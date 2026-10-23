@@ -2,6 +2,7 @@
 
 pub mod bookshelf;
 pub mod clients;
+pub mod cookbooks;
 pub mod data_bags;
 pub mod environments;
 pub mod error;
@@ -36,6 +37,7 @@ pub fn router(state: AppState) -> Router {
         .merge(data_bags::routes())
         .merge(bookshelf::routes())
         .merge(sandboxes::routes())
+        .merge(cookbooks::routes())
         .fallback(not_found)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
