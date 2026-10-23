@@ -53,3 +53,24 @@ fn write_private_file(path: &Path, contents: &str) -> Result<(), std::io::Error>
     }
     Ok(())
 }
+
+/// Load the local object-store HMAC secret, creating it on first start.
+pub fn ensure_object_store_secret(config: &Config) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(secret) = &config.object_store.secret {
+        if !secret.is_empty() {
+            return Ok(secret.clone());
+        }
+    }
+
+    let path = Path::new(&config.paths.data_dir).join("objectstore.secret");
+    if path.is_file() {
+        let secret = std::fs::read_to_string(&path)?;
+        if !secret.trim().is_empty() {
+            return Ok(secret.trim().to_string());
+        }
+    }
+
+    let secret = format!("os-{}", Uuid::new_v4().simple());
+    write_private_file(&path, &secret)?;
+    Ok(secret)
+}

@@ -1,5 +1,6 @@
 //! HTTP API for Microwave Server.
 
+pub mod bookshelf;
 pub mod clients;
 pub mod data_bags;
 pub mod environments;
@@ -9,6 +10,7 @@ pub mod middleware;
 pub mod nodes;
 pub mod organizations;
 pub mod roles;
+pub mod sandboxes;
 pub mod state;
 pub mod users;
 
@@ -32,6 +34,8 @@ pub fn router(state: AppState) -> Router {
         .merge(environments::routes())
         .merge(roles::routes())
         .merge(data_bags::routes())
+        .merge(bookshelf::routes())
+        .merge(sandboxes::routes())
         .fallback(not_found)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

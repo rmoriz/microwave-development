@@ -3,6 +3,7 @@ mod bootstrap;
 use clap::{Parser, Subcommand};
 use microwave_api::{router, AppState};
 use microwave_config::Config;
+use microwave_objectstore::LocalObjectStore;
 use microwave_store::SqliteStore;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -54,10 +55,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", serde_json::to_string_pretty(&config)?);
         }
         Command::Serve { config, check } => {
-            let config = Config::load(config.as_deref())?;
+            let mut config = Config::load(config.as_deref())?;
             let database_path = database_path(&config);
             let store = Arc::new(SqliteStore::open(Path::new(&database_path))?);
             bootstrap::ensure_superuser(&store, &config)?;
+            let secret = bootstrap::ensure_object_store_secret(&config)?;
+            let object_store = Arc::new(LocalObjectStore::new(
+                Path::new(&config.paths.data_dir).join("bookshelf"),
+                &secret,
+                format!("http://{}", config.server.bind),
+            ));
+            config.object_store.secret = Some(secret);
 
             if check {
                 eprintln!(
@@ -71,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let state = AppState {
                 store,
                 config: Arc::new(config),
+                object_store,
             };
             let listener = tokio::net::TcpListener::bind(&bind).await?;
             tracing::info!(%bind, "microwave-server listening");

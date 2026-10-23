@@ -6,6 +6,7 @@ members = [
     "crates/microwave-store",
     "crates/microwave-authz",
     "crates/microwave-api",
+    "crates/microwave-objectstore",
     "bin/microwave-server",
 ]
 
@@ -28,6 +29,8 @@ sha2 = "0.10"
 base64 = "0.22"
 bcrypt = "0.17"
 hex = "0.4"
+hmac = "0.12"
+md-5 = "0.10"
 rand = "0.8"
 rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }

@@ -5,8 +5,10 @@ use base64::Engine;
 use microwave_api::{router, AppState};
 use microwave_config::Config;
 use microwave_crypto::{sign_request, CanonicalRequest, SignVersion};
+use microwave_objectstore::LocalObjectStore;
 use microwave_store::{ActorType, SqliteStore};
 use std::sync::Arc;
+use uuid::Uuid;
 
 pub const PRIVATE_KEY: &str = include_str!("../../../microwave-crypto/tests/fixtures/test_key.pem");
 pub const PUBLIC_KEY: &str =
@@ -23,6 +25,11 @@ pub fn state_with_pivotal() -> AppState {
     AppState {
         store,
         config: Arc::new(Config::default()),
+        object_store: Arc::new(LocalObjectStore::new(
+            std::env::temp_dir().join(format!("mw-test-{}", Uuid::new_v4())),
+            "test-secret",
+            "http://0.0.0.0:8000",
+        )),
     }
 }
 

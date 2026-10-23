@@ -11,6 +11,7 @@ clap.workspace = true
 microwave-api = { path = "../../crates/microwave-api" }
 microwave-config = { path = "../../crates/microwave-config" }
 microwave-crypto = { path = "../../crates/microwave-crypto" }
+microwave-objectstore = { path = "../../crates/microwave-objectstore" }
 microwave-store = { path = "../../crates/microwave-store" }
 serde_json.workspace = true
 tokio.workspace = true

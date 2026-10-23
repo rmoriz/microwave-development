@@ -115,6 +115,9 @@ impl Config {
         if let Ok(value) = std::env::var("MW_OBJECT_STORE__ENDPOINT") {
             self.object_store.endpoint = Some(value);
         }
+        if let Ok(value) = std::env::var("MW_OBJECT_STORE__SECRET") {
+            self.object_store.secret = Some(value);
+        }
         if let Ok(value) = std::env::var("MW_AUTH__SKEW_SECONDS") {
             self.auth.skew_seconds = parse_value("MW_AUTH__SKEW_SECONDS", value)?;
         }
@@ -232,6 +235,7 @@ pub struct ObjectStoreConfig {
     pub backend: ObjectStoreBackend,
     pub bucket: Option<String>,
     pub endpoint: Option<String>,
+    pub secret: Option<String>,
 }
 
 impl Default for ObjectStoreConfig {
@@ -240,6 +244,7 @@ impl Default for ObjectStoreConfig {
             backend: ObjectStoreBackend::Local,
             bucket: None,
             endpoint: None,
+            secret: None,
         }
     }
 }
