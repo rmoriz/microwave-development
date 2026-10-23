@@ -310,6 +310,56 @@ impl SqliteStore {
             .optional()?)
     }
 
+    pub fn list_clients(&self, org_id: &str) -> Result<Vec<Client>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, org_id, authz_id, name, validator, admin, created_at, updated_at
+             FROM clients WHERE org_id = ?1 ORDER BY name",
+        )?;
+        let rows = statement.query_map([org_id], |row| {
+            Ok(Client {
+                id: row.get(0)?,
+                org_id: row.get(1)?,
+                authz_id: row.get(2)?,
+                name: row.get(3)?,
+                validator: row.get::<_, i64>(4)? != 0,
+                admin: row.get::<_, i64>(5)? != 0,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?;
+        let mut clients = Vec::new();
+        for row in rows {
+            clients.push(row?);
+        }
+        Ok(clients)
+    }
+
+    pub fn delete_client(&self, org_id: &str, name: &str) -> Result<(), StoreError> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        let client = transaction
+            .query_row(
+                "SELECT id, authz_id FROM clients WHERE org_id = ?1 AND name = ?2",
+                params![org_id, name],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NotFound(format!("client {name}")))?;
+
+        transaction.execute(
+            "DELETE FROM actor_keys WHERE actor_id = ?1 AND actor_type = 'client'",
+            [&client.0],
+        )?;
+        transaction.execute(
+            "DELETE FROM authz_entities WHERE authz_id = ?1",
+            [&client.1],
+        )?;
+        transaction.execute("DELETE FROM clients WHERE id = ?1", [&client.0])?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn add_actor_key(
         &self,
         actor_id: &str,

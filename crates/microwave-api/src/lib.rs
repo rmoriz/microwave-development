@@ -1,5 +1,6 @@
 //! HTTP API for Microwave Server.
 
+pub mod clients;
 pub mod error;
 pub mod middleware;
 pub mod organizations;
@@ -21,6 +22,7 @@ pub fn router(state: AppState) -> Router {
         .route("/license", get(license))
         .merge(users::routes())
         .merge(organizations::routes())
+        .merge(clients::routes())
         .fallback(not_found)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
