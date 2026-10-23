@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod error;
+pub mod password;
 pub mod signature;
 
 pub use auth::{
@@ -9,6 +10,7 @@ pub use auth::{
     SignVersion,
 };
 pub use error::CryptoError;
+pub use password::{hash_password, needs_upgrade, verify_password, PasswordHash};
 pub use signature::{
     decode_signature, parse_private_key_pem, parse_public_key_pem, sign_request, verify_request,
     AuthHeaders,

@@ -16,6 +16,10 @@ pub enum CryptoError {
     InvalidKey(String),
     #[error("invalid RSA signature length: {0}")]
     InvalidSignatureLength(usize),
+    #[error("password must not be empty")]
+    InvalidPassword,
+    #[error("password hashing failed: {0}")]
+    PasswordHash(String),
     #[error("signature verification failed")]
     VerificationFailed,
 }

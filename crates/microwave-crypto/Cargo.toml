@@ -14,3 +14,6 @@ thiserror.workspace = true
 rsa.workspace = true
 num-bigint-dig.workspace = true
 rand.workspace = true
+bcrypt.workspace = true
+hex.workspace = true
+subtle.workspace = true
