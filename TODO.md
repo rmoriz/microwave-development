@@ -2,6 +2,8 @@
 
 This document tracks the end-to-end engineering checklist for reimplementing the upstream Chef Infra Server API (`15.10.127`) and its surrounding compatibility surfaces in Rust, as specified in [`docs/superpowers/specs/2026-10-24-microwave-server-design.md`](docs/superpowers/specs/2026-10-24-microwave-server-design.md).
 
+> **Progress:** Phase 1A is complete: workspace, configuration, canonical request construction, `X-Ops` signing/verification (cross-checked against upstream `mixlib-authentication` vectors), password hash compatibility, and the `microwave-server` CLI. See [`docs/superpowers/plans/2026-10-24-phase-1a-foundation.md`](docs/superpowers/plans/2026-10-24-phase-1a-foundation.md).
+
 ---
 
 ## Phase 1: Workspace Foundation, Configuration, Cryptography & Storage Core
@@ -15,25 +17,25 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [ ] Add structured logging (`tracing` + `tracing-subscriber`) and Prometheus/JSON metrics registry.
 
 ### 1.2 Cryptography, Request Signing & Passwords (`microwave-crypto`)
-- [ ] Implement `X-Ops-Content-Hash` calculation and verification:
-  - [ ] SHA-1 Base64 digest for Sign `1.0` and `1.1`.
-  - [ ] SHA-256 Base64 digest for Sign `1.3`.
-- [ ] Implement canonical path normalization (collapsing duplicate slashes `/+`, stripping trailing slashes except `/`, ignoring query strings, preserving original path before default-org rewrite).
-- [ ] Implement `X-Ops-Sign` header parser (`version=1.0`, `version=1.1`, `version=1.3`, with optional `algorithm=...;` prefix).
+- [x] Implement `X-Ops-Content-Hash` calculation and verification:
+  - [x] SHA-1 Base64 digest for Sign `1.0` and `1.1`.
+  - [x] SHA-256 Base64 digest for Sign `1.3`.
+- [x] Implement canonical path normalization (collapsing duplicate slashes `/+`, stripping trailing slashes except `/`, ignoring query strings, preserving original path before default-org rewrite).
+- [x] Implement `X-Ops-Sign` header parser (`version=1.0`, `version=1.1`, `version=1.3`, with optional `algorithm=...;` prefix).
 - [ ] Implement `X-Ops-Authorization-1..N` header reassembly and Base64 decoding.
 - [ ] Implement timestamp skew validator (`X-Ops-Timestamp` ISO-8601 UTC parsing, configurable `authentication_skew` default 900s).
-- [ ] Implement Sign `1.0` & `1.1` verifier (RSA PKCS#1 v1.5 public-key decryption / raw verification against canonical string).
-- [ ] Implement Sign `1.3` verifier (`RSASSA-PKCS1-v1_5` with SHA-256 against canonical string including `X-Ops-Server-API-Version`).
-- [ ] Implement outbound `X-Ops-Sign` request signer (for `microwave-ctl`, `microwave-migrate`, and test harnesses).
+- [x] Implement Sign `1.0` & `1.1` verifier (RSA PKCS#1 v1.5 public-key decryption / raw verification against canonical string).
+- [x] Implement Sign `1.3` verifier (`RSASSA-PKCS1-v1_5` with SHA-256 against canonical string including `X-Ops-Server-API-Version`).
+- [x] Implement outbound `X-Ops-Sign` request signer (for `microwave-ctl`, `microwave-migrate`, and test harnesses).
 - [ ] Implement AWS SigV4 signer & verifier (both query-string presigned URLs `X-Amz-Algorithm=AWS4-HMAC-SHA256` and `Authorization: AWS4-HMAC-SHA256` headers) for Bookshelf/S3 compatibility.
-- [ ] Implement `chef_password` verifier and upgrader:
-  - [ ] Standard `bcrypt` and `erlang-bcrypt-0.5.0`.
-  - [ ] `SHA1-bcrypt` (`bcrypt(hex_sha1(salt + "--" + pass + "--"))`).
-  - [ ] `sha1+bcrypt` (`bcrypt(hex_sha1("--" + orig_salt + "--" + pass + "--"), bcrypt_salt)`).
-  - [ ] Legacy plain salted SHA-1 (`ec` and `osc` formats).
-  - [ ] Constant-time comparison and automatic re-hash to `bcrypt` on verify.
+- [x] Implement `chef_password` verifier and upgrader:
+  - [x] Standard `bcrypt` and `erlang-bcrypt-0.5.0`.
+  - [x] `SHA1-bcrypt` (`bcrypt(hex_sha1(salt + "--" + pass + "--"))`).
+  - [x] `sha1+bcrypt` (`bcrypt(hex_sha1("--" + orig_salt + "--" + pass + "--"), bcrypt_salt)`).
+  - [x] Legacy plain salted SHA-1 (`ec` and `osc` formats).
+  - [x] Constant-time comparison and automatic re-hash to `bcrypt` on verify.
 - [ ] Implement `KeygenCache` background worker (pre-generating 2048-bit RSA PEM keypairs in a bounded channel) and health reporting for `/_status`.
-- [ ] Port unit test vectors from `mixlib-authentication`, `chef_authn`, and `chef_password_tests.erl`.
+- [x] Port unit test vectors from `mixlib-authentication`, `chef_authn`, and `chef_password_tests.erl`.
 
 ### 1.3 Unified Database Schema & Store Providers (`microwave-store`)
 - [ ] Define `MetadataStore` and transactional unit-of-work traits covering all domain and authz operations.

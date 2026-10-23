@@ -1,8 +1,10 @@
 # Phase 1A: Workspace, Configuration, and Request Authentication Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Build the Rust workspace foundation, configuration loader, and Chef-compatible request authentication primitives with tests.
+
+**Status:** Complete. All tasks implemented and committed.
 
 **Architecture:** A Cargo workspace with focused crates. `microwave-config` loads TOML plus `MW_*` environment overrides. `microwave-crypto` implements `X-Ops-Sign` canonicalization, signature verification/signing, and password hash compatibility. `microwave-server` is a thin CLI that exercises configuration and reports its resolved values.
 
@@ -50,7 +52,7 @@
   - `Config::resolved_database_url(&self) -> String`
   - Nested structs: `ServerConfig`, `PathsConfig`, `DatabaseConfig`, `SearchConfig`, `ObjectStoreConfig`, `AuthConfig`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 // crates/microwave-config/tests/config_test.rs
@@ -98,21 +100,21 @@ fn sqlite_url_is_derived_from_data_dir() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p microwave-config --test config_test`
 Expected: FAIL because the workspace and crate do not exist.
 
-- [ ] **Step 3: Create the workspace and implement the config types**
+- [x] **Step 3: Create the workspace and implement the config types**
 
 Create a virtual workspace at the repository root with members `crates/*` and `bin/*`, shared workspace dependencies, and `rust-toolchain.toml` pinned to the installed stable channel. Implement `Config` with serde defaults, a `from_toml_str` parser, an env overlay for `MW_<SECTION>__<FIELD>` keys, and a `resolved_database_url` that returns `sqlite://<data_dir>/microwave.db` unless `database.url` is set.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p microwave-config --test config_test`
 Expected: PASS (4 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Cargo.toml rust-toolchain.toml crates/microwave-config
@@ -141,7 +143,7 @@ git commit -m "feat: add workspace and configuration loader"
   - `AuthHeaders { version, user_id, timestamp, content_hash, signature }`
   - `CanonicalRequest { method, path, body, user_id, timestamp, api_version }`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 use microwave_crypto::{canonical_path, content_hash, parse_sign_header, SignVersion, CryptoError};
@@ -171,21 +173,21 @@ fn hashes_empty_and_non_empty_bodies() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p microwave-crypto --test canonical_test`
 Expected: FAIL because the crate does not exist.
 
-- [ ] **Step 3: Implement parsing and canonicalization**
+- [x] **Step 3: Implement parsing and canonicalization**
 
 Implement `SignVersion` with `V1_0`, `V1_1`, `V1_3`; parse `version=`, optionally preceded by `algorithm=sha1;` or `algorithm=sha256;`. Canonicalize paths by collapsing repeated `/` characters and removing a trailing `/` unless the path is exactly `/`. Hash with SHA-1 for 1.0/1.1 and SHA-256 for 1.3, then Base64-encode. Build the canonical request strings exactly as specified in the design document.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p microwave-crypto --test canonical_test`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/microwave-crypto
@@ -210,7 +212,7 @@ git commit -m "feat: add canonical request primitives"
   - `parse_public_key_pem(&str) -> Result<RsaPublicKey, CryptoError>`
   - `parse_private_key_pem(&str) -> Result<RsaPrivateKey, CryptoError>`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 use microwave_crypto::*;
@@ -245,21 +247,21 @@ fn rejects_tampered_body() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p microwave-crypto --test signature_test`
 Expected: FAIL because the functions do not exist.
 
-- [ ] **Step 3: Implement raw RSA PKCS#1 v1.5 signing and verification**
+- [x] **Step 3: Implement raw RSA PKCS#1 v1.5 signing and verification**
 
 For 1.3, use RSA-SHA256 (`RSASSA-PKCS1-v1_5`). For 1.0 and 1.1, reproduce the upstream raw private-encrypt behavior: build the PKCS#1 v1.5 type-1 padded block from the canonical request bytes, apply the private exponent for signing, and the public exponent for verification. Use `rsa` key components plus `num-bigint-dig` modular exponentiation. Reject keys shorter than 2048 bits.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p microwave-crypto --test signature_test`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/microwave-crypto
@@ -283,7 +285,7 @@ git commit -m "feat: verify and sign X-Ops requests"
   - `verify_password(&str, &PasswordHash) -> bool`
   - `needs_upgrade(&PasswordHash) -> bool`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 use microwave_crypto::{hash_password, verify_password, needs_upgrade, PasswordHash};
@@ -314,21 +316,21 @@ fn unknown_hash_type_is_rejected() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p microwave-crypto --test password_test`
 Expected: FAIL because the functions do not exist.
 
-- [ ] **Step 3: Implement bcrypt and legacy formats**
+- [x] **Step 3: Implement bcrypt and legacy formats**
 
 Implement bcrypt hashing with cost 12, and verification for `bcrypt`, `erlang-bcrypt-0.5.0`, `SHA1-bcrypt`, `sha1+bcrypt`, and the legacy salted SHA-1 forms. Use the upstream `ec` and `osc` salt prefixes exactly. Compare with a constant-time helper. Generate a real fixture for the legacy test rather than leaving the placeholder.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p microwave-crypto --test password_test`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/microwave-crypto
@@ -351,7 +353,7 @@ git commit -m "feat: add password hash compatibility"
   - `microwave-server config [--config PATH]` prints the resolved configuration as JSON.
   - `microwave-server serve [--config PATH]` prints `serve: not implemented yet` and exits 0 for now.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 use assert_cmd::Command;
@@ -372,21 +374,21 @@ fn config_prints_json_defaults() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p microwave-server --test cli_test`
 Expected: FAIL because the binary does not exist.
 
-- [ ] **Step 3: Implement the CLI**
+- [x] **Step 3: Implement the CLI**
 
 Use `clap` derive with the three subcommands. Load the config through `Config::load`, apply env overrides, and serialize with `serde_json` for the `config` output. Keep `serve` as an explicit placeholder so later phases can replace it without changing the CLI surface.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p microwave-server --test cli_test`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add bin/microwave-server Cargo.toml
