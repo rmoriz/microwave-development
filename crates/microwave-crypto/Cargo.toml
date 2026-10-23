@@ -11,3 +11,6 @@ chrono.workspace = true
 sha1.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+rsa.workspace = true
+num-bigint-dig.workspace = true
+rand.workspace = true
