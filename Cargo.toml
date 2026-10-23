@@ -5,6 +5,7 @@ members = [
     "crates/microwave-crypto",
     "crates/microwave-store",
     "crates/microwave-authz",
+    "crates/microwave-api",
     "bin/microwave-server",
 ]
 
@@ -30,6 +31,11 @@ hex = "0.4"
 rand = "0.8"
 rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 subtle = "2"
 num-bigint-dig = "0.8"
 tempfile = "3"
