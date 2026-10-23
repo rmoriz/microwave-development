@@ -76,16 +76,13 @@ async fn create_client(
             .store
             .add_actor_key(&client.id, ActorType::Client, "default", public_key)
             .map_err(ApiError::from)?;
-    } else if body
-        .get("create_key")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
+    } else {
         let (private_key, public_key) = generate_rsa_keypair().map_err(|_| ApiError::internal())?;
         state
             .store
             .add_actor_key(&client.id, ActorType::Client, "default", &public_key)
             .map_err(ApiError::from)?;
+        response["private_key"] = json!(private_key);
         response["chef_key"] = json!({
             "uri": format!("{base}/organizations/{}/clients/{}/keys/default", org.name, name),
             "name": "default",
@@ -93,6 +90,17 @@ async fn create_client(
             "public_key": public_key,
             "expiration_date": "infinity"
         });
+    }
+
+    if let Some(group) = state
+        .store
+        .find_group(&org.id, "clients")
+        .map_err(ApiError::from)?
+    {
+        state
+            .store
+            .add_group_member(&group.authz_id, &client.authz_id)
+            .map_err(ApiError::from)?;
     }
 
     Ok((StatusCode::CREATED, Json(response)))

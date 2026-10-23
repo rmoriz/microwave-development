@@ -118,6 +118,7 @@ async fn uploads_and_reads_a_cookbook_version() {
     assert!(url.contains("/checksums/"));
     let path = url.strip_prefix("http://0.0.0.0:8000").unwrap();
     let response = app
+        .clone()
         .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
         .await
         .unwrap();
@@ -126,4 +127,31 @@ async fn uploads_and_reads_a_cookbook_version() {
         .await
         .unwrap();
     assert_eq!(&bytes[..], b"hello");
+
+    let response = app
+        .clone()
+        .oneshot(support::signed_request(
+            "POST",
+            "/organizations/acme/environments/_default/cookbook_versions",
+            br#"{"run_list":["recipe[apache]"]}"#,
+            SignVersion::V1_3,
+            "pivotal",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let solved = support::response_json(response).await;
+    assert_eq!(solved["cookbook_versions"]["apache"]["name"], "apache");
+
+    let response = app
+        .oneshot(support::signed_request(
+            "POST",
+            "/organizations/acme/environments/_default/cookbook_versions",
+            br#"{"run_list":["recipe[missing]"]}"#,
+            SignVersion::V1_3,
+            "pivotal",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
 }

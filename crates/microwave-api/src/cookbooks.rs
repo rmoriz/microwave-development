@@ -222,7 +222,7 @@ fn manifest_checksums(manifest: &Value) -> Vec<String> {
     checksums
 }
 
-fn add_download_urls(manifest: &mut Value, state: &AppState, org_id: &str) {
+pub(crate) fn add_download_urls(manifest: &mut Value, state: &AppState, org_id: &str) {
     for segment in SEGMENTS {
         if let Some(files) = manifest.get_mut(segment).and_then(Value::as_array_mut) {
             for file in files {

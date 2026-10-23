@@ -59,6 +59,13 @@ impl ApiError {
         }
     }
 
+    pub fn precondition_failed(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::PRECONDITION_FAILED,
+            message: message.into(),
+        }
+    }
+
     pub fn internal() -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
