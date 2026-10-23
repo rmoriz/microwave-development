@@ -25,12 +25,14 @@ fn config_prints_json_defaults() {
 }
 
 #[test]
-fn serve_reports_placeholder_and_exits_successfully() {
+fn serve_check_reports_configuration_and_exits_successfully() {
+    let dir = tempfile::tempdir().unwrap();
     let output = Command::cargo_bin("microwave-server")
         .unwrap()
-        .arg("serve")
+        .args(["serve", "--check"])
+        .env("MW_PATHS__DATA_DIR", dir.path())
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("serve: not implemented yet"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("configuration ok"));
 }

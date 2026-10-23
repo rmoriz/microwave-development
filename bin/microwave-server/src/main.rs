@@ -1,6 +1,11 @@
+mod bootstrap;
+
 use clap::{Parser, Subcommand};
+use microwave_api::{router, AppState};
 use microwave_config::Config;
-use std::path::PathBuf;
+use microwave_store::SqliteStore;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Debug, Parser)]
 #[command(name = "microwave-server", version, about = "Microwave Server")]
@@ -24,10 +29,20 @@ enum Command {
         /// Path to a TOML configuration file.
         #[arg(long, value_name = "PATH")]
         config: Option<PathBuf>,
+        /// Load configuration and initialize storage, then exit.
+        #[arg(long)]
+        check: bool,
     },
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .init();
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -38,15 +53,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let config = Config::load(config.as_deref())?;
             println!("{}", serde_json::to_string_pretty(&config)?);
         }
-        Command::Serve { config } => {
+        Command::Serve { config, check } => {
             let config = Config::load(config.as_deref())?;
-            eprintln!(
-                "serve: not implemented yet (bind {}, database {})",
-                config.server.bind,
-                config.resolved_database_url()
-            );
+            let database_path = database_path(&config);
+            let store = Arc::new(SqliteStore::open(Path::new(&database_path))?);
+            bootstrap::ensure_superuser(&store, &config)?;
+
+            if check {
+                eprintln!(
+                    "serve: configuration ok (bind {}, database {})",
+                    config.server.bind, database_path
+                );
+                return Ok(());
+            }
+
+            let bind = config.server.bind.clone();
+            let state = AppState {
+                store,
+                config: Arc::new(config),
+            };
+            let listener = tokio::net::TcpListener::bind(&bind).await?;
+            tracing::info!(%bind, "microwave-server listening");
+            axum::serve(listener, router(state)).await?;
         }
     }
 
     Ok(())
+}
+
+fn database_path(config: &Config) -> String {
+    let url = config.resolved_database_url();
+    url.strip_prefix("sqlite://").unwrap_or(&url).to_string()
 }
