@@ -1,0 +1,28 @@
+---
+driver:
+  name: vagrant
+  box_auto_update: true
+  box_auto_prune: true
+  linked_clone: false
+
+lifecycle:
+  pre_converge:
+    - remote: sudo yum install -y openssl cronie python3-libdnf python3-dnf
+      includes:
+        - fedora-41
+        - fedora-42
+    - remote: sudo yum install -y openssl cronie python3-libdnf5 python3-rpm
+      includes:
+        - fedora-43
+    - remote: curl https://omnitruck.chef.io/install.sh | sudo sh -s -- -P chef -c current
+    - remote: export PATH="/opt/chef/bin:/opt/chef/embedded/bin:$PATH"
+    - remote: echo "Chef container's Chef / Ohai release:"
+    - remote: /opt/chef/bin/chef-client -v
+    - remote: /opt/chef/bin/ohai -v
+    - remote: echo "Installing appbundler and appbundle-updater gems:"
+    - remote: sudo /opt/chef/embedded/bin/gem install appbundler appbundle-updater --no-doc
+    - remote: echo "Updating Chef using appbundler-updater:"
+    - remote: sudo /opt/chef/embedded/bin/appbundle-updater chef chef <%= ENV['GITHUB_SHA']  || %x(git rev-parse HEAD).chomp %> --tarball --github <%= ENV['GITHUB_REPOSITORY']  || "chef/chef" %>
+    - remote: echo "Installed Chef / Ohai release:"
+    - remote: /opt/chef/bin/chef-client -v
+    - remote: /opt/chef/bin/ohai -v

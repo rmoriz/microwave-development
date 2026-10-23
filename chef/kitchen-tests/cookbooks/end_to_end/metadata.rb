@@ -1,0 +1,23 @@
+name             "end_to_end"
+license          "Apache-2.0"
+description      "Installs/Configures base"
+version          "2.0.0"
+
+depends          "logrotate"
+depends          "ntp", "< 7.0"
+depends          "chrony"
+depends          "openssh", "< 3.0"
+depends          "resolver"
+depends          "users"
+depends          "git", "< 13.0.0"
+
+supports "ubuntu"
+supports "debian"
+supports "centos"
+supports "opensuseleap"
+supports "fedora"
+supports "amazon"
+
+chef_version     ">= 16"
+issues_url       "https://github.com/chef/chef/issues"
+source_url       "https://github.com/chef/chef"

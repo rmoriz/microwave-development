@@ -1,0 +1,23 @@
+[
+ %% these apps are not present in the rebar.conf so
+ %% commenting out for now to see what happens.
+%{<<"goldrush">>,
+% {git,"https://github.com/DeadZen/goldrush",
+%      {ref,"57e71f2789632a085f0963e1244644fdcb1941b9"}},
+% 1},
+%{<<"ibrowse">>,
+% {git,"https://github.com/chef/ibrowse",
+%      {ref,"7b2b0bfd5e15e57706beb2ef0360cdc7f24b37c5"}},
+% 1},
+ {<<"lager">>,
+  {git,"https://github.com/basho/lager",
+       {ref,"a140ea935eae9149bb35234bb40f6acf1c69caa1"}},
+  0},
+ {<<"opscoderl_httpc">>,
+  {git,"https://github.com/chef/opscoderl_httpc",
+       {ref,"39291d99bdb6930d82422d51552c068a3325d1ed"}},
+  0},
+ {<<"pooler">>,
+  {git,"https://github.com/chef/pooler",
+       {branch,"CHEF-11677/CHEF-12498/lbaker"}},
+  0}].

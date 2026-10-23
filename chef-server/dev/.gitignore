@@ -1,0 +1,10 @@
+.cached_tz
+.vagrant
+config.yml
+webui_priv.pem
+*.deb
+
+dotfiles/.*
+testdata/
+nodes/
+.chef

@@ -1,0 +1,80 @@
+#!/bin/bash
+
+set -eou pipefail
+
+if [[ "${BUILDKITE:-false}" == "true" ]]; then
+  # TODO(ssd) 2019-12-13: packages.microsoft.com periodically fails with
+  # an error such as:
+  #
+  # E: Failed to fetch
+  # https://packages.microsoft.com/ubuntu/18.04/prod/dists/bionic/main/binary-amd64/Packages.gz
+  # File has unexpected size (93512 != 165979). Mirror sync in progress?
+  # [IP: 13.74.252.37 443]
+  #    Hashes of expected file:
+  #     - Filesize:165979 [weak]
+  #     - SHA256:179eb71f2afb4a72bf5b11180b4d4c9ccf1644076dd75f5a7bbf880ecefafbba
+  #     - SHA1:381a8321619083a4063fa8381bf3aa12a2dac5a3 [weak]
+  #     - MD5Sum:54c730dd6a33c612b2ae3c23fe0cfcb7 [weak]
+  #    Release file created at: Thu, 12 Dec 2019 19:59:19 +0000
+  # E: Some index files failed to download. They have been ignored, or old ones used instead.
+  #
+  # Since we don't use any software from this repository in our tests,
+  # we can temporarily remove it from our sources.
+  rm -f /etc/apt/sources.list.d/microsoft-prod.list
+  # Remove problematic PostgreSQL repository if it exists
+  rm -f /etc/apt/sources.list.d/pgdg.list
+  # Remove problematic Helm repository if it exists
+  rm -f /etc/apt/sources.list.d/helm-stable-debian.list
+  
+  # Ensure Ubuntu main repositories are available
+  echo "deb http://archive.ubuntu.com/ubuntu focal main" | tee /etc/apt/sources.list.d/ubuntu-main.list
+  echo "deb http://archive.ubuntu.com/ubuntu focal-updates main" | tee -a /etc/apt/sources.list.d/ubuntu-main.list
+  echo "deb http://security.ubuntu.com/ubuntu focal-security main" | tee -a /etc/apt/sources.list.d/ubuntu-main.list
+  echo "deb http://archive.ubuntu.com/ubuntu focal universe" | tee -a /etc/apt/sources.list.d/ubuntu-universe.list
+  apt-get update
+
+  # Add keys and update
+  wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+  apt-get clean
+  apt-get autoremove
+  
+  # Install packages with dependency resolution, allowing downgrades if needed
+  apt-get install -y --allow-downgrades libpq-dev libsqlite3-dev libyaml-dev || \
+    (apt-get remove -y libpq5 libpq-dev && apt-get install -y libpq-dev libsqlite3-dev libyaml-dev)
+  asdf plugin add erlang
+  asdf install erlang 26.2.5.14
+  asdf local erlang 26.2.5.14
+  export PATH=/opt/asdf/shims:$PATH
+fi
+
+bundle_install_dirs=(
+  chef-server-ctl
+  oc-id
+)
+echo "+++ Using Ruby version: $(ruby -v)"
+
+for dir in "${bundle_install_dirs[@]}"; do
+  echo "--- Installing gem dependencies for $dir"
+  pushd "src/$dir"
+    bundle config set jobs 3
+    bundle config set retry 3
+    bundle config set path "/workdir/vendor/bundle"
+    bundle install 
+  popd
+done
+
+erlang_install_dirs=(
+  bookshelf
+  oc_bifrost
+  oc_erchef
+)
+
+for dir in "${erlang_install_dirs[@]}"; do
+  echo "--- Installing rebar dependencies for $dir"
+  pushd "src/$dir"
+    ./rebar3 get-deps
+  popd
+done
+
+echo "+++ Running License Scout"
+license_scout --only-show-failures

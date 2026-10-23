@@ -1,0 +1,560 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby
+
+
+require "yaml"
+require "fileutils"
+
+# Utiilty function that needs to
+Variant = ENV['VAGRANT_MACHINE_VARIANT'] ? ("-" + ENV['VAGRANT_MACHINE_VARIANT'] ) : ''
+VMName = "chef-server#{Variant}"
+
+IPS = {
+  cs: "192.168.56.100",
+  db: "192.168.56.150",
+  be: "192.168.56.151",
+  ldap: "192.168.56.152",
+  custom: "192.168.56.153",
+  reportingdb: "192.168.56.155",
+  elasticsearch: "192.168.56.156"
+}
+
+attributes = YAML.load_file("defaults.yml")
+begin
+  custom_attributes = YAML.load_file("config.yml")
+  attributes = simple_deep_merge(attributes, custom_attributes)
+rescue
+end
+# to run a chef-server vm with external postgresql,
+# edit your config.yml file, and set postgresql.start = true
+# For external AZURE postgresql, also set postgresql use-azure
+# to true, and set postgresql ip-azure to the ip address
+# of your azure postgresql server.  see the postgresql section in
+# dev/defaults.yml for additional information.
+vmattr = attributes['vm']
+USE_AZURE = vmattr['postgresql']['start'] && vmattr['postgresql']['use-azure']
+IPS[:db]  = vmattr['postgresql']['ip-azure'] if USE_AZURE && vmattr['postgresql']['ip-azure']
+
+# Just in case you have a hankering to start a VM to run components on the
+# same network that don't fall into the categories above.
+# Enable it by setting config.yml value `vm.custom` to `true`,
+# then bring it up with `vagrant up custom`
+DB_SUPERUSER = (vmattr['postgresql']['username-azure'] if USE_AZURE && vmattr['postgresql']['username-azure']) || 'bofh'
+DB_SUPERPASS = (vmattr['postgresql']['password-azure'] if USE_AZURE && vmattr['postgresql']['password-azure']) || 'i1uvd3v0ps'
+LDAP_PASSWORD='H0\/\/!|\/|3tY0ur|\/|0th3r'
+
+nodes_dir = File.join(File.expand_path(File.dirname(__FILE__)), 'nodes')
+if File.directory?(nodes_dir)
+  # This prevents attributes from previous runs from getting
+  # merged back into node attributes during provisioning.
+  #
+  # It prevents annoying things, like "private-chef-cookbooks never
+  # stops loading from the current repo instead of the package" - because
+  # the node attr that says to do that never got cleared.
+  Dir.glob(File.join(nodes_dir, "*.json")).each do  |nodefile|
+    File.delete(nodefile)
+  end
+else
+  puts "nodes directory is missing...creating it now"
+  FileUtils.mkdir(nodes_dir)
+end
+
+Vagrant.configure("2") do |config|
+  config.vm.network 'public_network' if USE_AZURE
+  config.vm.network "forwarded_port", guest: 80,  host: 8080
+  config.vm.network "forwarded_port", guest: 443, host: 8443
+  config.vm.box = "bento/ubuntu-24.04"
+  config.ssh.forward_agent = true
+  #config.omnibus.chef_version = :latest
+
+  if start_external_service?("postgresql" , attributes)
+    config.vm.define("database") do |c|
+      define_db_server(c, attributes)
+    end
+  end
+
+  if start_external_service?("reporting_postgresql", attributes)
+    config.vm.define("reportingdb") do |c|
+      define_db_server_reporting(c, attributes)
+    end
+  end
+
+  if start_external_service?("ldap", attributes)
+    config.vm.define('ldap') do |c|
+      define_ldap_server(c, attributes)
+    end
+  end
+
+  if start_external_service?("chef-backend", attributes)
+    config.vm.define("backend") do |c|
+      define_backend_server(c, attributes)
+    end
+  end
+
+  if start_external_service?("elasticsearch", attributes)
+    config.vm.define('elasticsearch') do |c|
+      define_elasticsearch_server(c, attributes)
+    end
+  end
+  config.vm.define(VMName, primary: true) do |c|
+    define_chef_server(c, attributes)
+  end
+
+end
+
+
+def define_chef_server(config, attributes)
+  provisioning, package, package_path = prepare('SERVER_PKG', 'chef-server-core', 'Chef Server 12+')
+  _m_provisioning, m_package, _m_package_path = prepare('MANAGE_PKG', 'chef-manage', 'Chef Manage 1.4+') if plugin_active?('chef-manage', attributes)
+  _ps_provisioning, ps_package, _ps_package_path = prepare('PUSH_JOBS_PKG', 'opscode-push-jobs-server', 'Push Jobs Server 1.1+') if plugin_active?('push-jobs-server', attributes)
+  _r_provisioning, r_package, _r_package_path = prepare('REPORTING_PKG', 'opscode-reporting', 'Chef Reporting 1.6+') if plugin_active?('reporting', attributes)
+
+  config.vm.hostname = "api.#{VMName}.dev"
+  config.vm.network "private_network", ip: IPS[:cs]
+
+  vmattr = attributes["vm"]
+  customize_vm(config, memory: vmattr["memory"], cpus: vmattr["cpus"], name: VMName)
+  if provisioning
+    autoload = vmattr["omnibus-autoload"]
+    show_autoload_banner(autoload)
+    json = {
+      "install_packages" => vmattr["packages"],
+      "tz" => host_timezone,
+      "omnibus-autoload" => vmattr["omnibus-autoload"],
+      "provisioning" => { "hosts" => ips_to_fqdns }
+    }.merge vmattr["node-attributes"]
+
+    if vmattr["postgresql"]["start"]
+      # TODO make this stuff common - we have these values in 2-3 places now...
+      pg = { "postgresql['external']" => true,
+             "postgresql['vip']" => "\"#{IPS[:db]}\"",
+             "postgresql['port']" => 5432,
+             "postgresql['db_superuser']" => "\"#{DB_SUPERUSER}\"",
+             "postgresql['db_superuser_password']" => "\"#{DB_SUPERPASS}\"",
+             "opscode_erchef['db_pool_size']" => 10,
+             "oc_id['db_pool_size']" => 10,
+             "oc_bifrost['db_pool_size']" => 10 }
+
+      pg.merge!({
+                  "postgresql['db_connection_superuser']" => "'#{DB_SUPERUSER}@#{IPS[:db]}'",
+                  "postgresql['sql_connection_user']" => "'#{DB_SUPERUSER}@#{IPS[:db]}'",
+                  "opscode_erchef['sql_connection_user']" => "'opscode_chef@#{IPS[:db]}'",
+                  "oc_bifrost['sql_connection_user']" => "'bifrost@#{IPS[:db]}'",
+                  "bookshelf['sql_connection_user']" => "'bookshelf@#{IPS[:db]}'",
+                  "oc_id['sql_connection_user']" => "'oc_id@#{IPS[:db]}'"
+                }) if USE_AZURE
+
+      json = simple_deep_merge(json, { "provisioning" => { "chef-server-config" => pg } })
+    end
+
+    if vmattr["reporting_postgresql"]["start"]
+      pg = { "postgresql['external']" => true,
+             "postgresql['vip']" => "\"#{IPS[:reportingdb]}\"",
+             "postgresql['port']" => 5432,
+             "postgresql['db_superuser']" => "\"#{DB_SUPERUSER}\"",
+             "postgresql['db_superuser_password']" => "\"#{DB_SUPERPASS}\""
+      }
+      json = simple_deep_merge(json, { "provisioning" => { "opscode-reporting-config" => pg } })
+    end
+
+    if vmattr['ldap']['start']
+      backend_compat_message('ldap') if chef_backend_active?(attributes)
+      ldap = { "ldap['base_dn']" => '"ou=chefs,dc=chef-server,dc=dev"',
+               "ldap['bind_dn']" => '"cn=admin,dc=chef-server,dc=dev"',
+               "ldap['bind_password']" => "'#{LDAP_PASSWORD}'",
+               "ldap['host']" => "'#{IPS[:ldap]}'",
+               "ldap['login_attribute']" => '"uid"'
+      }
+      json = simple_deep_merge(json, { "provisioning" => { "chef-server-config" => ldap } })
+    end
+
+    if vmattr['elasticsearch'] && vmattr['elasticsearch']['start']
+      elasticsearch = { "opscode_solr4['external']" => "true",
+                        "opscode_solr4['external_url']" => '"http://elasticsearch:9200"',
+                        "opscode_erchef['search_provider']" => '"elasticsearch"',
+                        "opscode_erchef['search_queue_mode']" => '"batch"'
+      }
+      json = simple_deep_merge(json, { "provisioning" => { "chef-server-config" => elasticsearch } })
+    end
+
+    if vmattr['oc_id']
+      json = simple_deep_merge(json, { "oc_id" => vmattr['oc_id'] })
+    end
+
+    dotfiles_path = vmattr["dotfile_path"] || "dotfiles"
+    config.vm.synced_folder File.absolute_path(File.join(Dir.pwd, "../")), "/host", SharedFoldersEnableSymlinksCreate: true
+    config.vm.synced_folder package_path, "/packages"
+    config.vm.synced_folder File.expand_path(dotfiles_path), "/dotfiles"
+
+    # temporary hack to prevent error on /vagrant/.chef directory not existing.
+    # this should be looked into properly later when we have the bandwidth.
+    config.vm.provision "shell", inline: 'mkdir -p /vagrant'
+    config.vm.provision "shell", inline: 'mkdir -p /vagrant/.chef'
+
+    # Preserve gitconfig from host - note that this can be a source of errors so if you start
+    # seeing bundler or rebar git clone failures, try removing /root/.gitconfig
+    config.vm.provision "file", source: "~/.gitconfig", destination: ".gitconfig"
+    # Install the chef-server package now so that its chef client is available to us
+    config.vm.provision "shell", inline: generate_install_script(package, 'opscode')
+    # Force the path we want for root this is necessary to make sure that the chef-client provisioner is in the path
+    # For a more complete setup of /root/.bashrc which happens later, see dev::user-env
+    config.vm.provision "shell", inline: 'echo "export PATH=/opt/opscode/embedded/bin:/opt/opscode/bin:$PATH" > /root/.bashrc'
+
+    # Set up the chef-zero recipes to run
+    recipes = %w{provisioning::hosts provisioning::chef-server
+                 provisioning::chef-server-rb
+                 dev::system dev::user-env dev::dvm}
+    provision_with_chef_zero(config, accept_license: false, recipes: recipes, binary_path: "/opt/opscode/embedded/bin", json: json)
+
+    if chef_backend_active?(attributes)
+      # Grab the chef-server.rb that chef-backend generates for us and overwrite the one we
+      # made in provisioning
+      config.vm.provision "shell", inline: "cp /packages/api.#{VMName}.dev.rb /etc/opscode/chef-server.rb"
+    end
+    # We do a number of things that can affect the initial configuration - by
+    # running reconfigure here we can ensure that they're all completed
+    # first  -- no matter what kind of pre-reconfigure provisioning we doing.
+    config.vm.provision "shell", inline: "chef-server-ctl reconfigure --verbose --chef-license=accept"
+
+    # Another chef-zero provision - now that the server has been reconfigured, we can set
+    # up a default data for testing
+    recipes = %w{dev::create-test-data dev::setup-knife}
+    provision_with_chef_zero(config, accept_license: false, recipes: recipes, binary_path: "/opt/opscode/embedded/bin", json: json)
+
+
+    if plugin_active?('chef-manage', attributes)
+      config.vm.provision "shell", "inline": generate_install_script(m_package, 'chef-manage')
+      config.vm.provision "shell", "inline": "chef-manage-ctl reconfigure"
+    end
+
+    if plugin_active?('push-jobs-server', attributes)
+      backend_compat_message('push-jobs-server') if chef_backend_active?(attributes)
+      config.vm.provision "shell", "inline": generate_install_script(ps_package, 'opscode-push-jobs-server')
+      config.vm.provision "shell", "inline": "opscode-push-jobs-server-ctl reconfigure"
+    end
+
+    if plugin_active?('reporting', attributes)
+      backend_compat_message('reporting') if chef_backend_active?(attributes)
+      config.vm.provision "shell", "inline": generate_install_script(r_package, 'opscode-reporting')
+      config.vm.provision "shell", "inline": "opscode-reporting-ctl reconfigure"
+    end
+
+  end
+end
+
+def define_ldap_server(config, attributes)
+  config.vm.hostname = "ldap.#{VMName}.dev"
+  config.vm.network "private_network", ip: IPS[:ldap]
+  customize_vm(config, name: "ldap#{Variant}", memory: 512, cpus: 1)
+
+  config.vm.provision "chef_zero" do |chef|
+    # chef.arguments = '--chef-license accept'
+    chef.node_name = config.vm.hostname
+    chef.cookbooks_path = "cookbooks"
+    chef.add_recipe("provisioning::ldap-server")
+    chef.nodes_path = "nodes"
+    chef.install = false
+    chef.json = {
+      'provisioning' => { 'hosts' =>  ips_to_fqdns },
+      'ldap' => {'password' => LDAP_PASSWORD }
+    }
+  end
+end
+
+def define_db_server(config, attributes)
+  config.vm.hostname = "db.#{VMName}.dev"
+  config.vm.network "private_network", ip: IPS[:db]
+  customize_vm(config, name: "database#{Variant}", memory: 512, cpus: 1)
+  provision_with_chef_zero(config,
+                             accept_license: false,
+                             recipes: ["provisioning::hosts"],
+                             json: { 'provisioning' => { 'hosts' =>  ips_to_fqdns } })
+  config.vm.provision "shell", path: "scripts/provision-postgres.sh", args: "#{IPS[:cs]}"
+end
+
+def define_custom_server(config, attributes)
+  config.vm.hostname = "custom.#{VMName}.dev"
+  config.vm.network "private_network", ip: IPS[:custom]
+  customize_vm(config, name: "custom#{Variant}", memory: 2048, cpus: 2)
+  provision_with_chef_zero(config,
+                             accept_license: false,
+                             recipes: ["provisioning::hosts"],
+                             json: { 'provisioning' => { 'hosts' =>  ips_to_fqdns } })
+end
+
+def define_elasticsearch_server(config, attributes)
+  config.vm.hostname = "elasticsearch.#{VMName}.dev"
+  config.vm.network "private_network", ip: IPS[:elasticsearch]
+  customize_vm(config, name: "elasticsearch#{Variant}", memory: 2048, cpus: 2)
+  provision_with_chef_zero(config,
+                             accept_license: false,
+                             recipes: ["provisioning::hosts"],
+                             json: { 'provisioning' => { 'hosts' =>  ips_to_fqdns } })
+  config.vm.provision "shell",
+                      path: "scripts/provision-elasticsearch.sh",
+                      env: { 'ELASTIC_VERSION' => attributes["vm"]["elasticsearch"]["version"] }
+end
+
+def define_backend_server(config, attribute)
+  provisioning, package, package_path = prepare('BACKEND_PKG', 'chef-backend', 'Chef Backend 1.1+')
+  config.vm.hostname = "backend.#{VMName}.dev"
+  config.vm.network "private_network", ip: IPS[:be]
+  customize_vm(config, name: "backend#{Variant}", memory: 2048, cpus: 2)
+  if provisioning
+    config.vm.synced_folder package_path, "/packages"
+    provision_with_chef_zero(config,
+                               accept_license: false,
+                               recipes: ["provisioning::hosts"],
+                               json: { 'provisioning' => { 'hosts' =>  ips_to_fqdns } })
+    config.vm.provision "file", source: "~/.gitconfig", destination: ".gitconfig"
+    config.vm.provision "shell", inline: generate_install_script(package, "chef-backend")
+    config.vm.provision "shell", path: "scripts/provision-backend.sh"
+  end
+end
+
+
+def define_db_server_reporting(config, attributes)
+  config.vm.hostname = "reportingdb.#{VMName}.dev"
+  config.vm.network "private_network", ip: IPS[:reportingdb]
+  customize_vm(config, name: "reportingdb#{Variant}", memory: 512, cpus: 1)
+  provision_with_chef_zero(config,
+                             accept_license: false,
+                             recipes: ["provisioning::hosts"],
+                             json: { 'provisioning' => { 'hosts' =>  ips_to_fqdns } })
+  # Using shell here to ave the trouble of downloading
+  # chef-client for the node.  May reconsider...
+  config.vm.provision "shell", inline: configure_postgres
+end
+
+
+##############
+# Internals
+##############
+# These functions are used for provisioning, and ensuring that the VM has
+# what it needs to load up and install chef-server
+##############
+
+
+def prepare(package_env, package_name, title)
+  action = ARGV[0]
+  if action =~ /^(provision|up|reload)$/
+    package = prompt_package(package_env, package_name)
+    raise "Please set #{package_env} to the path of a .deb package for #{title}." if package.nil?
+    raise "#{package} does not exist! Please fix this." unless File.file?(package)
+    package_path = File.dirname(File.expand_path(package))
+    provisioning = true
+  end
+  [provisioning, package, package_path]
+end
+
+def prompt_package(package_env, package_name)
+  puts "Package search path: #{Dir.home}/Downloads:#{base_path}/omnibus/pkg"
+  # TODO allow config override of location, multiple locations, search pattern, max count?
+  files = Dir.glob("#{Dir.home}/Downloads/#{package_name}*.deb") + Dir.glob("#{base_path}/omnibus/pkg/#{package_name}*.deb")
+
+  if ENV[package_env]
+    if ENV[package_env] =~ /^.*#{package_name}.*deb$/ and File.file?(ENV[package_env])
+      user_package = File.expand_path(ENV[package_env])
+    else
+      puts "#{package_env} #{ENV[package_env]} is not a valid #{package_name} package. Ignoring."
+    end
+  end
+
+  if files.length == 0 and not user_package
+    return nil
+  end
+
+  files = files.sort_by{ |f| File.mtime(f) }.last(10)
+  files.reverse!
+  files << "[#{package_env}]: #{user_package}" if user_package
+
+  selection = 0
+
+  # For the fantastically lazy, allow an environment variable to specify
+  # which package selection to use. Special value of '-1' or 'package' will
+  # use the INSTALLER env var automatically (instead of just putting it in
+  # the list to choose from).
+  if ENV.has_key? 'AUTOPACKAGE'
+
+    selection = ENV['AUTOPACKAGE']
+    if (selection == 'package' or selection == '-1') and user_package
+      # Auto pick the INSTALLER pacckage
+      selection = files.length
+    else
+      selection = selection.to_i
+    end
+
+    if selection <= 0 or selection > files.length
+      puts "Invalid AUTOPACKAGE selection of #{selection}."
+      selection = get_selection(files)
+    else
+      puts "Using AUTOPACKAGE selection of #{files[selection - 1]}"
+    end
+
+  else
+    selection = get_selection(package_env, files)
+  end
+
+  if selection == files.length  and user_package
+    user_package # we munged the text on this one
+  else
+    files[selection - 1]
+  end
+
+end
+
+def get_selection(env, files)
+  selection = 0
+  files.each_index do |x|
+    puts " #{x+1}) #{files[x]}\n"
+  end
+  loop do
+    print "Select an image, or set the #{env} variable and run again: [1 - #{files.length}]: "
+    selection = $stdin.gets.chomp.to_i
+    break if selection > 0 and selection <= files.length
+  end
+  selection
+end
+
+def host_timezone
+  return ENV['DVM_TZ'] if ENV.has_key? 'DVM_TZ'
+  require "time"
+  # Note that we have to reverse the offset sign if we're using Etc/GMT,
+  # reference: http://en.wikipedia.org/wiki/Tz_database#Area
+  #  offset = (Time.zone_offset(Time.now.zone) / 3600) * -1
+  #  zonesuffix = offset >= 0 ? "+#{offset.to_s}" : "#{offset.to_s}"
+  #  "Etc/GMT#{zonesuffix}"
+  #  Sigh - sqitch doesn't like the above format and dies.
+  if /darwin/ =~ RUBY_PLATFORM
+    host_timezone_osx
+  else # TODO windows if we otherwise check out for windows.
+    host_timezone_linux
+  end
+end
+
+def host_timezone_linux
+  if File.exists?("/etc/timezone")
+    File.read("/etc/timezone").chomp
+  else
+    "UTC"
+  end
+end
+
+def host_timezone_osx
+  if File.exists?(".cached_tz")
+    puts "Reading timezone from cache(.cached_tz)"
+    File.read(".cached_tz")
+  else
+    puts "Notice: using sudo to get timezone, no updates being made"
+    puts "Executing: sudo systemsetup -gettimezone"
+    # Time Zone: Blah/Blah
+    tz = `sudo systemsetup -gettimezone`.chomp.split(":")[1].strip
+    File.write(".cached_tz", tz)
+    tz
+  end
+end
+
+
+
+# this is here in order to avoid having to download a chef provisioner -
+# we already have a chef-client install included with the server package, and since
+# we're going to run in solo mode, it will run for VM provisioning without
+# interfering with the server install.
+def generate_install_script(package, path_key = "opscode")
+  server_package_name = File.basename(package)
+  return ";" if server_package_name.nil?
+  <<SCRIPT
+cp /home/vagrant/.gitconfig /root/.gitconfig
+if [ -d "/opt/#{path_key}/embedded" ]
+then
+  echo "Bypassing server install, it appears done."
+else
+  sudo dpkg -i "/packages/#{server_package_name}"
+fi
+SCRIPT
+end
+
+def ips_to_fqdns
+  final = []
+  IPS.map do |shortname, ip|
+    next if shortname == :cs  # this is handled in-template provisioning/templates/hosts.erb
+    final << "#{ip} #{shortname}.#{VMName}.dev #{shortname}"
+  end
+  final
+end
+
+def backend_compat_message(plugin)
+  puts ""
+  puts "WARNING: #{plugin} may not work with Chef Backend"
+  puts ""
+end
+
+
+def plugin_active?(plugin, attributes)
+  attributes.dig('vm', 'plugins', plugin)
+end
+
+def start_external_service?(name, attributes)
+  attributes.dig("vm", name, "start")
+end
+
+def chef_backend_active?(attributes)
+  start_external_service?("chef-backend", attributes)
+end
+
+def base_path
+  File.absolute_path(File.join(Dir.pwd, "../"))
+end
+
+def show_autoload_banner(autoload)
+  if autoload.length > 0
+    puts " *** "
+    puts " * The following omnibus components will be loaded prior to reconfigure: "
+    autoload.each { |a| puts "   > #{a}" }
+    puts " *** "
+    puts " "
+  end
+end
+
+def provision_with_chef_zero(config, opts)
+  config.vm.provision "chef_zero" do |chef|
+    # chef.arguments = "--chef-license accept" if opts[:accept_license] # Removed to enable interactive ELU prompt
+    chef.node_name = config.vm.hostname
+    chef.cookbooks_path = "cookbooks"
+    chef.nodes_path = "nodes"
+    chef.binary_path = opts[:chef_path] if opts.has_key?(:chef_path)
+    opts[:recipes].each { |recipe| chef.add_recipe(recipe) }
+    chef.json = opts[:json]
+    chef.install = false
+  end
+end
+
+def customize_vm(config, opts)
+  config.vm.provider :virtualbox do |vb|
+    vb.customize ["modifyvm", :id,
+                  "--name", opts[:name],
+                  "--memory", opts[:memory] || 512,
+                  "--cpus", opts[:cpus] || 2,
+                  "--usb", "off",
+                  "--usbehci", "off",
+                  "--audio", "none"]
+
+    # This loses some assurances around data integrity in case of an unexpected shutdown,
+    # but is much more performant - loading code from the host is painfully slow without it.
+    vb.customize ["storagectl", :id, "--name", "SATA Controller", "--hostiocache", "on"]
+  end
+end
+
+def simple_deep_merge(source_hash, new_hash)
+  source_hash.merge(new_hash) do |key, old, new|
+    if new.respond_to?(:blank) && new.blank?
+      old
+    elsif (old.kind_of?(Hash) and new.kind_of?(Hash))
+        simple_deep_merge(old, new)
+    elsif (old.kind_of?(Array) and new.kind_of?(Array))
+        old.concat(new).uniq
+    else
+       new
+    end
+  end
+end

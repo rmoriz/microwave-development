@@ -1,0 +1,153 @@
+# Documentation available at https://expeditor.chef.io/docs/getting-started/
+---
+# The name of the product keys for this product (from mixlib-install)
+# setting this value also tells expeditor its an omnibus build.
+# product_key:
+#   - chef
+# Slack channel in Chef Software slack to send notifications about build failures, etc
+slack:
+  notify_channel: chef-infra-notify
+
+# Which Ruby Gems, built when the Omnibus package is built, to publish to rubygems.org
+# This publish is triggered by the `built_in:publish_rubygems` artifact_action.
+rubygems:
+  - chef
+  - chef-config
+  - chef-bin
+  - chef-utils
+
+# At the given time, trigger the following scheduled workloads
+# https://expeditor.chef.io/docs/getting-started/subscriptions/#scheduling-workloads
+# For the moment, nightly builds do nothing useful because omnibus builds are disabled
+#schedules:
+#  - name: nightly_build_main
+#    description: "Run a nightly build in the Buildkite pipeline"
+#    cronline: "0 6 * * *"
+
+pipelines:
+  - verify:
+      public: true
+      env:
+        - IGNORE_ARTIFACTORY_RUBY_PROXY: true # Artifactory is throwing 500's when downloading some gems.
+  - validate/release:
+      description: Validate release and promote Habitat package
+      # Note: We use a shell script for pipeline generation, not static YAML
+      definition: .expeditor/verify.release.pipeline.yml
+  - validate/adhoc:
+      definition: .expeditor/verify.adhoc.pipeline.yml
+      env:
+        - ADHOC: true
+  - docker/build:
+      definition: .expeditor/docker-build.pipeline.yml
+      trigger: default
+  - habitat/verify:
+      public: true
+      definition: .expeditor/habitat-test.pipeline.yml
+      trigger: default
+  - habitat/build:
+      definition: .expeditor/build.habitat.yml
+  - hab-export:
+      definition: .expeditor/hab-export-pipeline.yml
+  - gem_validate/release:
+      description: Builds and uploads the gems to artifactory
+      definition: .expeditor/gem_release.pipeline.yml
+  - macos_universal_package:
+      description: Builds universal macos package using arch specific packages
+      definition: .expeditor/macos_universal_package.pipeline.yml
+
+github:
+  # This deletes the GitHub PR branch after successfully merged into the release branch
+  delete_branch_on_merge: true
+  # The tag format to use (e.g. v1.0.0)
+  version_tag_format: "v{{version}}"
+  # allow bumping the minor release via label
+  minor_bump_labels:
+    - "Expeditor: Bump Version Minor"
+  # allow bumping the major release via label
+  major_bump_labels:
+    - "Expeditor: Bump Version Major"
+
+# Which GitHub branches to build releases from, and what versions
+# (as determined by the value in the VERSION file) those branches are responsible
+# for building.
+release_branches:
+  - main:
+      version_constraint: 19*
+  - chef-18:
+      version_constraint: 18*
+
+changelog:
+  rollup_header: Changes not yet released to stable
+
+artifact_channels:
+  - current
+  - stable
+  - base-2025
+  - base
+
+subscriptions:
+  # These actions are taken, in order they are specified, anytime a Pull Request is merged.
+  - workload: pull_request_merged:{{github_repo}}:{{release_branch}}:*
+    actions:
+      # STEP 1: File-modifying actions (create commits) - MUST come first
+      - built_in:bump_version:
+          ignore_labels:
+            - "Expeditor: Skip Version Bump"
+            - "Expeditor: Skip All"
+      - bash:.expeditor/update_version.sh:
+          only_if: built_in:bump_version
+          ignore_labels:
+            - "Expeditor: Skip Version Bump"
+            - "Expeditor: Skip All"
+      - built_in:update_changelog:
+          ignore_labels:
+            - "Expeditor: Skip Changelog"
+            - "Expeditor: Skip All"
+
+      # STEP 2: Pipeline triggers - MUST come after all file modifications
+      - trigger_pipeline:validate/release:
+          ignore_labels:
+            - "Expeditor: Skip Habitat"
+            - "Expeditor: Skip All"
+          only_if: built_in:bump_version
+      - trigger_pipeline:gem_validate/release:
+          only_if: built_in:bump_version
+          ignore_labels:
+            - "Expeditor: Skip Version Bump"
+            - "Expeditor: Skip All"
+
+  # the habitat chain
+  # Build Habitat packages and promote to unstable when validate/release pipeline passes
+  - workload: buildkite_build_passed:{{agent_id}}:validate/release:*
+    actions:
+      - trigger_pipeline:habitat/build
+
+  # Trigger docker build once habitat/build pipeline completes and packages are available in unstable
+  - workload: buildkite_build_passed:{{agent_id}}:habitat/build:*
+    actions:
+      - trigger_pipeline:docker/build
+
+  # Automatically promote the Habitat packages from unstable to current upon successful build of habitat/build
+  - workload: buildkite_hab_build_group_published:{{agent_id}}:*
+    actions:
+      - built_in:promote_habitat_packages
+
+  # this is the only way currently to promote built-in rubygems publish
+  - workload: project_promoted:{{agent_id}}:*
+    actions:
+      - built_in:rollover_changelog
+      - bash:.expeditor/update_dockerfile.sh
+      - bash:.expeditor/promote-docker-images.sh
+      - built_in:publish_rubygems
+      - built_in:promote_habitat_packages
+      - built_in:notify_chefio_slack_channels
+
+  # once project_promoted in slack is done from current to stable, we then promote to stable to base-2025
+  - workload: hab_package_published:stable:chef-infra-client/19.*
+    actions:
+      - bash:.expeditor/scripts/base-2025-promote.sh
+
+# now that omnibus is not part of the build, we're working to redefine what the nightly should be
+#  - workload: schedule_triggered:chef/chef:main:nightly_build_main:*
+#    actions:
+#      - trigger_pipeline:validate/adhoc

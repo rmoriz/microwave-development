@@ -1,0 +1,247 @@
+#
+# Copyright:: 2018, Webb Agile Solutions Ltd.
+# Copyright:: Copyright (c) 2009-2026 Progress Software Corporation and/or its subsidiaries or affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+require_relative "../resource"
+
+class Chef
+  class Resource
+    class Sysctl < Chef::Resource
+
+      provides(:sysctl, target_mode: true) { true }
+      provides(:sysctl_param, target_mode: true) { true }
+      target_mode support: :full
+
+      description "Use the **sysctl** resource to set or remove kernel parameters using the `sysctl` command line tool and configuration files in the system's `sysctl.d` directory. Configuration files managed by this resource are named `99-chef-KEYNAME.conf`."
+      examples <<~DOC
+      **Set vm.swappiness**:
+
+      ```ruby
+      sysctl 'vm.swappiness' do
+        value 19
+      end
+      ```
+
+      **Remove kernel.msgmax**:
+
+      **Note**: This only removes the sysctl.d config for kernel.msgmax. The value will be set back to the kernel default value.
+
+      ```ruby
+      sysctl 'kernel.msgmax' do
+        action :remove
+      end
+      ```
+
+      **Adding Comments to sysctl configuration files**:
+
+      ```ruby
+      sysctl 'vm.swappiness' do
+        value 19
+        comment "define how aggressively the kernel will swap memory pages."
+      end
+      ```
+
+      This produces /etc/sysctl.d/99-chef-vm.swappiness.conf as follows:
+
+      ```
+      # define how aggressively the kernel will swap memory pages.
+      vm.swappiness = 1
+      ```
+
+      **Converting sysctl settings from shell scripts**:
+
+      Example of existing settings:
+
+      ```bash
+      fs.aio-max-nr = 1048576 net.ipv4.ip_local_port_range = 9000 65500 kernel.sem = 250 32000 100 128
+      ```
+
+      Converted to sysctl resources:
+
+      ```ruby
+      sysctl 'fs.aio-max-nr' do
+        value '1048576'
+      end
+
+      sysctl 'net.ipv4.ip_local_port_range' do
+        value '9000 65500'
+      end
+
+      sysctl 'kernel.sem' do
+        value '250 32000 100 128'
+      end
+      ```
+      DOC
+
+      introduced "14.0"
+
+      property :key, String,
+        description: "The kernel parameter key in dotted format if it differs from the resource block's name.",
+        name_property: true
+
+      property :ignore_error, [TrueClass, FalseClass],
+        description: "Ignore any errors when setting the value on the command line.",
+        default: false, desired_state: false
+
+      property :value, [Array, String, Integer, Float],
+        description: "The value to set.",
+        coerce: proc { |v| coerce_value(v) },
+        required: [:apply]
+
+      property :comment, [Array, String],
+        description: "Comments, placed above the resource setting in the generated file. For multi-line comments, use an array of strings, one per line.",
+        default: [],
+        desired_state: false,
+        introduced: "15.8"
+
+      property :conf_dir, String,
+        description: "The configuration directory to write the config to.",
+        default: "/etc/sysctl.d"
+
+      def after_created
+        raise "The sysctl resource requires Linux as it needs sysctl and the sysctl.d directory functionality." unless node["os"] == "linux"
+      end
+
+      def coerce_value(v)
+        case v
+        when Array
+          v.join(" ")
+        else
+          v.to_s
+        end
+      end
+
+      load_current_value do
+
+        value get_sysctl_value(key)
+      rescue
+        current_value_does_not_exist!
+
+      end
+
+      action :apply, description: "Set the kernel parameter and update the `sysctl` settings." do
+        converge_if_changed do
+          # set it temporarily
+          set_sysctl_param(new_resource.key, new_resource.value)
+
+          directory new_resource.conf_dir
+
+          file "#{new_resource.conf_dir}/99-chef-#{new_resource.key.tr("/", ".")}.conf" do
+            content construct_sysctl_content
+          end
+
+          execute "Load sysctl values" do
+            command sysctl_reload_command
+            default_env true
+            action :run
+          end
+        end
+      end
+
+      action :remove, description: "Remove the kernel parameter and update the `sysctl` settings." do
+        # only converge the resource if the file actually exists to delete
+        if ::TargetIO::File.exist?("#{new_resource.conf_dir}/99-chef-#{new_resource.key.tr("/", ".")}.conf")
+          converge_by "removing sysctl config at #{new_resource.conf_dir}/99-chef-#{new_resource.key.tr("/", ".")}.conf" do
+            file "#{new_resource.conf_dir}/99-chef-#{new_resource.key.tr("/", ".")}.conf" do
+              action :delete
+            end
+
+            execute "Load sysctl values" do
+              default_env true
+              command sysctl_reload_command
+              action :run
+            end
+          end
+        end
+      end
+
+      action_class do
+        #
+        # Shell out to set the sysctl value
+        #
+        # @param [String] key The sysctl key
+        # @param [String] value The value of the sysctl key
+        #
+        def set_sysctl_param(key, value)
+          shell_out!("sysctl #{"-e " if new_resource.ignore_error}-w \"#{key}=#{value}\"")
+        end
+
+        #
+        # The command used to reload sysctl settings from disk.
+        #
+        # `sysctl -p` only reads /etc/sysctl.conf (or an explicit file), which
+        # some distros (e.g. Debian 13 "trixie") no longer ship by default, since
+        # they rely entirely on systemd-sysctl loading /etc/sysctl.d/*.conf.
+        # `sysctl --system` reloads from all of the standard locations --
+        # including the conf_dir this resource writes to -- and simply skips
+        # /etc/sysctl.conf if it doesn't exist, so it works whether or not that
+        # file is present.
+        #
+        # @return [String] The sysctl reload command
+        #
+        def sysctl_reload_command
+          "sysctl #{"-e " if new_resource.ignore_error}--system"
+        end
+
+        #
+        # construct a string, joining members of new_resource.comment and new_resource.value
+        #
+        # @return [String] The text file content
+        #
+        def construct_sysctl_content
+          sysctl_lines = Array(new_resource.comment).map { |c| "# #{c.strip}" }
+
+          sysctl_lines << "#{new_resource.key} = #{new_resource.value}"
+
+          sysctl_lines.join("\n") + "\n"
+        end
+      end
+
+      private
+
+      # shellout to sysctl to get the current value
+      # ignore missing keys by using '-e'
+      # convert tabs to spaces since sysctl tab deliminates multivalue parameters
+      # strip the newline off the end of the output as well
+      #
+      # Chef creates a file in sysctld with parameter configuration
+      # Thus this config will persists even after rebooting the system
+      # User can be in a half configured state, where he has already updated the value
+      # which he wants to be configured from the resource
+      # Therefore we need an extra check with sysctld to ensure a correct idempotency
+      #
+      def get_sysctl_value(key)
+        val = shell_out!("sysctl -n -e #{key}").stdout.tr("\t", " ").strip
+        raise unless val == get_sysctld_value(key)
+
+        val
+      end
+
+      # Check if chef has already configured a value for the given key and
+      # return the value. Raise in case this conf file needs to be created
+      # or updated
+      def get_sysctld_value(key)
+        raise unless ::TargetIO::File.exist?("/etc/sysctl.d/99-chef-#{key.tr("/", ".")}.conf")
+
+        k, v = ::TargetIO::File.read("/etc/sysctl.d/99-chef-#{key.tr("/", ".")}.conf").match(/(.*) = (.*)/).captures
+        raise "Unknown sysctl key!" if k.nil?
+        raise "Unknown sysctl value!" if v.nil?
+
+        v
+      end
+    end
+  end
+end

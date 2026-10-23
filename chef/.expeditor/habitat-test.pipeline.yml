@@ -1,0 +1,29 @@
+---
+expeditor:
+  defaults:
+    buildkite:
+      timeout_in_minutes: 60
+      retry:
+        automatic:
+          limit: 1
+
+steps:
+
+- label: ":linux: Validate Linux"
+  commands:
+    - sudo -E .expeditor/scripts/habitat-test.sh $EXPEDITOR_PKG_IDENTS_CHEFINFRACLIENTX86_64LINUX
+  expeditor:
+    executor:
+      linux:
+        privileged: true
+        single-use: true
+
+- label: ":windows: Validate Habitat Builds of Chef Infra"
+  commands:
+    - .expeditor/scripts/habitat-test.ps1 -WindowsArtifact $EXPEDITOR_PKG_IDENTS_CHEFINFRACLIENTX86_64WINDOWS
+  expeditor:
+    executor:
+      windows:
+        privileged: true
+        single-use: true
+        shell: ["powershell", "-Command"]

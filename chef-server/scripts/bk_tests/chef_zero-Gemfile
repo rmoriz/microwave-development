@@ -1,0 +1,18 @@
+source 'https://rubygems.org'
+
+gemspec
+# For debugging in dvm
+gem 'pry'
+gem 'pry-byebug'
+gem 'pry-stack_explorer'
+gem 'rake'
+
+# For "rake chef_zero_spec"
+# PR #352 merged to main but not released yet - use main branch
+gem 'chef-zero', git: 'https://github.com/chef/chef-zero.git', branch: 'main'
+
+# If you want to load debugging tools into the bundle exec sandbox,
+# # add these additional dependencies into Gemfile.local
+eval(IO.read(__FILE__ + '.local'), binding) if File.exists?(__FILE__ + '.local')
+
+instance_eval(ENV['GEMFILE_MOD']) if ENV['GEMFILE_MOD']

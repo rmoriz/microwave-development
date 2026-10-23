@@ -1,0 +1,162 @@
+GIT
+  remote: https://github.com/chef/chef-zero.git
+  revision: aa4c1d5d917a6e521312116da574534da1d61e9e
+  branch: main
+  specs:
+    chef-zero (15.1.10)
+      ffi-yajl (>= 2.2, < 4.0)
+      hashie (>= 2.0, < 6.0)
+      mixlib-log (>= 2.0, < 4.0)
+      rack (~> 3.1, >= 3.1.16)
+      rackup (~> 2.2, >= 2.2.1)
+      uuidtools (>= 2.1, < 4.0)
+      webrick
+
+GIT
+  remote: https://github.com/chef/rest-client.git
+  revision: 4725c8b5ae09b3f6b968831beae27503f1261ea9
+  branch: jfm/ucrt_update1
+  specs:
+    rest-client (2.1.0)
+      base64
+      http-accept (~> 2.1.0)
+      http-cookie (>= 1.0.2, < 2.0)
+      mime-types (>= 1.16, < 4.0)
+      netrc (~> 0.8)
+
+PATH
+  remote: .
+  specs:
+    oc-chef-pedant (2.2.0)
+      activesupport (>= 7.0, < 8.0)
+      addressable
+      chef-utils (>= 16.17.51)
+      erubis (~> 2.7)
+      mixlib-authentication (> 1.4, < 4.0)
+      mixlib-config (>= 2, < 4)
+      mixlib-shellout (>= 1.1)
+      net-http-spy (~> 0.2)
+      rest-client (>= 1.6)
+      rspec (~> 3.2)
+      rspec-rerun (~> 1.0)
+      rspec_junit_formatter (~> 0.2)
+      uuidtools (~> 2.0)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+    activesupport (7.2.3.1)
+      base64
+      benchmark (>= 0.3)
+      bigdecimal
+      concurrent-ruby (~> 1.0, >= 1.3.1)
+      connection_pool (>= 2.2.5)
+      drb
+      i18n (>= 1.6, < 2)
+      logger (>= 1.4.2)
+      minitest (>= 5.1, < 6)
+      securerandom (>= 0.3)
+      tzinfo (~> 2.0, >= 2.0.5)
+    addressable (2.9.0)
+      public_suffix (>= 2.0.2, < 8.0)
+    base64 (0.3.0)
+    benchmark (0.5.0)
+    bigdecimal (4.1.2)
+    binding_of_caller (2.0.0)
+      debug_inspector (>= 1.2.0)
+    byebug (11.1.3)
+    chef-utils (19.2.110)
+      concurrent-ruby
+    coderay (1.1.3)
+    concurrent-ruby (1.3.8)
+    connection_pool (2.5.5)
+    debug_inspector (1.2.0)
+    diff-lcs (1.6.2)
+    domain_name (0.6.20240107)
+    drb (2.2.3)
+    erubis (2.7.0)
+    ffi (1.17.4-x86_64-linux-gnu)
+    ffi-yajl (3.0.0)
+      libyajl2 (>= 1.2)
+    hashie (5.1.0)
+      logger
+    http-accept (2.1.1)
+    http-cookie (1.1.6)
+      domain_name (~> 0.5)
+    i18n (1.14.8)
+      concurrent-ruby (~> 1.0)
+    io-console (0.8.2)
+    libyajl2 (2.1.0)
+    logger (1.7.0)
+    method_source (1.1.0)
+    mime-types (3.7.0)
+      logger
+      mime-types-data (~> 3.2025, >= 3.2025.0507)
+    mime-types-data (3.2026.0414)
+    minitest (5.27.0)
+    mixlib-authentication (3.0.10)
+    mixlib-config (3.0.27)
+      tomlrb
+    mixlib-log (3.2.3)
+      ffi (>= 1.15.5)
+    mixlib-shellout (3.4.10)
+      chef-utils
+    net-http-spy (0.2.1)
+    netrc (0.11.0)
+    pry (0.16.0)
+      coderay (~> 1.1)
+      method_source (~> 1.0)
+      reline (>= 0.6.0)
+    pry-byebug (3.8.0)
+      byebug (~> 11.0)
+      pry (~> 0.10)
+    pry-stack_explorer (0.6.3)
+      binding_of_caller (>= 1.0)
+      pry (~> 0.13)
+    public_suffix (6.0.2)
+    rack (3.2.6)
+    rackup (2.3.1)
+      rack (>= 3)
+    rake (13.4.2)
+    reline (0.6.3)
+      io-console (~> 0.5)
+    rspec (3.13.2)
+      rspec-core (~> 3.13.0)
+      rspec-expectations (~> 3.13.0)
+      rspec-mocks (~> 3.13.0)
+    rspec-core (3.13.6)
+      rspec-support (~> 3.13.0)
+    rspec-expectations (3.13.5)
+      diff-lcs (>= 1.2.0, < 2.0)
+      rspec-support (~> 3.13.0)
+    rspec-mocks (3.13.8)
+      diff-lcs (>= 1.2.0, < 2.0)
+      rspec-support (~> 3.13.0)
+    rspec-rerun (1.1.0)
+      rspec (~> 3.0)
+    rspec-support (3.13.7)
+    rspec_junit_formatter (0.6.0)
+      rspec-core (>= 2, < 4, != 2.12.0)
+    securerandom (0.4.1)
+    tomlrb (2.0.4)
+    tzinfo (2.0.6)
+      concurrent-ruby (~> 1.0)
+    uuidtools (2.2.0)
+    webrick (1.9.2)
+
+PLATFORMS
+  x86_64-linux
+
+DEPENDENCIES
+  chef-zero!
+  concurrent-ruby (>= 1.3.8)
+  oc-chef-pedant!
+  pry
+  pry-byebug
+  pry-stack_explorer
+  rack (>= 3.2.5)
+  rake
+  rest-client!
+
+BUNDLED WITH
+   2.3.27

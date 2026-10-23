@@ -1,0 +1,282 @@
+#
+# Copyright:: Copyright (c) 2009-2026 Progress Software Corporation and/or its subsidiaries or affiliates. All Rights Reserved.
+# Author:: Jamie Winsor (<jamie@vialstudios.com>)
+# Author:: Tim Smith (<tsmith@chef.io>)
+#
+# License:: Apache License, Version 2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+require_relative "../resource"
+require "fileutils" unless defined?(FileUtils)
+
+begin
+  # The explicit call to FFI::DynamicLibrary.open was added to address an issue specific to the Habitat packaging of Chef Infra Client on windows.
+  # In the Habitat environment, the libarchive library (archive.dll) is installed in a non-standard location that is not included
+  # in the default search paths used by the FFI gem to locate dynamic libraries. The default search paths for FFI are:
+  #   - <system library path>
+  #   - /usr/lib
+  #   - /usr/local/lib
+  #   - /opt/local/lib
+  # These paths do not account for the Habitat package structure, where libraries are installed in isolated directories under
+  # the Habitat package path (e.g., C:/hab/pkgs/core/libarchive/<version>/bin on Windows).
+  #
+  # Without explicitly loading archive.dll using FFI::DynamicLibrary.open, the ffi-libarchive gem fails to locate and load the library,
+  # resulting in runtime errors when attempting to use the archive_file resource.
+  #
+  # This code dynamically determines the path to archive.dll using the Habitat CLI (`hab pkg path core/libarchive`) and explicitly
+  # loads the library using FFI::DynamicLibrary.open. This ensures that the library is correctly loaded in the Habitat environment.
+  #
+  # Note: This logic is gated by a check that we are running from a Habitat package
+  # path to ensure it is only applied in Habitat runs. For other environments
+  # (e.g., Omnibus, plain gem installations, or git checkouts), the default behavior
+  # of FFI is sufficient, as the libraries are installed in standard locations or
+  # embedded paths that are included in the default search paths.
+  # Detect Habitat runtime environment reliably. HAB_CACHE_SRC_PATH is only set
+  # during `hab pkg build` (studio), not at runtime. HAB_PKG_PATH is also not
+  # guaranteed at runtime. Checking __FILE__ is reliable: when chef-client runs
+  # from a Hab package via `hab pkg exec`, this file's path always contains
+  # "hab/pkgs".
+  if RUBY_PLATFORM.match?(/mswin|mingw|windows/) && __FILE__.match?(%r{hab[/\\]pkgs})
+    require "ffi" unless defined?(FFI)
+    require_relative "helpers/archive_dll_locator"
+
+    # Search order: RUBY_DLL_PATH, then the hab CLI, then a search of the hab root.
+    archive_dll_path = Chef::ResourceHelpers::ArchiveDllLocator.find(source_file: __FILE__)
+
+    if archive_dll_path
+      FFI::DynamicLibrary.open(archive_dll_path, FFI::DynamicLibrary::RTLD_LAZY)
+      Chef::Log.debug("Explicitly loaded archive.dll from Habitat path: #{archive_dll_path}")
+    else
+      Chef::Log.debug("archive.dll not located via Habitat; relying on default library search paths")
+    end
+  end
+
+  # ffi-libarchive must be eager loaded see: https://github.com/chef/chef/issues/12228
+  require "ffi-libarchive" unless defined?(Archive::Reader)
+rescue LoadError => e
+  STDERR.puts "ffi-libarchive could not be loaded. libarchive is probably not installed on system, archive_file will not be available"
+end
+
+class Chef
+  class Resource
+    class ArchiveFile < Chef::Resource
+
+      provides :archive_file
+      provides :libarchive_file # legacy cookbook name
+
+      introduced "15.0"
+      description "Use the **archive_file** resource to extract archive files to disk. This resource uses the libarchive library to extract multiple archive formats including tar, gzip, bzip, and zip formats."
+      examples <<~DOC
+        **Extract a zip file to a specified directory**:
+
+        ```ruby
+        archive_file 'Precompiled.zip' do
+          path '/tmp/Precompiled.zip'
+          destination '/srv/files'
+        end
+        ```
+
+        **Set specific permissions on the extracted files**:
+
+        ```ruby
+        archive_file 'Precompiled.zip' do
+          owner 'tsmith'
+          group 'staff'
+          mode '700'
+          path '/tmp/Precompiled.zip'
+          destination '/srv/files'
+        end
+        ```
+      DOC
+
+      property :path, String,
+        name_property: true,
+        coerce: proc { |f| ::File.expand_path(f) },
+        description: "An optional property to set the file path to the archive to extract if it differs from the resource block's name."
+
+      property :owner, String,
+        description: "The owner of the extracted files."
+
+      property :group, String,
+        description: "The group of the extracted files."
+
+      property :mode, [String, Integer],
+        description: "The mode of the extracted files. Integer values are deprecated as octal values (ex. 0755) would not be interpreted correctly.",
+        default: "755", default_description: "'755'"
+
+      property :destination, String,
+        description: "The file path to extract the archive file to.",
+        required: true
+
+      property :options, [Array, Symbol],
+        description: "An array of symbols representing extraction flags. Example: `:no_overwrite` to prevent overwriting files on disk. By default, this properly sets `:time` which preserves the modification timestamps of files in the archive when writing them to disk.",
+        default: lazy { [:time] }
+
+      property :overwrite, [TrueClass, FalseClass, :auto],
+        description: "Should the resource overwrite the destination file contents if they already exist? If set to `:auto` the date stamp of files within the archive will be compared to those on disk and disk contents will be overwritten if they differ. This may cause unintended consequences if disk date stamps are changed between runs, which will result in the files being overwritten during each client run. Make sure to properly test any change to this property.",
+        default: false
+
+      property :strip_components, Integer,
+        description: "Remove the specified number of leading path elements. Pathnames with fewer elements will be silently skipped. This behaves similarly to tar's --strip-components command line argument.",
+        introduced: "17.5",
+        default: 0
+
+      # backwards compatibility for the legacy cookbook names
+      alias_method :extract_options, :options
+      alias_method :extract_to, :destination
+
+      action :extract, description: "Extract and archive file." do
+
+        unless ::File.exist?(new_resource.path)
+          raise Errno::ENOENT, "No archive found at #{new_resource.path}! Cannot continue."
+        end
+
+        if !::File.exist?(new_resource.destination)
+          Chef::Log.trace("File or directory does not exist at destination path: #{new_resource.destination}")
+
+          converge_by("create directory #{new_resource.destination}") do
+            # @todo when we remove the ability for mode to be an int we can remove the .to_s below
+            FileUtils.mkdir_p(new_resource.destination, mode: new_resource.mode.to_s.to_i(8))
+          end
+
+          extract(new_resource.path, new_resource.destination, Array(new_resource.options))
+        else
+          Chef::Log.trace("File or directory exists at destination path: #{new_resource.destination}.")
+
+          if new_resource.overwrite == true ||
+              (new_resource.overwrite == :auto && archive_differs_from_disk?(new_resource.path, new_resource.destination))
+            Chef::Log.debug("Overwriting existing content at #{new_resource.destination} due to resource's overwrite property settings.")
+
+            extract(new_resource.path, new_resource.destination, Array(new_resource.options))
+          else
+            Chef::Log.debug("Not extracting archive as #{new_resource.destination} exists and resource not set to overwrite.")
+          end
+        end
+
+        if new_resource.owner || new_resource.group
+          converge_by("set owner of files extracted in #{new_resource.destination} to #{new_resource.owner}:#{new_resource.group}") do
+            dest_realpath = ::File.expand_path(new_resource.destination)
+            Archive::Reader.open_filename(new_resource.path, nil, strip_components: new_resource.strip_components) do |archive|
+              archive.each_entry do |e|
+                # Validate path is within destination before chown-ing.
+                # Use expand_path for security check, original string for the chown call.
+                chown_path_expanded = ::File.expand_path("#{new_resource.destination}/#{e.pathname}")
+                next unless chown_path_expanded.start_with?(dest_realpath + ::File::SEPARATOR) || chown_path_expanded == dest_realpath
+
+                FileUtils.chown(new_resource.owner, new_resource.group, "#{new_resource.destination}/#{e.pathname}")
+              end
+            end
+          end
+        end
+      end
+
+      action_class do
+        def define_resource_requirements
+          if new_resource.mode.is_a?(Integer)
+            Chef.deprecated(:archive_file_integer_file_mode, "The mode property should be passed to archive_file resources as a String and not an Integer to ensure the value is properly interpreted.")
+          end
+        end
+
+        # This can't be a constant since we might not have required 'ffi-libarchive' yet.
+        def extract_option_map
+          {
+            owner: Archive::EXTRACT_OWNER,
+            permissions: Archive::EXTRACT_PERM,
+            time: Archive::EXTRACT_TIME,
+            no_overwrite: Archive::EXTRACT_NO_OVERWRITE,
+            acl: Archive::EXTRACT_ACL,
+            fflags: Archive::EXTRACT_FFLAGS,
+            extended_information: Archive::EXTRACT_XATTR,
+            xattr: Archive::EXTRACT_XATTR,
+            no_overwrite_newer: Archive::EXTRACT_NO_OVERWRITE_NEWER,
+          }
+        end
+
+        # try to determine if the resource has updated or not by checking for files that are in the
+        # archive, but not on disk or files with a non-matching mtime
+        #
+        # @param [String] src
+        # @param [String] dest
+        #
+        # @return [Boolean]
+        def archive_differs_from_disk?(src, dest)
+          modified = false
+          dest_realpath = ::File.expand_path(dest)
+          Archive::Reader.open_filename(src, nil, strip_components: new_resource.strip_components) do |archive|
+            Chef::Log.trace("Beginning the comparison of file mtime between contents of #{src} and #{dest}")
+            archive.each_entry do |e|
+              pathname = ::File.expand_path(e.pathname, dest_realpath)
+              # Skip archive entries that resolve outside the destination directory.
+              # A traversal entry (e.g. "../escaped") must not influence the mtime
+              # comparison and must never trigger extraction.
+              next unless pathname.start_with?(dest_realpath + ::File::SEPARATOR) || pathname == dest_realpath
+
+              if ::File.exist?(pathname)
+                Chef::Log.trace("#{pathname} mtime is #{::File.mtime(pathname)} and archive is #{e.mtime}")
+                modified = true unless ::File.mtime(pathname) == e.mtime
+              else
+                Chef::Log.trace("#{pathname} doesn't exist on disk, but exists in the archive")
+                modified = true
+              end
+            end
+          end
+          modified
+        end
+
+        # extract the archive
+        #
+        # @param [String] src
+        # @param [String] dest
+        # @param [Array] options
+        #
+        # @return [void]
+        def extract(src, dest, options = [])
+          converge_by("extract #{src} to #{dest}") do
+            user_flags = [options].flatten.map { |option| extract_option_map[option] }.compact.reduce(:|).to_i
+            # Always apply libarchive security flags to prevent path traversal.
+            # These are not user-overridable hence directly added here
+            # instead of options array. NODOTDOT blocks "../" sequences,
+            # NOABSOLUTEPATHS blocks absolute-path entries, SECURE_SYMLINKS prevents
+            # symlink attacks. Combined with the check below in archive.each_entry
+            # they safeguard against Zip Slip / CWE-22 attacks.
+            security_flags = Archive::EXTRACT_SECURE_NODOTDOT |
+              Archive::EXTRACT_SECURE_NOABSOLUTEPATHS |
+              Archive::EXTRACT_SECURE_SYMLINKS
+            all_flags = user_flags | security_flags
+            dest_realpath = ::File.expand_path(dest)
+
+            Dir.chdir(dest) do
+              Archive::Reader.open_filename(src, nil, strip_components: new_resource.strip_components) do |archive|
+                archive.each_entry do |e|
+                  # reject any entry whose resolved path
+                  # falls outside the destination directory before calling into libarchive.
+                  entry_realpath = ::File.expand_path(e.pathname, dest_realpath)
+                  unless entry_realpath.start_with?(dest_realpath + ::File::SEPARATOR) || entry_realpath == dest_realpath
+                    raise Chef::Exceptions::ValidationFailed,
+                      "Refusing to extract archive entry #{e.pathname.inspect}: resolved path " \
+                      "#{entry_realpath.inspect} is outside destination #{dest_realpath.inspect}. " \
+                      "This archive may contain a path traversal attack."
+                  end
+
+                  archive.extract(e, all_flags)
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+end

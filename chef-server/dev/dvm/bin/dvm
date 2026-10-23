@@ -1,0 +1,16 @@
+#!/opt/opscode/embedded/bin/ruby
+
+# Note that this expects RUBYLIB to be properly set to
+# point to our lib location
+unless Process.uid == 0
+  puts "First become root via sudo, or use sudo dvm"
+  exit! 1
+end
+
+require "dvm"
+
+begin
+  DVM::Application.start(ARGV)
+rescue DVM::DVMArgumentError => e
+  say HighLine.color(e.message, :red)
+end

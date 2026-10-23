@@ -1,0 +1,506 @@
+#
+# Copyright:: Copyright (c) 2009-2026 Progress Software Corporation and/or its subsidiaries or affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+require_relative "../resource"
+require "chef-utils/dist" unless defined?(ChefUtils::Dist)
+
+class Chef
+  class Resource
+    class ChefClientConfig < Chef::Resource
+
+      DIRECTORY_SPEC_DEFAULTS = {
+        config: { mode: "0750", inherits: :auto },
+        client_d: { mode: "0750", inherits: :auto },
+        logs: { mode: "0755", inherits: :auto },
+        cache: { mode: "0750", inherits: :auto },
+        backups: { mode: "0750", inherits: :auto },
+      }.freeze
+
+      provides :chef_client_config, target_mode: true
+      target_mode support: :full
+
+      description "Use the **chef_client_config** resource to create a client.rb file in the #{ChefUtils::Dist::Infra::PRODUCT} configuration directory. See the [client.rb docs](https://docs.chef.io/config_rb_client/) for more details on options available in the client.rb configuration file."
+      introduced "16.6"
+      examples <<~DOC
+      **Bare minimum #{ChefUtils::Dist::Infra::PRODUCT} client.rb**:
+
+      The absolute minimum configuration necessary for a node to communicate with the #{ChefUtils::Dist::Server::PRODUCT} is the URL of the #{ChefUtils::Dist::Server::PRODUCT}. All other configuration options either have values at the server side (Policyfiles, Roles, Environments, etc) or have default values determined at client startup.
+
+      ```ruby
+      chef_client_config 'Create client.rb' do
+        chef_server_url 'https://chef.example.dmz'
+      end
+      ```
+
+      **More complex #{ChefUtils::Dist::Infra::PRODUCT} client.rb**:
+
+      ```ruby
+      chef_client_config 'Create client.rb' do
+        chef_server_url 'https://chef.example.dmz'
+        log_level :info
+        log_location :syslog
+        http_proxy 'proxy.example.dmz'
+        https_proxy 'proxy.example.dmz'
+        no_proxy %w(internal.example.dmz)
+      end
+      ```
+
+      **Adding additional config content to the client.rb**:
+
+      This resource aims to provide common configuration options. Some configuration options are missing and some users may want to use arbitrary Ruby code within their configuration. For this we offer an `additional_config` property that can be used to add any configuration or code to the bottom of the `client.rb` file. Also keep in mind that within the configuration directory is a `client.d` directory where you can put additional `.rb` files containing configuration options. These can be created using `file` or `template` resources within your cookbooks as necessary.
+
+      ```ruby
+      chef_client_config 'Create client.rb' do
+        chef_server_url 'https://chef.example.dmz'
+        additional_config <<~CONFIG
+          # Extra config code to safely load a gem into the client run.
+          # Since the config is Ruby you can run any Ruby code you want via the client.rb.
+          # It's a great way to break things, so be careful
+          begin
+            require 'aws-sdk'
+          rescue LoadError
+            Chef::Log.warn "Failed to load aws-sdk."
+          end
+        CONFIG
+      end
+      ```
+
+      **Setup two report handlers in the client.rb**:
+
+      ```ruby
+      chef_client_config 'Create client.rb' do
+        chef_server_url 'https://chef.example.dmz'
+        report_handlers [
+          {
+            'class' => 'ReportHandler1Class',
+            'arguments' => ["'FirstArgument'", "'SecondArgument'"],
+          },
+          {
+            'class' => 'ReportHandler2Class',
+            'arguments' => ["'FirstArgument'", "'SecondArgument'"],
+          },
+        ]
+      end
+      ```
+
+      **Report directly to the [Chef Automate data collector endpoint](/automate/data_collection/#configure-chef-infra-client-to-use-the-data-collector-endpoint-in-chef-automate).**
+
+      ```ruby
+      chef_client_config 'Create client.rb' do
+        chef_server_url 'https://chef.example.dmz'
+        data_collector_server_url 'https://automate.example.dmz'
+        data_collector_token 'TEST_TOKEN_TEST'
+      end
+      ```
+
+      **Set Linux directory ownership and modes**:
+
+      ```ruby
+      chef_client_config 'Create client.rb' do
+        chef_server_url 'https://chef.example.dmz'
+        user 'root'
+        group 'root'
+        file_cache_path '/var/chef/cache'
+        file_backup_path '/var/chef/backups'
+        log_location '/var/log/chef/client.log'
+        directory_specs(
+          config: { owner: 'root', group: 'root', mode: '0700' },
+          client_d: { owner: 'root', group: 'root', mode: '0700' },
+          logs: { owner: 'root', group: 'root', mode: '0750' },
+          cache: { owner: 'root', group: 'root', mode: '0750' },
+          backups: { owner: 'root', group: 'root', mode: '0750' }
+        )
+      end
+      ```
+
+      **Set Windows directory inheritance and rights**:
+
+      ```ruby
+      chef_client_config 'Create client.rb' do
+        chef_server_url 'https://chef.example.dmz'
+        config_directory 'C:/chef'
+        file_cache_path 'C:/chef/cache'
+        file_backup_path 'C:/chef/backups'
+        log_location 'C:/chef/log/client.log'
+        directory_specs(
+          config: {
+            owner: 'Administrators',
+            inherits: false,
+            rights: {
+              'Administrators' => :full_control,
+              'SYSTEM' => :full_control,
+            },
+          }
+        )
+      end
+      ```
+      DOC
+
+      # @todo policy_file or policy_group being set requires the other to be set so enforce that.
+      # @todo all properties for automate report
+      # @todo add all descriptions
+      # @todo validate handler hash structure
+
+      #
+      # @param [String, Symbol] prop_val the value from the property
+      #
+      # @return [Symbol] The symbol form of the symbol-like string, string, or symbol value
+      #
+      def string_to_symbol(prop_val)
+        if prop_val.is_a?(String) && prop_val.start_with?(":")
+          prop_val[1..-1].to_sym
+        else
+          prop_val.to_sym
+        end
+      end
+
+      property :config_directory, String,
+        description: "The directory to store the client.rb in.",
+        default: ChefConfig::Config.etc_chef_dir,
+        default_description: '`/etc/chef/` on *nix-like systems and `C:\\chef\\` on Windows'
+
+      property :user, String,
+        description: "The user that should own the client.rb file and the configuration directory if it needs to be created. Note: The configuration directory will not be created if it already exists, which allows you to further control the setup of that directory outside of this resource."
+
+      property :group, String,
+        description: "The group that should own the client.rb file and the configuration directory if it needs to be created. Note: The configuration directory will not be created if it already exists, which allows you to further control the setup of that directory outside of this resource."
+
+      property :node_name, [String, NilClass], # this accepts nil so people can disable the default
+        description: "The name of the node. This configuration sets the `node.name` value used in cookbooks and the `client_name` value used when authenticating to a #{ChefUtils::Dist::Server::PRODUCT} to determine what configuration to apply. Note: By default this configuration uses the `node.name` value which would be set during bootstrap. Hard coding this value in the `client.rb` config avoids logic within #{ChefUtils::Dist::Server::PRODUCT} that performs DNS lookups and may fail in the event of a DNS outage. To skip this default value and instead use the built-in #{ChefUtils::Dist::Server::PRODUCT} logic, set this property to `nil`",
+        default: lazy { node.name },
+        default_description: "The `node.name` value reported by #{ChefUtils::Dist::Infra::PRODUCT}."
+
+      property :chef_server_url, String,
+        description: "The URL for the #{ChefUtils::Dist::Server::PRODUCT}.",
+        required: true
+
+      # @todo Allow passing this as a string and convert it to the symbol
+      property :ssl_verify_mode, [Symbol, String],
+        equal_to: %i{verify_none verify_peer},
+        coerce: proc { |x| string_to_symbol(x) },
+        description: <<~DESC
+        Set the verify mode for HTTPS requests.
+
+        * Use :verify_none for no validation of SSL certificates.
+        * Use :verify_peer for validation of all SSL certificates, including the #{ChefUtils::Dist::Server::PRODUCT} connections, S3 connections, and any HTTPS remote_file resource URLs used in #{ChefUtils::Dist::Infra::PRODUCT} runs. This is the recommended setting.
+        DESC
+
+      property :formatters, Array,
+        description: "Client logging formatters to load.",
+        default: []
+
+      property :event_loggers, Array,
+        description: "",
+        default: []
+
+      property :log_level, Symbol,
+        description: "The level of logging performed by the #{ChefUtils::Dist::Infra::PRODUCT}.",
+        equal_to: %i{auto trace debug info warn fatal}
+
+      property :log_location, [String, Symbol],
+        description: "The location to save logs to. This can either by a path to a log file on disk `:syslog` to log to Syslog, `:win_evt` to log to the Windows Event Log, or `'STDERR'`/`'STDOUT'` to log to the *nix text streams.",
+        callbacks: {
+          "accepts Symbol values of ':win_evt' for Windows Event Log or ':syslog' for Syslog" => lambda { |p|
+            p.is_a?(Symbol) ? %i{win_evt syslog}.include?(p) : true
+          },
+        }
+
+      property :http_proxy, String,
+        description: "The proxy server to use for HTTP connections."
+
+      property :https_proxy, String,
+        description: "The proxy server to use for HTTPS connections."
+
+      property :ftp_proxy, String,
+      description: "The proxy server to use for FTP connections."
+
+      property :no_proxy, [String, Array],
+        description: "A comma-separated list or an array of URLs that do not need a proxy.",
+        coerce: proc { |x| x.is_a?(Array) ? x.join(",") : x },
+        default: []
+
+      # @todo we need to fixup bad plugin naming inputs here
+      property :ohai_disabled_plugins, Array,
+        description: "Ohai plugins that should be disabled in order to speed up the #{ChefUtils::Dist::Infra::PRODUCT} run and reduce the size of node data sent to #{ChefUtils::Dist::Infra::PRODUCT}",
+        coerce: proc { |x| x.map { |v| string_to_symbol(v).capitalize } },
+        default: []
+
+      # @todo we need to fixup bad plugin naming inputs here
+      property :ohai_optional_plugins, Array,
+        description: "Optional Ohai plugins that should be enabled to provide additional Ohai data for use in cookbooks.",
+        coerce: proc { |x| x.map { |v| string_to_symbol(v).capitalize } },
+        default: []
+
+      property :policy_persist_run_list, [true, false],
+        description: "Override run lists defined in a Policyfile with the `run_list` defined on the #{ChefUtils::Dist::Server::PRODUCT}.",
+        introduced: "17.3",
+        default: false
+
+      property :minimal_ohai, [true, false],
+        description: "Run a minimal set of Ohai plugins providing data necessary for the execution of #{ChefUtils::Dist::Infra::PRODUCT}'s built-in resources. Setting this to true will skip many large and time consuming data sets such as `cloud` or `packages`. Setting this to true may break cookbooks that assume all Ohai data will be present.",
+        default: false
+
+      property :start_handlers, Array,
+        description: %q(An array of hashes that contain a report handler class and the arguments to pass to that class on initialization. The hash should include `class` and `argument` keys where `class` is a String and `argument` is an array of quoted String values. For example: `[{'class' => 'MyHandler', %w('"argument1"', '"argument2"')}]`),
+        default: []
+
+      property :report_handlers, Array,
+        description: %q(An array of hashes that contain a report handler class and the arguments to pass to that class on initialization. The hash should include `class` and `argument` keys where `class` is a String and `argument` is an array of quoted String values. For example: `[{'class' => 'MyHandler', %w('"argument1"', '"argument2"')}]`),
+        default: []
+
+      property :rubygems_url, [String, Array],
+        description: 'The location to source rubygems. It can be set to a string or array of strings for URIs to set as rubygems sources. This allows individuals to setup an internal mirror of rubygems for "airgapped" environments.',
+        introduced: "17.11"
+
+      property :exception_handlers, Array,
+        description: %q(An array of hashes that contain a exception handler class and the arguments to pass to that class on initialization. The hash should include `class` and `argument` keys where `class` is a String and `argument` is an array of quoted String values. For example: `[{'class' => 'MyHandler', %w('"argument1"', '"argument2"')}]`),
+        default: []
+
+      property :chef_license, String,
+        description: "Accept the [Chef EULA](https://www.chef.io/end-user-license-agreement/)",
+        equal_to: %w{accept accept-no-persist accept-silent}
+
+      property :policy_name, String,
+        description: "The name of a policy, as identified by the `name` setting in a Policyfile.rb file. `policy_group`  when setting this property."
+
+      property :policy_group, String,
+        description: "The name of a `policy group` that exists on the #{ChefUtils::Dist::Server::PRODUCT}. `policy_name` must also be specified when setting this property."
+
+      property :named_run_list, String,
+        description: "A specific named runlist defined in the node's applied Policyfile, which the should be used when running #{ChefUtils::Dist::Infra::PRODUCT}."
+
+      property :pid_file, String,
+        description: "The location in which a process identification number (pid) is saved. An executable, when started as a daemon, writes the pid to the specified file. "
+
+      property :file_cache_path, String,
+        description: "The location in which cookbooks (and other transient data) files are stored when they are synchronized. This value can also be used in recipes to download files with the `remote_file` resource."
+
+      property :file_backup_path, String,
+        description: "The location in which backup files are stored. If this value is empty, backup files are stored in the directory of the target file"
+
+      property :file_staging_uses_destdir, String,
+        description: "How file staging (via temporary files) is done. When `true`, temporary files are created in the directory in which files will reside. When `false`, temporary files are created under `ENV['TMP']`"
+
+      property :additional_config, String,
+        description: "Additional text to add at the bottom of the client.rb config. This can be used to run custom Ruby or to add less common config options"
+
+      property :data_collector_server_url, String,
+        description: "The data collector URL (typically automate) to send node, converge, and compliance data. Note: If possible, use Chef Infra Server to do all data collection reporting, as this removes the need to distribute tokens to individual nodes.",
+        introduced: "17.8"
+
+      property :data_collector_token, String,
+        description: "The data collector token to interact with the data collector server URL (Automate). Note: If possible, use Chef Infra Server to do all data collection reporting, as this removes the need to distribute tokens to individual nodes.",
+        introduced: "17.8"
+
+      property :directory_specs, Hash,
+        description: <<~DESC,
+          Permission overrides for Chef-managed directories.
+          This must be a hash of hashes: top-level keys are directory names, values are per-directory option hashes.
+
+          Use this property like:
+            directory_specs(
+              config: { owner: "root", group: "root", mode: "0700" },
+              client_d: { owner: "root", group: "root", mode: "0700" },
+              logs: { owner: "root", group: "root", mode: "0700" },
+              cache: { owner: "root", group: "root", mode: "0700" },
+              backups: { owner: "root", group: "root", mode: "0700" }
+            )
+
+          Directory keys: :config, :client_d, :logs, :cache, :backups
+          Override keys: :owner, :group, :mode, :rights, :inherits (:rights and :inherits are Windows-only)
+        DESC
+        callbacks: {
+          "keys must be one of :config, :client_d, :logs, :cache, :backups" => lambda { |v|
+            valid_keys = %i{config client_d logs cache backups}
+            v.keys.all? { |k| valid_keys.include?(k) }
+          },
+          "values must be a hash with keys only from :owner, :group, :mode, :rights, :inherits" => lambda { |v|
+            valid_inner_keys = %i{owner group mode rights inherits}
+            v.values.all? { |value| value.is_a?(Hash) && value.keys.all? { |k| valid_inner_keys.include?(k) } }
+          },
+        },
+        default: DIRECTORY_SPEC_DEFAULTS,
+        coerce: proc { |v|
+          DIRECTORY_SPEC_DEFAULTS.merge(v) do |_key, base, override|
+            override.is_a?(Hash) ? base.merge(override) : override
+          end
+        }
+
+      property :client_rb_mode, String,
+        description: "The mode to set on the client.rb file that is written out by this resource (e.g., 0600).",
+        default: "0640"
+
+      action :create, description: "Create a client.rb config file and folders for configuring #{ChefUtils::Dist::Infra::PRODUCT}." do
+        # The logs directory is derived from log_location, which may be a symbol
+        # or a stream name (STDOUT/STDERR) rather than a file path. Only raise if
+        # the user customized logs specs but log_location is not a usable file path.
+        if new_resource.directory_specs[:logs] != DIRECTORY_SPEC_DEFAULTS[:logs] && log_directory.nil?
+          raise ArgumentError, "Invalid directory_specs: logs requires :logs (file path)"
+        end
+
+        # Build path map for each managed directory. For cache and backups, fall
+        # back to ChefConfig defaults when not explicitly set so that directory_specs
+        # overrides are applied even if the user didn't configure a custom path in client.rb.
+        spec_paths = {
+          config: new_resource.config_directory,
+          client_d: ::File.join(new_resource.config_directory, "client.d"),
+          logs: log_directory,
+          cache: new_resource.file_cache_path || ChefConfig::Config.file_cache_path,
+          backups: new_resource.file_backup_path || ChefConfig::Config.file_backup_path,
+        }
+
+        # Build directory specs based on user input and defaults
+        specs = {}
+        new_resource.directory_specs.each do |key, overrides|
+          path = spec_paths[key]
+          next if path.nil?
+
+          specs[key] = DirectorySpec.new(
+            path: path,
+            owner: overrides[:owner] || new_resource.user,
+            group: overrides[:group] || new_resource.group,
+            mode: overrides[:mode],
+            rights: overrides[:rights],
+            inherits: overrides[:inherits]
+          )
+        end
+
+        # Converge directories
+        specs.each_value do |spec|
+          directory spec.path do
+            spec.apply(self)
+          end
+        end
+
+        template ::File.join(new_resource.config_directory, "client.rb") do
+          source ::File.expand_path("support/client.erb", __dir__)
+          user new_resource.user unless new_resource.user.nil?
+          group new_resource.group unless new_resource.group.nil?
+          local true
+          variables(
+            chef_license: new_resource.chef_license,
+            chef_server_url: new_resource.chef_server_url,
+            event_loggers: new_resource.event_loggers,
+            exception_handlers: format_handler(new_resource.exception_handlers),
+            file_backup_path: new_resource.file_backup_path,
+            file_cache_path: new_resource.file_cache_path,
+            file_staging_uses_destdir: new_resource.file_staging_uses_destdir,
+            formatters: new_resource.formatters,
+            http_proxy: new_resource.http_proxy,
+            https_proxy: new_resource.https_proxy,
+            ftp_proxy: new_resource.ftp_proxy,
+            log_level: new_resource.log_level,
+            log_location: new_resource.log_location,
+            minimal_ohai: new_resource.minimal_ohai,
+            named_run_list: new_resource.named_run_list,
+            no_proxy: new_resource.no_proxy,
+            node_name: new_resource.node_name,
+            ohai_disabled_plugins: new_resource.ohai_disabled_plugins,
+            ohai_optional_plugins: new_resource.ohai_optional_plugins,
+            pid_file: new_resource.pid_file,
+            policy_group: new_resource.policy_group,
+            policy_name: new_resource.policy_name,
+            report_handlers: format_handler(new_resource.report_handlers),
+            rubygems_url: new_resource.rubygems_url,
+            ssl_verify_mode: new_resource.ssl_verify_mode,
+            start_handlers: format_handler(new_resource.start_handlers),
+            additional_config: new_resource.additional_config,
+            policy_persist_run_list: new_resource.policy_persist_run_list,
+            data_collector_server_url: new_resource.data_collector_server_url,
+            data_collector_token: new_resource.data_collector_token
+          )
+          mode new_resource.client_rb_mode
+          action :create
+        end
+      end
+
+      action :remove, description: "Remove a client.rb config file for configuring #{ChefUtils::Dist::Infra::PRODUCT}." do
+        file ::File.join(new_resource.config_directory, "client.rb") do
+          action :delete
+        end
+      end
+
+      action_class do
+        #
+        # Format the handler document in the way we want it presented in the client.rb file
+        #
+        # @param [Hash] a handler property
+        #
+        # @return [Array] Array of handler data
+        #
+        def format_handler(handler_property)
+          handler_data = handler_property.map do |handler|
+            "#{handler["class"]}.new(#{handler["arguments"].join(",")})"
+          end
+        end
+
+        # A helper class to encapsulate directory spec data and application logic for both *nix and Windows.
+        # This allows us to keep the logic for how to apply permissions to directories in one place and makes it easier to test.
+        class DirectorySpec
+          attr_reader :path, :owner, :group, :mode, :rights, :inherits
+
+          def initialize(path:, owner: nil, group: nil, mode: nil, rights: nil, inherits: :auto)
+            @path   = path
+            @owner  = owner
+            @group  = group
+            @mode   = mode
+            @rights = rights
+            @inherits = inherits
+          end
+
+          def windows?
+            Chef::Platform.windows?
+          end
+
+          def apply(resource)
+            resource.recursive true
+
+            if windows?
+              if rights && !rights.empty?
+                resource.inherits(inherits == :auto ? false : inherits)
+
+                rights.each do |principal, permission|
+                  resource.rights(permission, principal)
+                end
+              else
+                # Ensure defaults can restore inherited ACL behavior after custom rights were applied.
+                resource.inherits(inherits == :auto ? true : inherits)
+                resource.mode(mode) if mode
+              end
+
+              resource.owner(owner) if owner
+            else
+              resource.owner(owner) if owner
+              resource.group(group) if group
+              resource.mode(mode) if mode
+            end
+          end
+        end
+
+        # A helper method to determine the directory to apply log permissions to based on the log_location property.
+        # If log_location is a file path, this returns the directory containing that file.
+        # If log_location is not a file path (e.g., it's a symbol for syslog or win_evt, or it's STDOUT/STDERR),
+        # this returns nil since there is no directory to apply permissions to.
+        def log_directory
+          return unless new_resource.log_location.is_a?(String)
+          return if %w{STDOUT STDERR}.include?(new_resource.log_location)
+
+          ::File.dirname(new_resource.log_location)
+        end
+      end
+    end
+  end
+end

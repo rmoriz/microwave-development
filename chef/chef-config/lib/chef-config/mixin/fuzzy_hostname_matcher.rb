@@ -1,0 +1,54 @@
+#
+# Copyright:: Copyright (c) 2009-2026 Progress Software Corporation and/or its subsidiaries or affiliates. All Rights Reserved.
+# License:: Apache License, Version 2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+require "fuzzyurl"
+
+module ChefConfig
+  module Mixin
+    module FuzzyHostnameMatcher
+
+      #
+      # Check to see if a hostname matches a match string. Used to see if hosts fall under our no_proxy config
+      #
+      # @param [String] hostname the hostname to check
+      # @param [String] matches the pattern to match
+      #
+      # @return [Boolean]
+      #
+      def fuzzy_hostname_match_any?(hostname, matches)
+        if hostname && matches
+          return matches.to_s.split(/\s*,\s*/).compact.any? do |m|
+            fuzzy_hostname_match?(hostname, m)
+          end
+        end
+
+        false
+      end
+
+      def fuzzy_hostname_match?(hostname, match)
+        # Do greedy matching by adding wildcard if it is not specified
+        match = "*" + match unless match.start_with?("*")
+        Fuzzyurl.matches?(Fuzzyurl.mask(hostname: match), hostname)
+      rescue ArgumentError
+        # Fuzzyurl cannot parse certain URL formats, notably IPv6 addresses
+        # (bare, bracketed, or embedded in URLs). When parsing fails, the URL
+        # cannot match a no_proxy pattern, so return false.
+        false
+      end
+
+    end
+  end
+end

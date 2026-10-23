@@ -1,0 +1,245 @@
+---
+name: chef-server
+directories:
+  - ./
+  - ./src/bookshelf
+  - ./src/chef-server-ctl
+  - ./src/nginx
+  - ./src/oc_bifrost
+  - ./src/oc_erchef
+  - ./src/oc-id
+  - ./src/openresty-noroot
+
+habitat:
+  channel_for_origin:
+    - origin: chef
+      channel: unstable
+    - origin: core
+      channel: LTS-2024
+
+allowed_licenses:
+  - Apache-1.0
+  - Apache-1.1
+  - Apache-2.0
+  - Artistic-2.0
+  - Artistic-1.0-Perl
+  - BSD-1-Clause
+  - BSD-2-Clause
+  - BSD-3-Clause
+  - BSD-3-Clause-Attribution
+  - BSD-Source-Code
+  - BSL-2.0
+  - bzip2-1.0.6
+  - CC0-1.0
+  - CC-BY-2.0
+  - CC-BY-3.0
+  - CC-BY-4.0
+  - curl
+  - gnuplot
+  - ICU
+  - ISC
+  - MIT
+  - MPL-2.0
+  - OpenSSL
+  - PHP-3.0
+  - PHP-3.01
+  - PostgreSQL
+  - Python-2.0
+  - Ruby
+  - SAX-PD
+  - Unlicense
+  - WTFPL
+  - Zlib
+
+fallbacks:
+  # These erlang overrides are temporary. We may be able to remove some of them once chef/license_scout#194 is resolved
+  erlang:
+    - name: amqp_client
+      license_id: MPL-1.1
+      license_content: https://github.com/seth/amqp_client/blob/master/src/amqp_connection.erl
+    - name: bcrypt
+      license_id: ISC
+      license_content: https://github.com/smarkets/erlang-bcrypt/blob/master/LICENSE
+    - name: bookshelf
+      license_id: Apache-2.0
+      license_content: https://github.com/chef/chef-server/LICENSE
+    - name: cf
+      license_id: BSD-3-Clause
+      license_content: https://github.com/project-fifo/cf/blob/master/LICENSE
+    - name: couchbeam
+      license_id: MIT
+      license_content: https://github.com/chef-boneyard/couchbeam/blob/master/LICENSE
+    - name: edown
+      license_id: Apache-2.0
+      license_content: https://github.com/uwiger/edown/blob/master/NOTICE
+    - name: epgsql
+      license_id: BSD-3-Clause
+      license_content: https://github.com/chef/epgsql-1/blob/master/LICENSE
+    - name: erlcloud
+      license_id: BSD-2-Clause
+      license_content: https://github.com/chef/erlcloud/blob/master/COPYRIGHT
+    - name: erlsom
+      license_id: LGPL-3.0
+      license_content: https://github.com/willemdj/erlsom/blob/master/COPYING
+    - name: erlware_commons
+      license_id: MIT
+      license_content: https://raw.githubusercontent.com/erlware/erlware_commons/master/COPYING
+    - name: gen_server2
+      license_id: MIT
+      license_content: https://github.com/hyperthunk/gen_server2/blob/master/rebar.config
+    - name: jiffy
+      license_id: MIT
+      license_content: https://github.com/davisp/jiffy/blob/master/LICENSE
+    - name: lhttpc
+      license_id: BSD-3-Clause
+      license_content: https://github.com/erlcloud/lhttpc/blob/master/LICENCE
+    - name: mochiweb
+      license_id: MIT
+      license_content: https://github.com/mochi/mochiweb/blob/master/LICENSE
+    - name: mover
+      license_id: Apache-2.0
+      license_content: https://github.com/chef/chef-server/LICENSE
+    - name: quickrand
+      license_id: MIT
+      license_content: https://github.com/okeuday/quickrand/blob/master/README.markdown
+    - name: rabbit_common
+      license_id: MPL-1.1
+      license_content: https://github.com/seth/rabbit_common/blob/master/include/rabbit_msg_store.hrl
+    - name: rebar_vsn_plugin
+      license_id: Apache-2.0
+      license_content: https://github.com/erlware/rebar_vsn_plugin/blob/master/src/rebar_vsn_plugin.erl
+    - name: recon
+      license_id: BSD-3-Clause
+      license_content: https://github.com/ferd/recon/blob/master/LICENSE
+    - name: sync
+      license_id: MIT
+      license_content: https://github.com/rustyio/sync/blob/master/src/sync.erl
+    - name: uuid
+      license_id: MIT
+      license_content: https://github.com/okeuday/uuid/blob/master/README.markdown
+  ruby:
+    - name: amqp
+      license_id: Ruby
+      license_content: https://raw.githubusercontent.com/ruby-amqp/amqp/master/README.md
+    - name: compass
+      license_id: MIT
+      license_content: https://raw.githubusercontent.com/Compass/compass/stable/LICENSE.markdown
+    - name: coolline
+      license_id: Zlib
+      license_content: https://raw.githubusercontent.com/Mon-Ouie/coolline/master/LICENSE
+    - name: em-http-request
+      license_id: MIT
+      license_content: https://raw.githubusercontent.com/igrigorik/em-http-request/master/README.md
+    - name: net-telnet
+      license_id: Ruby
+      license_content: https://raw.githubusercontent.com/ruby/net-telnet/master/LICENSE.txt
+    - name: pbkdf2
+      license_id: MIT
+      license_content: https://raw.githubusercontent.com/emerose/pbkdf2-ruby/master/LICENSE.TXT
+    - name: pry-remote
+      license_id: MIT
+      license_content: https://raw.githubusercontent.com/emerose/pbkdf2-ruby/master/LICENSE.TXT
+    - name: sqlite3-ruby
+      license_id: BSD-3-Clause
+      license_content: https://raw.githubusercontent.com/sparklemotion/sqlite3-ruby/master/LICENSE
+    - name: syslog-logger
+      license_id: MIT
+      license_content: https://raw.githubusercontent.com/ngmoco/syslog_logger/master/README.rdoc
+    - name: unicorn-rails
+      license_id: MIT
+      license_content: https://raw.githubusercontent.com/samuelkadolph/unicorn-rails/master/LICENSE
+  habitat:
+    - name: core/bundler
+      license_id: MIT
+      license_content: https://raw.githubusercontent.com/bundler/bundler/master/LICENSE.md
+
+exceptions:
+  erlang:
+    - name: amqp_client
+      reason: Historic exception made by Chef Legal (unmodified library, used as-is)
+    - name: erlsom
+      reason: Historic exception made by Chef Legal (unmodified library, used as-is)
+    - name: rabbit_common
+      reason: Historic exception made by Chef Legal (unmodiifed library, used as-is)
+  ruby:
+    - name: kgio
+      reason: Exception made by Chef Legal (unmodified library, used as-is)
+    - name: newrelic_rpm
+      reason: Exception made by Chef Legal (unmodified library, used as-is)
+    - name: raindrops
+      reason: Exception made by Chef Legal (unmodified library, used as-is)
+    - name: thin
+      reason: Uses a dual license. Ruby and GPL-v2. Ruby license can be used as is (unmodified library, used as-is) can be found at https://raw.githubusercontent.com/macournoyer/thin/master/README.md
+  habitat:
+    - name: core/attr
+      reason: Exception made by Chef Legal
+    - name: core/bash
+      reason: Exception made by Chef Legal
+    - name: core/binutils
+      reason: Exception made by Chef Legal
+    - name: core/busybox-static
+      reason: Exception made by Chef Legal
+    - name: core/coreutils
+      reason: Exception made by Chef Legal
+    - name: core/gcc-libs
+      reason: Exception made by Chef Legal
+    - name: core/gdbm
+      reason: Exception made by Chef Legal
+    - name: core/glibc
+      reason: Exception made by Chef Legal
+    - name: core/gmp
+      reason: Exception made by Chef Legal
+    - name: core/grep
+      reason: Exception made by Chef Legal
+    - name: core/less
+      reason: Exception made by Chef Legal
+    - name: core/libcap
+      reason: Exception made by Chef Legal
+    - name: core/libtool
+      reason: Exception made by Chef Legal
+    - name: core/linux-headers
+      reason: Exception made by Chef Legal
+    - name: core/perl
+      reason: Exception made by Chef Legal
+    - name: core/readline
+      reason: Exception made by Chef Legal
+    - name: core/rsync
+      reason: Exception made by Chef Legal
+    - name:  core/ruby31
+      reason: Exception made by Chef Legal
+    - name: core/ruby3_1
+      reason: Ruby license
+    - name: core/ruby3_4
+      reason: Ruby license
+    - name: core/sed
+      reason: Exception made by Chef Legal
+    - name: core/sqitch_pg
+      reason: Exception made by Chef Legal
+    - name: core/nss-myhostname
+      reason: Exception made by Chef Legal
+    - name: core/xz
+      reason: Exception made by Chef Legal
+    - name: core/libiconv
+      reason: Exception made by Chef Legal
+    - name: core/libidn2
+      reason: Exception made by Chef Legal
+    - name: core/libunistring
+      reason: Exception made by Chef Legal
+    - name: core/libmpc
+      reason: Exception made by Chef Legal
+    - name: core/mpfr 
+      reason: Exception made by Chef Legal
+    - name: core/acl
+      reason: Exception made by Chef Legal
+    - name: core/ncurses
+      reason: Exception made by Chef Legal
+    - name: core/cpanminus
+      reason: Exception made by Chef Legal
+    - name : core/ncurses
+      reason: Exception made by Chef Legal
+    - name: core/sqlite
+      reason: Exception made by Chef Legal
+    - name : core/tzdata
+      reason: Exception made by Chef Legal
+    - name: core/gawk
+      reason: Exception made by Chef Legal

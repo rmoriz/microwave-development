@@ -1,0 +1,52 @@
+# Files in the config/locales directory are used for internationalization
+# and are automatically loaded by Rails. If you want to use locales other
+# than English, add the necessary files in this directory.
+#
+# To use the locales, use `I18n.t`:
+#
+#     I18n.t 'hello'
+#
+# In views, this is aliased to just `t`:
+#
+#     <%= t('hello') %>
+#
+# To use a different locale, set it with `I18n.locale`:
+#
+#     I18n.locale = :es
+#
+# This would use the information in config/locales/es.yml.
+#
+# To learn more, please read the Rails Internationalization guide
+# available at http://guides.rubyonrails.org/i18n.html.
+
+en:
+  doorkeeper:
+    authorized_applications:
+      index:
+        no_applications_message: You have not granted any applications access to your Chef account.
+  errors:
+    passwords:
+      blank: "%{label} must not be blank."
+      problem: "There was a problem with your password."
+      current_password_is_wrong: "Current Password was not entered correctly."
+      dont_match: "The password you entered does not match the confirmation password."
+    password_resets:
+      username_blank: "Please enter a username or email address."
+      invalid_username: "%{name} is not a valid username or email address."
+      password_blank: "Password must not be blank."
+      invalid_signature: "The given password reset link is expired or has an invalid signature."
+      completion: "If the username or email address you entered exists, you should receive an email shortly."
+    logins:
+      invalid_credentials: "Sorry, that username, email address, or password was incorrect. Please try again."
+    emails:
+      problem: "There was a problem with your new email address."
+      invalid_signature: "The given email reset link is expired or has an invalid signature."
+      invalid_username: "'%{name}' is not a valid username."
+  password_resets:
+    new:
+      form_caption: Enter your Chef username and we'll send you a link to reset it.
+  profile:
+    update_successful: "Profile updated successfully."
+    password_changed: "Password changed."
+    email_changed: "Email changed for account %{name}."
+    email_change_sent: "If the new email address you entered exists, you should receive an email with a link shortly."

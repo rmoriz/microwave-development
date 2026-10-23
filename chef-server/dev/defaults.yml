@@ -1,0 +1,259 @@
+# Anything in this file can be overridden in config.yml.
+#
+vm:
+  # Override this in config.yml if you want to bring up the
+  # postgres box, and if you want to automatically configure chef-server
+  # to use it as an externally managed postgres instance.
+  postgresql:
+    # enable a separate postgres vm and configure it as the external postgres provider for
+    # chef-server
+    start: false
+    # When this is set true, and start is true, and use-external is true,
+    # the chef-server node will be configured to use
+    # this vm as an external azure postgresql server from the start.
+    use-azure: false
+  # Override this in config.yml if you want to bring up a separate reporting
+  # postgres box automatically configure chef-server
+  # to use it as an externally managed reporting postgres instance.
+  reporting_postgresql:
+    # enable a separate reporting postgres vm and use it as an external postgres provider
+    # for chef-server reporting module
+    start: false
+  # Override this in config.yml if you want to bring up a separate chef-backend
+  # box, and if you want to automatically configure chef-server to use it in a
+  # 1 FE / 1 BE topology.
+  chef-backend:
+    start: false
+  # Override this in config.yml to configure an ldap server and configure chef-server
+  # to perform user authentication with it.
+  ldap:
+    start: false
+
+  # Brings up elasticsearch 5 and configures chef-server to use it as - not connected to chef-server right now.
+  # This is experimental.
+  #elasticsearch:
+    #start: true
+    # The major version family to use - either "2" or "5".
+    #version: "5"
+
+  # Override this in config.yml if you want to install chef server plugins with
+  # specific packages.
+  plugins:
+    chef-manage: false
+    reporting: false
+    push-jobs-server: false
+
+  # All settings below apply only to the chef-server vm
+  cpus: 4
+  memory: 4096
+  packages: [ curl, wget, htop, uuid-dev, tmux, vim, iotop, zlib1g-dev, liblzma-dev, jq, ripgrep, tree ]
+  omnibus-autoload: [] # see config.yml for details and to add components
+  # Override this in config.yml to set a custom path for your dotfiles
+  # that's external to this repository.
+  dotfile_path: dotfiles
+  # TODO whitelist as well?
+  # Note that we can't exclude .git from top-level projects, and by extension from anything,
+  # otherwise rebar commands begin to fail.
+  sync:
+     exclude-files:
+       - pkg/
+       - deps/
+       - rel/
+       - _rel/
+       - _build/
+       - ebin/
+       - .eunit/
+       - .kitchen/
+       - .bundle/
+       - vendor/bundle/
+       - "*_SUITE_data/"
+       - "*.deb"
+       - "*.rpm"
+       - "*.vmdk"
+       - "*.plt"
+       - "*.beam"
+       - "*.o"
+       - "*.so"
+       - "*.d"
+       - logs/
+       - /dev/
+       - .concrete/
+       - relx # we don't want to pull in a mac relx to our linux vm
+       - rspec.failures
+       - partybus/config.rb
+       - oc-reporting-pedant/Gemfile.lock # friggin ugh
+       - config/database.yml # [oc-id] we'll need to use the one from omnibus
+       - config/settings/production.yml # [oc-id] we'll need to use the one from omnibus
+       - config/initializers/secret_token.rb # [oc-id] we'll need to use the one from omnibus
+       - oc-id/public/id/source
+       - oc-id/tmp
+
+  cover:
+    base_output_path: /vagrant/testdata/cover # maps to dev/testdata/cover
+  node-attributes:
+    placeholder: true
+  # Overriding config.vm.start-custom to true will create an empty VM of the same
+  # distro as the chef server, with 2GB/2core, using CUSTOM_VM_ADDRESS
+  start-custom: false
+  #
+  # Configure oc_id with pre-determined admin and authorized applications for that user
+  # oc_id:
+  #   administrators:
+  #     - admin
+  #   applications:
+  #     # provide an app name and its redirect_uri
+  #     supermarket: http://localhost:3000/auth/chef_oauth2/callback
+
+projects:
+  oc_erchef:
+    type: erlang
+    database: opscode_chef # Used for dvm psql oc_erchef
+    service:
+      name: opscode-erchef
+      cookie: erchef
+      node: erchef@127.0.0.1
+      secrets:
+        args: --use-file
+        list:
+          - chef-server.webui_pub_key
+          - opscode_erchef.sql_password
+          - bookshelf.access_key_id
+          - bookshelf.secret_access_key
+          - oc_bifrost.superuser_id
+        optional:
+          - data_collector.token
+          - ldap.bind_password
+  oc-id:
+    type: rails
+    build_steps:
+      - bundle config set --local without development test doc
+      # We used to build assets in the pipeline, and needed to build them before loading. Now we've commited those assets to git, and
+      #    - bundle exec rake assets:precompile --trace
+      - bundle exec --keep-file-descriptors rake db:migrate
+    symlinks:
+      config/database.yml: config/database.yml
+      config/settings/production.yml: config/production.yml
+      config/initializers/secret_token.rb: config/secret_token.rb
+    service:
+      name: oc_id
+      port: 9090
+      secrets:
+        args: --use-file
+        list:
+          - chef-server.webui_key
+          - oc_id.sql_password
+          - oc_id.secret_key_base
+  oc_bifrost:
+    type: erlang
+    database: bifrost
+    service:
+      name:  oc_bifrost
+      cookie: oc_bifrost
+      node: oc_bifrost@127.0.0.1
+      secrets:
+        args: --use-file
+        list:
+          - oc_bifrost.sql_password
+          - oc_bifrost.superuser_id
+  oc_reporting:
+    type:  erlang
+    external: true
+    database: opscode_reporting
+    install-path-key: opscode-reporting
+    service:
+      name: opscode-reporting
+      cookie: oc_reporting
+      node: oc_reporting@127.0.0.1
+      secrets:
+        args: --pack
+        list:
+          - chef-server.superuser_key
+          - chef-server.webui_pub_key
+          - opscode-reporting.sql_password
+          - rabbitmq.actions_password
+  bookshelf:
+    type: erlang
+    service:
+      rel-type: rebar3
+      name: bookshelf
+      cookie: bookshelf
+      node: bookshelf@127.0.0.1
+      secrets:
+        args: --use-file
+        list:
+          - bookshelf.access_key_id
+          - bookshelf.secret_access_key
+        optional:
+          - bookshelf.sql_password
+  omnibus:
+    path: "omnibus"
+    name: opscode-omnibus
+    type: omnibus
+    components:
+      # Note that these don't all technically belong under project 'omnibus' now, but it works...
+      server-ctl-cookbooks:
+        source_path: server-ctl-cookbooks/infra-server
+        dest_path: /opt/opscode/embedded/cookbooks/infra-server
+        reconfigure_on_load: true
+      ctl-commands:
+        # TODO: Note that this will override chef-server-ctl plugin commands, but won't load the top-level command
+        # itself at this time.
+        source_path: ../../src/chef-server-ctl/plugins
+        # TODO - the gem version will eventually change, we need a good way to keep it in sync with our ruby version
+        dest_path: /opt/opscode/embedded/lib/ruby/gems/3.1.7/gems/chef-server-ctl-1.1.0/plugins
+        reconfigure_on_load: false
+      upgrades:
+        source_path: private-chef-upgrades
+        dest_path: /opt/opscode/embedded/upgrades
+        reconfigure_on_load: false
+      partybus:
+        source_path: ../partybus
+        dest_path: /opt/opscode/embedded/service/partybus
+        reconfigure_on_load: false
+        bundler: true
+  oc-chef-pedant:
+    type: ruby
+    path: oc-chef-pedant
+    database: opscode_chef
+    run: bin/oc-chef-pedant -c /var/opt/opscode/oc-chef-pedant/etc/pedant_config.rb
+    service:
+      secrets:
+        args:
+        list:
+          - opscode_erchef.stats_password
+          - chef-server.webui_key
+          - chef-server.superuser_key
+
+  #
+  # External Components
+
+  # THe base OmnibusCtl class, from the omnibus-ctl gem
+  omnibus-ctl:
+    type: ruby
+    system: true
+    external: true
+
+  #
+  # Reporting
+  #
+  reporting:
+    embedded_in: "oc_reporting"
+    type: omnibus
+    external: true
+    components:
+      reporting-cookbooks:
+        source_path: cookbooks/opscode-reporting
+        dest_path: /opt/opscode-reporting/embedded/cookbooks/opscode-reporting
+        ctl-name: opscode-reporting-ctl
+        reconfigure_on_load: true
+      ctl-commands:
+        source_path: opscode-reporting-ctl-commands
+        dest_path: /opt/opscode-reporting/embedded/service/omnibus-ctl
+        reconfigure_on_load: false
+
+  oc-reporting-pedant:
+    type: ruby
+    external: true
+    gem-path: /opt/opscode-reporting/embedded/service/gems
+    run: ./oc-reporting-pedant -c /etc/opscode-reporting/pedant_config.rb
+
