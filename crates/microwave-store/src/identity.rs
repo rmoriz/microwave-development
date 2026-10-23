@@ -375,6 +375,93 @@ impl SqliteStore {
     pub fn find_principal_keys(&self, principal: &Principal) -> Result<Vec<ActorKey>, StoreError> {
         self.find_actor_keys(&principal.actor_id, principal.actor_type)
     }
+
+    pub fn list_users(&self) -> Result<Vec<User>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, authz_id, username, email, password_hash, password_salt,
+                    hash_type, admin, recovery_authentication_enabled, created_at, updated_at
+             FROM users ORDER BY username",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(User {
+                id: row.get(0)?,
+                authz_id: row.get(1)?,
+                username: row.get(2)?,
+                email: row.get(3)?,
+                password_hash: row.get(4)?,
+                password_salt: row.get(5)?,
+                hash_type: row.get(6)?,
+                admin: row.get::<_, i64>(7)? != 0,
+                recovery_authentication_enabled: row.get::<_, i64>(8)? != 0,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
+            })
+        })?;
+
+        let mut users = Vec::new();
+        for row in rows {
+            users.push(row?);
+        }
+        Ok(users)
+    }
+
+    pub fn update_user(
+        &self,
+        username: &str,
+        email: Option<&str>,
+        password: Option<(&str, &str, &str)>,
+        admin: Option<bool>,
+    ) -> Result<User, StoreError> {
+        let now = now();
+        let connection = self.connection();
+        let changed = connection.execute(
+            "UPDATE users
+             SET email = COALESCE(?2, email),
+                 password_hash = COALESCE(?3, password_hash),
+                 password_salt = COALESCE(?4, password_salt),
+                 hash_type = COALESCE(?5, hash_type),
+                 admin = COALESCE(?6, admin),
+                 updated_at = ?7
+             WHERE username = ?1",
+            params![
+                username,
+                email,
+                password.map(|value| value.0),
+                password.map(|value| value.1),
+                password.map(|value| value.2),
+                admin.map(|value| value as i64),
+                now
+            ],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NotFound(format!("user {username}")));
+        }
+        self.find_user(username)?
+            .ok_or_else(|| StoreError::NotFound(format!("user {username}")))
+    }
+
+    pub fn delete_user(&self, username: &str) -> Result<(), StoreError> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        let user = transaction
+            .query_row(
+                "SELECT id, authz_id FROM users WHERE username = ?1",
+                [username],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NotFound(format!("user {username}")))?;
+
+        transaction.execute(
+            "DELETE FROM actor_keys WHERE actor_id = ?1 AND actor_type = 'user'",
+            [&user.0],
+        )?;
+        transaction.execute("DELETE FROM authz_entities WHERE authz_id = ?1", [&user.1])?;
+        transaction.execute("DELETE FROM users WHERE id = ?1", [&user.0])?;
+        transaction.commit()?;
+        Ok(())
+    }
 }
 
 fn new_id() -> String {

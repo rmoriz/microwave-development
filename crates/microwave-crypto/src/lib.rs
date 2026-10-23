@@ -12,6 +12,6 @@ pub use auth::{
 pub use error::CryptoError;
 pub use password::{hash_password, needs_upgrade, verify_password, PasswordHash};
 pub use signature::{
-    decode_signature, parse_private_key_pem, parse_public_key_pem, sign_request, verify_request,
-    AuthHeaders,
+    decode_signature, generate_rsa_keypair, parse_private_key_pem, parse_public_key_pem,
+    sign_request, verify_request, AuthHeaders,
 };

@@ -2,9 +2,12 @@ use crate::auth::{canonical_request, content_hash, CanonicalRequest, SignVersion
 use crate::error::CryptoError;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use rand::rngs::OsRng;
 use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey};
 use rsa::pkcs1v15::{Signature, SigningKey, VerifyingKey};
-use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
+use rsa::pkcs8::{
+    DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, LineEnding,
+};
 use rsa::signature::{SignatureEncoding, Signer, Verifier};
 use rsa::traits::{PrivateKeyParts, PublicKeyParts};
 use rsa::{BigUint, RsaPrivateKey, RsaPublicKey};
@@ -18,6 +21,22 @@ pub struct AuthHeaders {
     pub timestamp: String,
     pub content_hash: String,
     pub signature: Vec<u8>,
+}
+
+/// Generate a 2048-bit RSA keypair as `(private_pem, public_pem)`.
+pub fn generate_rsa_keypair() -> Result<(String, String), CryptoError> {
+    let mut rng = OsRng;
+    let private_key = RsaPrivateKey::new(&mut rng, 2048)
+        .map_err(|error| CryptoError::InvalidKey(error.to_string()))?;
+    let private_pem = private_key
+        .to_pkcs8_pem(LineEnding::LF)
+        .map_err(|error| CryptoError::InvalidKey(error.to_string()))?
+        .to_string();
+    let public_pem = private_key
+        .to_public_key()
+        .to_public_key_pem(LineEnding::LF)
+        .map_err(|error| CryptoError::InvalidKey(error.to_string()))?;
+    Ok((private_pem, public_pem))
 }
 
 /// Decode the `X-Ops-Authorization-1..N` header values into signature bytes.
