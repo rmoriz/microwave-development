@@ -1,17 +1,25 @@
 # Microwave Server
 
-A Rust reimplementation of Chef Infra Server, designed as a drop-in replacement for the Chef Infra API and the surrounding product surfaces (`oc-id`, `chef-server-ctl`, data collector, license, and migration tooling).
+A Rust reimplementation of the Chef Infra Server API, designed as a drop-in replacement for existing clients and operations tooling. This is an independent project, not affiliated with or endorsed by Progress Software Corporation.
 
-This repository currently contains the design work and vendored upstream sources used as the reference implementation.
+The repository currently contains the design work and the vendored upstream sources used as the reference implementation.
 
 ## Layout
 
 | Path | Contents |
 |---|---|
-| `chef-server/` | Vendored Chef Infra Server `15.10.127` source snapshot (upstream commit `c38d169f083d064b8c542d912d072d8b88cf4c8c`, branch `main`). |
-| `chef/` | Vendored Chef Infra Client `19.4.47` source snapshot (upstream commit `46354347bc125edc98c5f080ca2592d55ec0e4bc`, branch `main`). |
-| `docs/superpowers/specs/` | Architecture and design specifications. |
+| `chef-server/` | Vendored upstream server `15.10.127` source snapshot (commit `c38d169f083d064b8c542d912d072d8b88cf4c8c`, branch `main`). |
+| `chef/` | Vendored upstream client `19.4.47` source snapshot (commit `46354347bc125edc98c5f080ca2592d55ec0e4bc`, branch `main`). |
+| `docs/superpowers/specs/2026-10-24-microwave-server-design.md` | Architecture and design specification. |
 | `TODO.md` | Master implementation checklist. |
+
+## Naming and Trademarks
+
+"Chef", "Chef Infra", "Chef Infra Server", and "Chef Infra Client" are trademarks of Progress Software Corporation. They appear in this repository only to identify the upstream software and the compatibility surface.
+
+This project's own crates, binaries, modules, services, and public types use the `microwave-*` prefix or domain-neutral names. The `chef-server-ctl` command name is retained only as a compatibility alias for `microwave-ctl`. Protocol-required identifiers such as the `X-Chef-Version` header, the `chef_type` JSON field, `/etc/opscode/chef-server.rb`, and `CHEF_SECRETS_DATA` are preserved because changing them would break compatibility.
+
+See section 1.1 of the design specification for the full policy.
 
 ## Vendored Git Histories
 

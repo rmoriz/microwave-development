@@ -1,25 +1,47 @@
-# Chef Infra Server Rust Rewrite ("Microwave Server") — Architecture & Design Specification
+# Microwave Server — Architecture & Design Specification
 
-**Date:** 2026-10-24  
-**Status:** Draft for Review  
+A Rust reimplementation of the Chef Infra Server API, designed as a drop-in replacement for existing clients and operations tooling.
+
+**Date:** 2026-10-24
+**Status:** Draft for Review
+**Compatibility Target:** Chef Infra Server `15.10.127` and Chef Infra Client `19.4.47`
 **Reference Codebases:**
 - `chef-server` (`15.10.127` — `oc_erchef`, `oc_bifrost`, `bookshelf`, `oc-id`, `chef-server-ctl`, `nginx`, `oc-chef-pedant`)
 - `chef` (`19.4.47` — `Chef::ServerAPI`, `Chef::HTTP::Authenticator`, `Chef::ServerAPIVersions`)
+
+> **Trademark note:** "Chef", "Chef Infra", "Chef Infra Server", and "Chef Infra Client" are trademarks of Progress Software Corporation. This is an independent project, not affiliated with or endorsed by Progress. Those names appear only to identify the upstream software and the compatibility surface. This project's own components use the `microwave-*` prefix or domain-neutral names.
 
 ---
 
 ## 1. Intent and Why
 
-Chef Infra Server today is a multi-runtime, multi-process system inherited from several generations of architecture:
+The upstream server today is a multi-runtime, multi-process system inherited from several generations of architecture:
 - **Erlang (`oc_erchef`, `oc_bifrost`, `bookshelf`)** on OTP 26 with Webmachine, Mochiweb, Sqerl, and custom connection pools.
 - **Ruby on Rails (`oc-id`)** for OAuth2 identity and application authorization.
 - **Ruby (`chef-server-ctl`, `knife-opc`, `oc-chef-pedant`)** for administration, lifecycle, and API verification.
 - **OpenResty / Nginx + Lua (`routes.lua`, `dispatch.lua`)** for edge routing, header validation, and internal upstream splitting.
 - **PostgreSQL + OpenSearch/Elasticsearch** as mandatory heavy external dependencies even for small installations.
 
-We are reimplementing Chef Infra Server in **Rust** (`microwave-server`) as a **drop-in replacement** for both the core Chef Infra API and the surrounding product surfaces (`oc-id`, `chef-server-ctl`, `data-collector`, `/license`, telemetry, and backup/migration), while collapsing the operational footprint into a **modular monolith** that:
+We are reimplementing the upstream Chef Infra Server API in **Rust** (`microwave-server`) as a **drop-in replacement** for existing clients, while replacing the surrounding compatibility surfaces (`/id` OAuth, the `chef-server-ctl` command surface, data collector, `/license`, telemetry, and backup/migration). The operational footprint collapses into a **modular monolith** that:
 1. Runs out of the box as a **single self-contained binary** with embedded storage (SQLite + Tantivy + local S3-compatible object store) capable of serving **~1,000 nodes**.
 2. Scales horizontally in **High Availability (HA) mode** by swapping its provider traits to **PostgreSQL, OpenSearch, and S3 / Garage** behind a load balancer.
+
+### 1.1 Naming and Trademark Policy
+
+The upstream product names are used only where the name is part of the compatibility contract. Our own crates, binaries, modules, services, types, and commands use the `microwave-*` prefix or domain-neutral names.
+
+**Allowed nominative uses:**
+- Describing the upstream software this project is compatible with (`Chef Infra Server`, `Chef Infra Client`, `chef-client`, `knife`).
+- Referencing upstream source paths and symbols when citing behavior (for example `chef_index_expand.erl` or `chef_lucene.peg`).
+- Protocol-required identifiers: the `X-Chef-Version` header, the `chef_type` JSON field, `Chef::Node`-style payload values, `/etc/opscode/chef-server.rb`, `private-chef-secrets.json`, and `CHEF_SECRETS_DATA`.
+- Compatibility command aliases: the `chef-server-ctl` executable name is installed as an alias so existing automation keeps working. The primary CLI is `microwave-ctl`.
+- The upstream verification suite, referred to as `oc-chef-pedant` because that is its actual name and path.
+- Vendored upstream checkout directory names (`chef/`, `chef-server/`) are retained for provenance and update tracking.
+
+**Not allowed:**
+- Naming our crates, binaries, modules, services, or public types with a `chef-` prefix.
+- Presenting this project as a Chef or Progress product, or implying endorsement.
+- Using upstream trademarks in the project's own branding, package names, or service names when a neutral name works.
 
 ---
 
@@ -29,20 +51,20 @@ We are reimplementing Chef Infra Server in **Rust** (`microwave-server`) as a **
 - **Wire-level drop-in compatibility:** Existing `chef-client` (up to 19.x), `knife`, `berkshelf`,Policyfile tooling, Supermarket (`oc-id` OAuth2 consumers), Automate (`data-collector`), and the `oc-chef-pedant` test suite can interact with the server without client modifications.
 - **Full API Version Support (`v0`, `v1`, `v2`):** Support `X-Ops-Server-API-Version` negotiation (`min_version: 0`, `max_version: 2`) and all version-specific payload behaviors (e.g., embedded `public_key` in `v0` vs. `/keys` table & `chef_key` responses in `v1+`; single vs. multi-principal responses in `/principals`).
 - **Complete Surrounding Product Replacement:**
-  - `oc-id` (`/id/*` OAuth2 provider, sessions, profile, password resets, `/id/v1/*` API).
-  - `chef-server-ctl` CLI compatibility (user/org management, key rotation, reindexing, backup/restore, maintenance mode, secrets, status, pedant runner).
+  - The `/id/*` OAuth2 surface (sessions, profile, password resets, `/id/v1/*` API).
+  - The `chef-server-ctl` command surface through `microwave-ctl` (user/org management, key rotation, reindexing, backup/restore, maintenance mode, secrets, status, pedant runner).
   - `data-collector` forwarding (`POST /organizations/:org/data-collector`).
   - `/license`, `/_status`, `/_stats`, `/server_api_version` endpoints.
 - **Modular Backend Providers:** Clean Rust traits for Metadata Store, Search Engine, and Object Store:
   - *Built-in Default (~1,000 nodes):* SQLite (WAL mode) + Embedded Tantivy + Built-in `/bookshelf` local filesystem store (or local Garage).
   - *HA Production:* PostgreSQL + OpenSearch + S3-compatible object store (Garage / AWS S3 / MinIO).
-- **Fresh Install + Migration Tool:** Provide a native migration tool (`microwave-ctl migrate` / `chef-server-ctl backup/restore`) that exports from an existing Erlang Chef Server (via API or `knife-ec-backup` archives / SQL dump) and imports into the Rust server, preserving orgs, users, password hashes, client/user public keys, ACLs, cookbooks, policies, nodes, roles, environments, and data bags.
+- **Fresh Install + Migration Tool:** Provide a native migration tool (`microwave-ctl migrate`, plus `backup`/`restore`) that exports from an existing upstream server (via API or `knife-ec-backup` archives / SQL dump) and imports into the Rust server, preserving orgs, users, password hashes, client/user public keys, ACLs, cookbooks, policies, nodes, roles, environments, and data bags.
 
 ### Non-Goals
-- **In-place database reuse of legacy Chef Server PostgreSQL schemas:** We do not need to run atop an unmigrated `opscode_chef` + `bifrost` database in place. Data moves via the migration/restore tool.
-- **Legacy Analytics (`/organizations/:org/controls`) and RabbitMQ indexing:** The `/controls` endpoint already returns `410 Gone` in Chef Server 15 and will continue to return `410 Gone`.
-- **Pixel-identical Rails HTML/CSS in `oc-id`:** *(Architect Call)* While all URLs, form actions, OAuth2 flows, and JSON APIs under `/id` must be 100% compatible, the HTML views for login/profile/app management will be clean, lightweight server-rendered templates rather than compiling the legacy Sprockets/Rails asset pipeline.
-- **Habitat / Runit supervision internals:** The Rust binary is self-supervised (or managed via `systemd`/containers); `chef-server-ctl` lifecycle commands map to the target runtime rather than `hab sup` or `runit`.
+- **In-place database reuse of legacy upstream PostgreSQL schemas:** We do not need to run atop an unmigrated `opscode_chef` + `bifrost` database in place. Data moves via the migration/restore tool.
+- **Legacy Analytics (`/organizations/:org/controls`) and RabbitMQ indexing:** The `/controls` endpoint already returns `410 Gone` in the upstream 15.x server and will continue to return `410 Gone`.
+- **Pixel-identical Rails HTML/CSS in the `/id` compatibility UI:** *(Architect Call)* While all URLs, form actions, OAuth2 flows, and JSON APIs under `/id` must be 100% compatible, the HTML views for login/profile/app management will be clean, lightweight server-rendered templates rather than compiling the legacy Sprockets/Rails asset pipeline.
+- **Habitat / Runit supervision internals:** The Rust binary is self-supervised (or managed via `systemd`/containers); `chef-server-ctl` lifecycle compatibility commands map to the target runtime rather than `hab sup` or `runit`.
 
 ### Anti-Goals (Failure Conditions Even If It Works)
 - **Leaking backend differences into API behavior:** A query or ACL check must never behave differently on SQLite/Tantivy vs. PostgreSQL/OpenSearch.
@@ -68,7 +90,7 @@ We are reimplementing Chef Infra Server in **Rust** (`microwave-server`) as a **
 ## 4. Approaches Considered
 
 ### Approach A — Modular Monolith with Provider Traits *(Selected)*
-A single Cargo workspace producing one primary binary (`microwave-server` / `chef-server-ctl` multicall or paired binaries) with role subcommands (`serve`, `worker`, `ctl`, `migrate`) and trait-abstracted backends (`MetadataStore`, `SearchBackend`, `ObjectStore`).
+A single Cargo workspace producing one primary binary (`microwave-server` / `microwave-ctl`, with a `chef-server-ctl` compatibility alias) with role subcommands (`serve`, `worker`, `ctl`, `migrate`) and trait-abstracted backends (`MetadataStore`, `SearchBackend`, `ObjectStore`).
 - **Pros:** Zero network hops between edge routing, API, and ACL checks; atomic SQL transactions across domain objects and ACLs; single binary deployment for ~1,000 nodes; horizontal stateless scaling for HA when pointed at Postgres + OpenSearch + Garage/S3.
 - **Cons:** Requires strict crate boundaries so backend-specific code doesn't leak into domain logic.
 
@@ -83,11 +105,11 @@ A Rust reverse proxy that gradually replaces endpoints while sharing the legacy 
 - **Cons:** Requires running the full Erlang/Ruby/Postgres/OpenSearch stack; conflicts with the fresh-install + single-binary default goal.
 
 **Decision:** **Approach A**, refined with five architectural guardrails agreed during review:
-1. Use **Tantivy** (not SQLite FTS5) for embedded search behind a unified Chef document expander and Lucene PEG query AST.
+1. Use **Tantivy** (not SQLite FTS5) for embedded search behind a unified document expander and Lucene PEG query AST.
 2. Keep business logic, cycle detection, and key synchronization in **Rust transactions** rather than SQL triggers/PLpgSQL, using standard SQL + `WITH RECURSIVE` across SQLite and PostgreSQL.
-3. Support **dual-mode presigned URLs** in `chef-objectstore` (in-process `/bookshelf` routes for local disk; native SigV4 presigned URLs for Garage/S3).
+3. Support **dual-mode presigned URLs** in `microwave-objectstore` (in-process `/bookshelf` routes for local disk; native SigV4 presigned URLs for Garage/S3).
 4. Support both **`inline` and `batch` indexing modes** inside the search subsystem so write-then-read tests and converge storms both work.
-5. Implement `chef-server-ctl` directly against the Rust admin/domain crates rather than shelling out to Ruby/`knife-opc`/`psql`.
+5. Implement the CLI in `microwave-ctl` directly against the Rust admin/domain crates rather than shelling out to Ruby/`knife-opc`/`psql`, and install a `chef-server-ctl` compatibility alias for existing automation.
 
 ---
 
@@ -97,24 +119,24 @@ A Rust reverse proxy that gradually replaces endpoints while sharing the legacy 
 microwave-server/
 ├── Cargo.toml
 ├── crates/
-│   ├── chef-config/        # TOML/env/chef-server.rb config loader & secrets store
-│   ├── chef-crypto/        # X-Ops-Sign (1.0/1.1/1.3), RSA keygen cache, password hashes, SigV4
-│   ├── chef-domain/        # Core domain types, validation rules, EJSON normalization, API v0/v1/v2 shapes
-│   ├── chef-authz/         # Actors, groups, containers, objects, ACL engine, org creation policy
-│   ├── chef-store/         # Unified repository traits + SQLite & PostgreSQL implementations
-│   ├── chef-search/        # Document expander, Lucene PEG parser/AST, Tantivy & OpenSearch backends, batcher
-│   ├── chef-objectstore/   # Cookbook blob store trait, local disk + S3/Garage backends, /bookshelf HTTP handler
-│   ├── chef-depsolver/     # Pure Rust cookbook version constraint solver
-│   ├── chef-api/           # Axum/Tower HTTP server, middleware, all ~70 Chef Infra API routes, data-collector
-│   ├── chef-oauth/         # oc-id replacement (/id/* OAuth2 server, sessions, UI templates, /id/v1/*)
-│   ├── chef-ctl/           # chef-server-ctl compatible CLI & backup/restore/reindex/admin commands
-│   └── chef-migrate/       # Importer from legacy Chef Server (API crawler & knife-ec-backup archive reader)
+│   ├── microwave-config/        # TOML/env/chef-server.rb config loader & secrets store
+│   ├── microwave-crypto/        # X-Ops-Sign (1.0/1.1/1.3), RSA keygen cache, password hashes, SigV4
+│   ├── microwave-domain/        # Core domain types, validation rules, EJSON normalization, API v0/v1/v2 shapes
+│   ├── microwave-authz/         # Actors, groups, containers, objects, ACL engine, org creation policy
+│   ├── microwave-store/         # Unified repository traits + SQLite & PostgreSQL implementations
+│   ├── microwave-search/        # Document expander, Lucene PEG parser/AST, Tantivy & OpenSearch backends, batcher
+│   ├── microwave-objectstore/   # Cookbook blob store trait, local disk + S3/Garage backends, /bookshelf HTTP handler
+│   ├── microwave-depsolver/     # Pure Rust cookbook version constraint solver
+│   ├── microwave-api/           # Axum/Tower HTTP server, middleware, all ~70 compatibility API routes, data-collector
+│   ├── microwave-oauth/         # /id OAuth2 and identity compatibility (/id/*, sessions, UI templates, /id/v1/*)
+│   ├── microwave-ctl/           # Primary CLI; installs a chef-server-ctl compatibility alias
+│   └── microwave-migrate/       # Importer from a legacy upstream server (API crawler & knife-ec-backup reader)
 └── bin/
     ├── microwave-server/   # Main daemon entrypoint (`serve`, `worker`)
-    └── chef-server-ctl/    # Drop-in CLI binary
+    └── microwave-ctl/      # Primary CLI binary; `chef-server-ctl` is installed as a compatibility alias
 ```
 
-### Request Pipeline (`chef-api` + `chef-oauth` + `chef-objectstore`)
+### Request Pipeline (`microwave-api` + `microwave-oauth` + `microwave-objectstore`)
 
 All HTTP traffic enters a single `axum` router (removing the need for OpenResty/Lua):
 
@@ -127,16 +149,16 @@ All HTTP traffic enters a single `axum` router (removing the need for OpenResty/
    - Checks maintenance mode flag (`503 Service Unavailable` when enabled, except `/_status`).
 2. **Route Dispatch:**
    - `/_status`, `/_stats`, `/server_api_version`, `/license` -> System handlers.
-   - `/bookshelf/*` -> `chef-objectstore` S3 SigV4 / presigned URL verifier and streaming blob handler (when embedded bookshelf is enabled).
-   - `/id/*` -> `chef-oauth` router (OAuth2 + session + `/id/v1/*` handlers).
-   - `/organizations/:org/data-collector` -> `chef-api` data-collector token/signed-auth verifier and async/sync forwarder.
-   - All Chef Infra routes -> **Signed Auth Middleware** -> **Authz Middleware** -> **Resource Handler**.
+   - `/bookshelf/*` -> `microwave-objectstore` S3 SigV4 / presigned URL verifier and streaming blob handler (when embedded bookshelf is enabled).
+   - `/id/*` -> `microwave-oauth` router (OAuth2 + session + `/id/v1/*` handlers).
+   - `/organizations/:org/data-collector` -> `microwave-api` data-collector token/signed-auth verifier and async/sync forwarder.
+   - All compatibility routes -> **Signed Auth Middleware** -> **Authz Middleware** -> **Resource Handler**.
 
 ---
 
 ## 6. Detailed Component Specifications
 
-### 6.1 Cryptographic & Authentication Engine (`chef-crypto`)
+### 6.1 Cryptographic & Authentication Engine (`microwave-crypto`)
 
 #### Request Signature Verification (`X-Ops-Sign`)
 - **Headers Required:**
@@ -162,7 +184,7 @@ All HTTP traffic enters a single `axum` router (removing the need for OpenResty/
 - **RSA Keypair Generation Cache:**
   - Like `chef_keygen_cache`, maintain a background buffer of pre-generated 2048-bit RSA keypairs so client/user/org creation (`create_key: true`) responds immediately without CPU stalls, exposing status in `/_status`.
 
-#### Password Hashing (`chef_password.erl` compatibility)
+#### Password Hashing (upstream `chef_password.erl` compatibility)
 - Store `(password_hash, password_salt, hash_type)`.
 - Default for new passwords: `bcrypt` (configurable cost, default 12).
 - Verification supports:
@@ -174,9 +196,9 @@ All HTTP traffic enters a single `axum` router (removing the need for OpenResty/
 
 ---
 
-### 6.2 Unified Data Model & Storage Layer (`chef-store`)
+### 6.2 Unified Data Model & Storage Layer (`microwave-store`)
 
-Instead of separate `opscode_chef`, `bifrost`, `bookshelf`, and `oc_id` databases with triggers and stored procedures, `chef-store` uses a **single unified relational schema** (compatible with both SQLite 3.35+ and PostgreSQL 14+) managed via embedded SQL migrations.
+Instead of separate `opscode_chef`, `bifrost`, `bookshelf`, and `oc_id` databases with triggers and stored procedures, `microwave-store` uses a **single unified relational schema** (compatible with both SQLite 3.35+ and PostgreSQL 14+) managed via embedded SQL migrations.
 
 #### Core Schema Tables
 
@@ -190,7 +212,7 @@ Instead of separate `opscode_chef`, `bifrost`, `bookshelf`, and `oc_id` database
    - `actor_keys (actor_id CHAR(32), actor_type TEXT CHECK(actor_type IN ('user','client')), key_name TEXT, public_key TEXT, key_version INT, expires_at TIMESTAMP, created_at TIMESTAMP, updated_at TIMESTAMP, last_updated_by CHAR(32), PK(actor_id, key_name))`
      - *Note:* In API `v0`, reading/updating `public_key` on a user or client reads/writes the `default` row in `actor_keys` inside the same Rust transaction—no SQL triggers needed.
 
-2. **Authorization Graph (`chef-authz` tables, replacing `bifrost`):**
+2. **Authorization Graph (`microwave-authz` tables, replacing `bifrost`):**
    - `authz_entities (authz_id CHAR(32) PK, entity_type TEXT CHECK(entity_type IN ('actor','group','object','container')), org_id CHAR(32) NULL)`
    - `authz_acl_actor (target_authz_id CHAR(32), permission TEXT, actor_authz_id CHAR(32), PK(target_authz_id, permission, actor_authz_id))`
    - `authz_acl_group (target_authz_id CHAR(32), permission TEXT, group_authz_id CHAR(32), PK(target_authz_id, permission, group_authz_id))`
@@ -199,7 +221,7 @@ Instead of separate `opscode_chef`, `bifrost`, `bookshelf`, and `oc_id` database
    - `containers (id CHAR(36) PK, org_id CHAR(32), authz_id CHAR(32) UNIQUE, name TEXT, last_updated_by, created_at, updated_at, UNIQUE(org_id, name))`
    - `groups (id CHAR(36) PK, org_id CHAR(32), authz_id CHAR(32) UNIQUE, name TEXT, last_updated_by, created_at, updated_at, UNIQUE(org_id, name))`
 
-3. **Chef Infra Objects:**
+3. **Core Infra Objects:**
    - `nodes (id CHAR(32) PK, authz_id CHAR(32) UNIQUE, org_id CHAR(32), name TEXT, environment TEXT, policy_name TEXT NULL, policy_group TEXT NULL, serialized_object BLOB, last_updated_by, created_at, updated_at, UNIQUE(org_id, name))`
      - Indexes on `(org_id, environment)`, `(org_id, policy_name)`, `(org_id, policy_group)`.
    - `roles (id CHAR(32) PK, authz_id CHAR(32) UNIQUE, org_id CHAR(32), name TEXT, serialized_object BLOB, last_updated_by, created_at, updated_at, UNIQUE(org_id, name))`
@@ -230,12 +252,12 @@ Instead of separate `opscode_chef`, `bifrost`, `bookshelf`, and `oc_id` database
    - `kvpair (key TEXT PK, value TEXT, updated_at TIMESTAMP)`
    - `telemetry (property TEXT, event_timestamp TIMESTAMP)`
 
-#### Payload Compression (`chef_db_compression.erl` compatibility)
+#### Payload Compression (upstream `chef_db_compression.erl` compatibility)
 - `nodes`, `roles`, `environments`, `data_bag_items`, and `cookbook_versions` store `serialized_object` compressed with `zlib`/gzip (or raw JSON bytes—transparently detected on read via header magic bytes so both compressed and uncompressed blobs work).
 
 ---
 
-### 6.3 Authorization Engine (`chef-authz`)
+### 6.3 Authorization Engine (`microwave-authz`)
 
 Replaces `oc_bifrost` and `oc_chef_authz` in-process:
 
@@ -273,12 +295,12 @@ Replaces `oc_bifrost` and `oc_chef_authz` in-process:
   5. Create the `_default` environment.
   6. Create the `{org}-validator` client (`validator: true`) + default RSA keypair and return `{"uri": ..., "clientname": "{org}-validator", "private_key": "..."}`.
 - **ACL Constraints (`oc_chef_authz_acl_constraints.erl`):**
-  - Prevent removing the `admins` group from the `grant` ACE of an organization or key objects when required by Chef Server semantics.
+  - Prevent removing the `admins` group from the `grant` ACE of an organization or key objects when required by upstream server semantics.
   - Enforce `clients` + `users` vs. `actors` query param/payload rules on `/_acl` endpoints.
 
 ---
 
-### 6.4 Complete API Route Surface (`chef-api`)
+### 6.4 Complete API Route Surface (`microwave-api`)
 
 Every route in `src/oc_erchef/apps/oc_chef_wm/priv/dispatch.conf` and `src/nginx/habitat/config/routes.lua` is implemented:
 
@@ -297,38 +319,38 @@ Every route in `src/oc_erchef/apps/oc_chef_wm/priv/dispatch.conf` and `src/nginx
 | **Nodes** | `GET,POST /organizations/:org/nodes`, `GET,PUT,DELETE /organizations/:org/nodes/:name`, `GET /organizations/:org/environments/:env/nodes` | Extracts `chef_environment`, `policy_name`, `policy_group`; indexes node on create/update/delete. |
 | **Roles** | `GET,POST /organizations/:org/roles`, `GET,PUT,DELETE /organizations/:org/roles/:name`, `GET /organizations/:org/roles/:name/environments`, `GET /organizations/:org/roles/:name/environments/:env`, `GET /organizations/:org/environments/:env/roles/:name` | Supports `env_run_lists` extraction. |
 | **Environments** | `GET,POST /organizations/:org/environments`, `GET,PUT,DELETE /organizations/:org/environments/:env`, `GET /organizations/:org/environments/:env/recipes`, `GET /organizations/:org/environments/:env/cookbooks`, `GET /organizations/:org/environments/:env/cookbooks/:cookbook` | `_default` environment cannot be deleted or renamed (`405 Method Not Allowed` / `400`). |
-| **Depsolver** | `POST /organizations/:org/environments/:env/cookbook_versions` | Resolves `run_list` constraints + environment cookbook constraints via `chef-depsolver`, returns expanded cookbook version manifests with presigned download URLs. |
+| **Depsolver** | `POST /organizations/:org/environments/:env/cookbook_versions` | Resolves `run_list` constraints + environment cookbook constraints via `microwave-depsolver`, returns expanded cookbook version manifests with presigned download URLs. |
 | **Data Bags** | `GET,POST /organizations/:org/data`, `GET,POST,DELETE /organizations/:org/data/:bag`, `GET,PUT,DELETE /organizations/:org/data/:bag/:item` | Each data bag appears as a dynamic search index in `/search` and `/search/:bag`. |
-| **Sandboxes** | `POST /organizations/:org/sandboxes`, `PUT /organizations/:org/sandboxes/:id` | `POST` checks existing `checksums` for org; returns `needs_upload: true` + presigned `PUT` URL for missing MD5s, `needs_upload: false` for existing. `PUT` (`{"is_completed": true}`) verifies all needed checksums exist in `chef-objectstore` (returning `503` if missing) and moves them from `sandboxed_checksums` to `checksums`. |
-| **Cookbooks** | `GET /organizations/:org/cookbooks`, `GET /organizations/:org/cookbooks/_latest`, `GET /organizations/:org/cookbooks/_recipes`, `GET /organizations/:org/cookbooks/:name`, `GET,PUT,DELETE /organizations/:org/cookbooks/:name/:version` | Supports `?num_versions=N` or `all`; enforces `frozen?` flag (`409 Conflict` unless `force=true`); validates all referenced file checksums exist in `checksums`; garbage-collects unreferenced checksums from `chef-objectstore` on delete. |
+| **Sandboxes** | `POST /organizations/:org/sandboxes`, `PUT /organizations/:org/sandboxes/:id` | `POST` checks existing `checksums` for org; returns `needs_upload: true` + presigned `PUT` URL for missing MD5s, `needs_upload: false` for existing. `PUT` (`{"is_completed": true}`) verifies all needed checksums exist in `microwave-objectstore` (returning `503` if missing) and moves them from `sandboxed_checksums` to `checksums`. |
+| **Cookbooks** | `GET /organizations/:org/cookbooks`, `GET /organizations/:org/cookbooks/_latest`, `GET /organizations/:org/cookbooks/_recipes`, `GET /organizations/:org/cookbooks/:name`, `GET,PUT,DELETE /organizations/:org/cookbooks/:name/:version` | Supports `?num_versions=N` or `all`; enforces `frozen?` flag (`409 Conflict` unless `force=true`); validates all referenced file checksums exist in `checksums`; garbage-collects unreferenced checksums from `microwave-objectstore` on delete. |
 | **Cookbook Artifacts** | `GET /organizations/:org/cookbook_artifacts`, `GET /organizations/:org/cookbook_artifacts/:name`, `GET,PUT,DELETE /organizations/:org/cookbook_artifacts/:name/:identifier` | Used by Policyfiles; keyed by 40-char SHA1 identifier rather than semver. |
 | **Policies & Policy Groups** | `GET /organizations/:org/policies`, `GET,POST,DELETE /organizations/:org/policies/:name`, `GET /organizations/:org/policies/:name/revisions`, `GET,DELETE /organizations/:org/policies/:name/revisions/:rev`, `GET /organizations/:org/policy_groups`, `GET,DELETE /organizations/:org/policy_groups/:group`, `GET,PUT,DELETE /organizations/:org/policy_groups/:group/policies/:name` | Full Policyfile revision and group association management. |
 | **Search** | `GET /organizations/:org/search`, `GET,POST /organizations/:org/search/:index` | `GET` returns full objects; `POST` performs partial search extracting requested attribute paths (`chef_deep_merge` / path extraction). |
 | **Universe & Validate** | `GET /organizations/:org/universe`, `ANY /organizations/:org/validate/*`, `GET /organizations/:org/:type/:name/_identifiers` | `/universe` returns Berkshelf-compatible dependency graph; `/validate/*` verifies signed headers and returns `{"requestor_name": ..., "requestor_type": ...}`; `/_identifiers` returns internal IDs for nodes. |
 | **Controls (Deprecated)** | `POST /organizations/:org/controls` | Returns `410 Gone` `{"error": "Resource gone, analytics is no longer supported by Chef Server"}`. |
-| **Data Collector** | `POST /organizations/:org/data-collector` | Validates `x-data-collector-token` or Chef signed request and forwards run/action payloads to configured external Automate/webhook endpoint. |
+| **Data Collector** | `POST /organizations/:org/data-collector` | Validates `x-data-collector-token` or a signed request and forwards run/action payloads to a configured external Automate/webhook endpoint. |
 
 ---
 
-### 6.5 Search & Indexing Subsystem (`chef-search`)
+### 6.5 Search & Indexing Subsystem (`microwave-search`)
 
-#### 1. Document Expansion (`chef_index_expand` port)
+#### 1. Document Expansion (port of upstream `chef_index_expand`)
 When any indexable object (`node`, `role`, `environment`, `client`, `data_bag_item`) is created or updated:
-- Prepare the indexable JSON representation (e.g., for nodes: merge `default`, `normal`, `override`, `automatic` attributes according to Chef deep-merge precedence, attach `recipe` and `role` expansions from `run_list`, plus `name`, `chef_environment`, `policy_name`, `policy_group`, `chef_type`, `X_CHEF_id_CHEF_X`, `X_CHEF_database_CHEF_X`, `X_CHEF_type_CHEF_X`).
+- Prepare the indexable JSON representation (e.g., for nodes: merge `default`, `normal`, `override`, `automatic` attributes according to the upstream deep-merge precedence, attach `recipe` and `role` expansions from `run_list`, plus `name`, `chef_environment`, `policy_name`, `policy_group`, `chef_type`, `X_CHEF_id_CHEF_X`, `X_CHEF_database_CHEF_X`, `X_CHEF_type_CHEF_X`).
 - Flatten nested keys with `_` and emit both full-path and leaf-key tokens separated by `__=__`:
   - `{"a": {"b": "foo"}}` -> `a_b__=__foo` and `b__=__foo`.
 - Special-case array/run_list values (`recipe[foo]`, `recipe[foo::default]`, `role[bar]`) exactly as `chef_index_expand.erl` does so `oc-chef-pedant/spec/api/search/search_spec.rb` and `word_break_spec.rb` pass.
 
-#### 2. Query Parser (`chef_lucene.peg` port)
+#### 2. Query Parser (port of upstream `chef_lucene.peg`)
 - Parse incoming `?q=...` query strings using a Rust PEG parser (`peg` or `pest` crate) matching `chef_lucene.peg`:
   - `*:*`, `field:term`, `field:"phrase"`, `field:[start TO end]`, `field:{start TO end}`, wildcards (`*`, `?`), boolean operators (`AND`, `&&`, `OR`, `||`, `NOT`, `!`, `+`, `-`), grouping `(...)`, boosting `^`, fuzzy `~`.
-  - Invalid queries throw `400 Bad Request` with Chef's exact malformed search error message.
+  - Invalid queries throw `400 Bad Request` with the exact upstream malformed search error message.
   - Missing `q` parameter defaults to `*:*`; empty `q=""` returns `400 Bad Request`.
 
 #### 3. Search Backends (`SearchBackend` trait)
 - **Embedded Default (Tantivy):**
   - Stores index in `{data_dir}/search/`.
-  - Schema fields: `id` (STRING, stored), `org_id` (STRING, fast/indexed), `obj_type` (STRING, indexed), `data_bag` (STRING, optional), `content` (TEXT with custom tokenizer preserving `__=__` and Chef word-break rules).
+  - Schema fields: `id` (STRING, stored), `org_id` (STRING, fast/indexed), `obj_type` (STRING, indexed), `data_bag` (STRING, optional), `content` (TEXT with custom tokenizer preserving `__=__` and upstream word-break rules).
   - Evaluates the parsed query AST directly into Tantivy queries (`TermQuery`, `PhraseQuery`, `RegexQuery`/`Wildcard`, `RangeQuery`, `BooleanQuery`), sorted by `X_CHEF_id_CHEF_X asc`, paginated by `start` and `rows` (default `start=0, rows=1000`).
 - **HA Backend (OpenSearch / Elasticsearch):**
   - Translates the rewritten query + `filter_query` (`+X_CHEF_database_CHEF_X:chef_{org_id} +X_CHEF_type_CHEF_X:{type}`) to OpenSearch `/_search` and `/_bulk` APIs, matching `chef_opensearch.erl`.
@@ -336,11 +358,11 @@ When any indexable object (`node`, `role`, `environment`, `client`, `data_bag_it
 #### 4. Indexing Queue Modes & Post-Filtering
 - Supports `inline` (immediate commit before HTTP response returns) and `batch` (coalesces concurrent writes over configurable `search_batch_max_wait` e.g. 20ms or `search_batch_max_size`, commits once, and unblocks all waiting HTTP handlers—matching `chef_index_batch.erl`).
 - **Database Hydration & Strict ACL Filtering:**
-  - Search returns matching object IDs -> `chef-store` bulk-fetches the objects -> if `strict_search_result_acls` is enabled, `chef-authz` filters out objects the requestor lacks `READ` permission on -> for `POST /search/:index` (partial search), extracts only the requested key-path map before serializing JSON.
+  - Search returns matching object IDs -> `microwave-store` bulk-fetches the objects -> if `strict_search_result_acls` is enabled, `microwave-authz` filters out objects the requestor lacks `READ` permission on -> for `POST /search/:index` (partial search), extracts only the requested key-path map before serializing JSON.
 
 ---
 
-### 6.6 Object Storage & Bookshelf (`chef-objectstore`)
+### 6.6 Object Storage & Bookshelf (`microwave-objectstore`)
 
 Cookbook files are content-addressed by `(org_id, md5_checksum)` under key `organization-{org_id}/checksum-{md5}`.
 
@@ -352,17 +374,17 @@ Cookbook files are content-addressed by `(org_id, md5_checksum)` under key `orga
 - **Built-in Default (Local Filesystem + Embedded `/bookshelf` HTTP Endpoint):**
   - Stores blobs in `{data_dir}/bookshelf/organization-{org_id}/checksum-{md5}` (writing to a temporary file first, verifying MD5 stream digest on the fly, and atomically renaming on completion).
   - Exposes `HEAD`, `GET`, `PUT`, `DELETE` on `/bookshelf/:bucket/organization-:org/checksum-:md5`.
-  - Verifies AWS SigV4 (both query-string presigned URLs and `Authorization: AWS4-HMAC-SHA256` headers) using `chef-crypto`'s SigV4 implementation (`bksw_wm_base.erl` / `bksw_sec.erl` parity).
+  - Verifies AWS SigV4 (both query-string presigned URLs and `Authorization: AWS4-HMAC-SHA256` headers) using `microwave-crypto`'s SigV4 implementation (`bksw_wm_base.erl` / `bksw_sec.erl` parity).
 - **External S3 / Garage Backend:**
   - Uses standard S3 SigV4 presigned URLs pointing to Garage / MinIO / AWS S3 (`external_url` for client-facing presigned URLs, `internal_url` for server-side `HEAD` verification and `DELETE` garbage collection).
   - Can also optionally run an embedded or sidecar **Garage** instance if configured.
 
 ---
 
-### 6.7 Cookbook Dependency Solver (`chef-depsolver`)
+### 6.7 Cookbook Dependency Solver (`microwave-depsolver`)
 
 Port of `src/oc_erchef/apps/depsolver`:
-- Supports Chef version strings (`MAJOR.MINOR` normalized to `MAJOR.MINOR.0`, and `MAJOR.MINOR.PATCH`) and constraint operators (`=`, `>`, `<`, `>=`, `<=`, `~>`).
+- Supports upstream cookbook version strings (`MAJOR.MINOR` normalized to `MAJOR.MINOR.0`, and `MAJOR.MINOR.PATCH`) and constraint operators (`=`, `>`, `<`, `>=`, `<=`, `~>`).
 - Given:
   1. All cookbook versions and their dependency metadata in the organization (`fetch_all_cookbook_version_dependencies`),
   2. The target environment's `cookbook_versions` constraints,
@@ -375,8 +397,8 @@ Port of `src/oc_erchef/apps/depsolver`:
 
 ### 6.8 Surrounding Products
 
-#### 1. `oc-id` Replacement (`chef-oauth`)
-Mounted under `/id`:
+#### 1. Identity/OAuth Service (`microwave-oauth`), compatible with the upstream `/id` surface
+Mounted under `/id` (the compatibility path):
 - **OAuth2 Provider (Doorkeeper-compatible):**
   - `GET /id/oauth/authorize`, `POST /id/oauth/authorize`, `DELETE /id/oauth/authorize`
   - `POST /id/oauth/token` (authorization_code and refresh_token grants)
@@ -386,15 +408,15 @@ Mounted under `/id`:
   - `GET /id/signin`, `POST /id/sessions`, `DELETE /id/signout`
   - `GET,PUT /id/profile`, `PUT /id/profile/password`, `GET /id/profile/email`, `POST /id/profile/regen_key`
   - `GET,POST,PUT /id/password-reset`
-- **REST API for OAuth Consumers (e.g., Chef Supermarket `omniauth-chef-oauth2`):**
+- **REST API for OAuth Consumers (e.g., the upstream `omniauth-chef-oauth2` integration):**
   - `GET /id/v1/me` (returns authenticated user profile + public key)
   - `GET /id/v1/me/organizations` (returns user's organizations)
   - `GET /id/v1/users/:id`
   - `GET /id/v1/status`
-- **Implementation:** Uses internal service calls to `chef-domain`/`chef-store` (no need to sign HTTP loopback requests with `webui_priv.pem`, though `webui_priv.pem` is still generated/maintained in secrets for external tooling compatibility).
+- **Implementation:** Uses internal service calls to `microwave-domain`/`microwave-store` (no need to sign HTTP loopback requests with `webui_priv.pem`, though `webui_priv.pem` is still generated/maintained in secrets for external tooling compatibility).
 
-#### 2. `chef-server-ctl` Replacement (`chef-ctl`)
-A binary named `chef-server-ctl` (and `microwave-ctl` alias) implementing the full operational command surface:
+#### 2. Control CLI (`microwave-ctl`), compatible with the `chef-server-ctl` command surface
+The primary binary is `microwave-ctl`; a `chef-server-ctl` compatibility alias is installed so existing automation keeps working. It implements the full operational command surface:
 - **Organization & User Management (formerly `wrap-knife.rb` / `knife-opc`):**
   - `user-list`, `user-show`, `user-create`, `user-delete`, `user-edit`
   - `org-list`, `org-show`, `org-create`, `org-delete`, `org-user-add`, `org-user-remove`
@@ -410,8 +432,8 @@ A binary named `chef-server-ctl` (and `microwave-ctl` alias) implementing the fu
 - **Secrets & Config:**
   - `show-secret`, `set-secret`, `remove-secret`, `rotate-credentials`, `rotate-all-credentials`, `rotate-shared-secrets`, `oc-id-show-app`, `check-config`, `reconfigure`
 - **Backup, Restore & Migration:**
-  - `backup` / `restore` (creates/restores a portable tarball of metadata, ACLs, keys, cookbook blobs, and `oc-id` apps).
-  - `migrate-from-legacy` (imports from a live legacy Chef Server API + Postgres/bookshelf dump or `knife-ec-backup` directory).
+  - `backup` / `restore` (creates/restores a portable tarball of metadata, ACLs, keys, cookbook blobs, and OAuth applications).
+  - `migrate-from-legacy` (imports from a live legacy upstream API + Postgres/bookshelf dump or `knife-ec-backup` directory).
 - **Diagnostics & Testing:**
   - `status`, `ha-status`, `version`, `gather-logs`, `psql` (opens `sqlite3` or `psql` shell against configured store), `test` (invokes `oc-chef-pedant` against localhost).
 
@@ -438,13 +460,13 @@ A binary named `chef-server-ctl` (and `microwave-ctl` alias) implementing the fu
 
 ---
 
-### 6.10 Verification Strategy (`oc-chef-pedant` + Rust Test Suite)
+### 6.10 Verification Strategy (upstream `oc-chef-pedant` + Rust Test Suite)
 
 1. **Unit & Property Tests (Rust):**
-   - `chef-crypto`: Test vectors from `mixlib-authentication` (Sign 1.0, 1.1, 1.3) and `chef_password_tests.erl`.
-   - `chef-search`: Port all `chef_index_expand` and `chef_lucene` EUnit test cases.
-   - `chef-depsolver`: Port all `depsolver_tests.erl` cases.
-   - `chef-store`: Run identical repository test suite against both in-memory SQLite and test PostgreSQL.
+   - `microwave-crypto`: Test vectors from `mixlib-authentication` (Sign 1.0, 1.1, 1.3) and `chef_password_tests.erl`.
+   - `microwave-search`: Port all `chef_index_expand` and `chef_lucene` EUnit test cases.
+   - `microwave-depsolver`: Port all `depsolver_tests.erl` cases.
+   - `microwave-store`: Run identical repository test suite against both in-memory SQLite and test PostgreSQL.
 2. **Integration Harness (`oc-chef-pedant`):**
    - Generate a `pedant_config.rb` pointing at the running `microwave-server` instance (seeded with `pivotal` superuser and test keys).
    - Run `bundle exec ./bin/oc-chef-pedant` incrementally by tag (`--focus-headers`, `--focus-keys`, `--focus-users`, `--focus-organizations`, `--focus-clients`, `--focus-nodes`, `--focus-roles`, `--focus-environments`, `--focus-data`, `--focus-sandboxes`, `--focus-cookbooks`, `--focus-cookbook_artifacts`, `--focus-policies`, `--focus-search`, `--focus-acls`, `--focus-depsolver`, `--focus-api_v1`, `--focus-oc_id`, `--focus-license`).
@@ -459,8 +481,8 @@ A binary named `chef-server-ctl` (and `microwave-ctl` alias) implementing the fu
 - **Architecture:** Modular monolith in Rust (Approach A) with trait-abstracted Metadata, Search, and Object stores.
 - **Default Backends:** SQLite (WAL) + Tantivy + Local `/bookshelf` (with first-class Garage/S3 support) targeting ~1,000 nodes out of the box.
 - **HA Backends:** PostgreSQL + OpenSearch + Garage/S3.
-- **Scope:** Full drop-in replacement including core Chef Infra API (`v0`–`v2`), `oc-id`, `chef-server-ctl`, `data-collector`, `/license`, and a legacy migration tool.
+- **Scope:** Full drop-in replacement including the core compatibility API (`v0`–`v2`), the `/id` OAuth surface, the `chef-server-ctl` command surface through `microwave-ctl`, `data-collector`, `/license`, and a legacy migration tool.
 
 ### Left to the Builder
 - Choice of exact Rust crates for HTTP/SQL/Templates (recommended defaults: `axum` + `tower`, `sqlx` or `rusqlite`+`tokio-postgres`, `tantivy`, `rsa`+`sha1`+`sha2`+`bcrypt`, `askama` or `maud` for `oc-id` HTML templates, `clap` for CLI).
-- Exact internal binary packaging (single multicall binary detecting `argv[0] == "chef-server-ctl"` vs. two binaries built from the same workspace).
+- Exact internal binary packaging (single multicall binary with a `chef-server-ctl` compatibility alias vs. two binaries built from the same workspace).

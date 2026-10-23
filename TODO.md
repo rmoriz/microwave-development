@@ -1,19 +1,20 @@
-# Microwave Server (Chef Infra Server in Rust) — Master Implementation TODO
+# Microwave Server — Master Implementation TODO
 
-This document tracks the end-to-end engineering checklist for reimplementing Chef Infra Server (`15.10.127`) and its surrounding ecosystem in Rust, as specified in [`docs/superpowers/specs/2026-10-24-chef-server-rust-rewrite-design.md`](docs/superpowers/specs/2026-10-24-chef-server-rust-rewrite-design.md).
+This document tracks the end-to-end engineering checklist for reimplementing the upstream Chef Infra Server API (`15.10.127`) and its surrounding compatibility surfaces in Rust, as specified in [`docs/superpowers/specs/2026-10-24-microwave-server-design.md`](docs/superpowers/specs/2026-10-24-microwave-server-design.md).
 
 ---
 
 ## Phase 1: Workspace Foundation, Configuration, Cryptography & Storage Core
 
-### 1.1 Cargo Workspace & Configuration (`chef-config`)
-- [ ] Initialize root `Cargo.toml` workspace with crates: `chef-config`, `chef-crypto`, `chef-domain`, `chef-authz`, `chef-store`, `chef-search`, `chef-objectstore`, `chef-depsolver`, `chef-api`, `chef-oauth`, `chef-ctl`, `chef-migrate`, and binary crates `microwave-server` and `chef-server-ctl`.
+### 1.1 Cargo Workspace & Configuration (`microwave-config`)
+- [ ] Initialize root `Cargo.toml` workspace with crates: `microwave-config`, `microwave-crypto`, `microwave-domain`, `microwave-authz`, `microwave-store`, `microwave-search`, `microwave-objectstore`, `microwave-depsolver`, `microwave-api`, `microwave-oauth`, `microwave-ctl`, `microwave-migrate`, and binary crates `microwave-server` and `microwave-ctl` (installing a `chef-server-ctl` compatibility alias).
+- [ ] Document and enforce the naming/trademark policy: no `chef-` prefix for project crates, binaries, modules, services, or public types; use upstream names only where required for compatibility.
 - [ ] Implement configuration schema (`Config`) supporting TOML config file, environment variable overrides, and basic `/etc/opscode/chef-server.rb` key-value extraction for drop-in compatibility.
 - [ ] Implement secrets management (`private-chef-secrets.json` reader/writer + environment variable fallback `CHEF_SECRETS_DATA`) for `pivotal` superuser key, `webui_pub`/`webui_priv`, `bookshelf` access/secret keys, `oc_id` secret_key_base, and `data_collector` token.
 - [ ] Implement automatic bootstrap initialization on first start: generate `pivotal` RSA keypair, `webui` RSA keypair, bookshelf HMAC credentials, and seed the `pivotal` superuser in the database.
 - [ ] Add structured logging (`tracing` + `tracing-subscriber`) and Prometheus/JSON metrics registry.
 
-### 1.2 Cryptography, Request Signing & Passwords (`chef-crypto`)
+### 1.2 Cryptography, Request Signing & Passwords (`microwave-crypto`)
 - [ ] Implement `X-Ops-Content-Hash` calculation and verification:
   - [ ] SHA-1 Base64 digest for Sign `1.0` and `1.1`.
   - [ ] SHA-256 Base64 digest for Sign `1.3`.
@@ -23,7 +24,7 @@ This document tracks the end-to-end engineering checklist for reimplementing Che
 - [ ] Implement timestamp skew validator (`X-Ops-Timestamp` ISO-8601 UTC parsing, configurable `authentication_skew` default 900s).
 - [ ] Implement Sign `1.0` & `1.1` verifier (RSA PKCS#1 v1.5 public-key decryption / raw verification against canonical string).
 - [ ] Implement Sign `1.3` verifier (`RSASSA-PKCS1-v1_5` with SHA-256 against canonical string including `X-Ops-Server-API-Version`).
-- [ ] Implement outbound `X-Ops-Sign` request signer (for `chef-ctl`, `chef-migrate`, and test harnesses).
+- [ ] Implement outbound `X-Ops-Sign` request signer (for `microwave-ctl`, `microwave-migrate`, and test harnesses).
 - [ ] Implement AWS SigV4 signer & verifier (both query-string presigned URLs `X-Amz-Algorithm=AWS4-HMAC-SHA256` and `Authorization: AWS4-HMAC-SHA256` headers) for Bookshelf/S3 compatibility.
 - [ ] Implement `chef_password` verifier and upgrader:
   - [ ] Standard `bcrypt` and `erlang-bcrypt-0.5.0`.
@@ -34,7 +35,7 @@ This document tracks the end-to-end engineering checklist for reimplementing Che
 - [ ] Implement `KeygenCache` background worker (pre-generating 2048-bit RSA PEM keypairs in a bounded channel) and health reporting for `/_status`.
 - [ ] Port unit test vectors from `mixlib-authentication`, `chef_authn`, and `chef_password_tests.erl`.
 
-### 1.3 Unified Database Schema & Store Providers (`chef-store`)
+### 1.3 Unified Database Schema & Store Providers (`microwave-store`)
 - [ ] Define `MetadataStore` and transactional unit-of-work traits covering all domain and authz operations.
 - [ ] Author unified SQL schema migrations compatible with both SQLite 3.35+ and PostgreSQL 14+:
   - [ ] `orgs`, `users`, `org_user_associations`, `org_user_invites`, `clients`, `actor_keys`.
@@ -48,7 +49,7 @@ This document tracks the end-to-end engineering checklist for reimplementing Che
 - [ ] Implement transparent `zlib`/gzip compression and decompression for `serialized_object` columns (`chef_db_compression.erl` parity).
 - [ ] Write dual-backend integration test macro running every repository test against both SQLite and PostgreSQL.
 
-### 1.4 Authorization & ACL Engine (`chef-authz`)
+### 1.4 Authorization & ACL Engine (`microwave-authz`)
 - [ ] Implement entity creation (`actor`, `group`, `object`, `container`) with 32-char hex `authz_id` generation.
 - [ ] Implement transitive permission check (`actor_has_permission_on` and bulk permission check `actor_has_bulk_permission_on`) using `WITH RECURSIVE` CTEs.
 - [ ] Implement default ACL inheritance when creating an object inside a container (copy container ACL + grant all 5 permissions to creator).
@@ -64,7 +65,7 @@ This document tracks the end-to-end engineering checklist for reimplementing Che
 
 ## Phase 2: Edge Middleware, System Endpoints & Identity/Org APIs
 
-### 2.1 HTTP Edge & Version Negotiation Middleware (`chef-api`)
+### 2.1 HTTP Edge & Version Negotiation Middleware (`microwave-api`)
 - [ ] Set up `axum` server with TLS support (`rustls`) and configurable HTTP/HTTPS listeners.
 - [ ] Implement `X-Request-Id` generation and response header injection.
 - [ ] Implement URI normalization and default-org path rewriter (preserving raw URI for signature verification).
@@ -140,7 +141,7 @@ This document tracks the end-to-end engineering checklist for reimplementing Che
   - [ ] `GET,PUT,DELETE /organizations/:org/data/:bag/:item` (handle `raw_data` wrapper vs unwrapped item JSON, validate `id` field match, index items under `{data_bag, bag_name}`).
 - [ ] Verify against `nodes/*`, `roles/*`, `environments/*`, `data_bag/*` pedant specs.
 
-### 3.2 Object Store, Bookshelf & Sandboxes (`chef-objectstore`)
+### 3.2 Object Store, Bookshelf & Sandboxes (`microwave-objectstore`)
 - [ ] Implement `ObjectStore` trait with two backends:
   - [ ] **Local Filesystem Backend:** atomic temp-file write + on-the-fly MD5 verification + rename into `{data_dir}/bookshelf/organization-{org_id}/checksum-{md5}`.
   - [ ] **S3 / Garage Backend:** SigV4 presigned URL generation (`PUT` with `content-md5` and `content-type: application/x-binary`; `GET`), `HEAD` object existence checks, and batch `DELETE`.
@@ -150,7 +151,7 @@ This document tracks the end-to-end engineering checklist for reimplementing Che
   - [ ] Check existing `checksums` table for the org; insert needed checksums into `sandboxed_checksums` and return `201 Created` with `sandbox_id`, `uri`, and per-checksum `{needs_upload, url}`.
 - [ ] Implement `PUT /organizations/:org/sandboxes/:id`:
   - [ ] Validate `{"is_completed": true}`.
-  - [ ] Verify all `needs_upload` checksums are present in `chef-objectstore` (return `503 Service Unavailable` listing missing checksums if any are absent).
+  - [ ] Verify all `needs_upload` checksums are present in `microwave-objectstore` (return `503 Service Unavailable` listing missing checksums if any are absent).
   - [ ] Promote checksums to `checksums` table and delete sandbox record.
 - [ ] Verify against `oc-chef-pedant/spec/api/sandboxes/complete_endpoint_spec.rb`.
 
@@ -176,8 +177,8 @@ This document tracks the end-to-end engineering checklist for reimplementing Che
   - [ ] Return Berkshelf-compatible dependency universe JSON across all cookbooks and versions in the org.
 - [ ] Verify against `cookbooks/*`, `cookbook_artifacts/*`, `policies/*`, and `universe_spec.rb`.
 
-### 3.4 Dependency Solver (`chef-depsolver`)
-- [ ] Implement Chef version parser (`MAJOR.MINOR` and `MAJOR.MINOR.PATCH`) and constraint operators (`=`, `>`, `<`, `>=`, `<=`, `~>`).
+### 3.4 Dependency Solver (`microwave-depsolver`)
+- [ ] Implement upstream cookbook version parser (`MAJOR.MINOR` and `MAJOR.MINOR.PATCH`) and constraint operators (`=`, `>`, `<`, `>=`, `<=`, `~>`).
 - [ ] Implement backtracking dependency graph solver with timeout (2,000ms) and detailed failure diagnostics (`non_existent_cookbooks`, `most_constrained_cookbooks`, `unable_to_solve`).
 - [ ] Implement `POST /organizations/:org/environments/:env/cookbook_versions` handler:
   - [ ] Parse `{"run_list": [...]}` recipes/cookbook constraints.
@@ -187,16 +188,16 @@ This document tracks the end-to-end engineering checklist for reimplementing Che
 
 ---
 
-## Phase 4: Search & Indexing Subsystem (`chef-search`)
+## Phase 4: Search & Indexing Subsystem (`microwave-search`)
 
-### 4.1 Document Expansion (`chef_index_expand` Port)
-- [ ] Implement Chef attribute deep-merge (`chef_deep_merge.erl` parity) for node attribute precedence (`default` < `normal` < `override` < `automatic`).
+### 4.1 Document Expansion (port of upstream `chef_index_expand`)
+- [ ] Implement upstream attribute deep-merge (`chef_deep_merge.erl` parity) for node attribute precedence (`default` < `normal` < `override` < `automatic`).
 - [ ] Implement JSON flattening/expansion into `content` tokens (`parent_child__=__value` + leaf `child__=__value`) with exact character escaping and word-break behavior.
 - [ ] Implement special field expansion for nodes (`recipe`, `recipes`, `role`, `roles`, `run_list`, `chef_environment`, `policy_name`, `policy_group`), roles, environments, clients, and data bag items.
 - [ ] Add metadata fields `X_CHEF_id_CHEF_X`, `X_CHEF_database_CHEF_X` (`chef_{org_id}`), `X_CHEF_type_CHEF_X`, and `data_bag`.
 - [ ] Port all EUnit tests from `src/oc_erchef/apps/chef_index/test/chef_index_expand_tests.erl`.
 
-### 4.2 Lucene Query Parser & Rewriter (`chef_lucene.peg` Port)
+### 4.2 Lucene Query Parser & Rewriter (port of upstream `chef_lucene.peg`)
 - [ ] Implement PEG grammar matching `chef_lucene.peg`:
   - [ ] `*:*`, field queries `field:term`, phrase queries `field:"foo bar"`, range queries `field:[a TO b]` / `field:{a TO b}` (including `*` bounds rewritten to `\ufff0`), wildcards `*` and `?`, fuzzy `~`, boost `^`, boolean `AND`/`&&`/`OR`/`||`/`NOT`/`!`/`+`/`-`, nested parentheses.
 - [ ] Implement URI percent-decoding and query parameter validation (`start` >= 0, `rows` >= 0, empty `q=""` -> `400 Bad Request`).
@@ -204,7 +205,7 @@ This document tracks the end-to-end engineering checklist for reimplementing Che
 
 ### 4.3 Search Backends & Endpoints
 - [ ] Implement **Tantivy Embedded Backend**:
-  - [ ] Custom tokenizer matching Chef's whitespace/symbol tokenization on `content`.
+  - [ ] Custom tokenizer matching the upstream whitespace/symbol tokenization on `content`.
   - [ ] Query AST to Tantivy query compiler (Term, Phrase, Wildcard/Regex, Range, Boolean, Boost).
   - [ ] Deterministic sorting by `X_CHEF_id_CHEF_X asc` and pagination (`start`, `rows`).
 - [ ] Implement **OpenSearch / Elasticsearch Backend**:
@@ -217,9 +218,9 @@ This document tracks the end-to-end engineering checklist for reimplementing Che
 
 ---
 
-## Phase 5: Surrounding Products (`oc-id`, `chef-server-ctl`, Data Collector, Migration)
+## Phase 5: Surrounding Compatibility Surfaces (`/id`, `chef-server-ctl`, Data Collector, Migration)
 
-### 5.1 `oc-id` OAuth2 & Identity Service (`chef-oauth`)
+### 5.1 `/id` OAuth2 & Identity Service (`microwave-oauth`)
 - [ ] Implement session management (signed/encrypted cookies compatible with `/id/signin` and `/id/signout`).
 - [ ] Implement OAuth2 Authorization Server endpoints:
   - [ ] `GET,POST,DELETE /id/oauth/authorize`
@@ -234,14 +235,15 @@ This document tracks the end-to-end engineering checklist for reimplementing Che
 - [ ] Create clean server-rendered HTML templates for sign-in, OAuth consent, profile, and application management.
 - [ ] Verify against `oc-chef-pedant/spec/api/oc_id_spec.rb`.
 
-### 5.2 Data Collector & Required Recipe (`chef-api`)
+### 5.2 Data Collector & Required Recipe (`microwave-api`)
 - [ ] Implement `POST /organizations/:org/data-collector` endpoint (token & signature validation, upstream HTTP forwarding pool).
 - [ ] Implement optional `oc_chef_action` mutation webhook notifications to data collector.
 - [ ] Implement `required_recipe` support if enabled in config (`required_recipe_spec.rb`).
 - [ ] Verify against `compliance_proxy_spec.rb` and `required_recipe_spec.rb`.
 
-### 5.3 `chef-server-ctl` CLI (`chef-ctl`)
+### 5.3 Control CLI (`microwave-ctl`, `chef-server-ctl` compatibility alias)
 - [ ] Implement CLI argument parser (`clap`) matching `chef-server-ctl` command and flag syntax:
+  - [ ] Install `chef-server-ctl` as a compatibility alias to `microwave-ctl`.
   - [ ] Org & User commands: `user-list`, `user-show`, `user-create`, `user-delete`, `user-edit`, `org-list`, `org-show`, `org-create`, `org-delete`, `org-user-add`, `org-user-remove`, `password`.
   - [ ] Server Admin commands: `grant-server-admin-permissions`, `remove-server-admin-permissions`, `list-server-admins`.
   - [ ] Key Rotation commands: `add-client-key`, `add-user-key`, `list-client-keys`, `list-user-keys`, `delete-client-key`, `delete-user-key`.
@@ -249,7 +251,7 @@ This document tracks the end-to-end engineering checklist for reimplementing Che
   - [ ] Secrets & Config commands: `show-secret`, `set-secret`, `remove-secret`, `rotate-credentials`, `rotate-all-credentials`, `rotate-shared-secrets`, `oc-id-show-app`, `check-config`, `reconfigure`.
   - [ ] Lifecycle & Diagnostics: `status`, `ha-status`, `version`, `psql`, `gather-logs`, `backup`, `restore`, `test` (runs `oc-chef-pedant`).
 
-### 5.4 Legacy Data Migration Tool (`chef-migrate`)
+### 5.4 Legacy Data Migration Tool (`microwave-migrate`)
 - [ ] Implement **Mode 1: Archive / Backup Importer (`knife-ec-backup` & SQL dump format):**
   - [ ] Import users (including legacy password hashes and salts), organizations, associations, invites, and server-admins.
   - [ ] Import clients and multi-key records (`actor_keys`).
@@ -257,7 +259,7 @@ This document tracks the end-to-end engineering checklist for reimplementing Che
   - [ ] Import nodes, roles, environments, data bags, cookbooks (and bookshelf blobs), cookbook artifacts, policies, and policy groups.
   - [ ] Import `oc-id` OAuth applications.
 - [ ] Implement **Mode 2: Live API Crawler:**
-  - [ ] Crawl a running Chef Server using `pivotal` credentials to pull all orgs, users, ACLs, cookbooks/blobs, policies, nodes, roles, environments, and data bags into the new server.
+  - [ ] Crawl a running upstream server using `pivotal` credentials to pull all orgs, users, ACLs, cookbooks/blobs, policies, nodes, roles, environments, and data bags into the new server.
 - [ ] Trigger full search reindex and verify object counts and checksum integrity post-migration.
 
 ### 5.5 Full Pedant Verification, HA & Performance Benchmarks
