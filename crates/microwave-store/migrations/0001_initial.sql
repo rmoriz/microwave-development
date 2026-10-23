@@ -182,6 +182,7 @@ CREATE TABLE IF NOT EXISTS data_bags (
     authz_id TEXT NOT NULL UNIQUE REFERENCES authz_entities(authz_id) ON DELETE CASCADE,
     org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
+    serialized_object BLOB,
     last_updated_by TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,

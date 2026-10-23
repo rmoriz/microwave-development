@@ -2,7 +2,9 @@
 
 pub mod clients;
 pub mod error;
+pub mod helpers;
 pub mod middleware;
+pub mod nodes;
 pub mod organizations;
 pub mod state;
 pub mod users;
@@ -23,6 +25,7 @@ pub fn router(state: AppState) -> Router {
         .merge(users::routes())
         .merge(organizations::routes())
         .merge(clients::routes())
+        .merge(nodes::routes())
         .fallback(not_found)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

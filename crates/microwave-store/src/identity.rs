@@ -510,6 +510,7 @@ impl SqliteStore {
         if changed == 0 {
             return Err(StoreError::NotFound(format!("user {username}")));
         }
+        drop(connection);
         self.find_user(username)?
             .ok_or_else(|| StoreError::NotFound(format!("user {username}")))
     }
@@ -537,7 +538,7 @@ impl SqliteStore {
     }
 }
 
-fn new_id() -> String {
+pub(crate) fn new_id() -> String {
     Uuid::new_v4().simple().to_string()
 }
 
@@ -545,7 +546,7 @@ pub(crate) fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
-fn conflict(error: rusqlite::Error, message: String) -> StoreError {
+pub(crate) fn conflict(error: rusqlite::Error, message: String) -> StoreError {
     if let rusqlite::Error::SqliteFailure(inner, _) = &error {
         if inner.code == rusqlite::ErrorCode::ConstraintViolation {
             return StoreError::Conflict(message);

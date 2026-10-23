@@ -53,6 +53,13 @@ fn apply_default_policy(
         containers.push(store.create_container_for_org(&org.id, name)?);
     }
 
+    store.create_environment(
+        &org.id,
+        "_default",
+        r#"{"name":"_default","description":"The default Chef environment","json_class":"Chef::Environment","chef_type":"environment","cookbook_versions":{},"default_attributes":{},"override_attributes":{}}"#,
+        creator_authz_id,
+    )?;
+
     let mut groups = Vec::with_capacity(DEFAULT_GROUPS.len());
     for name in DEFAULT_GROUPS {
         groups.push(store.create_group_for_org(&org.id, name)?);
