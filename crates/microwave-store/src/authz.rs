@@ -2,6 +2,20 @@ use crate::sqlite::{SqliteStore, StoreError};
 use rusqlite::params;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Container {
+    pub id: String,
+    pub authz_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Group {
+    pub id: String,
+    pub authz_id: String,
+    pub name: String,
+}
+
 /// The five Chef permissions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Permission {
@@ -13,6 +27,14 @@ pub enum Permission {
 }
 
 impl Permission {
+    pub const ALL: [Permission; 5] = [
+        Permission::Create,
+        Permission::Read,
+        Permission::Update,
+        Permission::Delete,
+        Permission::Grant,
+    ];
+
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Create => "create",
@@ -39,6 +61,116 @@ impl SqliteStore {
 
     pub fn create_container(&self) -> Result<String, StoreError> {
         self.create_authz_entity("container")
+    }
+
+    pub fn create_container_for_org(
+        &self,
+        org_id: &str,
+        name: &str,
+    ) -> Result<Container, StoreError> {
+        let id = Uuid::new_v4().simple().to_string();
+        let authz_id = Uuid::new_v4().simple().to_string();
+        let now = crate::identity::now();
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO authz_entities (authz_id, entity_type, org_id, created_at)
+             VALUES (?1, 'container', ?2, ?3)",
+            params![authz_id, org_id, now],
+        )?;
+        transaction.execute(
+            "INSERT INTO containers (id, org_id, authz_id, name, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+            params![id, org_id, authz_id, name, now],
+        )?;
+        transaction.commit()?;
+        Ok(Container {
+            id,
+            authz_id,
+            name: name.into(),
+        })
+    }
+
+    pub fn create_group_for_org(&self, org_id: &str, name: &str) -> Result<Group, StoreError> {
+        let id = Uuid::new_v4().simple().to_string();
+        let authz_id = Uuid::new_v4().simple().to_string();
+        let now = crate::identity::now();
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO authz_entities (authz_id, entity_type, org_id, created_at)
+             VALUES (?1, 'group', ?2, ?3)",
+            params![authz_id, org_id, now],
+        )?;
+        transaction.execute(
+            "INSERT INTO groups (id, org_id, authz_id, name, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+            params![id, org_id, authz_id, name, now],
+        )?;
+        transaction.commit()?;
+        Ok(Group {
+            id,
+            authz_id,
+            name: name.into(),
+        })
+    }
+
+    pub fn find_container(
+        &self,
+        org_id: &str,
+        name: &str,
+    ) -> Result<Option<Container>, StoreError> {
+        use rusqlite::OptionalExtension;
+        let connection = self.connection();
+        Ok(connection
+            .query_row(
+                "SELECT id, authz_id, name FROM containers WHERE org_id = ?1 AND name = ?2",
+                params![org_id, name],
+                |row| {
+                    Ok(Container {
+                        id: row.get(0)?,
+                        authz_id: row.get(1)?,
+                        name: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    pub fn find_group(&self, org_id: &str, name: &str) -> Result<Option<Group>, StoreError> {
+        use rusqlite::OptionalExtension;
+        let connection = self.connection();
+        Ok(connection
+            .query_row(
+                "SELECT id, authz_id, name FROM groups WHERE org_id = ?1 AND name = ?2",
+                params![org_id, name],
+                |row| {
+                    Ok(Group {
+                        id: row.get(0)?,
+                        authz_id: row.get(1)?,
+                        name: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    pub fn associate_user_org(&self, org_id: &str, user_id: &str) -> Result<(), StoreError> {
+        let now = crate::identity::now();
+        let connection = self.connection();
+        connection.execute(
+            "INSERT OR IGNORE INTO org_user_associations
+             (org_id, user_id, last_updated_by, created_at, updated_at)
+             VALUES (?1, ?2, '', ?3, ?3)",
+            params![org_id, user_id, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_org(&self, org_id: &str) -> Result<(), StoreError> {
+        let connection = self.connection();
+        connection.execute("DELETE FROM orgs WHERE id = ?1", params![org_id])?;
+        Ok(())
     }
 
     fn create_authz_entity(&self, entity_type: &str) -> Result<String, StoreError> {

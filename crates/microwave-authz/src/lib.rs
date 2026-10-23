@@ -2,7 +2,10 @@
 
 use microwave_store::{SqliteStore, StoreError};
 
+pub mod org;
+
 pub use microwave_store::Permission;
+pub use org::{create_organization, DEFAULT_CONTAINERS, DEFAULT_GROUPS};
 
 /// Check whether an actor has a permission on a target.
 pub fn check(
