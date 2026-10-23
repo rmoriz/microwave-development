@@ -1,0 +1,15 @@
+[package]
+name = "microwave-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+clap.workspace = true
+serde_json.workspace = true
+microwave-config = { path = "../../crates/microwave-config" }
+
+[dev-dependencies]
+assert_cmd.workspace = true
+serde_json.workspace = true

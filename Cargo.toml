@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/microwave-config",
     "crates/microwave-crypto",
+    "bin/microwave-server",
 ]
 
 [workspace.package]
