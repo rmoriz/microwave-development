@@ -2,6 +2,7 @@
 
 pub mod error;
 pub mod middleware;
+pub mod organizations;
 pub mod state;
 pub mod users;
 
@@ -19,6 +20,7 @@ pub fn router(state: AppState) -> Router {
         .route("/server_api_version", get(server_api_version))
         .route("/license", get(license))
         .merge(users::routes())
+        .merge(organizations::routes())
         .fallback(not_found)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

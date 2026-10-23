@@ -129,6 +129,29 @@ impl SqliteStore {
             .optional()?)
     }
 
+    pub fn list_orgs(&self) -> Result<Vec<Org>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, authz_id, name, full_name, created_at, updated_at
+             FROM orgs ORDER BY name",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(Org {
+                id: row.get(0)?,
+                authz_id: row.get(1)?,
+                name: row.get(2)?,
+                full_name: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })?;
+        let mut orgs = Vec::new();
+        for row in rows {
+            orgs.push(row?);
+        }
+        Ok(orgs)
+    }
+
     pub fn create_user(
         &self,
         username: &str,
