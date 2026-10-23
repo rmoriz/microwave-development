@@ -336,7 +336,7 @@ fn new_id() -> String {
     Uuid::new_v4().simple().to_string()
 }
 
-fn now() -> String {
+pub(crate) fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 

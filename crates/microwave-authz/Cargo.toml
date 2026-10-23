@@ -1,0 +1,10 @@
+[package]
+name = "microwave-authz"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+microwave-store = { path = "../microwave-store" }
+thiserror.workspace = true

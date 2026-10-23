@@ -4,6 +4,7 @@ members = [
     "crates/microwave-config",
     "crates/microwave-crypto",
     "crates/microwave-store",
+    "crates/microwave-authz",
     "bin/microwave-server",
 ]
 
