@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/microwave-config",
+    "crates/microwave-crypto",
 ]
 
 [workspace.package]
@@ -15,6 +16,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 thiserror = "2"
+chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 rsa = { version = "0.9", features = ["sha2"] }
 sha1 = "0.10"
