@@ -64,6 +64,15 @@ pub struct ActorKey {
     pub expires_at: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Principal {
+    pub actor_id: String,
+    pub authz_id: String,
+    pub name: String,
+    pub actor_type: ActorType,
+    pub org_id: Option<String>,
+}
+
 impl SqliteStore {
     pub fn create_org(&self, name: &str, full_name: &str) -> Result<Org, StoreError> {
         let id = new_id();
@@ -329,6 +338,42 @@ impl SqliteStore {
             keys.push(row?);
         }
         Ok(keys)
+    }
+
+    pub fn find_principals(
+        &self,
+        org_id: Option<&str>,
+        name: &str,
+    ) -> Result<Vec<Principal>, StoreError> {
+        let mut principals = Vec::new();
+
+        if let Some(org_id) = org_id {
+            if let Some(client) = self.find_client(org_id, name)? {
+                principals.push(Principal {
+                    actor_id: client.id,
+                    authz_id: client.authz_id,
+                    name: client.name,
+                    actor_type: ActorType::Client,
+                    org_id: Some(org_id.to_string()),
+                });
+            }
+        }
+
+        if let Some(user) = self.find_user(name)? {
+            principals.push(Principal {
+                actor_id: user.id,
+                authz_id: user.authz_id,
+                name: user.username,
+                actor_type: ActorType::User,
+                org_id: org_id.map(ToString::to_string),
+            });
+        }
+
+        Ok(principals)
+    }
+
+    pub fn find_principal_keys(&self, principal: &Principal) -> Result<Vec<ActorKey>, StoreError> {
+        self.find_actor_keys(&principal.actor_id, principal.actor_type)
     }
 }
 
