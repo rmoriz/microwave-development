@@ -17,7 +17,12 @@ pub async fn authenticate(
         Err(value) => return version_error(&value),
     };
 
-    if path == "/_status" || path == "/server_api_version" || path.starts_with("/bookshelf/") {
+    if path == "/_status"
+        || path == "/server_api_version"
+        || path == "/id"
+        || path.starts_with("/id/")
+        || path.starts_with("/bookshelf/")
+    {
         let response = next.run(request).await;
         return with_version_header(
             response,

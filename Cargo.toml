@@ -6,6 +6,7 @@ members = [
     "crates/microwave-store",
     "crates/microwave-authz",
     "crates/microwave-api",
+    "crates/microwave-oauth",
     "crates/microwave-objectstore",
     "crates/microwave-ctl",
     "bin/microwave-server",
