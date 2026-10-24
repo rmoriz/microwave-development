@@ -10,7 +10,8 @@ The repository contains a working vertical slice:
 - **Authentication** — `X-Ops-Sign` 1.0/1.1/1.3 canonicalization, RSA signing/verification, key reassembly, and legacy password hash compatibility.
 - **Storage** — SQLite schema for identity, ACLs, containers, groups, nodes, roles, environments, data bags, sandboxes, and cookbooks.
 - **Authorization** — recursive ACL/group checks, cycle rejection, the default organization policy, and ACL read/write endpoints with granular `users`/`clients` responses.
-- **HTTP API** — `/_status`, `/server_api_version`, `/license`, users, organizations, clients, principals, key management, nodes, environments, roles, data bags, sandboxes, bookshelf uploads, cookbooks, cookbook resolution, and search (node/role/environment/client/data-bag indexes with a query subset and partial search).
+- **HTTP API** — `/_status`, `/server_api_version`, `/license`, users, organizations, clients, principals, key management, organization memberships/invitations, nodes, environments, roles, data bags, sandboxes, bookshelf uploads, cookbooks, cookbook resolution, policyfiles/policy groups, ACL endpoints, and search (node/role/environment/client/data-bag indexes with a query subset and partial search).
+- **Operations CLI** — `microwave-ctl` with a `chef-server-ctl` compatibility binary: user/org administration, org membership, password reset, status, local backup/restore, and a clear not-implemented response for reindex.
 - **Object storage** — local content-addressed store with signed upload/download URLs.
 - **Server** — `microwave-server serve` bootstraps a `pivotal` superuser and listens on the configured address.
 
@@ -21,7 +22,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The workspace currently has 92 passing tests.
+The workspace currently has 127 passing tests.
 
 ## Run Locally
 
@@ -34,8 +35,8 @@ The first run creates `./data/pivotal.pem` (superuser private key), `./data/pivo
 
 ## Not Yet Implemented
 
-- Organization-membership/invitation and policyfile endpoints.
-- `oc-id` OAuth, `chef-server-ctl`, and the migration tool.
+- `oc-id` OAuth and the legacy migration tool.
+- The remaining `chef-server-ctl` command surface (key rotation, secrets, maintenance, HA, pedant runner, full tar backup format).
 - PostgreSQL, OpenSearch, and S3/Garage backends.
 - Full dependency-constraint solving; the current resolver selects the latest version per cookbook.
 - S3 SigV4 compatibility; the built-in local object store uses HMAC-signed URLs.
