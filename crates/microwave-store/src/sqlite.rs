@@ -14,6 +14,8 @@ pub enum StoreError {
     NotFound(String),
     #[error("invalid value: {0}")]
     Invalid(String),
+    #[error("forbidden: {0}")]
+    Forbidden(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }

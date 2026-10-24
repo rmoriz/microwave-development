@@ -143,7 +143,7 @@ async fn delete_user(
     Ok(Json(json!({})))
 }
 
-fn user_json(state: &AppState, user: &User) -> Result<Value, ApiError> {
+pub(crate) fn user_json(state: &AppState, user: &User) -> Result<Value, ApiError> {
     let keys = state
         .store
         .find_actor_keys(&user.id, ActorType::User)

@@ -222,6 +222,20 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn remove_group_member(
+        &self,
+        group_authz_id: &str,
+        actor_authz_id: &str,
+    ) -> Result<(), StoreError> {
+        let connection = self.connection();
+        connection.execute(
+            "DELETE FROM authz_group_actors
+             WHERE group_authz_id = ?1 AND actor_authz_id = ?2",
+            params![group_authz_id, actor_authz_id],
+        )?;
+        Ok(())
+    }
+
     pub fn add_group_child(
         &self,
         parent_group_authz_id: &str,
