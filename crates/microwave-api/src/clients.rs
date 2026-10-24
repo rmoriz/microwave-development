@@ -83,22 +83,24 @@ async fn create_client(
         .create_client_with_acl(&org.id, &name, validator, admin, creator)
         .map_err(client_error)?;
 
-    let generate_key = public_key.is_none();
-    let (response_public_key, private_key) = if let Some(public_key) = public_key {
+    // Upstream API v0 always provisions a default key when the request does not
+    // supply one. From v1 onward a key is only created when `create_key` or
+    // `public_key` asks for it; otherwise the client exists without a key.
+    let key_material = if let Some(public_key) = public_key {
         state
             .store
             .add_actor_key(&client.id, ActorType::Client, "default", &public_key)
             .map_err(ApiError::from)?;
-        (Some(public_key), None)
-    } else if generate_key {
+        Some((public_key, None))
+    } else if api_version.0 == 0 || create_key {
         let (private_key, public_key) = generate_rsa_keypair().map_err(|_| ApiError::internal())?;
         state
             .store
             .add_actor_key(&client.id, ActorType::Client, "default", &public_key)
             .map_err(ApiError::from)?;
-        (Some(public_key), Some(private_key))
+        Some((public_key, Some(private_key)))
     } else {
-        (None, None)
+        None
     };
 
     if let Some(group) = state
@@ -116,40 +118,35 @@ async fn create_client(
 
     let base = base_url(&headers, &state);
     let uri = format!("{base}/organizations/{}/clients/{}", org.name, name);
-    let response = if let Some(private_key) = private_key {
-        let key_uri = format!("{uri}/keys/default");
-        if api_version.0 == 0 {
-            json!({
+    let response = if api_version.0 == 0 {
+        match key_material {
+            Some((public_key, Some(private_key))) => json!({
                 "uri": uri,
-                "public_key": response_public_key,
+                "public_key": public_key,
                 "private_key": private_key,
-            })
-        } else {
-            let mut value = json!({
+            }),
+            Some((public_key, None)) => json!({
                 "uri": uri,
-                "chef_key": {
-                    "uri": key_uri,
-                    "name": "default",
-                    "private_key": private_key,
-                    "public_key": response_public_key,
-                    "expiration_date": "infinity"
-                }
-            });
-            if !create_key {
-                // The implicit default-key path is also exposed as
-                // top-level key fields for clients that predate chef_key.
-                value["public_key"] = json!(response_public_key);
-                value["private_key"] = value["chef_key"]["private_key"].clone();
-            }
-            value
+                "public_key": public_key,
+            }),
+            None => json!({ "uri": uri }),
         }
-    } else if let Some(public_key) = response_public_key {
-        json!({
-            "uri": uri,
-            "public_key": public_key,
-        })
     } else {
-        json!({ "uri": uri })
+        match key_material {
+            Some((public_key, private_key)) => {
+                let mut chef_key = json!({
+                    "uri": format!("{uri}/keys/default"),
+                    "name": "default",
+                    "public_key": public_key,
+                    "expiration_date": "infinity",
+                });
+                if let Some(private_key) = private_key {
+                    chef_key["private_key"] = json!(private_key);
+                }
+                json!({ "uri": uri, "chef_key": chef_key })
+            }
+            None => json!({ "uri": uri }),
+        }
     };
 
     Ok((StatusCode::CREATED, Json(response)))
@@ -158,6 +155,7 @@ async fn create_client(
 async fn get_client(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    Extension(api_version): Extension<ApiVersion>,
     Path((_organization, client_name)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
@@ -165,12 +163,19 @@ async fn get_client(
     let client = find_client(&state, org, &client_name)?;
     authorize_client(&state, &auth, &client, microwave_store::Permission::Read)?;
     let base = base_url(&headers, &state);
-    Ok(Json(client_json(&state, org, &client, &base)?))
+    Ok(Json(client_json(
+        &state,
+        org,
+        &client,
+        &base,
+        api_version.0 == 0,
+    )?))
 }
 
 async fn update_client(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    Extension(api_version): Extension<ApiVersion>,
     Path((_organization, client_name)): Path<(String, String)>,
     headers: HeaderMap,
     Json(body): Json<Value>,
@@ -184,6 +189,27 @@ async fn update_client(
     if body.get("create_key").is_some() {
         return Err(ApiError::bad_request("Field 'create_key' is invalid"));
     }
+    if api_version.0 >= 1 {
+        // Key management moved to /keys in API v1 and is not accepted on the
+        // client resource itself.
+        if body.get("public_key").is_some() {
+            return Err(ApiError::bad_request("Field 'public_key' is invalid"));
+        }
+        if body.get("private_key").is_some() {
+            return Err(ApiError::bad_request("Field 'private_key' is invalid"));
+        }
+    }
+
+    // A normal client may manage itself, but must not be able to promote
+    // itself to a validator.
+    if validator == Some(true)
+        && !client.validator
+        && auth.principal.actor_type == ActorType::Client
+        && auth.principal.name == client.name
+    {
+        return Err(ApiError::forbidden());
+    }
+
     let private_key_flag = match body.get("private_key") {
         None => false,
         Some(Value::Bool(value)) => *value,
@@ -226,7 +252,7 @@ async fn update_client(
     }
 
     let base = base_url(&headers, &state);
-    let mut response = client_json(&state, org, &client, &base)?;
+    let mut response = client_json(&state, org, &client, &base, api_version.0 == 0)?;
     response["private_key"] = match private_key {
         Some(private_key) => json!(private_key),
         None => json!(false),
@@ -242,6 +268,7 @@ async fn update_client(
 async fn delete_client(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    Extension(api_version): Extension<ApiVersion>,
     Path((_organization, client_name)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
@@ -249,7 +276,7 @@ async fn delete_client(
     let client = find_client(&state, org, &client_name)?;
     authorize_client(&state, &auth, &client, microwave_store::Permission::Delete)?;
     let base = base_url(&headers, &state);
-    let response = client_json(&state, org, &client, &base)?;
+    let response = client_json(&state, org, &client, &base, api_version.0 == 0)?;
     state
         .store
         .delete_client(&org.id, &client_name)
@@ -430,16 +457,8 @@ fn client_json(
     org: &Org,
     client: &Client,
     _base: &str,
+    include_public_key: bool,
 ) -> Result<Value, ApiError> {
-    let keys = state
-        .store
-        .find_actor_keys(&client.id, ActorType::Client)
-        .map_err(ApiError::from)?;
-    let public_key = keys
-        .iter()
-        .find(|key| key.key_name == "default")
-        .or_else(|| keys.first())
-        .map(|key| key.public_key.as_str());
     let mut value = json!({
         "name": client.name,
         "clientname": client.name,
@@ -448,8 +467,19 @@ fn client_json(
         "json_class": "Chef::ApiClient",
         "chef_type": "client",
     });
-    if let Some(public_key) = public_key {
-        value["public_key"] = json!(public_key);
+    if include_public_key {
+        let keys = state
+            .store
+            .find_actor_keys(&client.id, ActorType::Client)
+            .map_err(ApiError::from)?;
+        let public_key = keys
+            .iter()
+            .find(|key| key.key_name == "default")
+            .or_else(|| keys.first())
+            .map(|key| key.public_key.as_str());
+        if let Some(public_key) = public_key {
+            value["public_key"] = json!(public_key);
+        }
     }
     Ok(value)
 }

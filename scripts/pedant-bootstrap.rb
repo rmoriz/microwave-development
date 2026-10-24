@@ -154,13 +154,19 @@ keys[:admin_client] = create_client(ADMIN_CLIENT)
 keys[:non_admin_client] = create_client(NON_ADMIN_CLIENT)
 # The "bad" client is deliberately not created on the server: pedant uses it
 # only as a bogus signer and expects it to be absent from GET /clients.
-keys[:admin_user] = create_user(ADMIN_USER)
+#
+# The org admin user is also left to pedant (create_me: true below). Pedant's
+# requestor setup drops the `admin`/`associate` flags for pre-existing users,
+# so pre-seeding the admin user would make its group-membership expectations
+# disagree with the (correct) server state.
 keys[:non_admin_user] = create_user(NON_ADMIN_USER)
 keys[:bad_user] = create_user(BAD_USER)
 
 # 4. Association is left to pedant's requestor setup (make_owner/make_user),
 #    which knows whether each configured user should be associated.
-# 5. Populate the default groups through the public groups API.
+# 5. Populate the default groups through the public groups API.  The admin
+#    user does not exist yet; pedant's make_owner adds it to admins,
+#    billing-admins and users during requestor setup.
 def update_group(group_name, users:, clients:, groups: [])
   expect!(
     "PUT", "/organizations/#{ORG}/groups/#{group_name}",
@@ -176,9 +182,9 @@ def update_group(group_name, users:, clients:, groups: [])
   )
 end
 
-update_group("admins", users: [SUPERUSER_NAME, ADMIN_USER], clients: [])
-update_group("billing-admins", users: [ADMIN_USER], clients: [])
-update_group("users", users: [SUPERUSER_NAME, ADMIN_USER, NON_ADMIN_USER], clients: [])
+update_group("admins", users: [SUPERUSER_NAME], clients: [])
+update_group("billing-admins", users: [], clients: [])
+update_group("users", users: [SUPERUSER_NAME, NON_ADMIN_USER], clients: [])
 update_group("clients", users: [], clients: [ADMIN_CLIENT, NON_ADMIN_CLIENT, VALIDATOR])
 # 6. Write private keys where pedant expects them.
 key_paths = {}
@@ -233,10 +239,9 @@ config = <<~RUBY
     users: {
       admin: {
         name: #{ADMIN_USER.inspect},
-        create_me: false,
+        create_me: true,
         associate: true,
         admin: true,
-        key_file: #{key_paths[:admin_user].inspect},
       },
       non_admin: {
         name: #{NON_ADMIN_USER.inspect},
