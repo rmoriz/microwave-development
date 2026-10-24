@@ -77,15 +77,25 @@ async fn create_environment(app: &Router, name: &str, cookbook_versions: Value) 
 }
 
 async fn solve(app: &Router, environment: &str, run_list: Value) -> (StatusCode, Value) {
+    solve_with_api_version(app, environment, run_list, "2").await
+}
+
+async fn solve_with_api_version(
+    app: &Router,
+    environment: &str,
+    run_list: Value,
+    api_version: &str,
+) -> (StatusCode, Value) {
     let body = json!({ "run_list": run_list });
     let response = app
         .clone()
-        .oneshot(support::signed_request(
+        .oneshot(support::signed_request_with_api_version(
             "POST",
             &format!("/organizations/acme/environments/{environment}/cookbook_versions"),
             &serde_json::to_vec(&body).unwrap(),
             SignVersion::V1_3,
             "pivotal",
+            api_version,
         ))
         .await
         .unwrap();
@@ -166,7 +176,8 @@ async fn resolves_dependencies_and_attaches_presigned_urls() {
     put_cookbook(&app, "lib", "1.0.0", json!({})).await;
     put_cookbook(&app, "lib", "2.0.0", json!({})).await;
 
-    let (status, body) = solve(&app, "_default", json!(["recipe[app::default]"])).await;
+    let (status, body) =
+        solve_with_api_version(&app, "_default", json!(["recipe[app::default]"]), "1").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["app"]["version"], "2.0.0");
     assert_eq!(body["lib"]["version"], "2.0.0");
@@ -174,6 +185,39 @@ async fn resolves_dependencies_and_attaches_presigned_urls() {
     assert!(body["app"]["metadata"].get("attributes").is_none());
     assert!(body["app"]["metadata"].get("long_description").is_none());
     let url = body["app"]["recipes"][0]["url"].as_str().unwrap();
+    assert!(url.contains("/bookshelf/organizations/"));
+    assert!(url.contains("/checksums/"));
+}
+
+#[tokio::test]
+async fn returns_v2_all_files_in_solve_responses() {
+    let app = setup().await;
+    let checksum = upload_hello(&app).await;
+
+    let manifest = json!({
+        "name": "app",
+        "version": "2.0.0",
+        "metadata": { "version": "2.0.0" },
+        "recipes": [{
+            "name": "default.rb",
+            "path": "recipes/default.rb",
+            "checksum": checksum,
+            "specificity": "default",
+        }],
+    });
+    put_manifest(&app, "app", "2.0.0", &manifest).await;
+
+    let (status, body) = solve(&app, "_default", json!(["recipe[app::default]"])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["app"]["version"], "2.0.0");
+    assert_eq!(body["app"]["cookbook_name"], "app");
+    assert_eq!(body["app"]["name"], "app-2.0.0");
+    assert!(body["app"].get("recipes").is_none());
+    let files = body["app"]["all_files"].as_array().unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0]["name"], "recipes/default.rb");
+    assert_eq!(files[0]["path"], "recipes/default.rb");
+    let url = files[0]["url"].as_str().unwrap();
     assert!(url.contains("/bookshelf/organizations/"));
     assert!(url.contains("/checksums/"));
 }
