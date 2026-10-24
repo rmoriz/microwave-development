@@ -1,5 +1,5 @@
 use crate::sqlite::{SqliteStore, StoreError};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension, Transaction};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,6 +14,18 @@ pub struct Group {
     pub id: String,
     pub authz_id: String,
     pub name: String,
+}
+
+/// An ACL as `(permission, actor names, group names)` entries.
+pub type Acl = Vec<(Permission, Vec<String>, Vec<String>)>;
+
+/// One permission's ACE with actor names split by actor type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AclEntry {
+    pub permission: Permission,
+    pub users: Vec<String>,
+    pub clients: Vec<String>,
+    pub groups: Vec<String>,
 }
 
 /// The five Chef permissions.
@@ -35,7 +47,18 @@ impl Permission {
         Permission::Grant,
     ];
 
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "create" => Some(Self::Create),
+            "read" => Some(Self::Read),
+            "update" => Some(Self::Update),
+            "delete" => Some(Self::Delete),
+            "grant" => Some(Self::Grant),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Create => "create",
             Self::Read => "read",
@@ -274,6 +297,161 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Read the full ACL of a target. Every permission is present, even when
+    /// its ACE is empty. Actor names are ordered clients first, then users,
+    /// matching the upstream API's non-granular representation.
+    pub fn get_acl(&self, target_authz_id: &str) -> Result<Acl, StoreError> {
+        Ok(self
+            .get_acl_entries(target_authz_id)?
+            .into_iter()
+            .map(|entry| {
+                let mut actors = entry.clients;
+                actors.extend(entry.users);
+                (entry.permission, actors, entry.groups)
+            })
+            .collect())
+    }
+
+    /// Read the full ACL of a target with users and clients kept separate.
+    pub fn get_acl_entries(&self, target_authz_id: &str) -> Result<Vec<AclEntry>, StoreError> {
+        let connection = self.connection();
+        let exists: i64 = connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM authz_entities WHERE authz_id = ?1)",
+            [target_authz_id],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            return Err(StoreError::NotFound(format!(
+                "ACL target {target_authz_id}"
+            )));
+        }
+
+        let mut entries = Vec::with_capacity(Permission::ALL.len());
+        for permission in Permission::ALL {
+            let users = connection
+                .prepare(
+                    "SELECT u.username
+                     FROM authz_acl_actor ace
+                     JOIN users u ON u.authz_id = ace.actor_authz_id
+                     WHERE ace.target_authz_id = ?1 AND ace.permission = ?2
+                     ORDER BY u.username",
+                )?
+                .query_map(params![target_authz_id, permission.as_str()], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let clients = connection
+                .prepare(
+                    "SELECT c.name
+                     FROM authz_acl_actor ace
+                     JOIN clients c ON c.authz_id = ace.actor_authz_id
+                     WHERE ace.target_authz_id = ?1 AND ace.permission = ?2
+                     ORDER BY c.name",
+                )?
+                .query_map(params![target_authz_id, permission.as_str()], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let groups = connection
+                .prepare(
+                    "SELECT g.name
+                     FROM authz_acl_group ace
+                     JOIN groups g ON g.authz_id = ace.group_authz_id
+                     WHERE ace.target_authz_id = ?1 AND ace.permission = ?2
+                     ORDER BY g.name",
+                )?
+                .query_map(params![target_authz_id, permission.as_str()], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            entries.push(AclEntry {
+                permission,
+                users,
+                clients,
+                groups,
+            });
+        }
+        Ok(entries)
+    }
+
+    /// Replace the ACE for a single permission. Actor and group names are
+    /// resolved in the target's organization; unknown names are rejected
+    /// without changing the existing ACE.
+    pub fn set_acl_for_permission(
+        &self,
+        target_authz_id: &str,
+        permission: Permission,
+        actors: &[String],
+        groups: &[String],
+    ) -> Result<(), StoreError> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        let org_id: Option<String> = transaction
+            .query_row(
+                "SELECT org_id FROM authz_entities WHERE authz_id = ?1",
+                [target_authz_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NotFound(format!("ACL target {target_authz_id}")))?;
+
+        let mut actor_ids = Vec::with_capacity(actors.len());
+        for name in actors {
+            actor_ids.push(resolve_actor_authz_id(
+                &transaction,
+                org_id.as_deref(),
+                name,
+            )?);
+        }
+
+        let mut group_ids = Vec::with_capacity(groups.len());
+        for name in groups {
+            let Some(org_id) = org_id.as_deref() else {
+                return Err(StoreError::Invalid(format!("group {name} does not exist")));
+            };
+            let group_id = transaction
+                .query_row(
+                    "SELECT authz_id FROM groups WHERE org_id = ?1 AND name = ?2",
+                    params![org_id, name],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| {
+                    StoreError::Invalid(format!("group {name} does not exist in this organization"))
+                })?;
+            group_ids.push(group_id);
+        }
+
+        transaction.execute(
+            "DELETE FROM authz_acl_actor
+             WHERE target_authz_id = ?1 AND permission = ?2",
+            params![target_authz_id, permission.as_str()],
+        )?;
+        transaction.execute(
+            "DELETE FROM authz_acl_group
+             WHERE target_authz_id = ?1 AND permission = ?2",
+            params![target_authz_id, permission.as_str()],
+        )?;
+        for actor_id in actor_ids {
+            transaction.execute(
+                "INSERT OR IGNORE INTO authz_acl_actor
+                 (target_authz_id, permission, actor_authz_id)
+                 VALUES (?1, ?2, ?3)",
+                params![target_authz_id, permission.as_str(), actor_id],
+            )?;
+        }
+        for group_id in group_ids {
+            transaction.execute(
+                "INSERT OR IGNORE INTO authz_acl_group
+                 (target_authz_id, permission, group_authz_id)
+                 VALUES (?1, ?2, ?3)",
+                params![target_authz_id, permission.as_str(), group_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn check_permission(
         &self,
         actor_authz_id: &str,
@@ -308,5 +486,74 @@ impl SqliteStore {
             |row| row.get(0),
         )?;
         Ok(allowed != 0)
+    }
+
+    /// Resolve an ACL URL object type and name to its authz id.
+    ///
+    /// Supported types mirror the `/_acl` route table: clients, groups,
+    /// containers, data (data bags), nodes, roles, environments, cookbooks,
+    /// policies, policy_groups, and cookbook_artifacts.
+    pub fn find_acl_target(
+        &self,
+        org_id: &str,
+        object_type: &str,
+        name: &str,
+    ) -> Result<Option<String>, StoreError> {
+        let table = match object_type {
+            "clients" => "clients",
+            "groups" => "groups",
+            "containers" => "containers",
+            "data" => "data_bags",
+            "nodes" => "nodes",
+            "roles" => "roles",
+            "environments" => "environments",
+            "cookbooks" => "cookbooks",
+            "policies" => "policies",
+            "policy_groups" => "policy_groups",
+            "cookbook_artifacts" => "cookbook_artifacts",
+            _ => return Ok(None),
+        };
+        let connection = self.connection();
+        let sql = format!("SELECT authz_id FROM {table} WHERE org_id = ?1 AND name = ?2");
+        Ok(connection
+            .query_row(&sql, params![org_id, name], |row| row.get::<_, String>(0))
+            .optional()?)
+    }
+}
+
+fn resolve_actor_authz_id(
+    transaction: &Transaction<'_>,
+    org_id: Option<&str>,
+    name: &str,
+) -> Result<String, StoreError> {
+    let user_id: Option<String> = transaction
+        .query_row(
+            "SELECT authz_id FROM users WHERE username = ?1",
+            [name],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    let client_id = match org_id {
+        Some(org_id) => transaction
+            .query_row(
+                "SELECT authz_id FROM clients WHERE org_id = ?1 AND name = ?2",
+                params![org_id, name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?,
+        None => None,
+    };
+
+    match (user_id, client_id) {
+        (Some(_), Some(_)) => Err(StoreError::Invalid(format!(
+            "actor {name} exists as both a client and a user in this organization"
+        ))),
+        (Some(user_id), None) => Ok(user_id),
+        (None, Some(client_id)) => Ok(client_id),
+        (None, None) => Err(StoreError::Invalid(match org_id {
+            Some(_) => format!("actor {name} does not exist in this organization"),
+            None => format!("actor {name} does not exist"),
+        })),
     }
 }

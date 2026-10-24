@@ -7,7 +7,7 @@ mod objects;
 mod sandboxes;
 mod sqlite;
 
-pub use authz::{Container, Group, Permission};
+pub use authz::{Acl, AclEntry, Container, Group, Permission};
 pub use cookbooks::{parse_version, StoredCookbookVersion};
 pub use identity::{ActorKey, ActorType, Client, Org, Principal, User};
 pub use objects::{NewNode, StoredDataBagItem, StoredNode, StoredObject};
