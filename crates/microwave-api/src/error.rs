@@ -31,6 +31,13 @@ impl ApiError {
         }
     }
 
+    pub fn forbidden_with(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: message.into(),
+        }
+    }
+
     pub fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
@@ -86,6 +93,7 @@ impl From<StoreError> for ApiError {
             StoreError::Conflict(message) => Self::conflict(message),
             StoreError::NotFound(message) => Self::not_found(message),
             StoreError::Invalid(message) => Self::bad_request(message),
+            StoreError::Forbidden(message) => Self::forbidden_with(message),
             other => {
                 tracing::error!(error = %other, "store error");
                 Self::internal()

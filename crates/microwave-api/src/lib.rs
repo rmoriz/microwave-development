@@ -10,6 +10,7 @@ pub mod environments;
 pub mod error;
 pub mod helpers;
 pub mod keys;
+pub mod membership;
 pub mod middleware;
 pub mod nodes;
 pub mod organizations;
@@ -35,6 +36,7 @@ pub fn router(state: AppState) -> Router {
         .merge(users::routes())
         .merge(acls::routes())
         .merge(organizations::routes())
+        .merge(membership::routes())
         .merge(clients::routes())
         .merge(keys::routes())
         .merge(nodes::routes())
