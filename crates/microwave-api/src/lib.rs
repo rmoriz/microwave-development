@@ -27,6 +27,7 @@ use axum::{Json, Router};
 use serde_json::{json, Value};
 
 pub use error::ApiError;
+pub use microwave_oauth as oauth;
 pub use state::{ApiVersion, AppState, AuthContext};
 
 pub fn router(state: AppState) -> Router {
@@ -50,6 +51,7 @@ pub fn router(state: AppState) -> Router {
         .merge(sandboxes::routes())
         .merge(cookbooks::routes())
         .merge(depsolver::routes())
+        .merge(oauth::routes())
         .fallback(not_found)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

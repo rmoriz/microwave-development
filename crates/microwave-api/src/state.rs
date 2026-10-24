@@ -18,3 +18,12 @@ pub struct AuthContext {
     pub principal: Principal,
     pub org: Option<Org>,
 }
+
+impl microwave_oauth::ProvidesOAuthState for AppState {
+    fn oauth_state(&self) -> microwave_oauth::OAuthState {
+        microwave_oauth::OAuthState {
+            store: self.store.clone(),
+            config: self.config.clone(),
+        }
+    }
+}

@@ -238,6 +238,33 @@ impl SqliteStore {
             .optional()?)
     }
 
+    pub fn find_user_by_id(&self, id: &str) -> Result<Option<User>, StoreError> {
+        let connection = self.connection();
+        Ok(connection
+            .query_row(
+                "SELECT id, authz_id, username, email, password_hash, password_salt,
+                        hash_type, admin, recovery_authentication_enabled, created_at, updated_at
+                 FROM users WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok(User {
+                        id: row.get(0)?,
+                        authz_id: row.get(1)?,
+                        username: row.get(2)?,
+                        email: row.get(3)?,
+                        password_hash: row.get(4)?,
+                        password_salt: row.get(5)?,
+                        hash_type: row.get(6)?,
+                        admin: row.get::<_, i64>(7)? != 0,
+                        recovery_authentication_enabled: row.get::<_, i64>(8)? != 0,
+                        created_at: row.get(9)?,
+                        updated_at: row.get(10)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
     pub fn create_client(
         &self,
         org_id: &str,

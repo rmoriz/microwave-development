@@ -777,6 +777,7 @@ dependencies = [
  "microwave-authz",
  "microwave-config",
  "microwave-crypto",
+ "microwave-oauth",
  "microwave-objectstore",
  "microwave-store",
  "serde",
@@ -844,6 +845,22 @@ dependencies = [
  "microwave-ctl",
  "microwave-store",
  "tempfile",
+]
+
+[[package]]
+name = "microwave-oauth"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64",
+ "chrono",
+ "microwave-config",
+ "microwave-crypto",
+ "microwave-store",
+ "serde_json",
+ "serde_urlencoded",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use axum::body::Body;
 use axum::http::Request;
 use base64::engine::general_purpose::STANDARD;
