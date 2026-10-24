@@ -156,6 +156,14 @@ CREATE TABLE IF NOT EXISTS groups (
     UNIQUE (org_id, name)
 );
 
+CREATE TABLE IF NOT EXISTS global_groups (
+    id TEXT PRIMARY KEY,
+    authz_id TEXT NOT NULL UNIQUE REFERENCES authz_entities(authz_id) ON DELETE CASCADE,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY,
     authz_id TEXT NOT NULL UNIQUE REFERENCES authz_entities(authz_id) ON DELETE CASCADE,

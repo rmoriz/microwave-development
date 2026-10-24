@@ -169,6 +169,20 @@ impl IdentityRepository for PostgresStore {
             .map_err(db)
     }
 
+    async fn find_org_by_id(&self, id: &str) -> Result<Option<Org>, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, authz_id, name, full_name, created_at, updated_at
+             FROM orgs WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(db)?;
+        row.map(|row| crate::store::org_from_row(&row))
+            .transpose()
+            .map_err(db)
+    }
+
     async fn create_user(
         &self,
         username: &str,

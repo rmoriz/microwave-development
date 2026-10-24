@@ -827,6 +827,194 @@ impl AuthzRepository for PostgresStore {
         Ok(())
     }
 
+    async fn set_acl_for_permission_split(
+        &self,
+        target_authz_id: &str,
+        permission: Permission,
+        users: &[String],
+        clients: &[String],
+        groups: &[String],
+    ) -> Result<(), StoreError> {
+        let mut transaction = self.pool().begin().await.map_err(db)?;
+        let org_id: Option<String> =
+            sqlx::query_scalar("SELECT org_id FROM authz_entities WHERE authz_id = $1")
+                .bind(target_authz_id)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(db)?
+                .ok_or_else(|| StoreError::NotFound(format!("ACL target {target_authz_id}")))?;
+
+        let mut actor_ids = Vec::with_capacity(users.len() + clients.len());
+        for name in users {
+            let id: Option<String> =
+                sqlx::query_scalar("SELECT authz_id FROM users WHERE username = $1")
+                    .bind(name)
+                    .fetch_optional(&mut *transaction)
+                    .await
+                    .map_err(db)?;
+            actor_ids.push(
+                id.ok_or_else(|| StoreError::Invalid(format!("user {name} does not exist")))?,
+            );
+        }
+        for name in clients {
+            let Some(org_id) = org_id.as_deref() else {
+                return Err(StoreError::Invalid(format!(
+                    "client {name} is not allowed in this context"
+                )));
+            };
+            let id: Option<String> =
+                sqlx::query_scalar("SELECT authz_id FROM clients WHERE org_id = $1 AND name = $2")
+                    .bind(org_id)
+                    .bind(name)
+                    .fetch_optional(&mut *transaction)
+                    .await
+                    .map_err(db)?;
+            actor_ids.push(id.ok_or_else(|| {
+                StoreError::Invalid(format!("client {name} does not exist in this organization"))
+            })?);
+        }
+
+        let mut group_ids = Vec::with_capacity(groups.len());
+        for name in groups {
+            let group = find_scoped_group(&mut transaction, org_id.as_deref(), name)
+                .await?
+                .ok_or_else(|| {
+                    StoreError::Invalid(format!("group {name} does not exist in this organization"))
+                })?;
+            group_ids.push(group.authz_id);
+        }
+
+        sqlx::query("DELETE FROM authz_acl_actor WHERE target_authz_id = $1 AND permission = $2")
+            .bind(target_authz_id)
+            .bind(permission.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(db)?;
+        sqlx::query("DELETE FROM authz_acl_group WHERE target_authz_id = $1 AND permission = $2")
+            .bind(target_authz_id)
+            .bind(permission.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(db)?;
+        for actor_id in actor_ids {
+            sqlx::query(
+                "INSERT INTO authz_acl_actor (target_authz_id, permission, actor_authz_id)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(target_authz_id)
+            .bind(permission.as_str())
+            .bind(&actor_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db)?;
+        }
+        for group_id in group_ids {
+            sqlx::query(
+                "INSERT INTO authz_acl_group (target_authz_id, permission, group_authz_id)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(target_authz_id)
+            .bind(permission.as_str())
+            .bind(&group_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db)?;
+        }
+        transaction.commit().await.map_err(db)?;
+        Ok(())
+    }
+
+    async fn grant_actor_all(
+        &self,
+        target_authz_id: &str,
+        actor_authz_id: &str,
+    ) -> Result<(), StoreError> {
+        let mut transaction = self.pool().begin().await.map_err(db)?;
+        for permission in Permission::ALL {
+            sqlx::query(
+                "INSERT INTO authz_acl_actor (target_authz_id, permission, actor_authz_id)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(target_authz_id)
+            .bind(permission.as_str())
+            .bind(actor_authz_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db)?;
+        }
+        transaction.commit().await.map_err(db)?;
+        Ok(())
+    }
+
+    async fn ensure_global_group(&self, name: &str) -> Result<Group, StoreError> {
+        if let Some(group) = self.find_global_group(name).await? {
+            return Ok(group);
+        }
+
+        let id = new_id();
+        let authz_id = new_id();
+        let timestamp = now();
+        let mut transaction = self.pool().begin().await.map_err(db)?;
+        sqlx::query(
+            "INSERT INTO authz_entities (authz_id, entity_type, org_id, created_at)
+             VALUES ($1, 'group', NULL, $2)",
+        )
+        .bind(&authz_id)
+        .bind(&timestamp)
+        .execute(&mut *transaction)
+        .await
+        .map_err(db)?;
+        for permission in Permission::ALL {
+            sqlx::query(
+                "INSERT INTO authz_acl_actor (target_authz_id, permission, actor_authz_id)
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(&authz_id)
+            .bind(permission.as_str())
+            .bind(&authz_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db)?;
+        }
+        sqlx::query(
+            "INSERT INTO global_groups (id, authz_id, name, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $4)",
+        )
+        .bind(&id)
+        .bind(&authz_id)
+        .bind(name)
+        .bind(&timestamp)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| unique(error, format!("group {name} already exists")))?;
+        transaction.commit().await.map_err(db)?;
+        Ok(Group {
+            id,
+            authz_id,
+            name: name.into(),
+        })
+    }
+
+    async fn find_global_group(&self, name: &str) -> Result<Option<Group>, StoreError> {
+        let row = sqlx::query("SELECT id, authz_id, name FROM global_groups WHERE name = $1")
+            .bind(name)
+            .fetch_optional(self.pool())
+            .await
+            .map_err(db)?;
+        row.map(|row| {
+            Ok(Group {
+                id: row.try_get(0)?,
+                authz_id: row.try_get(1)?,
+                name: row.try_get(2)?,
+            })
+        })
+        .transpose()
+        .map_err(db)
+    }
+
     async fn check_permission(
         &self,
         actor_authz_id: &str,
@@ -957,4 +1145,65 @@ async fn resolve_actor_authz_id(
             None => format!("actor {name} does not exist"),
         })),
     }
+}
+
+async fn find_scoped_group(
+    transaction: &mut Transaction<'_, Postgres>,
+    org_id: Option<&str>,
+    name: &str,
+) -> Result<Option<Group>, StoreError> {
+    if let Some(global_name) = name.strip_prefix("::") {
+        let row = sqlx::query("SELECT id, authz_id, name FROM global_groups WHERE name = $1")
+            .bind(global_name)
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(db)?;
+        return row
+            .map(|row| {
+                Ok(Group {
+                    id: row.try_get(0)?,
+                    authz_id: row.try_get(1)?,
+                    name: row.try_get(2)?,
+                })
+            })
+            .transpose()
+            .map_err(db);
+    }
+    if let Some((org_name, group_name)) = name.split_once("::") {
+        let org_id: Option<String> = sqlx::query_scalar("SELECT id FROM orgs WHERE name = $1")
+            .bind(org_name)
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(db)?;
+        let Some(org_id) = org_id else {
+            return Ok(None);
+        };
+        return find_group_in_org(transaction, &org_id, group_name).await;
+    }
+    match org_id {
+        Some(org_id) => find_group_in_org(transaction, org_id, name).await,
+        None => Ok(None),
+    }
+}
+
+async fn find_group_in_org(
+    transaction: &mut Transaction<'_, Postgres>,
+    org_id: &str,
+    name: &str,
+) -> Result<Option<Group>, StoreError> {
+    let row = sqlx::query("SELECT id, authz_id, name FROM groups WHERE org_id = $1 AND name = $2")
+        .bind(org_id)
+        .bind(name)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(db)?;
+    row.map(|row| {
+        Ok(Group {
+            id: row.try_get(0)?,
+            authz_id: row.try_get(1)?,
+            name: row.try_get(2)?,
+        })
+    })
+    .transpose()
+    .map_err(db)
 }

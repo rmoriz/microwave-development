@@ -3,6 +3,7 @@
 mod artifacts;
 mod authz;
 mod backend;
+mod backend_sqlite;
 mod cookbooks;
 mod identity;
 mod kv;
@@ -19,8 +20,9 @@ mod sqlite;
 pub use artifacts::{StoredCookbookArtifact, StoredCookbookArtifactVersion};
 pub use authz::{Acl, AclEntry, Container, Group, GroupMembers, Permission};
 pub use backend::{
-    AuthzRepository, CookbookRepository, IdentityRepository, MetadataStore, ObjectRepository,
-    PolicyRepository, SandboxRepository,
+    ArtifactRepository, AuthzRepository, CookbookRepository, IdentityRepository, KvRepository,
+    MembershipRepository, MetadataStore, OAuthRepository, ObjectRepository, PolicyRepository,
+    SandboxRepository, SecretsRepository,
 };
 pub use cookbooks::{parse_version, StoredCookbookVersion};
 pub use identity::{ActorKey, ActorType, Client, Org, Principal, User, UserPatch, UserProfile};
