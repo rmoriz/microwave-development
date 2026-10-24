@@ -16,7 +16,11 @@ pub async fn show(
 ) -> Result<Response, OAuthError> {
     let token = query.get("token").filter(|value| !value.is_empty());
     let valid = match token {
-        Some(token) => state.store.find_password_reset_token(token)?.is_some(),
+        Some(token) => state
+            .store
+            .find_password_reset_token(token)
+            .await?
+            .is_some(),
         None => false,
     };
 
@@ -60,7 +64,7 @@ pub async fn create(
 ) -> Result<Response, OAuthError> {
     let params = parse_params(request).await?;
     if params.get("_method").as_deref() == Some("PUT") {
-        return apply_update(&state, &headers, params);
+        return apply_update(&state, &headers, params).await;
     }
     let username = params.get("username").unwrap_or_default();
     if username.is_empty() {
@@ -71,9 +75,14 @@ pub async fn create(
         ));
     }
 
-    let user = find_user(&state, &username)?;
+    let user = find_user(&state, &username).await?;
     let reset_token = match user {
-        Some(user) => Some(state.store.create_password_reset_token(&user.username)?),
+        Some(user) => Some(
+            state
+                .store
+                .create_password_reset_token(&user.username)
+                .await?,
+        ),
         None => None,
     };
     let reset_url = reset_token
@@ -112,10 +121,10 @@ pub async fn update(
     request: Request,
 ) -> Result<Response, OAuthError> {
     let params = parse_params(request).await?;
-    apply_update(&state, &headers, params)
+    apply_update(&state, &headers, params).await
 }
 
-fn apply_update(
+async fn apply_update(
     state: &OAuthState,
     headers: &HeaderMap,
     params: crate::util::Params,
@@ -123,7 +132,7 @@ fn apply_update(
     let token = params
         .get("token")
         .ok_or_else(|| OAuthError::invalid_request("token is required"))?;
-    let Some(username) = state.store.consume_password_reset_token(&token)? else {
+    let Some(username) = state.store.consume_password_reset_token(&token).await? else {
         return Err(OAuthError::forbidden("reset token is invalid or expired"));
     };
     let password = params.get("password").unwrap_or_default();
@@ -145,12 +154,15 @@ fn apply_update(
 
     let hash = hash_password(&password)
         .map_err(|_| OAuthError::invalid_request("password must not be empty"))?;
-    state.store.update_user(
-        &username,
-        None,
-        Some((&hash.hash, &hash.salt, &hash.hash_type)),
-        None,
-    )?;
+    state
+        .store
+        .update_user(
+            &username,
+            None,
+            Some((&hash.hash, &hash.salt, &hash.hash_type)),
+            None,
+        )
+        .await?;
 
     if wants_json(headers) || params.is_json() {
         return Ok(Json(json!({ "status": "ok" })).into_response());
@@ -158,17 +170,18 @@ fn apply_update(
     Ok(redirect("/id/signin"))
 }
 
-fn find_user(
+async fn find_user(
     state: &OAuthState,
     username: &str,
 ) -> Result<Option<microwave_store::User>, OAuthError> {
-    if let Some(user) = state.store.find_user(username)? {
+    if let Some(user) = state.store.find_user(username).await? {
         return Ok(Some(user));
     }
     if username.contains('@') {
         return Ok(state
             .store
-            .list_users()?
+            .list_users()
+            .await?
             .into_iter()
             .find(|user| user.email.as_deref() == Some(username)));
     }

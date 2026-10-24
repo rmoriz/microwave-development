@@ -34,9 +34,10 @@ pub async fn authorize(
         query.get("response_type").map(String::as_str),
         query.get("scope").map(String::as_str),
         query.get("state").cloned(),
-    )?;
+    )
+    .await?;
 
-    if crate::util::current_user(&state, &headers)?.is_none() {
+    if crate::util::current_user(&state, &headers).await?.is_none() {
         let return_to = uri
             .path_and_query()
             .map(|value| value.as_str())
@@ -91,9 +92,10 @@ pub async fn authorize_approve(
         params.get("response_type").as_deref(),
         params.get("scope").as_deref(),
         params.get("state"),
-    )?;
+    )
+    .await?;
 
-    let Some(user) = crate::util::current_user(&state, &headers)? else {
+    let Some(user) = crate::util::current_user(&state, &headers).await? else {
         if wants_json(&headers) {
             return Err(OAuthError::unauthorized("authentication is required"));
         }
@@ -112,13 +114,16 @@ pub async fn authorize_approve(
         )));
     }
 
-    let grant = state.store.create_oauth_access_grant(
-        &user.id,
-        request.application.id,
-        &request.redirect_uri,
-        &request.scope,
-        AUTHORIZATION_CODE_TTL_SECONDS,
-    )?;
+    let grant = state
+        .store
+        .create_oauth_access_grant(
+            &user.id,
+            request.application.id,
+            &request.redirect_uri,
+            &request.scope,
+            AUTHORIZATION_CODE_TTL_SECONDS,
+        )
+        .await?;
 
     let location = append_query(
         &request.redirect_uri,
@@ -143,8 +148,9 @@ pub async fn authorize_deny(
         params.get("response_type").as_deref(),
         params.get("scope").as_deref(),
         params.get("state"),
-    )?;
-    if crate::util::current_user(&state, &headers)?.is_none() {
+    )
+    .await?;
+    if crate::util::current_user(&state, &headers).await?.is_none() {
         return Ok(redirect("/id/signin"));
     }
     Ok(redirect(&append_query(
@@ -171,7 +177,8 @@ pub async fn token(
     };
     let application = state
         .store
-        .find_oauth_application_by_uid(&client_id)?
+        .find_oauth_application_by_uid(&client_id)
+        .await?
         .ok_or_else(|| OAuthError::invalid_client("unknown client"))?;
     if application.confidential && client_secret.as_deref() != Some(application.secret.as_str()) {
         return Err(OAuthError::invalid_client("invalid client secret"));
@@ -188,7 +195,8 @@ pub async fn token(
                 .ok_or_else(|| OAuthError::invalid_request("code is required"))?;
             let grant = state
                 .store
-                .find_oauth_access_grant(&code)?
+                .find_oauth_access_grant(&code)
+                .await?
                 .ok_or_else(|| OAuthError::invalid_grant("authorization code is invalid"))?;
             if grant.revoked_at.is_some()
                 || !timestamp_is_fresh(&grant.created_at, grant.expires_in)
@@ -207,14 +215,17 @@ pub async fn token(
                     return Err(OAuthError::invalid_grant("redirect_uri does not match"));
                 }
             }
-            state.store.revoke_oauth_access_grant(&code)?;
-            let token = state.store.create_oauth_access_token(
-                &grant.resource_owner_id,
-                application.id,
-                &grant.scopes,
-                Some(ACCESS_TOKEN_TTL_SECONDS),
-                true,
-            )?;
+            state.store.revoke_oauth_access_grant(&code).await?;
+            let token = state
+                .store
+                .create_oauth_access_token(
+                    &grant.resource_owner_id,
+                    application.id,
+                    &grant.scopes,
+                    Some(ACCESS_TOKEN_TTL_SECONDS),
+                    true,
+                )
+                .await?;
             Ok(token_response(&token))
         }
         "refresh_token" => {
@@ -223,7 +234,8 @@ pub async fn token(
                 .ok_or_else(|| OAuthError::invalid_request("refresh_token is required"))?;
             let token = state
                 .store
-                .find_oauth_access_token_by_refresh(&refresh_token)?
+                .find_oauth_access_token_by_refresh(&refresh_token)
+                .await?
                 .ok_or_else(|| OAuthError::invalid_grant("refresh token is invalid"))?;
             if token.revoked_at.is_some() {
                 return Err(OAuthError::invalid_grant("refresh token was revoked"));
@@ -236,14 +248,17 @@ pub async fn token(
             let Some(resource_owner_id) = token.resource_owner_id.clone() else {
                 return Err(OAuthError::invalid_grant("refresh token has no owner"));
             };
-            state.store.revoke_oauth_access_token(&token.token)?;
-            let token = state.store.create_oauth_access_token(
-                &resource_owner_id,
-                application.id,
-                &token.scopes,
-                Some(ACCESS_TOKEN_TTL_SECONDS),
-                true,
-            )?;
+            state.store.revoke_oauth_access_token(&token.token).await?;
+            let token = state
+                .store
+                .create_oauth_access_token(
+                    &resource_owner_id,
+                    application.id,
+                    &token.scopes,
+                    Some(ACCESS_TOKEN_TTL_SECONDS),
+                    true,
+                )
+                .await?;
             Ok(token_response(&token))
         }
         other => Err(OAuthError::new(
@@ -268,28 +283,39 @@ pub async fn revoke(
     if let Some(client_id) = client_id {
         let application = state
             .store
-            .find_oauth_application_by_uid(&client_id)?
+            .find_oauth_application_by_uid(&client_id)
+            .await?
             .ok_or_else(|| OAuthError::invalid_client("unknown client"))?;
-        if let Some(access) = state.store.find_oauth_access_token(&token)? {
+        if let Some(access) = state.store.find_oauth_access_token(&token).await? {
             if access.application_id == Some(application.id) {
-                state.store.revoke_oauth_access_token(&token)?;
+                state.store.revoke_oauth_access_token(&token).await?;
             }
-        } else if let Some(access) = state.store.find_oauth_access_token_by_refresh(&token)? {
+        } else if let Some(access) = state
+            .store
+            .find_oauth_access_token_by_refresh(&token)
+            .await?
+        {
             if access.application_id == Some(application.id) {
-                state.store.revoke_oauth_access_token_by_refresh(&token)?;
+                state
+                    .store
+                    .revoke_oauth_access_token_by_refresh(&token)
+                    .await?;
             }
         } else {
-            state.store.revoke_oauth_access_grant(&token)?;
+            state.store.revoke_oauth_access_grant(&token).await?;
         }
     } else {
-        state.store.revoke_oauth_access_token(&token)?;
-        state.store.revoke_oauth_access_token_by_refresh(&token)?;
-        state.store.revoke_oauth_access_grant(&token)?;
+        state.store.revoke_oauth_access_token(&token).await?;
+        state
+            .store
+            .revoke_oauth_access_token_by_refresh(&token)
+            .await?;
+        state.store.revoke_oauth_access_grant(&token).await?;
     }
     Ok(StatusCode::OK.into_response())
 }
 
-fn validate_authorization(
+async fn validate_authorization(
     state: &OAuthState,
     client_id: Option<&str>,
     redirect_uri: Option<&str>,
@@ -302,7 +328,8 @@ fn validate_authorization(
         .ok_or_else(|| OAuthError::invalid_request("client_id is required"))?;
     let application = state
         .store
-        .find_oauth_application_by_uid(client_id)?
+        .find_oauth_application_by_uid(client_id)
+        .await?
         .ok_or_else(|| OAuthError::invalid_client("unknown client"))?;
 
     let redirect_uri = redirect_uri

@@ -8,7 +8,7 @@ The repository contains a working vertical slice:
 
 - **Configuration** — TOML plus `MW_*` environment overrides.
 - **Authentication** — `X-Ops-Sign` 1.0/1.1/1.3 canonicalization, RSA signing/verification, key reassembly, and legacy password hash compatibility.
-- **Storage** — SQLite schema for identity, ACLs, containers, groups, nodes, roles, environments, data bags, sandboxes, and cookbooks; a PostgreSQL store slice with a tested schema and repositories (the HTTP runtime still uses SQLite).
+- **Storage** — one metadata contract with two backends: SQLite (default) and PostgreSQL, selected by `database.driver` / `MW_DATABASE__DRIVER`. The HTTP API, OAuth/identity surface, embedded search, authorization policy, and bootstrap all run on either backend. `microwave-ctl` and `microwave-migrate` remain SQLite-only.
 - **Authorization** — recursive ACL/group checks, cycle rejection, the default organization policy, and ACL read/write endpoints with granular `users`/`clients` responses.
 - **HTTP API** — `/_status`, `/server_api_version`, `/license`, users, organizations, clients, principals, key management, organization memberships/invitations, nodes, environments, roles, data bags, sandboxes, bookshelf uploads, cookbooks, cookbook resolution, policyfiles/policy groups, ACL endpoints, and search (node/role/environment/client/data-bag indexes with a query subset and partial search).
 - **Operations CLI** — `microwave-ctl` with a `chef-server-ctl` compatibility binary: user/org administration, server-admin grant/remove/list, org membership, password reset, key rotation (add/list/delete user and client keys), secrets management, maintenance state, `check-config`, `ha-status`, `psql`, status, local backup/restore, `migrate-from-legacy` snapshot import, and a clear not-implemented response for reindex.
@@ -16,7 +16,7 @@ The repository contains a working vertical slice:
 - **OAuth/identity** — `/id` sign-in/sessions, OAuth application management, authorization-code and refresh-token flows, `/id/v1/me`, `/id/v1/me/organizations`, `/id/v1/status`, profile/password/key regeneration, and password-reset tokens.
 - **Dependency solving** — Chef version constraints (`=`, `>`, `<`, `>=`, `<=`, `~>`), deterministic backtracking, environment constraints, role expansion, timeouts, and upstream-shaped 412 failures.
 - **External backends** — S3/Garage object storage with SigV4 signing and presigned URLs, and OpenSearch/Elasticsearch search with bulk indexing and query translation. The local object store and embedded search remain the defaults.
-- **Server** — `microwave-server serve` bootstraps a `pivotal` superuser and listens on the configured address.
+- **Server** — `microwave-server serve` selects the configured metadata backend, bootstraps a `pivotal` superuser and listens on the configured address. `serve --check` initializes/migrates the backend and prints its type without exposing credentials.
 
 Testing and formatting are green, and a strict stock `chef-client` converge passes without compatibility shims (`MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0`):
 
@@ -57,7 +57,7 @@ Packaging artifacts: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
 ## Remaining Work
 
 - A full extended `oc-chef-pedant` pass. The core tags are near-green (the only failure is a known plain-HTTP pedant artifact), but the extended suites need a complete re-run after the recent cookbook, ACL, OAuth, search, and manifest fixes.
-- Wiring the PostgreSQL store into `AppState` and the HTTP API. The schema and repositories are implemented and pass 7/7 integration tests; the running server still selects SQLite.
+- PostgreSQL operational tooling. The HTTP runtime, OAuth, authorization, search, and bootstrap run against PostgreSQL, but `microwave-ctl`/`microwave-migrate` and the local backup/restore path stay SQLite-only, and a multi-replica HA topology has not been load-validated.
 - HTTP enforcement of maintenance mode. `microwave-ctl maintenance on` persists the flag, but the request middleware does not return `503` yet; the command says so explicitly.
 - The remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup format).
 - TLS listener, `_stats`/metrics, key-generation cache, transparent `serialized_object` compression, and the dual-backend test matrix.

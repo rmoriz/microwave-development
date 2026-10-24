@@ -200,7 +200,7 @@ async fn list_users_filters_by_email_case_insensitively_and_external_uid() {
     support::add_user(&state, "alice", "User@aol.com", false);
     let saml = support::add_user(&state, "saml", "saml@example.com", false);
     state
-        .store
+        .sqlite()
         .update_user_patch(
             "saml",
             &microwave_store::UserPatch {
@@ -266,7 +266,7 @@ async fn list_users_requires_the_platform_superuser() {
 #[tokio::test]
 async fn get_user_allows_self_and_users_sharing_an_org() {
     let state = support::state_with_pivotal();
-    let org = support::add_org(&state, "acme");
+    let org = support::add_org(&state, "acme").await;
     let target = support::add_user(&state, "target", "target@example.com", false);
     let admin = support::add_user(&state, "admin", "admin@example.com", true);
     let normal = support::add_user(&state, "normal", "normal@example.com", false);

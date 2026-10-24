@@ -43,7 +43,7 @@ async fn create_org(app: &axum::Router) {
 
 fn add_user(state: &microwave_api::AppState, name: &str) -> String {
     let user = state
-        .store
+        .sqlite()
         .create_user(
             name,
             &format!("{name}@example.com"),
@@ -54,23 +54,26 @@ fn add_user(state: &microwave_api::AppState, name: &str) -> String {
         )
         .unwrap();
     state
-        .store
+        .sqlite()
         .add_actor_key(&user.id, ActorType::User, "default", support::PUBLIC_KEY)
         .unwrap();
     user.authz_id
 }
 
 fn associate_user(state: &microwave_api::AppState, username: &str) {
-    let org = state.store.find_org("acme").unwrap().unwrap();
-    let user = state.store.find_user(username).unwrap().unwrap();
-    state.store.associate_user_org(&org.id, &user.id).unwrap();
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
+    let user = state.sqlite().find_user(username).unwrap().unwrap();
+    state
+        .sqlite()
+        .associate_user_org(&org.id, &user.id)
+        .unwrap();
 }
 
 fn add_member(state: &microwave_api::AppState, org_name: &str, group: &str, authz_id: &str) {
-    let org = state.store.find_org(org_name).unwrap().unwrap();
-    let group = state.store.find_group(&org.id, group).unwrap().unwrap();
+    let org = state.sqlite().find_org(org_name).unwrap().unwrap();
+    let group = state.sqlite().find_group(&org.id, group).unwrap().unwrap();
     state
-        .store
+        .sqlite()
         .add_group_member(&group.authz_id, authz_id)
         .unwrap();
 }
@@ -290,8 +293,8 @@ async fn group_collection_and_named_crud_follow_upstream_shapes() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-#[test]
-fn replacement_group_members_are_validated_and_apply_per_bucket() {
+#[tokio::test]
+async fn replacement_group_members_are_validated_and_apply_per_bucket() {
     let store = SqliteStore::open_in_memory().unwrap();
     let creator = store
         .create_user("root", "root@example.com", "bcrypt", "h", "s", true)
@@ -303,6 +306,7 @@ fn replacement_group_members_are_validated_and_apply_per_bucket() {
         &creator.id,
         &creator.authz_id,
     )
+    .await
     .unwrap();
     let group = store
         .create_group_for_org_with_acl(&org.id, "test", &creator.authz_id)

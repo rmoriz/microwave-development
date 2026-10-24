@@ -9,7 +9,7 @@ use crate::search::expand;
 use crate::search::query::Fields;
 use crate::{ApiError, AppState};
 use microwave_store::{
-    ActorType, Client, Org, SqliteStore, StoredDataBagItem, StoredNode, StoredObject,
+    ActorType, Client, MetadataStore, Org, StoredDataBagItem, StoredNode, StoredObject,
 };
 use serde_json::{json, Value};
 
@@ -26,25 +26,28 @@ pub(crate) struct SearchEntry {
 }
 
 /// Loads and expands every searchable document of `kind` in an organization.
-pub(crate) fn load_entries(
-    store: &SqliteStore,
+pub(crate) async fn load_entries(
+    store: &dyn MetadataStore,
     org_id: &str,
     kind: &IndexKind,
 ) -> Result<Vec<SearchEntry>, ApiError> {
     match kind {
-        IndexKind::Node => node_entries(store, org_id),
+        IndexKind::Node => node_entries(store, org_id).await,
         IndexKind::Role => object_entries(
-            store.list_roles(org_id).map_err(ApiError::from)?,
+            store.list_roles(org_id).await.map_err(ApiError::from)?,
             "/roles",
             true,
         ),
         IndexKind::Environment => object_entries(
-            store.list_environments(org_id).map_err(ApiError::from)?,
+            store
+                .list_environments(org_id)
+                .await
+                .map_err(ApiError::from)?,
             "/environments",
             false,
         ),
-        IndexKind::Client => client_entries(store, org_id),
-        IndexKind::DataBag(name) => data_bag_entries(store, org_id, name),
+        IndexKind::Client => client_entries(store, org_id).await,
+        IndexKind::DataBag(name) => data_bag_entries(store, org_id, name).await,
     }
 }
 
@@ -145,9 +148,13 @@ fn push_pair(content: &mut String, name: &str, value: &str) {
     content.push(' ');
 }
 
-fn node_entries(store: &SqliteStore, org_id: &str) -> Result<Vec<SearchEntry>, ApiError> {
+async fn node_entries(
+    store: &dyn MetadataStore,
+    org_id: &str,
+) -> Result<Vec<SearchEntry>, ApiError> {
     store
         .list_nodes(org_id)
+        .await
         .map_err(ApiError::from)?
         .into_iter()
         .map(node_entry)
@@ -201,15 +208,20 @@ fn object_entry(
     })
 }
 
-fn client_entries(store: &SqliteStore, org_id: &str) -> Result<Vec<SearchEntry>, ApiError> {
+async fn client_entries(
+    store: &dyn MetadataStore,
+    org_id: &str,
+) -> Result<Vec<SearchEntry>, ApiError> {
     let org = store
         .find_org_by_id(org_id)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("organization {org_id}")))?;
     let mut entries = Vec::new();
-    for client in store.list_clients(org_id).map_err(ApiError::from)? {
+    for client in store.list_clients(org_id).await.map_err(ApiError::from)? {
         let keys = store
             .find_actor_keys(&client.id, ActorType::Client)
+            .await
             .map_err(ApiError::from)?;
         let public_key = keys
             .iter()
@@ -244,13 +256,14 @@ fn client_entry(client: Client, org_name: &str, public_key: Option<&str>) -> Sea
     }
 }
 
-fn data_bag_entries(
-    store: &SqliteStore,
+async fn data_bag_entries(
+    store: &dyn MetadataStore,
     org_id: &str,
     data_bag: &str,
 ) -> Result<Vec<SearchEntry>, ApiError> {
     if store
         .find_data_bag(org_id, data_bag)
+        .await
         .map_err(ApiError::from)?
         .is_none()
     {
@@ -259,6 +272,7 @@ fn data_bag_entries(
 
     store
         .list_data_bag_items(org_id, data_bag)
+        .await
         .map_err(ApiError::from)?
         .into_iter()
         .map(|item| data_bag_item_entry(item, data_bag))
@@ -333,6 +347,7 @@ pub(crate) async fn index_client(state: &AppState, org: &Org, client: &Client) {
     let public_key = state
         .store
         .find_actor_keys(&client.id, ActorType::Client)
+        .await
         .ok()
         .and_then(|keys| {
             keys.iter()

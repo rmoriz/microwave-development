@@ -24,7 +24,7 @@ async fn list_orgs(
 ) -> Result<Json<Value>, ApiError> {
     let base = base_url(&headers, &state);
     let mut orgs = Map::new();
-    for org in state.store.list_orgs().map_err(ApiError::from)? {
+    for org in state.store.list_orgs().await.map_err(ApiError::from)? {
         orgs.insert(
             org.name.clone(),
             json!(format!("{base}/organizations/{}", org.name)),
@@ -54,25 +54,28 @@ async fn create_org(
     let (private_key, public_key) = generate_rsa_keypair().map_err(|_| ApiError::internal())?;
 
     let org = create_organization(
-        &state.store,
+        state.store.as_ref(),
         &name,
         &full_name,
         &auth.principal.actor_id,
         &auth.principal.authz_id,
     )
+    .await
     .map_err(ApiError::from)?;
 
-    let client = match provision_validator(&state, &org, &auth.principal.authz_id, &public_key) {
-        Ok(client) => client,
-        Err(error) => {
-            let _ = state.store.delete_org(&org.id);
-            return Err(error);
-        }
-    };
+    let client =
+        match provision_validator(&state, &org, &auth.principal.authz_id, &public_key).await {
+            Ok(client) => client,
+            Err(error) => {
+                let _ = state.store.delete_org(&org.id).await;
+                return Err(error);
+            }
+        };
 
     for environment in state
         .store
         .list_environments(&org.id)
+        .await
         .map_err(ApiError::from)?
     {
         crate::search::index::index_object(
@@ -109,7 +112,7 @@ async fn create_org(
     Ok((StatusCode::CREATED, Json(response)))
 }
 
-fn provision_validator(
+async fn provision_validator(
     state: &AppState,
     org: &microwave_store::Org,
     creator_authz_id: &str,
@@ -119,19 +122,23 @@ fn provision_validator(
     let client = state
         .store
         .create_client_with_acl(&org.id, &name, true, false, Some(creator_authz_id))
+        .await
         .map_err(ApiError::from)?;
     state
         .store
         .add_actor_key(&client.id, ActorType::Client, "default", public_key)
+        .await
         .map_err(ApiError::from)?;
     if let Some(group) = state
         .store
         .find_group(&org.id, "clients")
+        .await
         .map_err(ApiError::from)?
     {
         state
             .store
             .add_group_member(&group.authz_id, &client.authz_id)
+            .await
             .map_err(ApiError::from)?;
     }
     Ok(client)
@@ -144,6 +151,7 @@ async fn get_org(
     let org = state
         .store
         .find_org(&organization)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("organization {organization}")))?;
     Ok(Json(json!({
@@ -162,9 +170,10 @@ async fn update_org(
     let org = state
         .store
         .find_org(&organization)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("organization {organization}")))?;
-    require_permission(&state, &auth, &org.authz_id, Permission::Update)?;
+    require_permission(&state, &auth, &org.authz_id, Permission::Update).await?;
 
     if body.get("private_key").is_some() {
         return Err(ApiError::bad_request("Field 'private_key' is invalid"));
@@ -184,6 +193,7 @@ async fn update_org(
     state
         .store
         .update_org(&organization, &full_name)
+        .await
         .map_err(ApiError::from)?;
 
     // Upstream echoes the posted representation, including fields such as
@@ -198,10 +208,15 @@ async fn delete_org(
     let org = state
         .store
         .find_org(&organization)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("organization {organization}")))?;
     let org_id = org.id.clone();
-    state.store.delete_org(&org_id).map_err(ApiError::from)?;
+    state
+        .store
+        .delete_org(&org_id)
+        .await
+        .map_err(ApiError::from)?;
     crate::search::index::delete_organization(&state, &org_id).await;
     Ok(Json(json!({})))
 }

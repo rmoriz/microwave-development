@@ -16,11 +16,11 @@ pub async fn show(
     State(state): State<OAuthState>,
     headers: HeaderMap,
 ) -> Result<Response, OAuthError> {
-    let Some(user) = crate::util::current_user(&state, &headers)? else {
+    let Some(user) = crate::util::current_user(&state, &headers).await? else {
         return Ok(redirect("/id/signin"));
     };
     if wants_json(&headers) {
-        return Ok(Json(user_json(&state, &user)).into_response());
+        return Ok(Json(user_json(&state, &user).await).into_response());
     }
 
     let csrf = csrf_token();
@@ -72,7 +72,7 @@ pub async fn update(
     request: Request,
 ) -> Result<Response, OAuthError> {
     let params = parse_params(request).await?;
-    let Some(user) = crate::util::current_user(&state, &headers)? else {
+    let Some(user) = crate::util::current_user(&state, &headers).await? else {
         if params.is_json() || wants_json(&headers) {
             return Err(OAuthError::unauthorized("authentication is required"));
         }
@@ -106,41 +106,48 @@ pub async fn update(
         display_name,
         ..Default::default()
     };
-    let updated = state.store.update_user_patch(&user.username, &patch)?;
+    let updated = state
+        .store
+        .update_user_patch(&user.username, &patch)
+        .await?;
 
     // Upstream oc-id round-trips the current public key through `PUT /users`
     // when the profile form is saved. That path leaves the key with an extra
     // trailing newline, which the Pedant oc_id spec asserts on the following
     // `GET /users/:name` (`public_key.to_s + "\n"`). Mirror the whitespace
     // without changing the key material.
-    normalize_default_key(&state, &updated)?;
+    normalize_default_key(&state, &updated).await?;
 
     if params.is_json() || wants_json(&headers) {
-        return Ok(Json(user_json(&state, &updated)).into_response());
+        return Ok(Json(user_json(&state, &updated).await).into_response());
     }
     Ok(redirect("/id/profile"))
 }
 
-fn normalize_default_key(
+async fn normalize_default_key(
     state: &OAuthState,
     user: &microwave_store::User,
 ) -> Result<(), OAuthError> {
     let Some(key) = state
         .store
-        .find_actor_key(&user.id, ActorType::User, "default")?
+        .find_actor_key(&user.id, ActorType::User, "default")
+        .await?
     else {
         return Ok(());
     };
     let normalized = format!("{}\n\n", key.public_key.trim_end_matches('\n'));
     if normalized != key.public_key {
-        state.store.update_actor_key(
-            &user.id,
-            ActorType::User,
-            "default",
-            None,
-            Some(&normalized),
-            None,
-        )?;
+        state
+            .store
+            .update_actor_key(
+                &user.id,
+                ActorType::User,
+                "default",
+                None,
+                Some(&normalized),
+                None,
+            )
+            .await?;
     }
     Ok(())
 }
@@ -150,7 +157,7 @@ pub async fn change_password(
     headers: HeaderMap,
     request: Request,
 ) -> Result<Response, OAuthError> {
-    let user = require_user(&state, &headers)?;
+    let user = require_user(&state, &headers).await?;
     let params = parse_params(request).await?;
     let current_password = params.get("current_password").unwrap_or_default();
     let new_password = params.get("new_password").unwrap_or_default();
@@ -175,12 +182,15 @@ pub async fn change_password(
 
     let hash = hash_password(&new_password)
         .map_err(|_| OAuthError::invalid_request("new password must not be empty"))?;
-    state.store.update_user(
-        &user.username,
-        None,
-        Some((&hash.hash, &hash.salt, &hash.hash_type)),
-        None,
-    )?;
+    state
+        .store
+        .update_user(
+            &user.username,
+            None,
+            Some((&hash.hash, &hash.salt, &hash.hash_type)),
+            None,
+        )
+        .await?;
 
     if params.is_json() || wants_json(&headers) {
         return Ok(Json(json!({ "status": "ok" })).into_response());
@@ -192,7 +202,7 @@ pub async fn email(
     State(state): State<OAuthState>,
     headers: HeaderMap,
 ) -> Result<Response, OAuthError> {
-    let user = require_user(&state, &headers)?;
+    let user = require_user(&state, &headers).await?;
     if wants_json(&headers) {
         return Ok(Json(json!({ "email": user.email })).into_response());
     }
@@ -207,22 +217,27 @@ pub async fn regen_key(
     State(state): State<OAuthState>,
     headers: HeaderMap,
 ) -> Result<Response, OAuthError> {
-    let user = require_user(&state, &headers)?;
+    let user = require_user(&state, &headers).await?;
     let (private_key, public_key) = generate_rsa_keypair().map_err(|_| OAuthError::internal())?;
 
-    match state.store.update_actor_key(
-        &user.id,
-        ActorType::User,
-        "default",
-        None,
-        Some(&public_key),
-        None,
-    ) {
+    match state
+        .store
+        .update_actor_key(
+            &user.id,
+            ActorType::User,
+            "default",
+            None,
+            Some(&public_key),
+            None,
+        )
+        .await
+    {
         Ok(_) => {}
         Err(microwave_store::StoreError::NotFound(_)) => {
             state
                 .store
-                .add_actor_key(&user.id, ActorType::User, "default", &public_key)?;
+                .add_actor_key(&user.id, ActorType::User, "default", &public_key)
+                .await?;
         }
         Err(error) => return Err(error.into()),
     }

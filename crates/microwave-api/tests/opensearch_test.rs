@@ -50,8 +50,8 @@ async fn search_route_uses_the_configured_opensearch_backend() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
 
-    let org = state.store.find_org("acme").unwrap().unwrap();
-    let node = state.store.find_node(&org.id, "web1").unwrap().unwrap();
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
+    let node = state.sqlite().find_node(&org.id, "web1").unwrap().unwrap();
 
     // The node write indexed a document through `_bulk`.
     let bulk = server.bulk_bodies();

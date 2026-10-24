@@ -4,9 +4,8 @@ PostgreSQL metadata-store backend for Microwave Server.
 
 This crate implements the backend-neutral repository traits from
 `microwave-store` against a schema equivalent to the unified SQLite schema in
-`crates/microwave-store/migrations/0001_initial.sql`. It is intentionally
-additive: the SQLite backend, the API crate, and the `AppState` wiring are
-unchanged.
+`crates/microwave-store/migrations/0001_initial.sql`. The HTTP server selects
+it when `database.driver = "postgres"`; SQLite remains the default.
 
 ## What is implemented
 
@@ -78,26 +77,32 @@ green on machines without Docker.
 Each test uses a unique org/name suffix so the suite can run in parallel
 against one database.
 
-## Remaining work: making `AppState` backend-agnostic
+## Runtime integration
 
-The trait already lives in `microwave-store` (`src/backend.rs`), not in this
-backend crate, so the API can depend on the contract rather than on PostgreSQL.
-`MetadataStore` is a blanket supertrait over all repository traits.
+`AppState` holds `Arc<dyn MetadataStore>`, so the API handlers, OAuth/identity
+surface, embedded search, authorization policy, and bootstrap use the same code
+for both backends. The server selects the backend in
+`bin/microwave-server/src/main.rs`:
 
-To finish the runtime integration:
+```sh
+MW_DATABASE__DRIVER=postgres \
+MW_DATABASE__URL=postgres://microwave:secret@db/microwave \
+microwave-server serve
+```
 
-1. **Change `AppState`.** Replace `pub store: Arc<SqliteStore>` with
-   `pub store: Arc<dyn MetadataStore>` (all methods are object-safe through
-   `async_trait`). `AuthContext` and handlers then operate on the trait.
-2. **Abstract search construction.** `microwave-api::state::build_search_backend`
-   currently accepts `Arc<SqliteStore>`; switch it to the read-side trait above.
-3. **Select the backend in configuration.** Add `metadata.backend =
-   "sqlite" | "postgres"` plus a `database_url` to `microwave-config`, and
-   construct the appropriate store at startup. Default remains SQLite.
-4. **Add the optional `set_secret_if_absent` bootstrap method.** It is not part
-   of the contract yet; when Stage 3 needs an atomic
-   `INSERT ... ON CONFLICT DO NOTHING` secret bootstrap, add it to the trait,
-   the SQLite forwarder and this backend together.
-5. **Operational follow-ups.** Connection retry/backoff, per-query timeouts,
-   advisory locks for cluster-wide cleanup jobs, and backup/restore support for
-   PostgreSQL (the current backup path is SQLite `VACUUM INTO`).
+`AppState::from_sqlite` keeps the concrete SQLite handle available for tests
+and SQLite-only helpers; `AppState::new` is backend-neutral.
+`SecretsRepository::set_secret_if_absent` provides the atomic first-start
+bootstrap (`INSERT ... ON CONFLICT DO NOTHING`), so several replicas starting
+against one database converge on one object-store secret.
+
+## Deferred work
+
+- `microwave-ctl` and `microwave-migrate` still open SQLite stores only.
+  PostgreSQL administration uses `psql`; snapshot import/export and key
+  rotation are not ported.
+- `microwave-ctl backup`/`restore` are SQLite-only (`VACUUM INTO`). Use
+  `pg_dump` plus the object-store backup for PostgreSQL deployments.
+- Multi-replica HA has not been load-validated. Connection retry/backoff,
+  per-query timeouts, and advisory locks for cluster-wide cleanup jobs remain
+  follow-ups.

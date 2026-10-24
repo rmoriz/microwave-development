@@ -17,7 +17,7 @@ struct Fixture {
     admin_id: String,
 }
 
-fn fixture() -> Fixture {
+async fn fixture() -> Fixture {
     let store = Arc::new(SqliteStore::open_in_memory().unwrap());
     let hash = hash_password(PASSWORD).unwrap();
     let admin = store
@@ -47,12 +47,13 @@ fn fixture() -> Fixture {
         .add_actor_key(&alice.id, ActorType::User, "default", support::PUBLIC_KEY)
         .unwrap();
     let org = microwave_authz::create_organization(
-        &store,
+        store.as_ref(),
         "acme",
         "Acme Corp",
         &admin.id,
         &admin.authz_id,
     )
+    .await
     .unwrap();
     store.add_user_to_org(&org.id, &alice.id).unwrap();
 
@@ -66,7 +67,7 @@ fn fixture() -> Fixture {
         ));
 
     Fixture {
-        state: AppState::new(store, Arc::new(config), object_store).unwrap(),
+        state: AppState::from_sqlite(store, Arc::new(config), object_store).unwrap(),
         admin_id: admin.id,
     }
 }
@@ -199,12 +200,12 @@ async fn sign_in(
 fn admin_bearer(fixture: &Fixture) -> String {
     let application = fixture
         .state
-        .store
+        .sqlite()
         .create_oauth_application("Bootstrap", "https://bootstrap.example/cb", "read", true)
         .unwrap();
     fixture
         .state
-        .store
+        .sqlite()
         .create_oauth_access_token(&fixture.admin_id, application.id, "read", Some(3600), false)
         .unwrap()
         .token
@@ -212,7 +213,7 @@ fn admin_bearer(fixture: &Fixture) -> String {
 
 #[tokio::test]
 async fn signs_in_with_password_and_reads_profile() {
-    let fixture = fixture();
+    let fixture = fixture().await;
     let app = app(&fixture);
 
     let (status, response) = sign_in(&app, "alice", PASSWORD).await;
@@ -246,7 +247,7 @@ async fn signs_in_with_password_and_reads_profile() {
 
 #[tokio::test]
 async fn rejects_invalid_credentials_and_unauthenticated_access() {
-    let fixture = fixture();
+    let fixture = fixture().await;
     let app = app(&fixture);
 
     let (status, response) = sign_in(&app, "alice", "wrong-password").await;
@@ -264,7 +265,7 @@ async fn rejects_invalid_credentials_and_unauthenticated_access() {
 
 #[tokio::test]
 async fn application_management_requires_an_admin() {
-    let fixture = fixture();
+    let fixture = fixture().await;
     let app = app(&fixture);
 
     let (_, alice_session) = sign_in(&app, "alice", PASSWORD).await;
@@ -354,11 +355,11 @@ async fn application_management_requires_an_admin() {
 
 #[tokio::test]
 async fn authorization_code_token_refresh_and_revoke_flow() {
-    let fixture = fixture();
+    let fixture = fixture().await;
     let app = app(&fixture);
     let application = fixture
         .state
-        .store
+        .sqlite()
         .create_oauth_application(
             "Supermarket",
             "https://supermarket.example/cb",
@@ -537,7 +538,7 @@ async fn authorization_code_token_refresh_and_revoke_flow() {
 
 #[tokio::test]
 async fn rejects_authorization_requests_with_an_unknown_client() {
-    let fixture = fixture();
+    let fixture = fixture().await;
     let app = app(&fixture);
     let response = request(
         &app,
@@ -554,7 +555,7 @@ async fn rejects_authorization_requests_with_an_unknown_client() {
 
 #[tokio::test]
 async fn status_is_public_and_matches_the_upstream_shape() {
-    let fixture = fixture();
+    let fixture = fixture().await;
     let app = app(&fixture);
     let response = request(&app, "GET", "/id/v1/status", "", "", &[]).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -570,7 +571,7 @@ async fn status_is_public_and_matches_the_upstream_shape() {
 
 #[tokio::test]
 async fn changes_password_and_regenerates_a_key() {
-    let fixture = fixture();
+    let fixture = fixture().await;
     let app = app(&fixture);
     let (_, session) = sign_in(&app, "alice", PASSWORD).await;
     let cookie = cookie_from(&session);
@@ -613,7 +614,7 @@ async fn changes_password_and_regenerates_a_key() {
 
 #[tokio::test]
 async fn password_reset_request_and_update_flow() {
-    let fixture = fixture();
+    let fixture = fixture().await;
     let app = app(&fixture);
 
     let response = request(
@@ -661,7 +662,7 @@ async fn password_reset_request_and_update_flow() {
 
 #[tokio::test]
 async fn application_form_posts_redirect_and_render_html() {
-    let fixture = fixture();
+    let fixture = fixture().await;
     let app = app(&fixture);
     let (_, session) = sign_in(&app, "admin", PASSWORD).await;
     let cookie = cookie_from(&session);
@@ -705,7 +706,7 @@ async fn application_form_posts_redirect_and_render_html() {
 
 #[tokio::test]
 async fn home_and_signin_pages_are_served_without_chef_signatures() {
-    let fixture = fixture();
+    let fixture = fixture().await;
     let app = app(&fixture);
     for path in ["/id", "/id/", "/id/signin"] {
         let response = request(&app, "GET", path, "", "", &[]).await;
@@ -722,7 +723,7 @@ async fn home_and_signin_pages_are_served_without_chef_signatures() {
 
 #[tokio::test]
 async fn signin_page_exposes_the_pedant_csrf_meta_tag_and_callback_form() {
-    let fixture = fixture();
+    let fixture = fixture().await;
     let app = app(&fixture);
     let (cookie, token, html) = signin_page(&app).await;
 
@@ -737,7 +738,7 @@ async fn signin_page_exposes_the_pedant_csrf_meta_tag_and_callback_form() {
 
 #[tokio::test]
 async fn pedant_signin_rejects_a_bad_password_with_the_failure_redirect() {
-    let fixture = fixture();
+    let fixture = fixture().await;
     let app = app(&fixture);
     let (pre_session, token, _) = signin_page(&app).await;
     let body = format!("username=alice&password=wrong&authenticity_token={token}&commit=Sign+In");
@@ -760,10 +761,10 @@ async fn pedant_signin_rejects_a_bad_password_with_the_failure_redirect() {
 
 #[tokio::test]
 async fn pedant_signin_profile_show_update_password_and_key_reset_flow() {
-    let fixture = fixture();
+    let fixture = fixture().await;
     fixture
         .state
-        .store
+        .sqlite()
         .update_user_patch(
             "alice",
             &UserPatch {
@@ -840,7 +841,7 @@ async fn pedant_signin_profile_show_update_password_and_key_reset_flow() {
         response.headers().get(header::LOCATION).unwrap(),
         "/id/profile"
     );
-    let user = fixture.state.store.find_user("alice").unwrap().unwrap();
+    let user = fixture.state.sqlite().find_user("alice").unwrap().unwrap();
     assert_eq!(user.first_name.as_deref(), Some("ALICE-FIRST"));
     assert_eq!(user.middle_name.as_deref(), Some("ALICE-MIDDLE"));
     assert_eq!(user.last_name.as_deref(), Some("ALICE-LAST"));
@@ -849,7 +850,7 @@ async fn pedant_signin_profile_show_update_password_and_key_reset_flow() {
     // trailing newline; Pedant asserts that exact shape.
     let key_after_update = fixture
         .state
-        .store
+        .sqlite()
         .find_actor_key(&user.id, ActorType::User, "default")
         .unwrap()
         .unwrap();
@@ -902,7 +903,7 @@ async fn pedant_signin_profile_show_update_password_and_key_reset_flow() {
     assert!(private_key.contains("BEGIN PRIVATE KEY"));
     let stored_key = fixture
         .state
-        .store
+        .sqlite()
         .find_actor_key(&user.id, ActorType::User, "default")
         .unwrap()
         .unwrap();
@@ -911,7 +912,7 @@ async fn pedant_signin_profile_show_update_password_and_key_reset_flow() {
 
 #[tokio::test]
 async fn signout_clears_the_identity_session() {
-    let fixture = fixture();
+    let fixture = fixture().await;
     let app = app(&fixture);
     let cookie = pedant_signin(&app, "alice", PASSWORD).await;
 

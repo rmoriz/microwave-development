@@ -75,7 +75,7 @@ async fn principals_return_versioned_shapes_and_real_org_membership() {
     let app = support::app(state.clone());
     create_org(&app).await;
 
-    let org = state.store.find_org("acme").unwrap().unwrap();
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
     support::associate(&state, &org, &member);
 
     let (status, _) = request(

@@ -30,11 +30,16 @@ async fn list_clients(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let container = client_container_authz(&state, org)?;
-    require_permission(&state, &auth, &container, microwave_store::Permission::Read)?;
+    let container = client_container_authz(&state, org).await?;
+    require_permission(&state, &auth, &container, microwave_store::Permission::Read).await?;
     let base = base_url(&headers, &state);
     let mut clients = Map::new();
-    for client in state.store.list_clients(&org.id).map_err(ApiError::from)? {
+    for client in state
+        .store
+        .list_clients(&org.id)
+        .await
+        .map_err(ApiError::from)?
+    {
         clients.insert(
             client.name.clone(),
             json!(format!(
@@ -68,12 +73,12 @@ async fn create_client(
         ));
     }
 
-    authorize_create(&state, &auth, org, validator)?;
+    authorize_create(&state, &auth, org, validator).await?;
 
     // A validator performs the create with system privilege upstream: the new
     // client itself, not the validator, is added to its ACL. Normal creators
     // are added explicitly.
-    let creator = if is_validator_requestor(&state, &auth, org)? {
+    let creator = if is_validator_requestor(&state, &auth, org).await? {
         None
     } else {
         Some(auth.principal.authz_id.as_str())
@@ -81,6 +86,7 @@ async fn create_client(
     let client = state
         .store
         .create_client_with_acl(&org.id, &name, validator, admin, creator)
+        .await
         .map_err(client_error)?;
 
     // Upstream API v0 always provisions a default key when the request does not
@@ -90,6 +96,7 @@ async fn create_client(
         state
             .store
             .add_actor_key(&client.id, ActorType::Client, "default", &public_key)
+            .await
             .map_err(ApiError::from)?;
         Some((public_key, None))
     } else if api_version.0 == 0 || create_key {
@@ -97,6 +104,7 @@ async fn create_client(
         state
             .store
             .add_actor_key(&client.id, ActorType::Client, "default", &public_key)
+            .await
             .map_err(ApiError::from)?;
         Some((public_key, Some(private_key)))
     } else {
@@ -106,11 +114,13 @@ async fn create_client(
     if let Some(group) = state
         .store
         .find_group(&org.id, "clients")
+        .await
         .map_err(ApiError::from)?
     {
         state
             .store
             .add_group_member(&group.authz_id, &client.authz_id)
+            .await
             .map_err(ApiError::from)?;
     }
 
@@ -160,16 +170,12 @@ async fn get_client(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let client = find_client(&state, org, &client_name)?;
-    authorize_client(&state, &auth, &client, microwave_store::Permission::Read)?;
+    let client = find_client(&state, org, &client_name).await?;
+    authorize_client(&state, &auth, &client, microwave_store::Permission::Read).await?;
     let base = base_url(&headers, &state);
-    Ok(Json(client_json(
-        &state,
-        org,
-        &client,
-        &base,
-        api_version.0 == 0,
-    )?))
+    Ok(Json(
+        client_json(&state, org, &client, &base, api_version.0 == 0).await?,
+    ))
 }
 
 async fn update_client(
@@ -181,8 +187,8 @@ async fn update_client(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let org = organization(&auth)?;
-    let client = find_client(&state, org, &client_name)?;
-    authorize_client(&state, &auth, &client, microwave_store::Permission::Update)?;
+    let client = find_client(&state, org, &client_name).await?;
+    authorize_client(&state, &auth, &client, microwave_store::Permission::Update).await?;
 
     let new_name = client_destination_name(&body, &client_name)?;
     let validator = optional_bool(&body, "validator")?;
@@ -230,6 +236,7 @@ async fn update_client(
         state
             .store
             .update_client(&org.id, &client_name, &new_name, validator)
+            .await
             .map_err(client_error)?
     } else {
         client
@@ -242,17 +249,19 @@ async fn update_client(
         state
             .store
             .update_or_create_default_key(&client.id, ActorType::Client, &generated_public)
+            .await
             .map_err(ApiError::from)?;
         private_key = Some(generated_private);
     } else if let Some(public_key) = public_key {
         state
             .store
             .update_or_create_default_key(&client.id, ActorType::Client, &public_key)
+            .await
             .map_err(ApiError::from)?;
     }
 
     let base = base_url(&headers, &state);
-    let mut response = client_json(&state, org, &client, &base, api_version.0 == 0)?;
+    let mut response = client_json(&state, org, &client, &base, api_version.0 == 0).await?;
     response["private_key"] = match private_key {
         Some(private_key) => json!(private_key),
         None => json!(false),
@@ -273,13 +282,14 @@ async fn delete_client(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let client = find_client(&state, org, &client_name)?;
-    authorize_client(&state, &auth, &client, microwave_store::Permission::Delete)?;
+    let client = find_client(&state, org, &client_name).await?;
+    authorize_client(&state, &auth, &client, microwave_store::Permission::Delete).await?;
     let base = base_url(&headers, &state);
-    let response = client_json(&state, org, &client, &base, api_version.0 == 0)?;
+    let response = client_json(&state, org, &client, &base, api_version.0 == 0).await?;
     state
         .store
         .delete_client(&org.id, &client_name)
+        .await
         .map_err(ApiError::from)?;
     crate::search::index::delete_document(&state, &org.id, &client.id).await;
     Ok(Json(response))
@@ -293,6 +303,7 @@ async fn get_principal(
     let org = state
         .store
         .find_org(&organization_name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| {
             ApiError::not_found_object("org", format!("Cannot find org {organization_name}"))
@@ -300,6 +311,7 @@ async fn get_principal(
     let principals = state
         .store
         .find_principals(Some(&org.id), &name)
+        .await
         .map_err(ApiError::from)?;
     if principals.is_empty() {
         return Err(ApiError::not_found_object(
@@ -308,10 +320,10 @@ async fn get_principal(
         ));
     }
 
-    let values = principals
-        .iter()
-        .map(|principal| principal_json(&state, principal))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut values = Vec::with_capacity(principals.len());
+    for principal in &principals {
+        values.push(principal_json(&state, principal).await?);
+    }
 
     if api_version.0 == 0 {
         Ok(Json(values.into_iter().next().unwrap_or(Value::Null)))
@@ -320,7 +332,7 @@ async fn get_principal(
     }
 }
 
-fn authorize_create(
+async fn authorize_create(
     state: &AppState,
     auth: &AuthContext,
     org: &Org,
@@ -333,15 +345,15 @@ fn authorize_create(
         if creating_validator {
             return Err(ApiError::forbidden());
         }
-        if is_validator_requestor(state, auth, org)? {
+        if is_validator_requestor(state, auth, org).await? {
             return Ok(());
         }
     }
-    let container = client_container_authz(state, org)?;
-    require_permission(state, auth, &container, microwave_store::Permission::Create)
+    let container = client_container_authz(state, org).await?;
+    require_permission(state, auth, &container, microwave_store::Permission::Create).await
 }
 
-fn authorize_client(
+async fn authorize_client(
     state: &AppState,
     auth: &AuthContext,
     client: &Client,
@@ -357,10 +369,10 @@ fn authorize_client(
         }
         return Ok(());
     }
-    require_permission(state, auth, &client.authz_id, permission)
+    require_permission(state, auth, &client.authz_id, permission).await
 }
 
-fn is_validator_requestor(
+async fn is_validator_requestor(
     state: &AppState,
     auth: &AuthContext,
     org: &Org,
@@ -371,23 +383,26 @@ fn is_validator_requestor(
     Ok(state
         .store
         .find_client(&org.id, &auth.principal.name)
+        .await
         .map_err(ApiError::from)?
         .is_some_and(|client| client.validator))
 }
 
-fn client_container_authz(state: &AppState, org: &Org) -> Result<String, ApiError> {
+async fn client_container_authz(state: &AppState, org: &Org) -> Result<String, ApiError> {
     Ok(state
         .store
         .find_container(&org.id, "clients")
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found("container clients"))?
         .authz_id)
 }
 
-fn find_client(state: &AppState, org: &Org, name: &str) -> Result<Client, ApiError> {
+async fn find_client(state: &AppState, org: &Org, name: &str) -> Result<Client, ApiError> {
     state
         .store
         .find_client(&org.id, name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("client {name}")))
 }
@@ -460,7 +475,7 @@ fn client_error(error: StoreError) -> ApiError {
     }
 }
 
-fn client_json(
+async fn client_json(
     state: &AppState,
     org: &Org,
     client: &Client,
@@ -479,6 +494,7 @@ fn client_json(
         let keys = state
             .store
             .find_actor_keys(&client.id, ActorType::Client)
+            .await
             .map_err(ApiError::from)?;
         let public_key = keys
             .iter()
@@ -492,10 +508,11 @@ fn client_json(
     Ok(value)
 }
 
-fn principal_json(state: &AppState, principal: &Principal) -> Result<Value, ApiError> {
+async fn principal_json(state: &AppState, principal: &Principal) -> Result<Value, ApiError> {
     let keys = state
         .store
         .find_principal_keys(principal)
+        .await
         .map_err(ApiError::from)?;
     let public_key = keys.first().map(|key| key.public_key.as_str());
     let org_member = match principal.actor_type {
@@ -504,6 +521,7 @@ fn principal_json(state: &AppState, principal: &Principal) -> Result<Value, ApiE
             Some(org_id) => state
                 .store
                 .is_user_in_org(org_id, &principal.actor_id)
+                .await
                 .map_err(ApiError::from)?,
             None => false,
         },

@@ -25,11 +25,16 @@ async fn list_groups(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "groups")?;
-    require_permission(&state, &auth, &container, Permission::Read)?;
+    let container = container_authz(&state, org, "groups").await?;
+    require_permission(&state, &auth, &container, Permission::Read).await?;
     let base = base_url(&headers, &state);
     let mut groups = Map::new();
-    for group in state.store.list_groups(&org.id).map_err(ApiError::from)? {
+    for group in state
+        .store
+        .list_groups(&org.id)
+        .await
+        .map_err(ApiError::from)?
+    {
         groups.insert(
             group.name.clone(),
             json!(format!(
@@ -48,13 +53,14 @@ async fn create_group(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "groups")?;
-    require_permission(&state, &auth, &container, Permission::Create)?;
+    let container = container_authz(&state, org, "groups").await?;
+    require_permission(&state, &auth, &container, Permission::Create).await?;
     let name = group_name(&body)?;
 
     let group = state
         .store
         .create_group_for_org_with_acl(&org.id, &name, &auth.principal.authz_id)
+        .await
         .map_err(ApiError::from)?;
     let base = base_url(&headers, &state);
     Ok((
@@ -71,11 +77,12 @@ async fn get_group(
     Path((_organization, group_name)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let group = find_group(&state, org, &group_name)?;
-    require_permission(&state, &auth, &group.authz_id, Permission::Read)?;
+    let group = find_group(&state, org, &group_name).await?;
+    require_permission(&state, &auth, &group.authz_id, Permission::Read).await?;
     let members = state
         .store
         .list_group_members(&org.id, &group.authz_id)
+        .await
         .map_err(ApiError::from)?;
     Ok(Json(group_json(org, &group, &members)))
 }
@@ -87,8 +94,8 @@ async fn update_group(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let org = organization(&auth)?;
-    let group = find_group(&state, org, &group_name)?;
-    require_permission(&state, &auth, &group.authz_id, Permission::Update)?;
+    let group = find_group(&state, org, &group_name).await?;
+    require_permission(&state, &auth, &group.authz_id, Permission::Update).await?;
 
     let new_name = match body.get("groupname") {
         None => None,
@@ -122,6 +129,7 @@ async fn update_group(
         state
             .store
             .rename_group(&org.id, &group_name, new_name.as_deref().unwrap())
+            .await
             .map_err(ApiError::from)?
     } else {
         group
@@ -136,11 +144,13 @@ async fn update_group(
             clients.as_deref(),
             groups.as_deref(),
         )
+        .await
         .map_err(ApiError::from)?;
 
     let members = state
         .store
         .list_group_members(&org.id, &group.authz_id)
+        .await
         .map_err(ApiError::from)?;
     let status = if renamed {
         StatusCode::CREATED
@@ -156,8 +166,8 @@ async fn delete_group(
     Path((_organization, group_name)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let group = find_group(&state, org, &group_name)?;
-    require_permission(&state, &auth, &group.authz_id, Permission::Delete)?;
+    let group = find_group(&state, org, &group_name).await?;
+    require_permission(&state, &auth, &group.authz_id, Permission::Delete).await?;
     if microwave_authz::DEFAULT_GROUPS.contains(&group.name.as_str()) {
         return Err(ApiError::forbidden_with(
             "default organization groups cannot be deleted",
@@ -166,28 +176,32 @@ async fn delete_group(
     let members = state
         .store
         .list_group_members(&org.id, &group.authz_id)
+        .await
         .map_err(ApiError::from)?;
     let response = group_json(org, &group, &members);
     state
         .store
         .delete_group(&org.id, &group_name)
+        .await
         .map_err(ApiError::from)?;
     Ok(Json(response))
 }
 
-fn container_authz(state: &AppState, org: &Org, name: &str) -> Result<String, ApiError> {
+async fn container_authz(state: &AppState, org: &Org, name: &str) -> Result<String, ApiError> {
     Ok(state
         .store
         .find_container(&org.id, name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("container {name}")))?
         .authz_id)
 }
 
-fn find_group(state: &AppState, org: &Org, name: &str) -> Result<Group, ApiError> {
+async fn find_group(state: &AppState, org: &Org, name: &str) -> Result<Group, ApiError> {
     state
         .store
         .find_group(&org.id, name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("group {name}")))
 }

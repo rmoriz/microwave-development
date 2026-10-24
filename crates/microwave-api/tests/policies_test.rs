@@ -383,7 +383,7 @@ async fn rejects_invalid_revision_documents() {
 async fn requires_permission_on_the_policy_container() {
     let state = support::state_with_pivotal();
     let outsider = state
-        .store
+        .sqlite()
         .create_user(
             "outsider",
             "outsider@example.com",
@@ -394,7 +394,7 @@ async fn requires_permission_on_the_policy_container() {
         )
         .unwrap();
     state
-        .store
+        .sqlite()
         .add_actor_key(
             &outsider.id,
             ActorType::User,

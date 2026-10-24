@@ -68,7 +68,7 @@ async fn create_client(app: &axum::Router, name: &str) {
 
 fn add_user(state: &microwave_api::AppState, name: &str) -> microwave_store::User {
     let user = state
-        .store
+        .sqlite()
         .create_user(
             name,
             &format!("{name}@example.com"),
@@ -79,7 +79,7 @@ fn add_user(state: &microwave_api::AppState, name: &str) -> microwave_store::Use
         )
         .unwrap();
     state
-        .store
+        .sqlite()
         .add_actor_key(&user.id, ActorType::User, "default", support::PUBLIC_KEY)
         .unwrap();
     user
@@ -91,9 +91,9 @@ fn add_member(
     group: &str,
     authz_id: &str,
 ) {
-    let group = state.store.find_group(&org.id, group).unwrap().unwrap();
+    let group = state.sqlite().find_group(&org.id, group).unwrap().unwrap();
     state
-        .store
+        .sqlite()
         .add_group_member(&group.authz_id, authz_id)
         .unwrap();
 }
@@ -147,9 +147,12 @@ async fn client_can_read_the_default_environment() {
             .contains(&json!("admins")));
     }
 
-    let org = state.store.find_org("acme").unwrap().unwrap();
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
     let admin = add_user(&state, "admin");
-    state.store.associate_user_org(&org.id, &admin.id).unwrap();
+    state
+        .sqlite()
+        .associate_user_org(&org.id, &admin.id)
+        .unwrap();
     add_member(&state, &org, "admins", &admin.authz_id);
     let (status, _) = request(
         &app,
@@ -167,7 +170,7 @@ async fn client_can_read_roles_and_nodes_needed_for_a_converge() {
     let state = support::state_with_pivotal();
     let app = support::app(state.clone());
     create_org(&app).await;
-    let org = state.store.find_org("acme").unwrap().unwrap();
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
 
     // A normal user creates a role; the role object inherits the roles
     // container ACL, which grants the clients group read.

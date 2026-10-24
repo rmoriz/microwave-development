@@ -18,16 +18,16 @@ pub async fn me(
     State(state): State<OAuthState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, OAuthError> {
-    let user = require_bearer_user(&state, &headers)?;
-    Ok(Json(user_json(&state, &user)))
+    let user = require_bearer_user(&state, &headers).await?;
+    Ok(Json(user_json(&state, &user).await))
 }
 
 pub async fn organizations(
     State(state): State<OAuthState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, OAuthError> {
-    let user = require_bearer_user(&state, &headers)?;
-    let organizations = state.store.list_user_orgs(&user.id)?;
+    let user = require_bearer_user(&state, &headers).await?;
+    let organizations = state.store.list_user_orgs(&user.id).await?;
     let organizations = organizations
         .into_iter()
         .map(|organization| {
@@ -45,11 +45,12 @@ pub async fn user(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, OAuthError> {
-    require_bearer_user(&state, &headers)?;
+    require_bearer_user(&state, &headers).await?;
     let user = state
         .store
-        .find_user(&id)?
-        .or(state.store.find_user_by_id(&id)?)
+        .find_user(&id)
+        .await?
+        .or(state.store.find_user_by_id(&id).await?)
         .ok_or_else(|| OAuthError::not_found(format!("user {id}")))?;
     Ok(Json(json!({
         "id": user.username,
@@ -61,11 +62,13 @@ pub async fn user(
     })))
 }
 
-fn require_bearer_user(
+async fn require_bearer_user(
     state: &OAuthState,
     headers: &HeaderMap,
 ) -> Result<microwave_store::User, OAuthError> {
     let token = bearer_token(headers)
         .ok_or_else(|| OAuthError::unauthorized("bearer token is required"))?;
-    bearer_user(state, &token)?.ok_or_else(|| OAuthError::unauthorized("invalid bearer token"))
+    bearer_user(state, &token)
+        .await?
+        .ok_or_else(|| OAuthError::unauthorized("invalid bearer token"))
 }

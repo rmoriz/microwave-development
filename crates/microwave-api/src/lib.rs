@@ -99,7 +99,7 @@ async fn server_api_version() -> Json<Value> {
 
 async fn license(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
     let node_license = state.config.license.node_license;
-    let node_count = state.store.count_nodes().map_err(ApiError::from)?;
+    let node_count = state.store.count_nodes().await.map_err(ApiError::from)?;
     Ok(Json(json!({
         "limit_exceeded": node_count > node_license,
         "node_license": node_license,

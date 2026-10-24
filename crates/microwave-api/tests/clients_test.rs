@@ -188,7 +188,7 @@ async fn request_v0(
 
 fn add_user(state: &microwave_api::AppState, name: &str) -> microwave_store::User {
     let user = state
-        .store
+        .sqlite()
         .create_user(
             name,
             &format!("{name}@example.com"),
@@ -199,7 +199,7 @@ fn add_user(state: &microwave_api::AppState, name: &str) -> microwave_store::Use
         )
         .unwrap();
     state
-        .store
+        .sqlite()
         .add_actor_key(&user.id, ActorType::User, "default", support::PUBLIC_KEY)
         .unwrap();
     user
@@ -211,13 +211,13 @@ fn add_member(
     group: &str,
     user: &microwave_store::User,
 ) {
-    let org = state.store.find_org(org_name).unwrap().unwrap();
-    if !state.store.is_user_in_org(&org.id, &user.id).unwrap() {
-        state.store.add_user_to_org(&org.id, &user.id).unwrap();
+    let org = state.sqlite().find_org(org_name).unwrap().unwrap();
+    if !state.sqlite().is_user_in_org(&org.id, &user.id).unwrap() {
+        state.sqlite().add_user_to_org(&org.id, &user.id).unwrap();
     }
-    let group = state.store.find_group(&org.id, group).unwrap().unwrap();
+    let group = state.sqlite().find_group(&org.id, group).unwrap().unwrap();
     state
-        .store
+        .sqlite()
         .add_group_member(&group.authz_id, &user.authz_id)
         .unwrap();
 }

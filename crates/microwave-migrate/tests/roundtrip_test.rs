@@ -19,8 +19,8 @@ fn database(dir: &Path) -> std::path::PathBuf {
     dir.join("microwave.db")
 }
 
-#[test]
-fn exported_snapshot_round_trips_identity_authz_and_objects() {
+#[tokio::test]
+async fn exported_snapshot_round_trips_identity_authz_and_objects() {
     let source_dir = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(&database(source_dir.path())).unwrap();
 
@@ -59,9 +59,12 @@ fn exported_snapshot_round_trips_identity_authz_and_objects() {
         .add_actor_key(&alice.id, ActorType::User, "default", PUBLIC_KEY)
         .unwrap();
 
-    let acme =
-        create_organization(&store, "acme", "Acme Corp", &alice.id, &alice.authz_id).unwrap();
-    let beta = create_organization(&store, "beta", "Beta Inc", &bob.id, &bob.authz_id).unwrap();
+    let acme = create_organization(&store, "acme", "Acme Corp", &alice.id, &alice.authz_id)
+        .await
+        .unwrap();
+    let beta = create_organization(&store, "beta", "Beta Inc", &bob.id, &bob.authz_id)
+        .await
+        .unwrap();
 
     let web = store.create_client(&acme.id, "web", false, false).unwrap();
     store

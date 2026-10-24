@@ -1,12 +1,12 @@
 use axum::extract::FromRef;
 use microwave_config::Config;
-use microwave_store::SqliteStore;
+use microwave_store::MetadataStore;
 use std::sync::Arc;
 
 /// Dependencies the identity surface needs from the host application.
 #[derive(Clone)]
 pub struct OAuthState {
-    pub store: Arc<SqliteStore>,
+    pub store: Arc<dyn MetadataStore>,
     pub config: Arc<Config>,
 }
 

@@ -26,6 +26,7 @@ tower.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+microwave-store-postgres = { path = "../microwave-store-postgres" }
 tokio.workspace = true
 tower.workspace = true
 uuid.workspace = true

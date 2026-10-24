@@ -82,16 +82,12 @@ async fn list_cookbooks(
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "cookbooks")?;
-    require_permission(&state, &auth, &container, Permission::Read)?;
+    let container = container_authz(&state, org, "cookbooks").await?;
+    require_permission(&state, &auth, &container, Permission::Read).await?;
     let num_versions = parse_num_versions(query.get("num_versions"), NumVersions::Count(1))?;
-    Ok(Json(cookbook_map(
-        &state,
-        org,
-        &headers,
-        &num_versions,
-        None,
-    )?))
+    Ok(Json(
+        cookbook_map(&state, org, &headers, &num_versions, None).await?,
+    ))
 }
 
 async fn get_cookbook(
@@ -101,19 +97,20 @@ async fn get_cookbook(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "cookbooks")?;
-    require_permission(&state, &auth, &container, Permission::Read)?;
+    let container = container_authz(&state, org, "cookbooks").await?;
+    require_permission(&state, &auth, &container, Permission::Read).await?;
 
     if name == "_latest" {
-        return Ok(Json(latest_cookbook_map(&state, org, &headers)?));
+        return Ok(Json(latest_cookbook_map(&state, org, &headers).await?));
     }
     if name == "_recipes" {
-        return Ok(Json(Value::Array(recipes_from_latest(&state, org)?)));
+        return Ok(Json(Value::Array(recipes_from_latest(&state, org).await?)));
     }
 
     let versions = state
         .store
         .list_cookbook_versions(&org.id)
+        .await
         .map_err(ApiError::from)?;
     let versions: Vec<_> = versions
         .into_iter()
@@ -137,9 +134,10 @@ async fn get_cookbook_version(
     Path((_organization, name, version)): Path<(String, String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let cookbook = resolve_version(&state, org, &name, &version)?
+    let cookbook = resolve_version(&state, org, &name, &version)
+        .await?
         .ok_or_else(|| cookbook_version_not_found(&name, &version))?;
-    require_permission(&state, &auth, &cookbook.authz_id, Permission::Read)?;
+    require_permission(&state, &auth, &cookbook.authz_id, Permission::Read).await?;
 
     let manifest = render_manifest(&cookbook.manifest, api_version, Some(&state), &org.id)?;
     Ok(Json(manifest))
@@ -161,10 +159,11 @@ async fn put_cookbook_version(
     let existing = state
         .store
         .find_cookbook_version(&org.id, &name, &version)
+        .await
         .map_err(ApiError::from)?;
 
     if let Some(existing) = existing {
-        require_permission(&state, &auth, &existing.authz_id, Permission::Update)?;
+        require_permission(&state, &auth, &existing.authz_id, Permission::Update).await?;
         let force = query.get("force").is_some_and(|value| value != "false");
         if existing.frozen && !force {
             return Err(ApiError::conflict(frozen_message(&name, &version)));
@@ -174,7 +173,8 @@ async fn put_cookbook_version(
             org,
             &normalized.checksums,
             ChecksumErrorStyle::Update,
-        )?;
+        )
+        .await?;
 
         let frozen = existing.frozen || normalized.frozen;
         let mut response = normalized.response;
@@ -193,18 +193,20 @@ async fn put_cookbook_version(
                 frozen,
                 &auth.principal.authz_id,
             )
+            .await
             .map_err(ApiError::from)?;
         delete_blobs(&state, &org.id, &removed);
         Ok((StatusCode::OK, Json(response)))
     } else {
-        let container = container_authz(&state, org, "cookbooks")?;
-        require_permission(&state, &auth, &container, Permission::Create)?;
+        let container = container_authz(&state, org, "cookbooks").await?;
+        require_permission(&state, &auth, &container, Permission::Create).await?;
         validate_checksums(
             &state,
             org,
             &normalized.checksums,
             ChecksumErrorStyle::Create,
-        )?;
+        )
+        .await?;
 
         state
             .store
@@ -217,6 +219,7 @@ async fn put_cookbook_version(
                 normalized.frozen,
                 &auth.principal.authz_id,
             )
+            .await
             .map_err(ApiError::from)?;
 
         Ok((StatusCode::CREATED, Json(normalized.response)))
@@ -230,13 +233,15 @@ async fn delete_cookbook_version(
     Path((_organization, name, version)): Path<(String, String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let cookbook = resolve_version(&state, org, &name, &version)?
+    let cookbook = resolve_version(&state, org, &name, &version)
+        .await?
         .ok_or_else(|| cookbook_version_not_found(&name, &version))?;
-    require_permission(&state, &auth, &cookbook.authz_id, Permission::Delete)?;
+    require_permission(&state, &auth, &cookbook.authz_id, Permission::Delete).await?;
 
     let (deleted, removed) = state
         .store
         .delete_cookbook_version(&org.id, &name, &cookbook.version)
+        .await
         .map_err(ApiError::from)?;
     delete_blobs(&state, &org.id, &removed);
 
@@ -250,13 +255,14 @@ async fn universe(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "cookbooks")?;
-    require_permission(&state, &auth, &container, Permission::Read)?;
+    let container = container_authz(&state, org, "cookbooks").await?;
+    require_permission(&state, &auth, &container, Permission::Read).await?;
 
     let base = base_url(&headers, &state);
     let versions = state
         .store
         .list_cookbook_versions(&org.id)
+        .await
         .map_err(ApiError::from)?;
     let mut cookbooks: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
     for version in versions {
@@ -513,7 +519,7 @@ enum ChecksumErrorStyle {
     Update,
 }
 
-fn validate_checksums(
+async fn validate_checksums(
     state: &AppState,
     org: &Org,
     checksums: &[String],
@@ -523,6 +529,7 @@ fn validate_checksums(
         if !state
             .store
             .checksum_exists(&org.id, checksum)
+            .await
             .map_err(ApiError::from)?
         {
             return Err(match style {
@@ -538,7 +545,7 @@ fn validate_checksums(
     Ok(())
 }
 
-fn resolve_version(
+async fn resolve_version(
     state: &AppState,
     org: &Org,
     name: &str,
@@ -548,6 +555,7 @@ fn resolve_version(
         let versions = state
             .store
             .list_cookbook_versions(&org.id)
+            .await
             .map_err(ApiError::from)?;
         let mut versions: Vec<_> = versions
             .into_iter()
@@ -560,10 +568,11 @@ fn resolve_version(
     state
         .store
         .find_cookbook_version(&org.id, name, version)
+        .await
         .map_err(ApiError::from)
 }
 
-fn cookbook_map(
+async fn cookbook_map(
     state: &AppState,
     org: &Org,
     headers: &HeaderMap,
@@ -573,6 +582,7 @@ fn cookbook_map(
     let versions = state
         .store
         .list_cookbook_versions(&org.id)
+        .await
         .map_err(ApiError::from)?;
     let base = base_url(headers, state);
     let mut names: Vec<String> = versions
@@ -597,7 +607,7 @@ fn cookbook_map(
     Ok(Value::Object(map))
 }
 
-fn latest_cookbook_map(
+async fn latest_cookbook_map(
     state: &AppState,
     org: &Org,
     headers: &HeaderMap,
@@ -605,6 +615,7 @@ fn latest_cookbook_map(
     let versions = state
         .store
         .list_cookbook_versions(&org.id)
+        .await
         .map_err(ApiError::from)?;
     let base = base_url(headers, state);
     let mut latest: BTreeMap<String, StoredCookbookVersion> = BTreeMap::new();
@@ -631,10 +642,11 @@ fn latest_cookbook_map(
     Ok(Value::Object(map))
 }
 
-fn recipes_from_latest(state: &AppState, org: &Org) -> Result<Vec<Value>, ApiError> {
+async fn recipes_from_latest(state: &AppState, org: &Org) -> Result<Vec<Value>, ApiError> {
     let versions = state
         .store
         .list_cookbook_versions(&org.id)
+        .await
         .map_err(ApiError::from)?;
     let mut latest: BTreeMap<String, StoredCookbookVersion> = BTreeMap::new();
     for version in versions {

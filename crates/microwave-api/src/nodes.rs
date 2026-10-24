@@ -51,10 +51,14 @@ async fn list_nodes(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let nodes_container = container_authz(&state, org, "nodes")?;
-    require_permission(&state, &auth, &nodes_container, Permission::Read)?;
+    let nodes_container = container_authz(&state, org, "nodes").await?;
+    require_permission(&state, &auth, &nodes_container, Permission::Read).await?;
 
-    let nodes = state.store.list_nodes(&org.id).map_err(ApiError::from)?;
+    let nodes = state
+        .store
+        .list_nodes(&org.id)
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(node_map(
         &headers,
         &state,
@@ -70,12 +74,13 @@ async fn list_environment_nodes(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let nodes_container = container_authz(&state, org, "nodes")?;
-    require_permission(&state, &auth, &nodes_container, Permission::Read)?;
+    let nodes_container = container_authz(&state, org, "nodes").await?;
+    require_permission(&state, &auth, &nodes_container, Permission::Read).await?;
 
     let exists = state
         .store
         .find_environment(&org.id, &environment)
+        .await
         .map_err(ApiError::from)?
         .is_some();
     if !exists {
@@ -87,6 +92,7 @@ async fn list_environment_nodes(
     let nodes = state
         .store
         .list_nodes_in_environment(&org.id, &environment)
+        .await
         .map_err(ApiError::from)?;
     Ok(Json(node_map(
         &headers,
@@ -120,8 +126,8 @@ async fn create_node(
     Json(mut body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let org = organization(&auth)?;
-    let nodes_container = container_authz(&state, org, "nodes")?;
-    require_permission(&state, &auth, &nodes_container, Permission::Create)?;
+    let nodes_container = container_authz(&state, org, "nodes").await?;
+    require_permission(&state, &auth, &nodes_container, Permission::Create).await?;
 
     let normalized = normalize_node(&mut body, None)?;
     let node = state
@@ -137,6 +143,7 @@ async fn create_node(
                 creator_authz_id: &auth.principal.authz_id,
             },
         )
+        .await
         .map_err(ApiError::from)?;
     crate::search::index::index_node(&state, org, &node).await;
 
@@ -158,9 +165,10 @@ async fn get_node(
     let node = state
         .store
         .find_node(&org.id, &name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| node_not_found(&name))?;
-    require_permission(&state, &auth, &node.authz_id, Permission::Read)?;
+    require_permission(&state, &auth, &node.authz_id, Permission::Read).await?;
     serialized_body(&node.serialized_object)
 }
 
@@ -175,9 +183,10 @@ async fn update_node(
     let existing = state
         .store
         .find_node(&org.id, &name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| node_not_found(&name))?;
-    require_permission(&state, &auth, &existing.authz_id, Permission::Update)?;
+    require_permission(&state, &auth, &existing.authz_id, Permission::Update).await?;
 
     let node = state
         .store
@@ -189,6 +198,7 @@ async fn update_node(
             normalized.policy_name.as_deref(),
             normalized.policy_group.as_deref(),
         )
+        .await
         .map_err(ApiError::from)?;
     crate::search::index::index_node(&state, org, &node).await;
     serialized_body(&node.serialized_object)
@@ -203,12 +213,14 @@ async fn delete_node(
     let node = state
         .store
         .find_node(&org.id, &name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| node_not_found(&name))?;
-    require_permission(&state, &auth, &node.authz_id, Permission::Delete)?;
+    require_permission(&state, &auth, &node.authz_id, Permission::Delete).await?;
     state
         .store
         .delete_node(&org.id, &name)
+        .await
         .map_err(ApiError::from)?;
     crate::search::index::delete_document(&state, &org.id, &node.id).await;
     serialized_body(&node.serialized_object)

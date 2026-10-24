@@ -56,9 +56,9 @@ async fn list_user_keys(
     Path(username): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let target = user_target(&state, &headers, &username)?;
-    authorize(&state, &auth, &target, Permission::Read)?;
-    list_keys(&state, &target)
+    let target = user_target(&state, &headers, &username).await?;
+    authorize(&state, &auth, &target, Permission::Read).await?;
+    list_keys(&state, &target).await
 }
 
 async fn create_user_key(
@@ -68,9 +68,9 @@ async fn create_user_key(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
-    let target = user_target(&state, &headers, &username)?;
-    authorize(&state, &auth, &target, Permission::Update)?;
-    create_key(&state, &target, &body)
+    let target = user_target(&state, &headers, &username).await?;
+    authorize(&state, &auth, &target, Permission::Update).await?;
+    create_key(&state, &target, &body).await
 }
 
 async fn get_user_key(
@@ -79,9 +79,9 @@ async fn get_user_key(
     Path((username, key_name)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let target = user_target(&state, &headers, &username)?;
-    authorize(&state, &auth, &target, Permission::Read)?;
-    get_key(&state, &target, &key_name)
+    let target = user_target(&state, &headers, &username).await?;
+    authorize(&state, &auth, &target, Permission::Read).await?;
+    get_key(&state, &target, &key_name).await
 }
 
 async fn update_user_key(
@@ -91,9 +91,9 @@ async fn update_user_key(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
-    let target = user_target(&state, &headers, &username)?;
-    authorize(&state, &auth, &target, Permission::Update)?;
-    update_key(&state, &target, &key_name, &body)
+    let target = user_target(&state, &headers, &username).await?;
+    authorize(&state, &auth, &target, Permission::Update).await?;
+    update_key(&state, &target, &key_name, &body).await
 }
 
 async fn delete_user_key(
@@ -102,9 +102,9 @@ async fn delete_user_key(
     Path((username, key_name)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let target = user_target(&state, &headers, &username)?;
-    authorize(&state, &auth, &target, Permission::Update)?;
-    delete_key(&state, &target, &key_name)
+    let target = user_target(&state, &headers, &username).await?;
+    authorize(&state, &auth, &target, Permission::Update).await?;
+    delete_key(&state, &target, &key_name).await
 }
 
 async fn list_client_keys(
@@ -113,9 +113,9 @@ async fn list_client_keys(
     Path((_organization, client_name)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let target = client_target(&state, &auth, &headers, &client_name)?;
-    authorize_public_read(&state, &auth)?;
-    list_keys(&state, &target)
+    let target = client_target(&state, &auth, &headers, &client_name).await?;
+    authorize_public_read(&state, &auth).await?;
+    list_keys(&state, &target).await
 }
 
 async fn create_client_key(
@@ -125,9 +125,9 @@ async fn create_client_key(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
-    let target = client_target(&state, &auth, &headers, &client_name)?;
-    authorize(&state, &auth, &target, Permission::Update)?;
-    create_key(&state, &target, &body)
+    let target = client_target(&state, &auth, &headers, &client_name).await?;
+    authorize(&state, &auth, &target, Permission::Update).await?;
+    create_key(&state, &target, &body).await
 }
 
 async fn get_client_key(
@@ -136,9 +136,9 @@ async fn get_client_key(
     Path((_organization, client_name, key_name)): Path<(String, String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let target = client_target(&state, &auth, &headers, &client_name)?;
-    authorize_public_read(&state, &auth)?;
-    get_key(&state, &target, &key_name)
+    let target = client_target(&state, &auth, &headers, &client_name).await?;
+    authorize_public_read(&state, &auth).await?;
+    get_key(&state, &target, &key_name).await
 }
 
 async fn update_client_key(
@@ -148,9 +148,9 @@ async fn update_client_key(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
-    let target = client_target(&state, &auth, &headers, &client_name)?;
-    authorize(&state, &auth, &target, Permission::Update)?;
-    update_key(&state, &target, &key_name, &body)
+    let target = client_target(&state, &auth, &headers, &client_name).await?;
+    authorize(&state, &auth, &target, Permission::Update).await?;
+    update_key(&state, &target, &key_name, &body).await
 }
 
 async fn delete_client_key(
@@ -159,9 +159,9 @@ async fn delete_client_key(
     Path((_organization, client_name, key_name)): Path<(String, String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let target = client_target(&state, &auth, &headers, &client_name)?;
-    authorize(&state, &auth, &target, Permission::Update)?;
-    delete_key(&state, &target, &key_name)
+    let target = client_target(&state, &auth, &headers, &client_name).await?;
+    authorize(&state, &auth, &target, Permission::Update).await?;
+    delete_key(&state, &target, &key_name).await
 }
 
 async fn list_org_user_keys(
@@ -170,9 +170,9 @@ async fn list_org_user_keys(
     Path((_organization, username)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let target = org_user_target(&state, &auth, &headers, &username)?;
-    authorize_public_read(&state, &auth)?;
-    list_keys(&state, &target)
+    let target = org_user_target(&state, &auth, &headers, &username).await?;
+    authorize_public_read(&state, &auth).await?;
+    list_keys(&state, &target).await
 }
 
 async fn get_org_user_key(
@@ -181,12 +181,12 @@ async fn get_org_user_key(
     Path((_organization, username, key_name)): Path<(String, String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let target = org_user_target(&state, &auth, &headers, &username)?;
-    authorize_public_read(&state, &auth)?;
-    get_key(&state, &target, &key_name)
+    let target = org_user_target(&state, &auth, &headers, &username).await?;
+    authorize_public_read(&state, &auth).await?;
+    get_key(&state, &target, &key_name).await
 }
 
-fn user_target(
+async fn user_target(
     state: &AppState,
     headers: &HeaderMap,
     username: &str,
@@ -194,6 +194,7 @@ fn user_target(
     let user = state
         .store
         .find_user(username)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("user {username}")))?;
     Ok(KeyTarget {
@@ -206,7 +207,7 @@ fn user_target(
     })
 }
 
-fn org_user_target(
+async fn org_user_target(
     state: &AppState,
     auth: &AuthContext,
     headers: &HeaderMap,
@@ -216,6 +217,7 @@ fn org_user_target(
     let user = state
         .store
         .find_user(username)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("user {username}")))?;
     Ok(KeyTarget {
@@ -232,7 +234,7 @@ fn org_user_target(
     })
 }
 
-fn client_target(
+async fn client_target(
     state: &AppState,
     auth: &AuthContext,
     headers: &HeaderMap,
@@ -242,6 +244,7 @@ fn client_target(
     let client = state
         .store
         .find_client(&org.id, client_name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("client {client_name}")))?;
     Ok(KeyTarget {
@@ -261,7 +264,7 @@ fn client_target(
 /// Keys follow the ACL of their actor. The platform superuser may manage any
 /// key, users may manage their own, and non-validator clients may manage their
 /// own keys (validators have no self-service permissions).
-fn authorize(
+async fn authorize(
     state: &AppState,
     auth: &AuthContext,
     target: &KeyTarget,
@@ -277,12 +280,12 @@ fn authorize(
             ActorType::Client => return Err(ApiError::forbidden()),
         }
     }
-    require_permission(state, auth, &target.authz_id, permission)
+    require_permission(state, auth, &target.authz_id, permission).await
 }
 
 /// Reads of org-scoped actor keys are governed by membership in the org's
 /// `public_key_read_access` group, not by the target actor's ACL.
-fn authorize_public_read(state: &AppState, auth: &AuthContext) -> Result<(), ApiError> {
+async fn authorize_public_read(state: &AppState, auth: &AuthContext) -> Result<(), ApiError> {
     if is_superuser(auth) {
         return Ok(());
     }
@@ -290,11 +293,13 @@ fn authorize_public_read(state: &AppState, auth: &AuthContext) -> Result<(), Api
     let group = state
         .store
         .find_group(&org.id, "public_key_read_access")
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(ApiError::forbidden)?;
     if state
         .store
         .user_in_group(&group.authz_id, &auth.principal.authz_id)
+        .await
         .map_err(ApiError::from)?
     {
         Ok(())
@@ -303,10 +308,11 @@ fn authorize_public_read(state: &AppState, auth: &AuthContext) -> Result<(), Api
     }
 }
 
-fn list_keys(state: &AppState, target: &KeyTarget) -> Result<Json<Value>, ApiError> {
+async fn list_keys(state: &AppState, target: &KeyTarget) -> Result<Json<Value>, ApiError> {
     let keys = state
         .store
         .list_actor_keys(&target.actor_id, target.actor_type)
+        .await
         .map_err(ApiError::from)?;
     let values = keys
         .iter()
@@ -321,16 +327,21 @@ fn list_keys(state: &AppState, target: &KeyTarget) -> Result<Json<Value>, ApiErr
     Ok(Json(Value::Array(values)))
 }
 
-fn get_key(state: &AppState, target: &KeyTarget, key_name: &str) -> Result<Json<Value>, ApiError> {
+async fn get_key(
+    state: &AppState,
+    target: &KeyTarget,
+    key_name: &str,
+) -> Result<Json<Value>, ApiError> {
     let key = state
         .store
         .find_actor_key(&target.actor_id, target.actor_type, key_name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("key {key_name}")))?;
     Ok(Json(key_json(target, &key, None)))
 }
 
-fn create_key(
+async fn create_key(
     state: &AppState,
     target: &KeyTarget,
     body: &Value,
@@ -348,11 +359,12 @@ fn create_key(
             &public_key,
             &expires_at,
         )
+        .await
         .map_err(ApiError::from)?;
     created_key_response(target, &key, private_key.as_deref())
 }
 
-fn update_key(
+async fn update_key(
     state: &AppState,
     target: &KeyTarget,
     key_name: &str,
@@ -397,6 +409,7 @@ fn update_key(
             public_key.as_deref(),
             expires_at.as_deref(),
         )
+        .await
         .map_err(ApiError::from)?;
 
     let renamed = new_key_name.as_deref().is_some_and(|name| name != key_name);
@@ -410,7 +423,7 @@ fn update_key(
     Ok((status, location_headers(&uri)?, Json(response)))
 }
 
-fn delete_key(
+async fn delete_key(
     state: &AppState,
     target: &KeyTarget,
     key_name: &str,
@@ -418,11 +431,13 @@ fn delete_key(
     let key = state
         .store
         .find_actor_key(&target.actor_id, target.actor_type, key_name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("key {key_name}")))?;
     state
         .store
         .delete_actor_key(&target.actor_id, target.actor_type, key_name)
+        .await
         .map_err(ApiError::from)?;
     Ok(Json(key_json(target, &key, None)))
 }

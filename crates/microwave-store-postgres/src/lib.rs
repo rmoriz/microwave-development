@@ -19,7 +19,8 @@
 //! # }
 //! ```
 //!
-//! See `README.md` for the remaining `AppState` integration work.
+//! The server selects this backend through `database.driver = "postgres"`; see
+//! `README.md` for the runtime wiring and deferred operational work.
 
 mod artifacts;
 mod authz;

@@ -27,13 +27,14 @@ async fn create_sandbox(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "sandboxes")?;
-    require_permission(&state, &auth, &container, Permission::Create)?;
+    let container = container_authz(&state, org, "sandboxes").await?;
+    require_permission(&state, &auth, &container, Permission::Create).await?;
 
     let checksums = checksums_from_body(&body)?;
     let (sandbox_id, checks) = state
         .store
         .create_sandbox(&org.id, &checksums)
+        .await
         .map_err(ApiError::from)?;
     let base = base_url(&headers, &state);
     Ok((
@@ -53,8 +54,8 @@ async fn commit_sandbox(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "sandboxes")?;
-    require_permission(&state, &auth, &container, Permission::Create)?;
+    let container = container_authz(&state, org, "sandboxes").await?;
+    require_permission(&state, &auth, &container, Permission::Create).await?;
 
     if body.get("is_completed").and_then(Value::as_bool) != Some(true) {
         return Err(ApiError::bad_request(
@@ -64,6 +65,7 @@ async fn commit_sandbox(
     if !state
         .store
         .sandbox_exists(&org.id, &sandbox_id)
+        .await
         .map_err(ApiError::from)?
     {
         return Err(ApiError::not_found(format!(
@@ -74,11 +76,13 @@ async fn commit_sandbox(
     let created_at = state
         .store
         .sandbox_created_at(&org.id, &sandbox_id)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("No such sandbox '{sandbox_id}'.")))?;
     let checksums = state
         .store
         .sandbox_checksums(&org.id, &sandbox_id)
+        .await
         .map_err(ApiError::from)?;
     let missing: Vec<&String> = checksums
         .iter()
@@ -98,6 +102,7 @@ async fn commit_sandbox(
     state
         .store
         .commit_sandbox(&org.id, &sandbox_id)
+        .await
         .map_err(ApiError::from)?;
     Ok(Json(json!({
         "guid": sandbox_id,

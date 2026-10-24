@@ -40,7 +40,7 @@ pub fn state_with_config(mut config: Config) -> AppState {
         &secret,
         "http://0.0.0.0:8000",
     ));
-    AppState::new(store, Arc::new(config), object_store).unwrap()
+    AppState::from_sqlite(store, Arc::new(config), object_store).unwrap()
 }
 
 pub fn app(state: AppState) -> axum::Router {
@@ -52,24 +52,25 @@ pub fn app(state: AppState) -> axum::Router {
 /// behavior is driven by org group membership.
 pub fn add_user(state: &AppState, username: &str, email: &str, admin: bool) -> User {
     let user = state
-        .store
+        .sqlite()
         .create_user(username, email, "bcrypt", "h", "s", admin)
         .unwrap();
     state
-        .store
+        .sqlite()
         .add_actor_key(&user.id, ActorType::User, "default", PUBLIC_KEY)
         .unwrap();
     user
 }
 
-pub fn add_org(state: &AppState, name: &str) -> Org {
-    let creator = state.store.find_user("pivotal").unwrap().unwrap();
-    microwave_authz::create_organization(&state.store, name, name, &creator.id, &creator.authz_id)
+pub async fn add_org(state: &AppState, name: &str) -> Org {
+    let creator = state.sqlite().find_user("pivotal").unwrap().unwrap();
+    microwave_authz::create_organization(state.sqlite(), name, name, &creator.id, &creator.authz_id)
+        .await
         .unwrap()
 }
 
 pub fn associate(state: &AppState, org: &Org, user: &User) {
-    state.store.add_user_to_org(&org.id, &user.id).unwrap();
+    state.sqlite().add_user_to_org(&org.id, &user.id).unwrap();
 }
 
 pub fn signed_request(

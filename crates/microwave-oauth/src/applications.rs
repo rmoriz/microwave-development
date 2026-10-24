@@ -12,8 +12,8 @@ pub async fn list_applications(
     State(state): State<OAuthState>,
     headers: HeaderMap,
 ) -> Result<Response, OAuthError> {
-    require_admin(&state, &headers)?;
-    let applications = state.store.list_oauth_applications()?;
+    require_admin(&state, &headers).await?;
+    let applications = state.store.list_oauth_applications().await?;
     if wants_json(&headers) {
         let list: Vec<Value> = applications
             .iter()
@@ -55,7 +55,7 @@ pub async fn create_application(
     headers: HeaderMap,
     request: Request,
 ) -> Result<Response, OAuthError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let params = parse_params(request).await?;
     let name = params
         .get("name")
@@ -69,10 +69,10 @@ pub async fn create_application(
         .map(|value| value != "false" && value != "0")
         .unwrap_or(true);
 
-    let application =
-        state
-            .store
-            .create_oauth_application(&name, &redirect_uri, &scopes, confidential)?;
+    let application = state
+        .store
+        .create_oauth_application(&name, &redirect_uri, &scopes, confidential)
+        .await?;
 
     if params.is_json() || wants_json(&headers) {
         return Ok((StatusCode::CREATED, Json(application_json(&application))).into_response());
@@ -88,10 +88,11 @@ pub async fn get_application(
     Path(id): Path<i64>,
     headers: HeaderMap,
 ) -> Result<Response, OAuthError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let application = state
         .store
-        .find_oauth_application(id)?
+        .find_oauth_application(id)
+        .await?
         .ok_or_else(|| OAuthError::not_found(format!("oauth application {id}")))?;
 
     if wants_json(&headers) {
@@ -127,7 +128,7 @@ pub async fn update_application(
     headers: HeaderMap,
     request: Request,
 ) -> Result<Response, OAuthError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let params = parse_params(request).await?;
     let name = params.get("name");
     let redirect_uri = params.get("redirect_uri");
@@ -137,10 +138,10 @@ pub async fn update_application(
         ));
     }
 
-    let application =
-        state
-            .store
-            .update_oauth_application(id, name.as_deref(), redirect_uri.as_deref())?;
+    let application = state
+        .store
+        .update_oauth_application(id, name.as_deref(), redirect_uri.as_deref())
+        .await?;
 
     if params.is_json() || wants_json(&headers) {
         return Ok(Json(application_json(&application)).into_response());
@@ -153,8 +154,8 @@ pub async fn delete_application(
     Path(id): Path<i64>,
     headers: HeaderMap,
 ) -> Result<Response, OAuthError> {
-    require_admin(&state, &headers)?;
-    state.store.delete_oauth_application(id)?;
+    require_admin(&state, &headers).await?;
+    state.store.delete_oauth_application(id).await?;
     if wants_json(&headers) {
         return Ok(Json(json!({})).into_response());
     }

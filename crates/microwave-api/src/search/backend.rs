@@ -10,7 +10,7 @@ use crate::search::opensearch::{OpenSearchBackend, SearchProvider};
 use crate::search::query::Query;
 use async_trait::async_trait;
 use microwave_config::{SearchBackend as ConfiguredSearchBackend, SearchConfig};
-use microwave_store::SqliteStore;
+use microwave_store::MetadataStore;
 use std::sync::Arc;
 
 /// The logical Chef search index being queried.
@@ -124,11 +124,11 @@ pub trait SearchBackend: Send + Sync {
 /// In-process backend. The relational store remains the source of truth, so
 /// index updates are no-ops and searches read the expanded store objects.
 pub struct EmbeddedSearch {
-    store: Arc<SqliteStore>,
+    store: Arc<dyn MetadataStore>,
 }
 
 impl EmbeddedSearch {
-    pub fn new(store: Arc<SqliteStore>) -> Self {
+    pub fn new(store: Arc<dyn MetadataStore>) -> Self {
         Self { store }
     }
 }
@@ -140,7 +140,8 @@ impl SearchBackend for EmbeddedSearch {
     }
 
     async fn search(&self, request: &SearchRequest) -> Result<SearchHits, SearchError> {
-        let entries = index::load_entries(&self.store, &request.org_id, &request.kind)
+        let entries = index::load_entries(self.store.as_ref(), &request.org_id, &request.kind)
+            .await
             .map_err(|error| SearchError::Response(error.message))?;
         let matched: Vec<&index::SearchEntry> = entries
             .iter()
@@ -180,7 +181,7 @@ impl SearchBackend for EmbeddedSearch {
 /// `search.url`, for example `http://localhost:9200`.
 pub fn build_search_backend(
     config: &SearchConfig,
-    store: Arc<SqliteStore>,
+    store: Arc<dyn MetadataStore>,
 ) -> Result<Arc<dyn SearchBackend>, SearchError> {
     match config.backend {
         ConfiguredSearchBackend::Embedded => Ok(Arc::new(EmbeddedSearch::new(store))),
@@ -200,8 +201,8 @@ mod tests {
     use super::*;
     use microwave_config::SearchBackend as Configured;
 
-    fn store() -> Arc<SqliteStore> {
-        Arc::new(SqliteStore::open_in_memory().unwrap())
+    fn store() -> Arc<dyn MetadataStore> {
+        Arc::new(microwave_store::SqliteStore::open_in_memory().unwrap())
     }
 
     #[test]

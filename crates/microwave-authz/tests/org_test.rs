@@ -1,14 +1,15 @@
 use microwave_authz::{create_organization, Permission};
 use microwave_store::SqliteStore;
 
-#[test]
-fn creates_default_containers_groups_and_acls() {
+#[tokio::test]
+async fn creates_default_containers_groups_and_acls() {
     let store = SqliteStore::open_in_memory().unwrap();
     let creator = store
         .create_user("root", "root@example.com", "bcrypt", "hash", "salt", true)
         .unwrap();
-    let org =
-        create_organization(&store, "acme", "Acme Corp", &creator.id, &creator.authz_id).unwrap();
+    let org = create_organization(&store, "acme", "Acme Corp", &creator.id, &creator.authz_id)
+        .await
+        .unwrap();
 
     for name in microwave_authz::DEFAULT_CONTAINERS {
         assert!(
@@ -32,14 +33,15 @@ fn creates_default_containers_groups_and_acls() {
         .unwrap());
 }
 
-#[test]
-fn default_environment_inherits_the_environments_container_acl() {
+#[tokio::test]
+async fn default_environment_inherits_the_environments_container_acl() {
     let store = SqliteStore::open_in_memory().unwrap();
     let creator = store
         .create_user("root", "root@example.com", "bcrypt", "hash", "salt", true)
         .unwrap();
-    let org =
-        create_organization(&store, "acme", "Acme Corp", &creator.id, &creator.authz_id).unwrap();
+    let org = create_organization(&store, "acme", "Acme Corp", &creator.id, &creator.authz_id)
+        .await
+        .unwrap();
 
     let environment = store
         .find_environment(&org.id, "_default")
@@ -80,14 +82,15 @@ fn default_environment_inherits_the_environments_container_acl() {
     }
 }
 
-#[test]
-fn roles_created_after_the_policy_inherit_the_roles_container_acl() {
+#[tokio::test]
+async fn roles_created_after_the_policy_inherit_the_roles_container_acl() {
     let store = SqliteStore::open_in_memory().unwrap();
     let creator = store
         .create_user("root", "root@example.com", "bcrypt", "hash", "salt", true)
         .unwrap();
-    let org =
-        create_organization(&store, "acme", "Acme Corp", &creator.id, &creator.authz_id).unwrap();
+    let org = create_organization(&store, "acme", "Acme Corp", &creator.id, &creator.authz_id)
+        .await
+        .unwrap();
 
     let role = store
         .create_role(
@@ -136,14 +139,15 @@ fn acl_users(store: &SqliteStore, authz_id: &str, permission: Permission) -> Vec
         .users
 }
 
-#[test]
-fn applies_the_upstream_default_container_and_group_matrices() {
+#[tokio::test]
+async fn applies_the_upstream_default_container_and_group_matrices() {
     let store = SqliteStore::open_in_memory().unwrap();
     let creator = store
         .create_user("root", "root@example.com", "bcrypt", "hash", "salt", true)
         .unwrap();
-    let org =
-        create_organization(&store, "acme", "Acme Corp", &creator.id, &creator.authz_id).unwrap();
+    let org = create_organization(&store, "acme", "Acme Corp", &creator.id, &creator.authz_id)
+        .await
+        .unwrap();
 
     let nodes = store.find_container(&org.id, "nodes").unwrap().unwrap();
     for permission in [
@@ -219,14 +223,15 @@ fn applies_the_upstream_default_container_and_group_matrices() {
     assert_eq!(org_read.groups, vec!["admins", "users"]);
 }
 
-#[test]
-fn creates_global_read_access_and_server_admin_groups() {
+#[tokio::test]
+async fn creates_global_read_access_and_server_admin_groups() {
     let store = SqliteStore::open_in_memory().unwrap();
     let creator = store
         .create_user("root", "root@example.com", "bcrypt", "hash", "salt", true)
         .unwrap();
-    let org =
-        create_organization(&store, "acme", "Acme Corp", &creator.id, &creator.authz_id).unwrap();
+    let org = create_organization(&store, "acme", "Acme Corp", &creator.id, &creator.authz_id)
+        .await
+        .unwrap();
 
     let read_access = store
         .find_global_group("acme_read_access_group")

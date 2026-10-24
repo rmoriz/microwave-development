@@ -47,12 +47,13 @@ async fn list_org_users(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    require_permission(&state, &auth, &org.authz_id, Permission::Read)?;
+    require_permission(&state, &auth, &org.authz_id, Permission::Read).await?;
     let base = base_url(&headers, &state);
     let mut users = Map::new();
     for user in state
         .store
         .list_org_users(&org.id)
+        .await
         .map_err(ApiError::from)?
     {
         users.insert(
@@ -76,10 +77,11 @@ async fn add_org_user(
     require_superuser(&auth)?;
     let username = username_from_body(&body)?;
 
-    let user = find_user(&state, &username)?;
+    let user = find_user(&state, &username).await?;
     if state
         .store
         .is_user_in_org(&org.id, &user.id)
+        .await
         .map_err(ApiError::from)?
     {
         return Err(ApiError::conflict("The association already exists."));
@@ -88,6 +90,7 @@ async fn add_org_user(
     state
         .store
         .add_user_to_org(&org.id, &user.id)
+        .await
         .map_err(ApiError::from)?;
 
     let base = base_url(&headers, &state);
@@ -106,10 +109,12 @@ async fn get_org_user(
     Path((_organization, username)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    require_permission(&state, &auth, &org.authz_id, Permission::Read)?;
-    let user = find_user(&state, &username)?;
-    ensure_member(&state, org, &user)?;
-    Ok(Json(crate::users::user_json(&state, &user, api_version)?))
+    require_permission(&state, &auth, &org.authz_id, Permission::Read).await?;
+    let user = find_user(&state, &username).await?;
+    ensure_member(&state, org, &user).await?;
+    Ok(Json(
+        crate::users::user_json(&state, &user, api_version).await?,
+    ))
 }
 
 async fn remove_org_user(
@@ -118,16 +123,17 @@ async fn remove_org_user(
     Path((_organization, username)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let user = find_user(&state, &username)?;
-    ensure_member(&state, org, &user)?;
+    let user = find_user(&state, &username).await?;
+    ensure_member(&state, org, &user).await?;
 
     if auth.principal.authz_id != user.authz_id {
-        require_permission(&state, &auth, &org.authz_id, Permission::Update)?;
+        require_permission(&state, &auth, &org.authz_id, Permission::Update).await?;
     }
 
     state
         .store
         .remove_user_from_org(&org.id, &user.id, &user.username)
+        .await
         .map_err(ApiError::from)?;
     Ok(Json(json!({})))
 }
@@ -137,10 +143,11 @@ async fn list_org_invitations(
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    require_permission(&state, &auth, &org.authz_id, Permission::Read)?;
+    require_permission(&state, &auth, &org.authz_id, Permission::Read).await?;
     let invitations = state
         .store
         .list_org_invitations(&org.id)
+        .await
         .map_err(ApiError::from)?;
     Ok(Json(invitations_json(&invitations)))
 }
@@ -152,13 +159,14 @@ async fn create_invitation(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let org = organization(&auth)?;
-    require_permission(&state, &auth, &org.authz_id, Permission::Update)?;
+    require_permission(&state, &auth, &org.authz_id, Permission::Update).await?;
     let username = username_from_body(&body)?;
-    let user = find_user(&state, &username)?;
+    let user = find_user(&state, &username).await?;
 
     if state
         .store
         .is_user_in_org(&org.id, &user.id)
+        .await
         .map_err(ApiError::from)?
     {
         return Err(ApiError::conflict("The association already exists."));
@@ -167,6 +175,7 @@ async fn create_invitation(
     let invitation = state
         .store
         .create_invitation(&org.id, &user.id, &auth.principal.authz_id)
+        .await
         .map_err(ApiError::from)?;
     let base = base_url(&headers, &state);
     let mut response = invitation_json(&invitation);
@@ -183,12 +192,16 @@ async fn delete_invitation(
     Path((_organization, id)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let invitation = find_invitation(&state, &id)?;
+    let invitation = find_invitation(&state, &id).await?;
     if invitation.org_id != org.id {
         return Err(invitation_not_found(&id));
     }
-    require_permission(&state, &auth, &org.authz_id, Permission::Update)?;
-    state.store.delete_invitation(&id).map_err(ApiError::from)?;
+    require_permission(&state, &auth, &org.authz_id, Permission::Update).await?;
+    state
+        .store
+        .delete_invitation(&id)
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(json!({})))
 }
 
@@ -198,16 +211,18 @@ async fn list_user_orgs(
     Path(username): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let user = find_user(&state, &username)?;
+    let user = find_user(&state, &username).await?;
     let mut orgs = state
         .store
         .list_user_orgs(&user.id)
+        .await
         .map_err(ApiError::from)?;
 
     if !is_self_or_superuser(&auth, &user) {
         let requestor_orgs: HashSet<String> = state
             .store
             .list_user_orgs(&auth.principal.actor_id)
+            .await
             .map_err(ApiError::from)?
             .into_iter()
             .map(|org| org.id)
@@ -234,11 +249,12 @@ async fn list_user_invitations(
     Extension(auth): Extension<AuthContext>,
     Path(username): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let user = find_user(&state, &username)?;
+    let user = find_user(&state, &username).await?;
     require_self_or_superuser(&auth, &user)?;
     let invitations = state
         .store
         .list_user_invitations(&user.id)
+        .await
         .map_err(ApiError::from)?;
     Ok(Json(invitations_json(&invitations)))
 }
@@ -248,11 +264,12 @@ async fn count_user_invitations(
     Extension(auth): Extension<AuthContext>,
     Path(username): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let user = find_user(&state, &username)?;
+    let user = find_user(&state, &username).await?;
     require_self_or_superuser(&auth, &user)?;
     let count = state
         .store
         .count_user_invitations(&user.id)
+        .await
         .map_err(ApiError::from)?;
     Ok(Json(json!({ "value": count })))
 }
@@ -263,14 +280,14 @@ async fn respond_to_invitation(
     Path((username, id)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    let user = find_user(&state, &username)?;
-    let invitation = find_invitation(&state, &id)?;
+    let user = find_user(&state, &username).await?;
+    let invitation = find_invitation(&state, &id).await?;
     if invitation.user_id != user.id {
         return Err(invitation_not_found(&id));
     }
 
     if !is_self_or_superuser(&auth, &user) {
-        require_permission(&state, &auth, &user.authz_id, Permission::Grant)?;
+        require_permission(&state, &auth, &user.authz_id, Permission::Grant).await?;
     }
 
     let response = body
@@ -278,8 +295,16 @@ async fn respond_to_invitation(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let invitation = match response {
-        "accept" => state.store.accept_invitation(&id).map_err(ApiError::from)?,
-        "reject" => state.store.reject_invitation(&id).map_err(ApiError::from)?,
+        "accept" => state
+            .store
+            .accept_invitation(&id)
+            .await
+            .map_err(ApiError::from)?,
+        "reject" => state
+            .store
+            .reject_invitation(&id)
+            .await
+            .map_err(ApiError::from)?,
         _ => {
             return Err(ApiError::bad_request(
                 "Param response must be either 'accept' or 'reject'",
@@ -305,18 +330,20 @@ fn user_name(value: &Value) -> Option<&str> {
         .or_else(|| value.get("username").and_then(Value::as_str))
 }
 
-fn find_user(state: &AppState, username: &str) -> Result<User, ApiError> {
+async fn find_user(state: &AppState, username: &str) -> Result<User, ApiError> {
     state
         .store
         .find_user(username)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("user {username}")))
 }
 
-fn find_invitation(state: &AppState, id: &str) -> Result<Invitation, ApiError> {
+async fn find_invitation(state: &AppState, id: &str) -> Result<Invitation, ApiError> {
     state
         .store
         .find_invitation(id)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| invitation_not_found(id))
 }
@@ -325,10 +352,11 @@ fn invitation_not_found(id: &str) -> ApiError {
     ApiError::not_found(format!("Cannot find association request: {id}"))
 }
 
-fn ensure_member(state: &AppState, org: &Org, user: &User) -> Result<(), ApiError> {
+async fn ensure_member(state: &AppState, org: &Org, user: &User) -> Result<(), ApiError> {
     if state
         .store
         .is_user_in_org(&org.id, &user.id)
+        .await
         .map_err(ApiError::from)?
     {
         Ok(())
