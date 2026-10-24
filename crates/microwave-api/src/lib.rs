@@ -14,6 +14,7 @@ pub mod membership;
 pub mod middleware;
 pub mod nodes;
 pub mod organizations;
+pub mod policies;
 pub mod roles;
 pub mod sandboxes;
 pub mod search;
@@ -40,6 +41,7 @@ pub fn router(state: AppState) -> Router {
         .merge(clients::routes())
         .merge(keys::routes())
         .merge(nodes::routes())
+        .merge(policies::routes())
         .merge(environments::routes())
         .merge(roles::routes())
         .merge(data_bags::routes())

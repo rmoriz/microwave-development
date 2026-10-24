@@ -496,7 +496,7 @@ impl SqliteStore {
     }
 }
 
-fn create_object_authz(
+pub(crate) fn create_object_authz(
     tx: &Transaction<'_>,
     org_id: &str,
     container_name: &str,
