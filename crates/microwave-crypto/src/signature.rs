@@ -2,12 +2,12 @@ use crate::auth::{canonical_request, content_hash, CanonicalRequest, SignVersion
 use crate::error::CryptoError;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use rand::rngs::OsRng;
 use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey, EncodeRsaPublicKey};
 use rsa::pkcs1v15::{Signature, SigningKey, VerifyingKey};
 use rsa::pkcs8::{
     DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, LineEnding,
 };
+use rsa::rand_core::OsRng;
 use rsa::signature::{SignatureEncoding, Signer, Verifier};
 use rsa::traits::{PrivateKeyParts, PublicKeyParts};
 use rsa::{BigUint, RsaPrivateKey, RsaPublicKey};
