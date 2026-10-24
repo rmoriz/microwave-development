@@ -13,6 +13,7 @@ The repository contains a working vertical slice:
 - **HTTP API** — `/_status`, `/server_api_version`, `/license`, users, organizations, clients, principals, key management, organization memberships/invitations, nodes, environments, roles, data bags, sandboxes, bookshelf uploads, cookbooks, cookbook resolution, policyfiles/policy groups, ACL endpoints, and search (node/role/environment/client/data-bag indexes with a query subset and partial search).
 - **Operations CLI** — `microwave-ctl` with a `chef-server-ctl` compatibility binary: user/org administration, org membership, password reset, status, local backup/restore, `migrate-from-legacy` snapshot import, and a clear not-implemented response for reindex.
 - **Migration** — `microwave-migrate` exports a versioned JSON snapshot of the local store (users with password hashes, organizations, clients, keys, authz ACLs, nodes, roles, environments, data bags, checksums, cookbooks, policies, and OAuth applications) and imports it with original ids, authz ids, timestamps, and keys intact. The live legacy API crawler (`from-api`) is deferred and reports a clear not-implemented error.
+- **OAuth/identity** — `/id` sign-in/sessions, OAuth application management, authorization-code and refresh-token flows, `/id/v1/me`, `/id/v1/me/organizations`, `/id/v1/status`, profile/password/key regeneration, and password-reset tokens.
 - **Object storage** — local content-addressed store with signed upload/download URLs.
 - **Server** — `microwave-server serve` bootstraps a `pivotal` superuser and listens on the configured address.
 
@@ -32,9 +33,11 @@ cargo run -p microwave-server -- serve
 
 The first run creates `./data/pivotal.pem` (superuser private key), `./data/pivotal.password`, and `./data/objectstore.secret`. Use `MW_PATHS__DATA_DIR` to choose another data directory.
 
+The workspace currently has 154 passing tests.
+
 ## Not Yet Implemented
 
-- `oc-id` OAuth and the live legacy API crawler (`microwave-migrate from-api`). Local snapshot export/import and `microwave-ctl migrate-from-legacy` are available.
+- The live legacy API crawler (`microwave-migrate from-api`). Local snapshot export/import and `microwave-ctl migrate-from-legacy` are available.
 - The remaining `chef-server-ctl` command surface (key rotation, secrets, maintenance, HA, pedant runner, full tar backup format).
 - PostgreSQL, OpenSearch, and S3/Garage backends.
 - Full dependency-constraint solving; the current resolver selects the latest version per cookbook.
