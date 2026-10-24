@@ -79,7 +79,7 @@ impl SqliteStore {
                 now
             ],
         )
-        .map_err(|error| crate::identity::conflict(error, format!("node {name} already exists")))?;
+        .map_err(|error| crate::identity::conflict(error, "Node already exists".to_string()))?;
         tx.commit()?;
         Ok(StoredNode {
             id,
@@ -115,6 +115,25 @@ impl SqliteStore {
              FROM nodes WHERE org_id = ?1 ORDER BY name",
         )?;
         let rows = statement.query_map([org_id], node_from_row)?;
+        let mut nodes = Vec::new();
+        for row in rows {
+            nodes.push(row?);
+        }
+        Ok(nodes)
+    }
+
+    pub fn list_nodes_in_environment(
+        &self,
+        org_id: &str,
+        environment: &str,
+    ) -> Result<Vec<StoredNode>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, authz_id, name, environment, policy_name, policy_group,
+                    serialized_object, created_at, updated_at
+             FROM nodes WHERE org_id = ?1 AND environment = ?2 ORDER BY name",
+        )?;
+        let rows = statement.query_map(params![org_id, environment], node_from_row)?;
         let mut nodes = Vec::new();
         for row in rows {
             nodes.push(row?);

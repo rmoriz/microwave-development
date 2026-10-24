@@ -6,6 +6,10 @@ use serde_json::json;
 pub const MIN_API_VERSION: u8 = 0;
 pub const MAX_API_VERSION: u8 = 2;
 
+/// Upstream `oc_chef_wm`'s `max_request_size` default. Request bodies larger
+/// than this are rejected with `413` before any JSON parsing happens.
+pub const MAX_REQUEST_BODY: usize = 2_000_000;
+
 pub async fn authenticate(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
     request: axum::extract::Request,
@@ -55,6 +59,11 @@ async fn authenticate_signed(
     let body_bytes = axum::body::to_bytes(body, 16 * 1024 * 1024)
         .await
         .map_err(|_| ApiError::bad_request("request body is too large"))?;
+    if matches!(parts.method.as_str(), "POST" | "PUT") && body_bytes.len() > MAX_REQUEST_BODY {
+        return Err(ApiError::payload_too_large(format!(
+            "JSON must be no more than {MAX_REQUEST_BODY} bytes."
+        )));
+    }
 
     let headers = &parts.headers;
     let sign = required_header(headers, "x-ops-sign")?;
