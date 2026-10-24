@@ -12,6 +12,17 @@
 #   scripts/run-pedant.sh [TAG ...]
 #
 # Default tags: headers users organizations clients nodes
+#
+# Tag sets:
+#   core                 headers users organizations clients nodes (the default)
+#   extended             keys acls data_bags cookbooks sandboxes search policies
+#                        oauth license depsolver versioned_behaviors
+#   all                  core + extended
+#
+# Individual tags are passed straight to Pedant's --focus.  Friendly aliases
+# are accepted for a few suites whose RSpec metadata differs:
+#   oauth -> oc_id, acls -> acl, versioned_behaviors -> api_v1
+#
 # Environment:
 #   PEDANT_TAGS          space- or comma-separated tags (overridden by argv)
 #   PEDANT_ARTIFACTS     directory for logs, generated keys, and config
@@ -81,16 +92,47 @@ if [[ ! -x "$SERVER_BIN" ]]; then
 fi
 
 # ---- Tag selection ----------------------------------------------------------
+CORE_TAGS=(headers users organizations clients nodes)
+EXTENDED_TAGS=(keys acls data_bags cookbooks sandboxes search policies oauth
+               license depsolver versioned_behaviors)
+
+expand_tag_sets() {
+  local tag
+  for tag in "$@"; do
+    case "$tag" in
+      core) printf '%s\n' "${CORE_TAGS[@]}" ;;
+      extended) printf '%s\n' "${EXTENDED_TAGS[@]}" ;;
+      all) printf '%s\n' "${CORE_TAGS[@]}" "${EXTENDED_TAGS[@]}" ;;
+      *) printf '%s\n' "$tag" ;;
+    esac
+  done
+}
+
 if [[ $# -gt 0 ]]; then
-  TAGS=("$@")
+  TAGS=($(expand_tag_sets "$@"))
 elif [[ -n "${PEDANT_TAGS:-}" ]]; then
-  IFS=', ' read -r -a TAGS <<<"${PEDANT_TAGS//,/ }"
+  IFS=', ' read -r -a REQUESTED_TAGS <<<"${PEDANT_TAGS//,/ }"
+  TAGS=($(expand_tag_sets "${REQUESTED_TAGS[@]}"))
 else
-  TAGS=(headers users organizations clients nodes)
+  TAGS=("${CORE_TAGS[@]}")
 fi
+
+# ---- Tag aliases ------------------------------------------------------------
+# Pedant's own tag names do not always match the suite names people use.  Map
+# the friendly names accepted on the command line (and in PEDANT_TAGS) to the
+# RSpec metadata tags in spec/api.
+pedant_tag() {
+  case "$1" in
+    oauth|oc-id|oc_id) printf '%s' "oc_id" ;;
+    acls|acl) printf '%s' "acl" ;;
+    versioned_behaviors|versioned-behaviors|api_v1|api-v1) printf '%s' "api_v1" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
 
 # ---- Server lifecycle -------------------------------------------------------
 SERVER_PID=""
+SEARCH_STUB_PID=""
 TAG_DIR=""
 cleanup() {
   local status=$?
@@ -98,8 +140,40 @@ cleanup() {
     kill "$SERVER_PID" >/dev/null 2>&1 || true
     wait "$SERVER_PID" 2>/dev/null || true
   fi
+  stop_search_stub
   restore_lock
   exit "$status"
+}
+
+start_search_stub() {
+  local port
+  port="$("$RUBY_BIN" -rsocket -e 's=TCPServer.new("127.0.0.1",0); puts s.addr[1]; s.close')"
+  PEDANT_SEARCH_SERVER="http://127.0.0.1:$port"
+  "$RUBY_BIN" "$ROOT/scripts/pedant-solr-stub.rb" "$port" >"$TAG_DIR/solr-stub.log" 2>&1 &
+  SEARCH_STUB_PID=$!
+  export PEDANT_SEARCH_SERVER
+
+  local ready=0
+  for _ in $(seq 1 100); do
+    if "$RUBY_BIN" -rsocket -e "TCPSocket.new('127.0.0.1', $port).close" 2>/dev/null; then
+      ready=1
+      break
+    fi
+    sleep 0.05
+  done
+  if [[ "$ready" != "1" ]]; then
+    echo "error: solr commit stub did not start on port $port" >&2
+    cat "$TAG_DIR/solr-stub.log" >&2 || true
+    exit 3
+  fi
+}
+
+stop_search_stub() {
+  if [[ -n "$SEARCH_STUB_PID" ]] && kill -0 "$SEARCH_STUB_PID" >/dev/null 2>&1; then
+    kill "$SEARCH_STUB_PID" >/dev/null 2>&1 || true
+    wait "$SEARCH_STUB_PID" 2>/dev/null || true
+  fi
+  SEARCH_STUB_PID=""
 }
 trap cleanup EXIT INT TERM
 
@@ -110,6 +184,7 @@ start_server() {
   local database="$data_dir/microwave.db"
   local config="$TAG_DIR/microwave.toml"
   mkdir -p "$data_dir"
+  start_search_stub
 
   local port
   port="$("$RUBY_BIN" -rsocket -e 's=TCPServer.new("127.0.0.1",0); puts s.addr[1]; s.close')"
@@ -133,7 +208,10 @@ EOF
   SERVER_PID=$!
 
   local ready=0
-  for _ in $(seq 1 100); do
+  # A fresh SQLite database runs the full migration set on first boot; on a
+  # cold page cache (and with several tags running back to back) that can take
+  # well over ten seconds, so allow up to 60 seconds.
+  for _ in $(seq 1 600); do
     if ! kill -0 "$SERVER_PID" >/dev/null 2>&1; then
       echo "error: [$tag] microwave-server exited during startup; see $TAG_DIR/server.log" >&2
       tail -30 "$TAG_DIR/server.log" >&2 || true
@@ -172,6 +250,7 @@ stop_server() {
     wait "$SERVER_PID" 2>/dev/null || true
   fi
   SERVER_PID=""
+  stop_search_stub
 }
 
 # ---- Run --------------------------------------------------------------------
@@ -183,9 +262,10 @@ PEDANT_STATUS=0
 for tag in "${TAGS[@]}"; do
   [[ -n "$tag" ]] || continue
   start_server "$tag"
+  focus="$(pedant_tag "$tag")"
 
   echo
-  echo "==> [$tag] running pedant"
+  echo "==> [$tag] running pedant (focus: $focus)"
   LOG="$TAG_DIR/pedant.log"
   set +e
   (cd "$PEDANT_DIR" && \
@@ -193,7 +273,7 @@ for tag in "${TAGS[@]}"; do
     "$BUNDLE_BIN" exec ./bin/oc-chef-pedant \
       -c "$PEDANT_CONFIG" \
       -L "$TAG_DIR/http-traffic.log" \
-      --focus "$tag" 2>&1) | tee "$LOG"
+      --focus "$focus" 2>&1) | tee "$LOG"
   status=${PIPESTATUS[0]}
   set -e
 
