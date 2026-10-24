@@ -1,6 +1,6 @@
 use crate::sqlite::{SqliteStore, StoreError};
-use chrono::{SecondsFormat, Utc};
-use rusqlite::{params, OptionalExtension};
+use chrono::{DateTime, SecondsFormat, Utc};
+use rusqlite::{params, OptionalExtension, Row};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +62,7 @@ pub struct ActorKey {
     pub key_name: String,
     pub public_key: String,
     pub expires_at: String,
+    pub expired: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -367,6 +368,27 @@ impl SqliteStore {
         key_name: &str,
         public_key: &str,
     ) -> Result<(), StoreError> {
+        self.create_actor_key(actor_id, actor_type, key_name, public_key, "infinity")
+            .map(|_| ())
+    }
+
+    /// Create a key for an actor. `expires_at` is either `"infinity"` or an
+    /// RFC 3339 timestamp.
+    pub fn create_actor_key(
+        &self,
+        actor_id: &str,
+        actor_type: ActorType,
+        key_name: &str,
+        public_key: &str,
+        expires_at: &str,
+    ) -> Result<ActorKey, StoreError> {
+        if key_name.is_empty() {
+            return Err(StoreError::Invalid("key name must not be empty".into()));
+        }
+        if public_key.is_empty() {
+            return Err(StoreError::Invalid("public key must not be empty".into()));
+        }
+
         let now = now();
         let connection = self.connection();
         connection
@@ -374,14 +396,126 @@ impl SqliteStore {
                 "INSERT INTO actor_keys
                  (actor_id, actor_type, key_name, public_key, key_version, expires_at,
                   last_updated_by, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, 1, 'infinity', '', ?5, ?5)",
-                params![actor_id, actor_type.as_str(), key_name, public_key, now],
+                 VALUES (?1, ?2, ?3, ?4, 1, ?5, '', ?6, ?6)",
+                params![
+                    actor_id,
+                    actor_type.as_str(),
+                    key_name,
+                    public_key,
+                    expires_at,
+                    now
+                ],
             )
             .map_err(|error| conflict(error, format!("key {key_name} already exists")))?;
+        drop(connection);
+        self.find_actor_key(actor_id, actor_type, key_name)?
+            .ok_or_else(|| StoreError::NotFound(format!("key {key_name}")))
+    }
+
+    pub fn find_actor_key(
+        &self,
+        actor_id: &str,
+        actor_type: ActorType,
+        key_name: &str,
+    ) -> Result<Option<ActorKey>, StoreError> {
+        let connection = self.connection();
+        Ok(connection
+            .query_row(
+                "SELECT actor_id, actor_type, key_name, public_key, expires_at
+                 FROM actor_keys
+                 WHERE actor_id = ?1 AND actor_type = ?2 AND key_name = ?3",
+                params![actor_id, actor_type.as_str(), key_name],
+                actor_key_from_row,
+            )
+            .optional()?)
+    }
+
+    /// Update a key. Omitted fields are preserved. Renaming the `default` key
+    /// is rejected because it is the canonical key for the actor.
+    pub fn update_actor_key(
+        &self,
+        actor_id: &str,
+        actor_type: ActorType,
+        key_name: &str,
+        new_key_name: Option<&str>,
+        public_key: Option<&str>,
+        expires_at: Option<&str>,
+    ) -> Result<ActorKey, StoreError> {
+        let current = self
+            .find_actor_key(actor_id, actor_type, key_name)?
+            .ok_or_else(|| StoreError::NotFound(format!("key {key_name}")))?;
+
+        if let Some(new_key_name) = new_key_name {
+            if new_key_name.is_empty() {
+                return Err(StoreError::Invalid("key name must not be empty".into()));
+            }
+            if key_name == "default" && new_key_name != "default" {
+                return Err(StoreError::Invalid(
+                    "the default key cannot be renamed".into(),
+                ));
+            }
+        }
+        if public_key.is_some_and(str::is_empty) {
+            return Err(StoreError::Invalid("public key must not be empty".into()));
+        }
+
+        let now = now();
+        let connection = self.connection();
+        connection
+            .execute(
+                "UPDATE actor_keys
+                 SET key_name = COALESCE(?3, key_name),
+                     public_key = COALESCE(?4, public_key),
+                     key_version = CASE WHEN ?4 IS NULL THEN key_version ELSE 1 END,
+                     expires_at = COALESCE(?5, expires_at),
+                     updated_at = ?6
+                 WHERE actor_id = ?1 AND actor_type = ?2 AND key_name = ?7",
+                params![
+                    actor_id,
+                    actor_type.as_str(),
+                    new_key_name,
+                    public_key,
+                    expires_at,
+                    now,
+                    key_name
+                ],
+            )
+            .map_err(|error| conflict(error, format!("key {key_name} already exists")))?;
+        drop(connection);
+
+        let updated_name = new_key_name.unwrap_or(&current.key_name);
+        self.find_actor_key(actor_id, actor_type, updated_name)?
+            .ok_or_else(|| StoreError::NotFound(format!("key {updated_name}")))
+    }
+
+    pub fn delete_actor_key(
+        &self,
+        actor_id: &str,
+        actor_type: ActorType,
+        key_name: &str,
+    ) -> Result<(), StoreError> {
+        let connection = self.connection();
+        let changed = connection.execute(
+            "DELETE FROM actor_keys
+             WHERE actor_id = ?1 AND actor_type = ?2 AND key_name = ?3",
+            params![actor_id, actor_type.as_str(), key_name],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NotFound(format!("key {key_name}")));
+        }
         Ok(())
     }
 
     pub fn find_actor_keys(
+        &self,
+        actor_id: &str,
+        actor_type: ActorType,
+    ) -> Result<Vec<ActorKey>, StoreError> {
+        self.list_actor_keys(actor_id, actor_type)
+    }
+
+    /// List all keys for an actor, including expired keys and their expiry state.
+    pub fn list_actor_keys(
         &self,
         actor_id: &str,
         actor_type: ActorType,
@@ -393,18 +527,8 @@ impl SqliteStore {
              WHERE actor_id = ?1 AND actor_type = ?2
              ORDER BY key_name",
         )?;
-        let rows = statement.query_map(params![actor_id, actor_type.as_str()], |row| {
-            Ok(ActorKey {
-                actor_id: row.get(0)?,
-                actor_type: match row.get::<_, String>(1)?.as_str() {
-                    "user" => ActorType::User,
-                    _ => ActorType::Client,
-                },
-                key_name: row.get(2)?,
-                public_key: row.get(3)?,
-                expires_at: row.get(4)?,
-            })
-        })?;
+        let rows =
+            statement.query_map(params![actor_id, actor_type.as_str()], actor_key_from_row)?;
 
         let mut keys = Vec::new();
         for row in rows {
@@ -536,6 +660,31 @@ impl SqliteStore {
         transaction.commit()?;
         Ok(())
     }
+}
+
+fn actor_key_from_row(row: &Row<'_>) -> rusqlite::Result<ActorKey> {
+    let actor_type = match row.get::<_, String>(1)?.as_str() {
+        "user" => ActorType::User,
+        _ => ActorType::Client,
+    };
+    let expires_at: String = row.get(4)?;
+    Ok(ActorKey {
+        actor_id: row.get(0)?,
+        actor_type,
+        key_name: row.get(2)?,
+        public_key: row.get(3)?,
+        expired: key_is_expired(&expires_at),
+        expires_at,
+    })
+}
+
+fn key_is_expired(expires_at: &str) -> bool {
+    if expires_at == "infinity" {
+        return false;
+    }
+    DateTime::parse_from_rfc3339(expires_at)
+        .map(|expires_at| expires_at.with_timezone(&Utc) <= Utc::now())
+        .unwrap_or(false)
 }
 
 pub(crate) fn new_id() -> String {
