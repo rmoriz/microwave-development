@@ -24,6 +24,25 @@ pub fn routes() -> Router<AppState> {
             "/organizations/{organization}/{scope}/_acl",
             get(get_organization_acl_compat),
         )
+        // Cookbooks and cookbook artifacts also have a versioned child route
+        // (`.../<name>/<version>`), so `_acl` must be registered explicitly;
+        // otherwise the version handler captures it.
+        .route(
+            "/organizations/{organization}/cookbooks/{name}/_acl",
+            get(get_cookbook_acl),
+        )
+        .route(
+            "/organizations/{organization}/cookbooks/{name}/_acl/{permission}",
+            put(put_cookbook_acl),
+        )
+        .route(
+            "/organizations/{organization}/cookbook_artifacts/{name}/_acl",
+            get(get_cookbook_artifact_acl),
+        )
+        .route(
+            "/organizations/{organization}/cookbook_artifacts/{name}/_acl/{permission}",
+            put(put_cookbook_artifact_acl),
+        )
         .route(
             "/organizations/{organization}/{object_type}/{name}/_acl",
             get(get_object_acl),
@@ -114,10 +133,7 @@ async fn get_object_acl(
     Path((_organization, object_type, name)): Path<(String, String, String)>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Json<Value>, ApiError> {
-    let org = organization(&auth)?;
-    let target = resolve_target(&state, org, &object_type, &name)?;
-    require_grant(&state, &auth, &target)?;
-    acl_json(&state, &target, is_granular(&query))
+    get_object_acl_for(&state, &auth, &object_type, &name, is_granular(&query))
 }
 
 async fn put_object_acl(
@@ -126,10 +142,83 @@ async fn put_object_acl(
     Path((_organization, object_type, name, permission)): Path<(String, String, String, String)>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    let permission = parse_permission(&permission)?;
-    let org = organization(&auth)?;
-    let target = resolve_target(&state, org, &object_type, &name)?;
-    require_grant(&state, &auth, &target)?;
+    put_object_acl_for(&state, &auth, &object_type, &name, &permission, body)
+}
+
+async fn get_cookbook_acl(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path((_organization, name)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Result<Json<Value>, ApiError> {
+    get_object_acl_for(&state, &auth, "cookbooks", &name, is_granular(&query))
+}
+
+async fn put_cookbook_acl(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path((_organization, name, permission)): Path<(String, String, String)>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    put_object_acl_for(&state, &auth, "cookbooks", &name, &permission, body)
+}
+
+async fn get_cookbook_artifact_acl(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path((_organization, name)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Result<Json<Value>, ApiError> {
+    get_object_acl_for(
+        &state,
+        &auth,
+        "cookbook_artifacts",
+        &name,
+        is_granular(&query),
+    )
+}
+
+async fn put_cookbook_artifact_acl(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path((_organization, name, permission)): Path<(String, String, String)>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    put_object_acl_for(
+        &state,
+        &auth,
+        "cookbook_artifacts",
+        &name,
+        &permission,
+        body,
+    )
+}
+
+fn get_object_acl_for(
+    state: &AppState,
+    auth: &AuthContext,
+    object_type: &str,
+    name: &str,
+    granular: bool,
+) -> Result<Json<Value>, ApiError> {
+    let org = organization(auth)?;
+    let target = resolve_target(state, org, object_type, name)?;
+    require_grant(state, auth, &target)?;
+    acl_json(state, &target, granular)
+}
+
+fn put_object_acl_for(
+    state: &AppState,
+    auth: &AuthContext,
+    object_type: &str,
+    name: &str,
+    permission: &str,
+    body: Value,
+) -> Result<Json<Value>, ApiError> {
+    let permission = parse_permission(permission)?;
+    let org = organization(auth)?;
+    let target = resolve_target(state, org, object_type, name)?;
+    require_grant(state, auth, &target)?;
     let ace = parse_ace(body, permission)?;
     state
         .store

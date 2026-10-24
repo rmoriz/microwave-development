@@ -98,6 +98,7 @@ impl CookbookRepository for PostgresStore {
             manifest: manifest.into(),
             checksums: checksums.to_vec(),
             authz_id,
+            frozen: false,
             created_at: timestamp.clone(),
             updated_at: timestamp,
         })
@@ -142,6 +143,7 @@ impl CookbookRepository for PostgresStore {
             manifest: row.try_get(2).map_err(db)?,
             checksums,
             authz_id: row.try_get(5).map_err(db)?,
+            frozen: false,
             created_at: row.try_get(3).map_err(db)?,
             updated_at: row.try_get(4).map_err(db)?,
         }))
@@ -179,6 +181,7 @@ impl CookbookRepository for PostgresStore {
                 manifest: row.try_get(2).map_err(db)?,
                 checksums,
                 authz_id: row.try_get(5).map_err(db)?,
+                frozen: false,
                 created_at: row.try_get(3).map_err(db)?,
                 updated_at: row.try_get(4).map_err(db)?,
             });

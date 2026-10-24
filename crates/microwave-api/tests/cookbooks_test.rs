@@ -71,7 +71,7 @@ async fn uploads_and_reads_a_cookbook_version() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let manifest = format!(
-        r#"{{"name":"apache","version":"1.0.0","metadata":{{"version":"1.0.0"}},"recipes":[{{"name":"default.rb","path":"recipes/default.rb","checksum":"{checksum}","specificity":"default"}}]}}"#
+        r#"{{"name":"apache-1.0.0","cookbook_name":"apache","version":"1.0.0","json_class":"Chef::CookbookVersion","chef_type":"cookbook_version","frozen?":false,"metadata":{{"version":"1.0.0"}},"all_files":[{{"name":"recipes/default.rb","path":"recipes/default.rb","checksum":"{checksum}","specificity":"default"}}]}}"#
     );
     let response = app
         .clone()
@@ -109,13 +109,13 @@ async fn uploads_and_reads_a_cookbook_version() {
             b"",
             SignVersion::V1_3,
             "pivotal",
-            "1",
+            "2",
         ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let fetched = support::response_json(response).await;
-    let url = fetched["recipes"][0]["url"].as_str().unwrap();
+    let url = fetched["all_files"][0]["url"].as_str().unwrap();
     assert!(url.contains("/bookshelf/organizations/"));
     assert!(url.contains("/checksums/"));
     let path = url.strip_prefix("http://0.0.0.0:8000").unwrap();
@@ -144,7 +144,7 @@ async fn uploads_and_reads_a_cookbook_version() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let solved = support::response_json(response).await;
-    assert_eq!(solved["apache"]["name"], "apache");
+    assert_eq!(solved["apache"]["cookbook_name"], "apache");
 
     let response = app
         .oneshot(support::signed_request(
@@ -253,7 +253,7 @@ async fn returns_v0_segments_and_v2_all_files_for_the_same_cookbook() {
     upload_blob(&app, checksum, "hello").await;
 
     let manifest = json!({
-        "name": "apache",
+        "name": "apache-1.0.0",
         "cookbook_name": "apache",
         "version": "1.0.0",
         "metadata": { "name": "apache", "version": "1.0.0" },
@@ -400,9 +400,7 @@ async fn v2_upload_rejects_a_missing_all_files_checksum() {
     assert_eq!(
         body,
         json!({
-            "error": [
-                "manifest references missing checksums: 00000000000000000000000000000000"
-            ]
+            "error": ["Manifest has a checksum that hasn't been uploaded."]
         })
     );
 }

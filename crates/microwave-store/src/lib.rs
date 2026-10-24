@@ -1,5 +1,6 @@
 //! SQLite-backed metadata store for Microwave Server.
 
+mod artifacts;
 mod authz;
 mod backend;
 mod cookbooks;
@@ -15,6 +16,7 @@ mod sandboxes;
 mod secrets;
 mod sqlite;
 
+pub use artifacts::{StoredCookbookArtifact, StoredCookbookArtifactVersion};
 pub use authz::{Acl, AclEntry, Container, Group, GroupMembers, Permission};
 pub use backend::{
     AuthzRepository, CookbookRepository, IdentityRepository, MetadataStore, ObjectRepository,

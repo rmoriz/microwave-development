@@ -149,6 +149,7 @@ async fn client_can_read_the_default_environment() {
 
     let org = state.store.find_org("acme").unwrap().unwrap();
     let admin = add_user(&state, "admin");
+    state.store.associate_user_org(&org.id, &admin.id).unwrap();
     add_member(&state, &org, "admins", &admin.authz_id);
     let (status, _) = request(
         &app,

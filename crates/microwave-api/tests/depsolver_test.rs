@@ -46,13 +46,17 @@ async fn put_manifest(app: &Router, name: &str, version: &str, manifest: &Value)
 
 async fn put_cookbook(app: &Router, name: &str, version: &str, dependencies: Value) {
     let manifest = json!({
-        "name": name,
+        "name": format!("{name}-{version}"),
+        "cookbook_name": name,
         "version": version,
+        "json_class": "Chef::CookbookVersion",
+        "chef_type": "cookbook_version",
+        "frozen?": false,
         "metadata": {
             "version": version,
             "dependencies": dependencies,
         },
-        "recipes": [],
+        "all_files": [],
     });
     put_manifest(app, name, version, &manifest).await;
 }
@@ -157,16 +161,20 @@ async fn resolves_dependencies_and_attaches_presigned_urls() {
     let checksum = upload_hello(&app).await;
 
     let manifest = json!({
-        "name": "app",
+        "name": "app-2.0.0",
+        "cookbook_name": "app",
         "version": "2.0.0",
+        "json_class": "Chef::CookbookVersion",
+        "chef_type": "cookbook_version",
+        "frozen?": false,
         "metadata": {
             "version": "2.0.0",
             "dependencies": { "lib": ">= 1.0.0" },
             "attributes": { "secret": true },
             "long_description": "not needed by chef-client",
         },
-        "recipes": [{
-            "name": "default.rb",
+        "all_files": [{
+            "name": "recipes/default.rb",
             "path": "recipes/default.rb",
             "checksum": checksum,
             "specificity": "default",
@@ -177,14 +185,14 @@ async fn resolves_dependencies_and_attaches_presigned_urls() {
     put_cookbook(&app, "lib", "2.0.0", json!({})).await;
 
     let (status, body) =
-        solve_with_api_version(&app, "_default", json!(["recipe[app::default]"]), "1").await;
+        solve_with_api_version(&app, "_default", json!(["recipe[app::default]"]), "2").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["app"]["version"], "2.0.0");
     assert_eq!(body["lib"]["version"], "2.0.0");
     assert_eq!(body["app"]["metadata"]["dependencies"]["lib"], ">= 1.0.0");
     assert!(body["app"]["metadata"].get("attributes").is_none());
     assert!(body["app"]["metadata"].get("long_description").is_none());
-    let url = body["app"]["recipes"][0]["url"].as_str().unwrap();
+    let url = body["app"]["all_files"][0]["url"].as_str().unwrap();
     assert!(url.contains("/bookshelf/organizations/"));
     assert!(url.contains("/checksums/"));
 }
@@ -195,11 +203,12 @@ async fn returns_v2_all_files_in_solve_responses() {
     let checksum = upload_hello(&app).await;
 
     let manifest = json!({
-        "name": "app",
+        "name": "app-2.0.0",
+        "cookbook_name": "app",
         "version": "2.0.0",
         "metadata": { "version": "2.0.0" },
-        "recipes": [{
-            "name": "default.rb",
+        "all_files": [{
+            "name": "recipes/default.rb",
             "path": "recipes/default.rb",
             "checksum": checksum,
             "specificity": "default",

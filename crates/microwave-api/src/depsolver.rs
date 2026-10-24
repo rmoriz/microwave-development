@@ -1,4 +1,4 @@
-use crate::cookbooks::{add_download_urls, manifest_for_api_version};
+use crate::cookbooks::render_manifest;
 use crate::helpers::{container_authz, organization, require_permission};
 use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::extract::{Path, State};
@@ -61,16 +61,9 @@ async fn solve(
             for package in solution.packages {
                 let key = (package.name.clone(), package.version.to_string());
                 let stored = stored_versions.get(&key).ok_or_else(ApiError::internal)?;
-                let stored_manifest: Value =
-                    serde_json::from_str(&stored.manifest).map_err(|_| ApiError::internal())?;
-                let mut manifest = manifest_for_api_version(
-                    &stored_manifest,
-                    api_version,
-                    &package.name,
-                    &package.version.to_string(),
-                );
+                let mut manifest =
+                    render_manifest(&stored.manifest, api_version, Some(&state), &org.id)?;
                 strip_minimal_metadata(&mut manifest);
-                add_download_urls(&mut manifest, &state, &org.id);
                 result.insert(package.name, manifest);
             }
             Ok((StatusCode::OK, Json(Value::Object(result))))

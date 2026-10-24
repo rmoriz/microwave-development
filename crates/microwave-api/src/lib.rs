@@ -4,6 +4,7 @@ pub mod acls;
 pub mod bookshelf;
 pub mod clients;
 pub mod containers;
+pub mod cookbook_artifacts;
 pub mod cookbooks;
 pub mod data_bags;
 pub mod depsolver;
@@ -54,6 +55,7 @@ pub fn router(state: AppState) -> Router {
         .merge(bookshelf::routes())
         .merge(sandboxes::routes())
         .merge(cookbooks::routes())
+        .merge(cookbook_artifacts::routes())
         .merge(depsolver::routes())
         .merge(oauth::routes())
         .fallback(not_found)

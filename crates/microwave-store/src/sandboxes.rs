@@ -18,6 +18,10 @@ impl SqliteStore {
         let timestamp = now();
         let mut connection = self.connection();
         let tx = connection.transaction()?;
+        tx.execute(
+            "INSERT INTO sandboxes (org_id, sandbox_id, created_at) VALUES (?1, ?2, ?3)",
+            params![org_id, sandbox_id, timestamp],
+        )?;
         let mut checks = Vec::with_capacity(checksums.len());
         for checksum in checksums {
             let exists: i64 = tx.query_row(
@@ -27,6 +31,12 @@ impl SqliteStore {
             )?;
             tx.execute(
                 "INSERT OR IGNORE INTO sandboxed_checksums
+                 (org_id, sandbox_id, checksum, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![org_id, sandbox_id, checksum, timestamp],
+            )?;
+            tx.execute(
+                "INSERT OR IGNORE INTO sandbox_checksums
                  (org_id, sandbox_id, checksum, created_at)
                  VALUES (?1, ?2, ?3, ?4)",
                 params![org_id, sandbox_id, checksum, timestamp],
@@ -47,7 +57,7 @@ impl SqliteStore {
     ) -> Result<Vec<String>, StoreError> {
         let connection = self.connection();
         let mut statement = connection.prepare(
-            "SELECT checksum FROM sandboxed_checksums
+            "SELECT checksum FROM sandbox_checksums
              WHERE org_id = ?1 AND sandbox_id = ?2 ORDER BY checksum",
         )?;
         let rows = statement.query_map(params![org_id, sandbox_id], |row| row.get(0))?;
@@ -62,7 +72,7 @@ impl SqliteStore {
         let connection = self.connection();
         let exists: i64 = connection.query_row(
             "SELECT EXISTS(
-                 SELECT 1 FROM sandboxed_checksums WHERE org_id = ?1 AND sandbox_id = ?2
+                 SELECT 1 FROM sandboxes WHERE org_id = ?1 AND sandbox_id = ?2
              )",
             params![org_id, sandbox_id],
             |row| row.get(0),
@@ -78,8 +88,8 @@ impl SqliteStore {
         let connection = self.connection();
         Ok(connection
             .query_row(
-                "SELECT created_at FROM sandboxed_checksums
-                 WHERE org_id = ?1 AND sandbox_id = ?2 ORDER BY rowid LIMIT 1",
+                "SELECT created_at FROM sandboxes
+                 WHERE org_id = ?1 AND sandbox_id = ?2",
                 params![org_id, sandbox_id],
                 |row| row.get(0),
             )
@@ -92,12 +102,20 @@ impl SqliteStore {
         let tx = connection.transaction()?;
         tx.execute(
             "INSERT OR IGNORE INTO checksums (org_id, checksum, created_at)
-             SELECT org_id, checksum, ?3 FROM sandboxed_checksums
+             SELECT org_id, checksum, ?3 FROM sandbox_checksums
              WHERE org_id = ?1 AND sandbox_id = ?2",
             params![org_id, sandbox_id, timestamp],
         )?;
         tx.execute(
             "DELETE FROM sandboxed_checksums WHERE org_id = ?1 AND sandbox_id = ?2",
+            params![org_id, sandbox_id],
+        )?;
+        tx.execute(
+            "DELETE FROM sandbox_checksums WHERE org_id = ?1 AND sandbox_id = ?2",
+            params![org_id, sandbox_id],
+        )?;
+        tx.execute(
+            "DELETE FROM sandboxes WHERE org_id = ?1 AND sandbox_id = ?2",
             params![org_id, sandbox_id],
         )?;
         tx.commit()?;

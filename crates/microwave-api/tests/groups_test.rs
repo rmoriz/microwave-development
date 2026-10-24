@@ -60,6 +60,12 @@ fn add_user(state: &microwave_api::AppState, name: &str) -> String {
     user.authz_id
 }
 
+fn associate_user(state: &microwave_api::AppState, username: &str) {
+    let org = state.store.find_org("acme").unwrap().unwrap();
+    let user = state.store.find_user(username).unwrap().unwrap();
+    state.store.associate_user_org(&org.id, &user.id).unwrap();
+}
+
 fn add_member(state: &microwave_api::AppState, org_name: &str, group: &str, authz_id: &str) {
     let org = state.store.find_org(org_name).unwrap().unwrap();
     let group = state.store.find_group(&org.id, group).unwrap().unwrap();
@@ -77,6 +83,8 @@ async fn group_collection_and_named_crud_follow_upstream_shapes() {
     let _outside = add_user(&state, "outside");
     let app = support::app(state.clone());
     create_org(&app).await;
+    associate_user(&state, "admin");
+    associate_user(&state, "normal");
     add_member(&state, "acme", "admins", &admin);
     add_member(&state, "acme", "users", &normal);
 

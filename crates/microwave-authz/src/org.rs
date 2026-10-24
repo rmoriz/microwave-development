@@ -217,17 +217,41 @@ fn apply_default_policy(
         Some(&billing_admins.authz_id),
     )?;
 
-    // The default environment must be created after the container ACLs are in
-    // place: object ACLs are copied from their container at creation time, so
-    // creating it earlier leaves it without the `clients` read grant and every
-    // chef-client converge fails with 403 on the environment read. Upstream
-    // `oc_chef_wm_organizations` also creates `_default` only after the org
-    // creator policy has been applied.
-    store.create_environment(
+    // Create the default environment only after every container ACL has been
+    // applied. Object ACLs are copied from their container at creation time,
+    // so creating it earlier leaves clients without the read grant they need
+    // for a converge.
+    let default_environment = store.create_environment(
         &org.id,
         "_default",
         r#"{"name":"_default","description":"The default Chef environment","json_class":"Chef::Environment","chef_type":"environment","cookbook_versions":{},"default_attributes":{},"override_attributes":{}}"#,
         creator_authz_id,
+    )?;
+    grant(
+        store,
+        &default_environment.authz_id,
+        &Permission::ALL,
+        None,
+        Some(&admins.authz_id),
+    )?;
+    grant(
+        store,
+        &default_environment.authz_id,
+        &[
+            Permission::Create,
+            Permission::Read,
+            Permission::Update,
+            Permission::Delete,
+        ],
+        None,
+        Some(&users.authz_id),
+    )?;
+    grant(
+        store,
+        &default_environment.authz_id,
+        &[Permission::Read],
+        None,
+        Some(&clients.authz_id),
     )?;
 
     Ok(())

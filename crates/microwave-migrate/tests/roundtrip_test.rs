@@ -126,6 +126,7 @@ fn exported_snapshot_round_trips_identity_authz_and_objects() {
             "1.2.3",
             COOKBOOK_MANIFEST,
             &[CHECKSUM.to_string()],
+            false,
             &alice.authz_id,
         )
         .unwrap();

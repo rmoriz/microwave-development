@@ -51,7 +51,10 @@ pub fn require_permission(
     {
         Ok(())
     } else {
-        Err(ApiError::forbidden())
+        Err(ApiError::forbidden_with(format!(
+            "missing {} permission",
+            permission.as_str()
+        )))
     }
 }
 
