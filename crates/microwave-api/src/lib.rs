@@ -13,6 +13,7 @@ pub mod nodes;
 pub mod organizations;
 pub mod roles;
 pub mod sandboxes;
+pub mod search;
 pub mod state;
 pub mod users;
 
@@ -36,6 +37,7 @@ pub fn router(state: AppState) -> Router {
         .merge(environments::routes())
         .merge(roles::routes())
         .merge(data_bags::routes())
+        .merge(search::routes())
         .merge(bookshelf::routes())
         .merge(sandboxes::routes())
         .merge(cookbooks::routes())
