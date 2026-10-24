@@ -432,3 +432,32 @@ Ordered by how much pedant surface they unlock:
 - The harness restores the vendored `Gemfile.lock` after each run. Bundler adds the local
   `arm64-darwin-25` platform and drops the `rack` floor because the omnibus `safe_versions.rb`
   file is not present in this checkout; committing that host-specific rewrite is undesirable.
+
+---
+
+## Post-fix rerun (merged main)
+
+Run after the node, user/auth, and organization/client compatibility fixes were merged.
+
+Command:
+
+```sh
+scripts/run-pedant.sh headers users organizations clients nodes
+```
+
+| Tag | Examples | Passed | Failed | Pending |
+| --- | ---: | ---: | ---: | ---: |
+| headers | 7 | 6 | 1 | 0 |
+| users | 165 | 81 | 84 | 0 |
+| organizations | 15 | 15 | 0 | 0 |
+| clients | 142 | 129 | 10 | 3 |
+| nodes | 331 | 326 | 0 | 5 |
+| **Total** | **660** | **557** | **95** | **8** |
+
+The `headers` failure is the known plain-HTTP pedant artifact (`"https"` → `"http"` `sub!` returns nil). Four `clients` failures are pedant's own `NameError: undefined local variable 'chef_key'`; several of the remaining client failures are v1 canonical-behavior trade-offs documented in `docs/pedant-org-client-followup.md`.
+
+### Next highest-impact work
+
+1. `users` tag: user create/update validation, verbose/list filters, `first_name`/`last_name`/`display_name`, v1 `public_key` omission, rename and outside-user authorization.
+2. `clients` tag: finish v1 canonical key/`public_key` behavior and re-check the remaining non-pedant failures.
+3. Broaden the harness beyond these five tags: keys, ACLs, data bags, cookbooks, sandboxes, search, policies, oauth, license, depsolver.
