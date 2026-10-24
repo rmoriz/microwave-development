@@ -61,13 +61,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             bootstrap::ensure_superuser(&store, &config)?;
             let secret = match config.object_store.backend {
                 ObjectStoreBackend::Local => {
-                    let secret = bootstrap::ensure_object_store_secret(&config)?;
+                    let secret = bootstrap::ensure_object_store_secret(&config, &store)?;
                     config.object_store.secret = Some(secret.clone());
                     secret
                 }
                 // S3/Garage clients use presigned URLs directly, so there is
-                // no local bookshelf token secret to bootstrap.
-                _ => config.object_store.secret.clone().unwrap_or_default(),
+                // no local bookshelf token secret to bootstrap. Credentials
+                // may still come from the secret store.
+                _ => {
+                    bootstrap::apply_bookshelf_secrets(&mut config, &store)?;
+                    config.object_store.secret.clone().unwrap_or_default()
+                }
             };
             let object_store = build_object_store(&config, &secret)?;
 

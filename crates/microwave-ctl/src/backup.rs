@@ -42,6 +42,7 @@ pub fn backup(context: &Context, path: &Path) -> Result<(), CtlError> {
 /// Restore a backup directory created by [`backup`]. The live database and
 /// bookshelf are replaced.
 pub fn restore(context: &Context, path: &Path) -> Result<(), CtlError> {
+    let database_path = context.sqlite_path()?;
     let database_backup = path.join(DATABASE_FILE);
     if !database_backup.is_file() {
         return Err(CtlError::message(format!(
@@ -52,29 +53,29 @@ pub fn restore(context: &Context, path: &Path) -> Result<(), CtlError> {
     }
     SqliteStore::verify_database(&database_backup)?;
 
-    if same_path(&database_backup, &context.database_path) {
+    if same_path(&database_backup, database_path) {
         return Err(CtlError::message(
             "the backup database is the live database; choose a separate backup directory",
         ));
     }
 
     context.prepare_data_dir()?;
-    if let Some(parent) = context.database_path.parent() {
+    if let Some(parent) = database_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
     // Stage the snapshot before touching the live files so a failed copy does
     // not leave the database half-replaced.
     let staged = sidecar(
-        &context.database_path,
+        database_path,
         &format!(".restore-{}", Uuid::new_v4().simple()),
     );
     std::fs::copy(&database_backup, &staged)?;
 
-    remove_file(&context.database_path)?;
-    remove_file(&sidecar(&context.database_path, "-wal"))?;
-    remove_file(&sidecar(&context.database_path, "-shm"))?;
-    std::fs::rename(&staged, &context.database_path)?;
+    remove_file(database_path)?;
+    remove_file(&sidecar(database_path, "-wal"))?;
+    remove_file(&sidecar(database_path, "-shm"))?;
+    std::fs::rename(&staged, database_path)?;
 
     let bookshelf = context.data_dir.join(BOOKSHELF_DIR);
     remove_path(&bookshelf)?;
@@ -85,7 +86,7 @@ pub fn restore(context: &Context, path: &Path) -> Result<(), CtlError> {
 
     // Open the restored database so it is migrated to the current schema and
     // any incompatibility is reported before the command succeeds.
-    SqliteStore::open(&context.database_path)?;
+    SqliteStore::open(database_path)?;
 
     println!("Restored from {}", path.display());
     Ok(())

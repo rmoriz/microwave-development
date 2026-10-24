@@ -8,9 +8,12 @@ mod backup;
 mod cli;
 mod commands;
 mod context;
+mod diagnostics;
 mod error;
+mod keys;
+mod secrets;
 
-pub use cli::{Cli, Command};
+pub use cli::{Cli, Command, MaintenanceAction};
 pub use error::CtlError;
 
 use clap::{CommandFactory, FromArgMatches};
@@ -63,7 +66,63 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
         Command::OrgDelete { name } => commands::org_delete(&context, &name),
         Command::OrgUserAdd { org, user } => commands::org_user_add(&context, &org, &user),
         Command::OrgUserRemove { org, user } => commands::org_user_remove(&context, &org, &user),
+        Command::GrantServerAdminPermissions { user } => {
+            commands::grant_server_admin_permissions(&context, &user)
+        }
+        Command::RemoveServerAdminPermissions { user } => {
+            commands::remove_server_admin_permissions(&context, &user)
+        }
+        Command::ListServerAdmins => commands::list_server_admins(&context),
         Command::Password { user } => commands::password(&context, &user),
+        Command::AddClientKey {
+            org,
+            client,
+            key_name,
+            expiration_date,
+            public_key_path,
+        } => keys::add_client_key(
+            &context,
+            &org,
+            &client,
+            &keys::AddKeyOptions {
+                key_name: key_name.as_deref(),
+                expiration_date: &expiration_date,
+                public_key_path: public_key_path.as_deref(),
+            },
+        ),
+        Command::AddUserKey {
+            user,
+            key_name,
+            expiration_date,
+            public_key_path,
+        } => keys::add_user_key(
+            &context,
+            &user,
+            &keys::AddKeyOptions {
+                key_name: key_name.as_deref(),
+                expiration_date: &expiration_date,
+                public_key_path: public_key_path.as_deref(),
+            },
+        ),
+        Command::ListClientKeys {
+            org,
+            client,
+            verbose,
+        } => keys::list_client_keys(&context, &org, &client, verbose),
+        Command::ListUserKeys { user, verbose } => keys::list_user_keys(&context, &user, verbose),
+        Command::DeleteClientKey { org, client, key } => {
+            keys::delete_client_key(&context, &org, &client, &key)
+        }
+        Command::DeleteUserKey { user, key } => keys::delete_user_key(&context, &user, &key),
+        Command::ShowSecret { group, name } => secrets::show_secret(&context, &group, &name),
+        Command::SetSecret { group, name, value } => {
+            secrets::set_secret(&context, &group, &name, &value)
+        }
+        Command::RemoveSecret { group, name } => secrets::remove_secret(&context, &group, &name),
+        Command::Maintenance { action } => secrets::maintenance(&context, action),
+        Command::CheckConfig => diagnostics::check_config(&context),
+        Command::HaStatus => diagnostics::ha_status(&context),
+        Command::Psql { args } => diagnostics::psql(&context, &args),
         Command::Reindex { org } => commands::reindex(org.as_deref()),
         Command::Backup { path } => backup::backup(&context, &path),
         Command::Restore { path } => backup::restore(&context, &path),

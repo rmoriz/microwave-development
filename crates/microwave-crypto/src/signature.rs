@@ -3,7 +3,7 @@ use crate::error::CryptoError;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use rand::rngs::OsRng;
-use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey};
+use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey, EncodeRsaPublicKey};
 use rsa::pkcs1v15::{Signature, SigningKey, VerifyingKey};
 use rsa::pkcs8::{
     DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, LineEnding,
@@ -11,6 +11,7 @@ use rsa::pkcs8::{
 use rsa::signature::{SignatureEncoding, Signer, Verifier};
 use rsa::traits::{PrivateKeyParts, PublicKeyParts};
 use rsa::{BigUint, RsaPrivateKey, RsaPublicKey};
+use sha1::{Digest, Sha1};
 use sha2::Sha256;
 
 /// Parsed Chef authentication headers.
@@ -37,6 +38,24 @@ pub fn generate_rsa_keypair() -> Result<(String, String), CryptoError> {
         .to_public_key_pem(LineEnding::LF)
         .map_err(|error| CryptoError::InvalidKey(error.to_string()))?;
     Ok((private_pem, public_pem))
+}
+
+/// Compute a Chef-compatible public key fingerprint.
+///
+/// The fingerprint is the lowercase SHA-1 digest of the PKCS#1 DER encoding of
+/// the public key, written as colon-separated hex octets. Chef uses this value
+/// as the default key name when a key is generated or imported without one.
+pub fn public_key_fingerprint(public_key_pem: &str) -> Result<String, CryptoError> {
+    let public_key = parse_public_key_pem(public_key_pem)?;
+    let der = public_key
+        .to_pkcs1_der()
+        .map_err(|error| CryptoError::InvalidKey(error.to_string()))?;
+    let digest = Sha1::digest(der.as_bytes());
+    Ok(digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(":"))
 }
 
 /// Decode the `X-Ops-Authorization-1..N` header values into signature bytes.

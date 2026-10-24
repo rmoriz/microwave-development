@@ -11,7 +11,7 @@ The repository contains a working vertical slice:
 - **Storage** — SQLite schema for identity, ACLs, containers, groups, nodes, roles, environments, data bags, sandboxes, and cookbooks.
 - **Authorization** — recursive ACL/group checks, cycle rejection, the default organization policy, and ACL read/write endpoints with granular `users`/`clients` responses.
 - **HTTP API** — `/_status`, `/server_api_version`, `/license`, users, organizations, clients, principals, key management, organization memberships/invitations, nodes, environments, roles, data bags, sandboxes, bookshelf uploads, cookbooks, cookbook resolution, policyfiles/policy groups, ACL endpoints, and search (node/role/environment/client/data-bag indexes with a query subset and partial search).
-- **Operations CLI** — `microwave-ctl` with a `chef-server-ctl` compatibility binary: user/org administration, org membership, password reset, status, local backup/restore, `migrate-from-legacy` snapshot import, and a clear not-implemented response for reindex.
+- **Operations CLI** — `microwave-ctl` with a `chef-server-ctl` compatibility binary: user/org administration, server-admin grant/remove/list, org membership, password reset, key rotation (add/list/delete user and client keys), secrets management, maintenance state, `check-config`, `ha-status`, `psql`, status, local backup/restore, `migrate-from-legacy` snapshot import, and a clear not-implemented response for reindex.
 - **Migration** — `microwave-migrate` exports a versioned JSON snapshot of the local store (users with password hashes, organizations, clients, keys, authz ACLs, nodes, roles, environments, data bags, checksums, cookbooks, policies, and OAuth applications) and imports it with original ids, authz ids, timestamps, and keys intact. The live legacy API crawler (`from-api`) is deferred and reports a clear not-implemented error.
 - **OAuth/identity** — `/id` sign-in/sessions, OAuth application management, authorization-code and refresh-token flows, `/id/v1/me`, `/id/v1/me/organizations`, `/id/v1/status`, profile/password/key regeneration, and password-reset tokens.
 - **External backends** — S3/Garage object storage with SigV4 signing and presigned URLs, and OpenSearch/Elasticsearch search with bulk indexing and query translation. The local object store and embedded search remain the defaults.
@@ -35,10 +35,21 @@ The first run creates `./data/pivotal.pem` (superuser private key), `./data/pivo
 
 The full workspace suite is green.
 
+## Operational CLI Notes
+
+`microwave-ctl` and the `chef-server-ctl` alias share one dispatch, so every command below is available through both names.
+
+- **Server admins.** `grant-server-admin-permissions`, `remove-server-admin-permissions`, and `list-server-admins` use the `users.admin` column as the source of truth. The unified schema has no separate global `server-admins` group, and the HTTP/OAuth surfaces already treat `users.admin` as the administrator flag. The configured superuser cannot be demoted.
+- **Key rotation.** `add-client-key`, `add-user-key`, `list-client-keys`, `list-user-keys`, `delete-client-key`, and `delete-user-key` manage `actor_keys`. New keys are 2048-bit RSA keypairs; the private key is printed exactly once at creation and is not stored. When `--key-name` is omitted, the key name is the Chef-compatible SHA-1 public-key fingerprint. `--public-key-path` imports an existing PEM public key instead of generating one, and `--expiration-date` accepts `infinity` or an ISO-8601 timestamp.
+- **Secrets.** `set-secret`, `show-secret`, and `remove-secret` store values in the `kvpair` table under `secret:<group>:<name>`. Only `show-secret` prints a value. The supported credential names mirror upstream, including `object_store secret`, `bookshelf access_key_id`, `bookshelf secret_access_key`, `data_collector token`, and the SQL password groups. At startup the server resolves the local `/bookshelf` HMAC secret from configuration, then `object_store secret`, then `<data_dir>/objectstore.secret`, and copies file-backed values into the secret store. S3/Garage access and secret keys fall back to the `bookshelf` secrets when configuration omits them.
+- **Maintenance.** `maintenance on`, `maintenance off`, and `maintenance status` persist a flag in `kvpair` (`maintenance:enabled`). **HTTP enforcement is pending:** running servers do not return `503` while maintenance mode is on, and the command prints that limitation.
+- **Diagnostics.** `check-config` loads the resolved configuration and validates the data directory, database URL/driver, bind address, search backend, object-store credentials, and superuser name. `ha-status` reports a single-node deployment; multi-node, DRBD, and keepalived HA are not implemented. `psql` execs `sqlite3` against the configured database, or `psql` with a configured PostgreSQL URL, and passes trailing arguments through.
+
 ## Not Yet Implemented
 
 - The live legacy API crawler (`microwave-migrate from-api`). Local snapshot export/import and `microwave-ctl migrate-from-legacy` are available.
-- The remaining `chef-server-ctl` command surface (key rotation, secrets, maintenance, HA, pedant runner, full tar backup format).
+- The remaining `chef-server-ctl` command surface (credential rotation, `reconfigure`, pedant runner, full tar backup format).
+- HTTP enforcement of maintenance mode. `microwave-ctl maintenance on` persists the flag, but the request middleware does not return `503` yet; the command says so explicitly.
 - PostgreSQL, OpenSearch, and S3/Garage backends.
 - Full dependency-constraint solving; the current resolver selects the latest version per cookbook.
 - S3 SigV4 compatibility; the built-in local object store uses HMAC-signed URLs.
