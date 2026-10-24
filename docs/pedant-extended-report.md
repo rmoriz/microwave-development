@@ -8,7 +8,22 @@
 `scripts/pedant-solr-stub.rb` (new)
 **Branch:** `subagent/pedant-more`
 
-> **Post-merge status (2026-10-24):** the counts below predate the cookbook/artifact, ACL, OAuth, principal/license/search, and v2 manifest fixes. After those merges, the ACL suite dropped to 199 failures (from 555), keys to 86 (from 139), OAuth passed 13 examples / 0 failures / 5 pending, and sandboxes, data bags, policies, and cookbook artifacts are green. A complete extended re-run is still required for a final score.
+> **Current run (2026-10-24, post-merge):** **3,111 passed / 162 failed / 14 pending out of 3,287 examples**. All suites except `keys`, `acls`, `search`, and `depsolver` are green. The counts below are the historical pre-fix baseline.
+>
+> | Tag | Examples | Passed | Failed | Pending |
+> | --- | ---: | ---: | ---: | ---: |
+> | `keys` | 312 | 226 | 86 | 0 |
+> | `acls` | 1,640 | 1,570 | 70 | 0 |
+> | `data_bags` | 89 | 89 | 0 | 0 |
+> | `cookbooks` | 531 | 531 | 0 | 0 |
+> | `sandboxes` | 14 | 14 | 0 | 0 |
+> | `search` | 501 | 490 | 3 | 8 |
+> | `policies` | 93 | 93 | 0 | 0 |
+> | `oauth` | 13 | 8 | 0 | 5 |
+> | `license` | 9 | 9 | 0 | 0 |
+> | `depsolver` | 20 | 17 | 3 | 0 |
+> | `versioned_behaviors` | 65 | 64 | 0 | 1 |
+> | **Total** | **3,287** | **3,111** | **162** | **14** |
 >
 > The suites were first captured on `41abe62`. `main` then gained the ctl,
 > object-store-secret, and full-depsolver changes; the branch was rebased onto
