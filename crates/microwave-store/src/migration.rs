@@ -76,6 +76,10 @@ pub struct UserRow {
     pub admin: bool,
     pub recovery_authentication_enabled: bool,
     pub external_authentication_uid: Option<String>,
+    pub display_name: Option<String>,
+    pub first_name: Option<String>,
+    pub middle_name: Option<String>,
+    pub last_name: Option<String>,
     pub last_updated_by: String,
     pub created_at: String,
     pub updated_at: String,
@@ -412,7 +416,8 @@ impl SqliteStore {
                 &connection,
                 "SELECT id, authz_id, username, email, password_hash, password_salt,
                         hash_type, admin, recovery_authentication_enabled,
-                        external_authentication_uid, last_updated_by, created_at, updated_at
+                        external_authentication_uid, display_name, first_name, middle_name,
+                        last_name, last_updated_by, created_at, updated_at
                  FROM users ORDER BY id",
                 |row| {
                     Ok(UserRow {
@@ -426,9 +431,13 @@ impl SqliteStore {
                         admin: row.get::<_, i64>(7)? != 0,
                         recovery_authentication_enabled: row.get::<_, i64>(8)? != 0,
                         external_authentication_uid: row.get(9)?,
-                        last_updated_by: row.get(10)?,
-                        created_at: row.get(11)?,
-                        updated_at: row.get(12)?,
+                        display_name: row.get(10)?,
+                        first_name: row.get(11)?,
+                        middle_name: row.get(12)?,
+                        last_name: row.get(13)?,
+                        last_updated_by: row.get(14)?,
+                        created_at: row.get(15)?,
+                        updated_at: row.get(16)?,
                     })
                 },
             )?,
@@ -932,8 +941,9 @@ fn import_all(transaction: &Transaction<'_>, snapshot: &StoreSnapshot) -> Result
             "INSERT INTO users
              (id, authz_id, username, email, password_hash, password_salt, hash_type,
               admin, recovery_authentication_enabled, external_authentication_uid,
+              display_name, first_name, middle_name, last_name,
               last_updated_by, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
              ON CONFLICT(id) DO UPDATE SET
                  authz_id = excluded.authz_id,
                  username = excluded.username,
@@ -944,6 +954,10 @@ fn import_all(transaction: &Transaction<'_>, snapshot: &StoreSnapshot) -> Result
                  admin = excluded.admin,
                  recovery_authentication_enabled = excluded.recovery_authentication_enabled,
                  external_authentication_uid = excluded.external_authentication_uid,
+                 display_name = excluded.display_name,
+                 first_name = excluded.first_name,
+                 middle_name = excluded.middle_name,
+                 last_name = excluded.last_name,
                  last_updated_by = excluded.last_updated_by,
                  created_at = excluded.created_at,
                  updated_at = excluded.updated_at",
@@ -958,6 +972,10 @@ fn import_all(transaction: &Transaction<'_>, snapshot: &StoreSnapshot) -> Result
                 row.admin as i64,
                 row.recovery_authentication_enabled as i64,
                 row.external_authentication_uid,
+                row.display_name,
+                row.first_name,
+                row.middle_name,
+                row.last_name,
                 row.last_updated_by,
                 row.created_at,
                 row.updated_at

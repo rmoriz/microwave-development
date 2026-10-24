@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS users (
     recovery_authentication_enabled INTEGER NOT NULL DEFAULT 0
         CHECK (recovery_authentication_enabled IN (0, 1)),
     external_authentication_uid TEXT,
+    display_name TEXT,
+    first_name TEXT,
+    middle_name TEXT,
+    last_name TEXT,
     last_updated_by TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

@@ -8,7 +8,7 @@ use microwave_api::{router, AppState};
 use microwave_config::Config;
 use microwave_crypto::{sign_request, CanonicalRequest, SignVersion};
 use microwave_objectstore::{LocalObjectStore, ObjectStore};
-use microwave_store::{ActorType, SqliteStore};
+use microwave_store::{ActorType, Org, SqliteStore, User};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -45,6 +45,31 @@ pub fn state_with_config(mut config: Config) -> AppState {
 
 pub fn app(state: AppState) -> axum::Router {
     router(state)
+}
+
+/// Add a user with the shared test key and a default profile derived from the
+/// username. The `admin` flag is global metadata; organization-level admin
+/// behavior is driven by org group membership.
+pub fn add_user(state: &AppState, username: &str, email: &str, admin: bool) -> User {
+    let user = state
+        .store
+        .create_user(username, email, "bcrypt", "h", "s", admin)
+        .unwrap();
+    state
+        .store
+        .add_actor_key(&user.id, ActorType::User, "default", PUBLIC_KEY)
+        .unwrap();
+    user
+}
+
+pub fn add_org(state: &AppState, name: &str) -> Org {
+    let creator = state.store.find_user("pivotal").unwrap().unwrap();
+    microwave_authz::create_organization(&state.store, name, name, &creator.id, &creator.authz_id)
+        .unwrap()
+}
+
+pub fn associate(state: &AppState, org: &Org, user: &User) {
+    state.store.add_user_to_org(&org.id, &user.id).unwrap();
 }
 
 pub fn signed_request(

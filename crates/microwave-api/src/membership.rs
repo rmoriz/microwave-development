@@ -1,5 +1,5 @@
 use crate::helpers::{base_url, organization, require_permission};
-use crate::{ApiError, AppState, AuthContext};
+use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{delete, get, put};
@@ -102,13 +102,14 @@ async fn add_org_user(
 async fn get_org_user(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    Extension(ApiVersion(api_version)): Extension<ApiVersion>,
     Path((_organization, username)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
     require_permission(&state, &auth, &org.authz_id, Permission::Read)?;
     let user = find_user(&state, &username)?;
     ensure_member(&state, org, &user)?;
-    Ok(Json(crate::users::user_json(&state, &user)?))
+    Ok(Json(crate::users::user_json(&state, &user, api_version)?))
 }
 
 async fn remove_org_user(
