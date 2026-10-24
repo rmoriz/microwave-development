@@ -44,6 +44,21 @@ The full workspace suite is green.
 - S3 SigV4 compatibility; the built-in local object store uses HMAC-signed URLs.
 - A full `oc-chef-pedant` pass and end-to-end `chef-client` converge verification.
 
+### Pedant Compatibility
+
+The first `oc-chef-pedant` run is recorded in [`docs/pedant-report.md`](docs/pedant-report.md). Baseline for the five tags run:
+
+| Tag | Passed | Failed | Pending |
+| --- | ---: | ---: | ---: |
+| headers | 5 | 2 | 0 |
+| users | 21 | 144 | 0 |
+| organizations | 5 | 10 | 0 |
+| clients | 9 | 130 | 3 |
+| nodes | 214 | 112 | 5 |
+| **Total** | **254** | **398** | **8** |
+
+The harness is `scripts/run-pedant.sh`. The report lists the highest-impact gaps: missing `/authenticate_user` and `/system_recovery`, missing default keys on `POST /users`, missing validator client/private key on `POST /organizations`, absent groups/containers APIs, client authorization inversion, node validation/response divergence, and missing `X-Chef-Version` rejection.
+
 See `docs/superpowers/specs/2026-10-24-microwave-server-design.md` and `TODO.md` for the full target and remaining work.
 
 ## Layout
