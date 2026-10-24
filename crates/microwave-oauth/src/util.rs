@@ -243,14 +243,29 @@ pub fn escape_html(value: &str) -> String {
     escaped
 }
 
-pub fn page(title: &str, body: &str) -> Html<String> {
-    let csrf = uuid::Uuid::new_v4().simple().to_string();
+/// Generate a per-render CSRF token. The identity surface does not persist
+/// these tokens: upstream Rails ties them to the session, but Pedant only needs
+/// to be able to scrape the token and echo it back in the form body.
+pub fn csrf_token() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
+/// Render a page with a caller-supplied CSRF token so the meta tag and any
+/// hidden `authenticity_token` input share the same value.
+///
+/// The self-closing ` />` is required by `oc-chef-pedant`'s scraper:
+/// `<meta name="csrf-token" content="(.*)" />`.
+pub fn page_with_token(title: &str, body: &str, csrf: &str) -> Html<String> {
     Html(format!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
-         <meta name=\"csrf-token\" content=\"{csrf}\">\
+         <meta name=\"csrf-token\" content=\"{csrf}\" />\
          <title>{title}</title></head><body>{body}</body></html>",
         title = escape_html(title)
     ))
+}
+
+pub fn page(title: &str, body: &str) -> Html<String> {
+    page_with_token(title, body, &csrf_token())
 }
 
 pub fn user_json(state: &OAuthState, user: &User) -> Value {
@@ -267,10 +282,10 @@ pub fn user_json(state: &OAuthState, user: &User) -> Value {
     serde_json::json!({
         "id": user.username,
         "username": user.username,
-        "first_name": Value::Null,
-        "middle_name": Value::Null,
-        "last_name": Value::Null,
-        "display_name": user.username,
+        "first_name": user.first_name,
+        "middle_name": user.middle_name,
+        "last_name": user.last_name,
+        "display_name": user.display_name,
         "email": user.email,
         "public_key": public_key,
         "admin": user.admin,
@@ -298,6 +313,17 @@ mod tests {
             append_query("https://example.test/cb?x=1", &[("code", "a b")]),
             "https://example.test/cb?x=1&code=a%20b"
         );
+    }
+
+    #[test]
+    fn page_uses_the_pedant_csrf_meta_tag_shape() {
+        let html = page("Sign In", "<p>body</p>").0;
+        let token = csrf_token();
+        assert!(html.contains("<meta name=\"csrf-token\" content=\""));
+        assert!(html.contains("\" />"));
+        assert!(page_with_token("Sign In", "", &token)
+            .0
+            .contains(&format!("<meta name=\"csrf-token\" content=\"{token}\" />")));
     }
 
     #[test]
