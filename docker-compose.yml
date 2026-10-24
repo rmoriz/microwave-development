@@ -1,0 +1,41 @@
+# Microwave Server — default single-node deployment.
+#
+#   docker compose up -d --build
+#   docker compose exec microwave microwave-ctl status
+#   curl -fsS http://127.0.0.1:8000/_status
+#
+# This file runs the embedded profile: SQLite metadata, the in-process search
+# backend, and local /bookshelf blobs, all under the microwave-data volume.
+# For shared OpenSearch and S3/Garage storage use the override:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d
+#
+# PostgreSQL metadata is *not* available yet; see docs/deployment.md.
+
+name: microwave
+
+services:
+  microwave:
+    build:
+      context: .
+      args:
+        RUST_VERSION: ${RUST_VERSION:-1}
+    image: ${MW_IMAGE:-microwave-server:local}
+    restart: unless-stopped
+    ports:
+      - "${MW_PORT:-8000}:8000"
+    environment:
+      MW_CONFIG: /etc/microwave/microwave.toml
+      # Keep in sync with MW_PORT when the listener port changes; the
+      # image healthcheck probes this port.
+      MW_HTTP_PORT: "8000"
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - microwave-data:/var/lib/microwave
+      # Mount a copy of packaging/microwave.toml.example here. It is
+      # read-only inside the container; reload requires a restart.
+      - ${MW_CONFIG_FILE:-./packaging/microwave.toml.example}:/etc/microwave/microwave.toml:ro
+    stop_grace_period: 30s
+
+volumes:
+  microwave-data:

@@ -1,0 +1,86 @@
+# Microwave Server configuration.
+#
+# Precedence (lowest to highest):
+#   1. built-in defaults
+#   2. this file (`--config`, `MW_CONFIG`, or ./microwave.toml)
+#   3. MW_* environment variables
+#
+# The file is valid TOML with the local single-node defaults active. External
+# backends are shown as commented alternatives; uncomment one block per
+# section and keep exactly one active value per key.
+#
+# Verify a file before starting the server:
+#   microwave-ctl --config /etc/microwave/microwave.toml check-config
+#   microwave-server config --config /etc/microwave/microwave.toml
+
+[server]
+# Address the HTTP listener binds to. Put a TLS-terminating proxy in front of
+# the server; the server itself speaks plain HTTP.
+bind = "0.0.0.0:8000"
+# 0 lets the server size the Tokio runtime from the available CPUs.
+worker_threads = 0
+
+[paths]
+# All mutable local state lives here: microwave.db (+ WAL/SHM), bookshelf/
+# blobs for the local object-store backend, pivotal.pem, pivotal.password and
+# objectstore.secret. The systemd unit and container image both use this path.
+data_dir = "/var/lib/microwave"
+
+[database]
+# Only the SQLite metadata store is implemented today. `postgres` is parsed by
+# the configuration loader but the server does not have a PostgreSQL metadata
+# backend yet (see "Not Yet Implemented" in README.md). Leave this at sqlite.
+driver = "sqlite"
+# Defaults to sqlite://<paths.data_dir>/microwave.db when omitted.
+# url = "sqlite:///var/lib/microwave/microwave.db"
+
+[search]
+# `embedded` reads the relational store directly and needs no extra service.
+backend = "embedded"
+# --- OpenSearch / Elasticsearch (HA profiles) -----------------------------
+# backend = "opensearch"
+# url = "http://opensearch:9200"
+# The backend writes to the `chef` index and sends the organization and
+# object-type constraints as a filter query, matching upstream.
+#
+# Switching a populated installation from `embedded` to a remote backend does
+# not backfill documents: `microwave-ctl reindex` is a no-op today, so only
+# objects written after the switch are indexed. Plan a maintenance window and
+# re-push cookbooks/nodes, or wait for the reindex implementation.
+
+[object_store]
+# `local` serves /bookshelf from <data_dir>/bookshelf.
+backend = "local"
+# Shared secret for local /bookshelf tokens. Generated on first start into
+# <data_dir>/objectstore.secret and copied into the metadata secrets table.
+# secret = "replace-with-a-long-random-string"
+
+# --- S3 / Garage ----------------------------------------------------------
+# backend = "garage"            # or "s3"
+# endpoint = "http://host.docker.internal:3900"
+# bucket = "chef-cookbooks"
+# region = "garage"
+# path_style = true             # required for Garage, MinIO, and most S3 gateways
+# access_key = "GK..."
+# secret_key = "..."
+#
+# The endpoint is used for two different purposes: server-side PUT/HEAD/GET/
+# DELETE calls *and* for the presigned URLs handed to chef-client. It must
+# therefore resolve and be reachable from both the server and the clients. For
+# a real deployment use one DNS name behind a reverse proxy, not a Docker
+# network alias such as `garage`.
+#
+# When access_key/secret_key are omitted the server falls back to the
+# `bookshelf.access_key_id` / `bookshelf.secret_access_key` secrets stored in
+# the metadata database:
+#   microwave-ctl set-secret bookshelf access_key_id GK...
+#   microwave-ctl set-secret bookshelf secret_access_key ...
+
+[auth]
+# Allowed clock skew for X-Ops-Timestamp, in seconds (upstream default 900).
+# Increase only when client clocks cannot be kept in sync.
+skew_seconds = 900
+# The bootstrap superuser created on first start. The CLI and HTTP surfaces
+# use `users.admin` for server-admin privileges; this name identifies the
+# account that cannot be demoted.
+superuser_name = "pivotal"

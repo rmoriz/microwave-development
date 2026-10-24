@@ -1,0 +1,28 @@
+# Build context for the Microwave Server image.
+#
+# The vendored upstream trees are large and are not part of the Cargo
+# workspace, so they must not be sent to the daemon.
+chef/
+chef-server/
+.git/
+.gitignore
+target/
+**/target/
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Local configuration and secrets never belong in an image layer.
+microwave.toml
+*.pem
+*.password
+*.secret
+
+# Documentation, tests and local tooling.
+docs/
+scripts/
+TODO.md
+README.md
+docker-compose*.yml
+packaging/systemd/

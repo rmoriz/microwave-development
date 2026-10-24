@@ -36,6 +36,13 @@ The first run creates `./data/pivotal.pem` (superuser private key), `./data/pivo
 
 The full workspace suite is green.
 
+## Deployment
+
+Docker, Docker Compose, systemd, backup/restore, migration, and the supported
+HA topology are documented in [`docs/deployment.md`](docs/deployment.md).
+Packaging artifacts: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
+`docker-compose.ha.yml`, and `packaging/`.
+
 ## Operational CLI Notes
 
 `microwave-ctl` and the `chef-server-ctl` alias share one dispatch, so every command below is available through both names.
@@ -80,6 +87,7 @@ See `docs/superpowers/specs/2026-10-24-microwave-server-design.md` and `TODO.md`
 | `crates/` | Rust workspace crates. |
 | `bin/` | Server and compatibility binaries. |
 | `docs/superpowers/specs/` | Architecture and design specifications. |
+| `packaging/` | systemd unit, example configuration, Garage config/bootstrap for Compose. |
 | `TODO.md` | Master implementation checklist. |
 
 ## Naming and Trademarks
