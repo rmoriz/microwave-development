@@ -53,6 +53,21 @@ pub async fn authenticate(
         );
     }
 
+    if is_principal_path(&path) {
+        // The principal resource is unauthenticated upstream but still needs
+        // the negotiated API version to choose the v0 vs v1+ response shape.
+        let mut request = request;
+        request
+            .extensions_mut()
+            .insert(crate::state::ApiVersion(requested_version));
+        let response = next.run(request).await;
+        return with_version_header(
+            response,
+            &requested_version.to_string(),
+            &requested_version.to_string(),
+        );
+    }
+
     if path == "/_status"
         || path == "/server_api_version"
         || path == "/id"
@@ -229,6 +244,18 @@ fn organization_name_from_path(path: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Upstream's principal endpoint has no authentication (`auth_info` returns
+/// `authorized`), so it must work for unassociated users and even for requests
+/// whose signature cannot be verified.
+fn is_principal_path(path: &str) -> bool {
+    let mut parts = path.trim_matches('/').split('/');
+    parts.next() == Some("organizations")
+        && parts.next().is_some_and(|part| !part.is_empty())
+        && parts.next() == Some("principals")
+        && parts.next().is_some_and(|part| !part.is_empty())
+        && parts.next().is_none()
 }
 
 /// Match `routes.is_client_version_valid/2`: a version is accepted when its

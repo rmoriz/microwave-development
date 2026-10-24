@@ -178,6 +178,27 @@ impl SqliteStore {
             .optional()?)
     }
 
+    pub fn find_org_by_id(&self, id: &str) -> Result<Option<Org>, StoreError> {
+        let connection = self.connection();
+        Ok(connection
+            .query_row(
+                "SELECT id, authz_id, name, full_name, created_at, updated_at
+                 FROM orgs WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok(Org {
+                        id: row.get(0)?,
+                        authz_id: row.get(1)?,
+                        name: row.get(2)?,
+                        full_name: row.get(3)?,
+                        created_at: row.get(4)?,
+                        updated_at: row.get(5)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
     pub fn list_orgs(&self) -> Result<Vec<Org>, StoreError> {
         let connection = self.connection();
         let mut statement = connection.prepare(

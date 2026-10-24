@@ -122,6 +122,15 @@ impl SqliteStore {
         Ok(nodes)
     }
 
+    /// Number of nodes across every organization, matching upstream
+    /// `chef_db:count_nodes/1` used by the license endpoint.
+    pub fn count_nodes(&self) -> Result<u64, StoreError> {
+        let connection = self.connection();
+        let count: i64 =
+            connection.query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get(0))?;
+        Ok(count as u64)
+    }
+
     pub fn list_nodes_in_environment(
         &self,
         org_id: &str,

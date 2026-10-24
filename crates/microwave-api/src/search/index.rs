@@ -8,7 +8,9 @@ use crate::search::backend::{IndexKind, SearchDocument};
 use crate::search::expand;
 use crate::search::query::Fields;
 use crate::{ApiError, AppState};
-use microwave_store::{Client, Org, SqliteStore, StoredDataBagItem, StoredNode, StoredObject};
+use microwave_store::{
+    ActorType, Client, Org, SqliteStore, StoredDataBagItem, StoredNode, StoredObject,
+};
 use serde_json::{json, Value};
 
 /// A fully hydrated search entry. Entries are loaded from the store after the
@@ -77,8 +79,13 @@ pub(crate) fn object_document(
 }
 
 /// Builds the document that the OpenSearch backend indexes for a client.
-pub(crate) fn client_document(org_id: &str, client: &Client) -> SearchDocument {
-    let entry = client_entry(client.clone());
+pub(crate) fn client_document(
+    org_id: &str,
+    org_name: &str,
+    client: &Client,
+    public_key: Option<&str>,
+) -> SearchDocument {
+    let entry = client_entry(client.clone(), org_name, public_key);
     document_for_entry(org_id, &IndexKind::Client, "client", None, entry)
 }
 
@@ -195,22 +202,38 @@ fn object_entry(
 }
 
 fn client_entries(store: &SqliteStore, org_id: &str) -> Result<Vec<SearchEntry>, ApiError> {
-    Ok(store
-        .list_clients(org_id)
+    let org = store
+        .find_org_by_id(org_id)
         .map_err(ApiError::from)?
-        .into_iter()
-        .map(client_entry)
-        .collect())
+        .ok_or_else(|| ApiError::not_found(format!("organization {org_id}")))?;
+    let mut entries = Vec::new();
+    for client in store.list_clients(org_id).map_err(ApiError::from)? {
+        let keys = store
+            .find_actor_keys(&client.id, ActorType::Client)
+            .map_err(ApiError::from)?;
+        let public_key = keys
+            .iter()
+            .find(|key| key.key_name == "default")
+            .or_else(|| keys.first())
+            .map(|key| key.public_key.clone());
+        entries.push(client_entry(client, &org.name, public_key.as_deref()));
+    }
+    Ok(entries)
 }
 
-fn client_entry(client: Client) -> SearchEntry {
-    let value = json!({
+fn client_entry(client: Client, org_name: &str, public_key: Option<&str>) -> SearchEntry {
+    let mut value = json!({
         "name": client.name,
+        "clientname": client.name,
         "validator": client.validator,
+        "orgname": org_name,
         "admin": client.admin,
         "json_class": "Chef::ApiClient",
         "chef_type": "client"
     });
+    if let Some(public_key) = public_key {
+        value["public_key"] = json!(public_key);
+    }
     let fields = expand::flatten(&value);
     SearchEntry {
         id: client.id,
@@ -307,7 +330,17 @@ pub(crate) async fn index_object(
 }
 
 pub(crate) async fn index_client(state: &AppState, org: &Org, client: &Client) {
-    let document = client_document(&org.id, client);
+    let public_key = state
+        .store
+        .find_actor_keys(&client.id, ActorType::Client)
+        .ok()
+        .and_then(|keys| {
+            keys.iter()
+                .find(|key| key.key_name == "default")
+                .or_else(|| keys.first())
+                .map(|key| key.public_key.clone())
+        });
+    let document = client_document(&org.id, &org.name, client, public_key.as_deref());
     log_error(state.search.index(&document).await, "client index");
 }
 

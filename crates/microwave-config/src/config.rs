@@ -12,6 +12,7 @@ pub struct Config {
     pub search: SearchConfig,
     pub object_store: ObjectStoreConfig,
     pub auth: AuthConfig,
+    pub license: LicenseConfig,
 }
 
 impl Config {
@@ -58,6 +59,7 @@ impl Config {
     ///   `MW_OBJECT_STORE__SECRET_KEY`, `MW_OBJECT_STORE__PATH_STYLE`
     /// - `MW_OBJECT_STORE__SECRET` (local bookshelf token secret)
     /// - `MW_AUTH__SKEW_SECONDS`, `MW_AUTH__SUPERUSER_NAME`
+    /// - `MW_LICENSE__NODE_LICENSE`, `MW_LICENSE__UPGRADE_URL`
     pub fn apply_env(&mut self) -> Result<(), ConfigError> {
         if let Ok(value) = std::env::var("MW_SERVER__BIND") {
             self.server.bind = value;
@@ -138,6 +140,12 @@ impl Config {
         }
         if let Ok(value) = std::env::var("MW_AUTH__SUPERUSER_NAME") {
             self.auth.superuser_name = value;
+        }
+        if let Ok(value) = std::env::var("MW_LICENSE__NODE_LICENSE") {
+            self.license.node_license = parse_value("MW_LICENSE__NODE_LICENSE", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_LICENSE__UPGRADE_URL") {
+            self.license.upgrade_url = value;
         }
         Ok(())
     }
@@ -305,6 +313,25 @@ impl Default for AuthConfig {
         Self {
             skew_seconds: 900,
             superuser_name: "pivotal".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct LicenseConfig {
+    /// Maximum number of nodes permitted by the license. Upstream reads
+    /// `node_license` from `oc_chef_wm` configuration.
+    pub node_license: u64,
+    /// URL advertised by `GET /license`.
+    pub upgrade_url: String,
+}
+
+impl Default for LicenseConfig {
+    fn default() -> Self {
+        Self {
+            node_license: 1000,
+            upgrade_url: "https://www.chef.io/pricing".into(),
         }
     }
 }

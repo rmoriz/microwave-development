@@ -7,6 +7,9 @@ use serde_json::json;
 pub struct ApiError {
     pub status: StatusCode,
     pub message: String,
+    /// When set, the response body is the upstream object form
+    /// `{"error": message, "not_found": kind}` instead of `{"error": [message]}`.
+    pub not_found_kind: Option<String>,
 }
 
 impl ApiError {
@@ -14,6 +17,7 @@ impl ApiError {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
+            not_found_kind: None,
         }
     }
 
@@ -21,6 +25,7 @@ impl ApiError {
         Self {
             status: StatusCode::UNAUTHORIZED,
             message: "Failed to authenticate".into(),
+            not_found_kind: None,
         }
     }
 
@@ -28,6 +33,7 @@ impl ApiError {
         Self {
             status: StatusCode::UNAUTHORIZED,
             message: message.into(),
+            not_found_kind: None,
         }
     }
 
@@ -35,6 +41,7 @@ impl ApiError {
         Self {
             status: StatusCode::FORBIDDEN,
             message: "missing permission".into(),
+            not_found_kind: None,
         }
     }
 
@@ -42,6 +49,7 @@ impl ApiError {
         Self {
             status: StatusCode::FORBIDDEN,
             message: message.into(),
+            not_found_kind: None,
         }
     }
 
@@ -49,6 +57,17 @@ impl ApiError {
         Self {
             status: StatusCode::NOT_FOUND,
             message: message.into(),
+            not_found_kind: None,
+        }
+    }
+
+    /// Build the upstream `not_found_ejson/2` body used by resources such as
+    /// the principal endpoint.
+    pub fn not_found_object(kind: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message: message.into(),
+            not_found_kind: Some(kind.into()),
         }
     }
 
@@ -56,6 +75,7 @@ impl ApiError {
         Self {
             status: StatusCode::CONFLICT,
             message: message.into(),
+            not_found_kind: None,
         }
     }
 
@@ -63,6 +83,7 @@ impl ApiError {
         Self {
             status: StatusCode::METHOD_NOT_ALLOWED,
             message: message.into(),
+            not_found_kind: None,
         }
     }
 
@@ -70,6 +91,7 @@ impl ApiError {
         Self {
             status: StatusCode::PAYLOAD_TOO_LARGE,
             message: message.into(),
+            not_found_kind: None,
         }
     }
 
@@ -77,6 +99,7 @@ impl ApiError {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
             message: message.into(),
+            not_found_kind: None,
         }
     }
 
@@ -84,6 +107,7 @@ impl ApiError {
         Self {
             status: StatusCode::PRECONDITION_FAILED,
             message: message.into(),
+            not_found_kind: None,
         }
     }
 
@@ -91,13 +115,18 @@ impl ApiError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: "internal server error".into(),
+            not_found_kind: None,
         }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.status, axum::Json(json!({ "error": [self.message] }))).into_response()
+        let body = match self.not_found_kind {
+            Some(kind) => json!({ "error": self.message, "not_found": kind }),
+            None => json!({ "error": [self.message] }),
+        };
+        (self.status, axum::Json(body)).into_response()
     }
 }
 

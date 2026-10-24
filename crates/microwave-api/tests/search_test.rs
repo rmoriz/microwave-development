@@ -359,6 +359,57 @@ async fn performs_partial_searches() {
 }
 
 #[tokio::test]
+async fn client_search_rows_include_upstream_fields_by_api_version() {
+    let app = support::app(support::state_with_pivotal());
+    create_org(&app).await;
+
+    let (status, created) = request(
+        &app,
+        "POST",
+        "/organizations/acme/clients",
+        br#"{"name":"web1","create_key":true}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+
+    for (api_version, expects_public_key) in [("0", true), ("2", false)] {
+        let response = app
+            .clone()
+            .oneshot(support::signed_request_with_api_version(
+                "GET",
+                "/organizations/acme/search/client?q=name:web1",
+                b"",
+                SignVersion::V1_3,
+                "pivotal",
+                api_version,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let result = support::response_json(response).await;
+        assert_eq!(result["total"], 1, "api version {api_version}");
+        let row = &result["rows"][0];
+        assert_eq!(row["name"], "web1");
+        assert_eq!(row["clientname"], "web1");
+        assert_eq!(row["orgname"], "acme");
+        if expects_public_key {
+            assert!(
+                row["public_key"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("BEGIN PUBLIC KEY"),
+                "api version {api_version}: {row}"
+            );
+        } else {
+            assert!(
+                row.get("public_key").is_none(),
+                "api version {api_version}: {row}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn partial_search_of_data_bag_items_wraps_url_and_data() {
     let app = support::app(support::state_with_pivotal());
     create_org(&app).await;
