@@ -476,3 +476,95 @@ async fn rejects_duplicate_and_invalid_key_payloads() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn org_scoped_key_reads_follow_public_key_read_access_membership() {
+    let state = support::state_with_pivotal();
+    let app = support::app(state.clone());
+    create_org(&app).await;
+    create_user_with_public_key(&app, "alice").await;
+    create_user_with_public_key(&app, "bob").await;
+
+    let org = state.store.find_org("acme").unwrap().unwrap();
+    let bob = state.store.find_user("bob").unwrap().unwrap();
+    state.store.add_user_to_org(&org.id, &bob.id).unwrap();
+
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/organizations/acme/clients",
+        br#"{"name":"web1","create_key":true}"#,
+        "pivotal",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = send(
+        &app,
+        "GET",
+        "/organizations/acme/clients/web1/keys",
+        b"",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = send(
+        &app,
+        "GET",
+        "/organizations/acme/users/alice/keys",
+        b"",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let public_key_read = state
+        .store
+        .find_group(&org.id, "public_key_read_access")
+        .unwrap()
+        .unwrap();
+    state
+        .store
+        .replace_group_members(&org.id, &public_key_read.authz_id, None, None, Some(&[]))
+        .unwrap();
+
+    let (status, _) = send(
+        &app,
+        "GET",
+        "/organizations/acme/clients/web1/keys",
+        b"",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = send(
+        &app,
+        "GET",
+        "/organizations/acme/users/alice/keys",
+        b"",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    state
+        .store
+        .replace_group_members(
+            &org.id,
+            &public_key_read.authz_id,
+            None,
+            None,
+            Some(&["users".to_string(), "clients".to_string()]),
+        )
+        .unwrap();
+    let (status, _) = send(
+        &app,
+        "GET",
+        "/organizations/acme/clients/web1/keys",
+        b"",
+        "bob",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}

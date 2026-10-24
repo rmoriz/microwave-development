@@ -343,10 +343,10 @@ fn authorize_client(
         return Ok(());
     }
     // Normal clients may always manage themselves; validators may not.
-    if auth.principal.actor_type == ActorType::Client
-        && auth.principal.name == client.name
-        && !client.validator
-    {
+    if auth.principal.actor_type == ActorType::Client && auth.principal.name == client.name {
+        if client.validator {
+            return Err(ApiError::forbidden());
+        }
         return Ok(());
     }
     require_permission(state, auth, &client.authz_id, permission)

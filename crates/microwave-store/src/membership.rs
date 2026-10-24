@@ -74,6 +74,12 @@ impl SqliteStore {
             })?;
 
         add_group_actor(&transaction, &users_group, user_id)?;
+        let user_authz_id: String = transaction.query_row(
+            "SELECT authz_id FROM users WHERE id = ?1",
+            [user_id],
+            |row| row.get(0),
+        )?;
+        crate::authz::add_org_read_access_ace(&transaction, org_id, &user_authz_id)?;
         transaction.commit()?;
         Ok(())
     }
@@ -121,6 +127,7 @@ impl SqliteStore {
              WHERE group_authz_id = ?1 AND actor_authz_id = ?2",
             params![users_group, user_authz_id],
         )?;
+        crate::authz::remove_org_read_access_ace(&transaction, org_id, &user_authz_id)?;
         transaction.commit()?;
         Ok(())
     }
@@ -160,6 +167,43 @@ impl SqliteStore {
     ) -> Result<bool, StoreError> {
         let connection = self.connection();
         actor_in_group(&connection, group_authz_id, actor_authz_id)
+    }
+
+    /// Whether `actor_authz_id` is an admin of any organization the given user
+    /// belongs to.
+    pub fn is_org_admin_for_user(
+        &self,
+        actor_authz_id: &str,
+        user_id: &str,
+    ) -> Result<bool, StoreError> {
+        let connection = self.connection();
+        let exists: i64 = connection.query_row(
+            "SELECT EXISTS (
+                 SELECT 1
+                 FROM org_user_associations association
+                 JOIN groups admins
+                   ON admins.org_id = association.org_id
+                  AND admins.name = 'admins'
+                 WHERE association.user_id = ?2
+                   AND EXISTS (
+                       WITH RECURSIVE actor_groups(group_authz_id) AS (
+                           SELECT group_authz_id
+                           FROM authz_group_actors
+                           WHERE actor_authz_id = ?1
+                           UNION
+                           SELECT relation.parent_group_authz_id
+                           FROM authz_group_groups relation
+                           JOIN actor_groups
+                             ON relation.child_group_authz_id = actor_groups.group_authz_id
+                       )
+                       SELECT 1 FROM actor_groups
+                       WHERE group_authz_id = admins.authz_id
+                   )
+             )",
+            params![actor_authz_id, user_id],
+            |row| row.get(0),
+        )?;
+        Ok(exists != 0)
     }
 
     pub fn create_invitation(
@@ -261,6 +305,12 @@ impl SqliteStore {
             params![invitation.org_id, invitation.user_id, timestamp],
         )?;
         add_group_actor(&transaction, &users_group, &invitation.user_id)?;
+        let user_authz_id: String = transaction.query_row(
+            "SELECT authz_id FROM users WHERE id = ?1",
+            [&invitation.user_id],
+            |row| row.get(0),
+        )?;
+        crate::authz::add_org_read_access_ace(&transaction, &invitation.org_id, &user_authz_id)?;
         transaction.execute("DELETE FROM org_user_invites WHERE id = ?1", [id])?;
         transaction.commit()?;
         Ok(invitation)

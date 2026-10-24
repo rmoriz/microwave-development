@@ -1,4 +1,4 @@
-use crate::helpers::{organization, require_permission};
+use crate::helpers::{is_superuser, organization, require_permission};
 use crate::{ApiError, AppState, AuthContext};
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, put};
@@ -25,6 +25,22 @@ pub fn routes() -> Router<AppState> {
             get(get_organization_acl_compat),
         )
         .route(
+            "/organizations/{organization}/cookbooks/{name}/_acl",
+            get(get_cookbook_acl),
+        )
+        .route(
+            "/organizations/{organization}/cookbooks/{name}/_acl/{permission}",
+            put(put_cookbook_acl),
+        )
+        .route(
+            "/organizations/{organization}/data/{name}/_acl",
+            get(get_data_acl),
+        )
+        .route(
+            "/organizations/{organization}/data/{name}/_acl/{permission}",
+            put(put_data_acl),
+        )
+        .route(
             "/organizations/{organization}/{object_type}/{name}/_acl",
             get(get_object_acl),
         )
@@ -45,7 +61,7 @@ async fn get_user_acl(
         .find_user(&username)
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("user {username}")))?;
-    require_grant(&state, &auth, &user.authz_id)?;
+    require_user_acl_access(&state, &auth, &user.id, &user.authz_id)?;
     acl_json(&state, &user.authz_id, is_granular(&query))
 }
 
@@ -61,12 +77,10 @@ async fn put_user_acl(
         .find_user(&username)
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("user {username}")))?;
-    require_grant(&state, &auth, &user.authz_id)?;
+    require_user_acl_access(&state, &auth, &user.id, &user.authz_id)?;
     let ace = parse_ace(body, permission)?;
-    state
-        .store
-        .set_acl_for_permission(&user.authz_id, permission, &ace.actors, &ace.groups)
-        .map_err(ApiError::from)?;
+    enforce_grant_constraint(&state, &auth, &user.authz_id, permission, &ace.groups)?;
+    apply_ace(&state, &user.authz_id, permission, &ace)?;
     Ok(Json(json!({})))
 }
 
@@ -101,10 +115,8 @@ async fn put_organization_acl(
     let org = organization(&auth)?;
     require_grant(&state, &auth, &org.authz_id)?;
     let ace = parse_ace(body, permission)?;
-    state
-        .store
-        .set_acl_for_permission(&org.authz_id, permission, &ace.actors, &ace.groups)
-        .map_err(ApiError::from)?;
+    enforce_grant_constraint(&state, &auth, &org.authz_id, permission, &ace.groups)?;
+    apply_ace(&state, &org.authz_id, permission, &ace)?;
     Ok(Json(json!({})))
 }
 
@@ -114,10 +126,38 @@ async fn get_object_acl(
     Path((_organization, object_type, name)): Path<(String, String, String)>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Json<Value>, ApiError> {
-    let org = organization(&auth)?;
-    let target = resolve_target(&state, org, &object_type, &name)?;
-    require_grant(&state, &auth, &target)?;
-    acl_json(&state, &target, is_granular(&query))
+    get_object_acl_inner(&state, &auth, &object_type, &name, &query)
+}
+
+async fn get_cookbook_acl(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path((_organization, name)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Result<Json<Value>, ApiError> {
+    get_object_acl_inner(&state, &auth, "cookbooks", &name, &query)
+}
+
+async fn get_data_acl(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path((_organization, name)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Result<Json<Value>, ApiError> {
+    get_object_acl_inner(&state, &auth, "data", &name, &query)
+}
+
+fn get_object_acl_inner(
+    state: &AppState,
+    auth: &AuthContext,
+    object_type: &str,
+    name: &str,
+    query: &HashMap<String, String>,
+) -> Result<Json<Value>, ApiError> {
+    let org = organization(auth)?;
+    let target = resolve_target(state, org, object_type, name)?;
+    require_grant(state, auth, &target)?;
+    acl_json(state, &target, is_granular(query))
 }
 
 async fn put_object_acl(
@@ -126,15 +166,42 @@ async fn put_object_acl(
     Path((_organization, object_type, name, permission)): Path<(String, String, String, String)>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    let permission = parse_permission(&permission)?;
-    let org = organization(&auth)?;
-    let target = resolve_target(&state, org, &object_type, &name)?;
-    require_grant(&state, &auth, &target)?;
+    put_object_acl_inner(&state, &auth, &object_type, &name, &permission, body)
+}
+
+async fn put_cookbook_acl(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path((_organization, name, permission)): Path<(String, String, String)>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    put_object_acl_inner(&state, &auth, "cookbooks", &name, &permission, body)
+}
+
+async fn put_data_acl(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path((_organization, name, permission)): Path<(String, String, String)>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    put_object_acl_inner(&state, &auth, "data", &name, &permission, body)
+}
+
+fn put_object_acl_inner(
+    state: &AppState,
+    auth: &AuthContext,
+    object_type: &str,
+    name: &str,
+    permission: &str,
+    body: Value,
+) -> Result<Json<Value>, ApiError> {
+    let permission = parse_permission(permission)?;
+    let org = organization(auth)?;
+    let target = resolve_target(state, org, object_type, name)?;
+    require_grant(state, auth, &target)?;
     let ace = parse_ace(body, permission)?;
-    state
-        .store
-        .set_acl_for_permission(&target, permission, &ace.actors, &ace.groups)
-        .map_err(ApiError::from)?;
+    enforce_grant_constraint(state, auth, &target, permission, &ace.groups)?;
+    apply_ace(state, &target, permission, &ace)?;
     Ok(Json(json!({})))
 }
 
@@ -155,10 +222,93 @@ fn resolve_target(
 }
 
 fn require_grant(state: &AppState, auth: &AuthContext, target: &str) -> Result<(), ApiError> {
-    if auth.principal.name == "pivotal" {
+    if is_superuser(auth) {
         return Ok(());
     }
     require_permission(state, auth, target, Permission::Grant)
+}
+
+/// User ACLs are global. Upstream permits the superuser, anyone with a grant
+/// ACE on the user, and admins of an organization the user belongs to.
+fn require_user_acl_access(
+    state: &AppState,
+    auth: &AuthContext,
+    user_id: &str,
+    user_authz_id: &str,
+) -> Result<(), ApiError> {
+    if is_superuser(auth) {
+        return Ok(());
+    }
+    if state
+        .store
+        .check_permission(&auth.principal.authz_id, user_authz_id, Permission::Grant)
+        .map_err(ApiError::from)?
+    {
+        return Ok(());
+    }
+    if state
+        .store
+        .is_org_admin_for_user(&auth.principal.authz_id, user_id)
+        .map_err(ApiError::from)?
+    {
+        return Ok(());
+    }
+    Err(ApiError::forbidden())
+}
+
+/// Removing the `admins` group from a grant ACE is reserved for the superuser.
+fn enforce_grant_constraint(
+    state: &AppState,
+    auth: &AuthContext,
+    target: &str,
+    permission: Permission,
+    new_groups: &[String],
+) -> Result<(), ApiError> {
+    if permission != Permission::Grant || is_superuser(auth) {
+        return Ok(());
+    }
+    let entries = state
+        .store
+        .get_acl_entries(target)
+        .map_err(ApiError::from)?;
+    let current_groups = entries
+        .iter()
+        .find(|entry| entry.permission == Permission::Grant)
+        .map(|entry| entry.groups.as_slice())
+        .unwrap_or(&[]);
+    if current_groups.iter().any(|group| group == "admins")
+        && !new_groups.iter().any(|group| group == "admins")
+    {
+        return Err(ApiError::forbidden());
+    }
+    Ok(())
+}
+
+fn apply_ace(
+    state: &AppState,
+    target: &str,
+    permission: Permission,
+    ace: &Ace,
+) -> Result<(), ApiError> {
+    match &ace.legacy_actors {
+        Some(actors) => state
+            .store
+            .set_acl_for_permission(target, permission, actors, &ace.groups)
+            .map_err(acl_store_error),
+        None => state
+            .store
+            .set_acl_for_permission_split(target, permission, &ace.users, &ace.clients, &ace.groups)
+            .map_err(acl_store_error),
+    }
+}
+
+fn acl_store_error(error: microwave_store::StoreError) -> ApiError {
+    if let microwave_store::StoreError::Invalid(message) = &error {
+        if message.contains("exists as both a client and a user") {
+            return ApiError::unprocessable(message.clone());
+        }
+    }
+    ApiError::from(error)
 }
 
 fn parse_permission(value: &str) -> Result<Permission, ApiError> {
@@ -183,6 +333,7 @@ fn acl_json(
     for entry in entries {
         let mut ace = Map::new();
         if granular {
+            ace.insert("actors".into(), json!([]));
             ace.insert("users".into(), json!(entry.users));
             ace.insert("clients".into(), json!(entry.clients));
         } else {
@@ -197,7 +348,9 @@ fn acl_json(
 }
 
 struct Ace {
-    actors: Vec<String>,
+    legacy_actors: Option<Vec<String>>,
+    users: Vec<String>,
+    clients: Vec<String>,
     groups: Vec<String>,
 }
 
@@ -216,37 +369,47 @@ fn parse_ace(mut body: Value, permission: Permission) -> Result<Ace, ApiError> {
         .as_object()
         .ok_or_else(|| ApiError::bad_request("ACL body must be a JSON object"))?;
 
-    let has_actors = object.contains_key("actors");
-    let has_users = object.contains_key("users");
-    let has_clients = object.contains_key("clients");
-    if has_actors && (has_users || has_clients) {
-        return Err(ApiError::bad_request(
-            "ACL body must not contain both actors and users/clients",
-        ));
-    }
+    let actors = object
+        .get("actors")
+        .ok_or_else(|| ApiError::bad_request("ACL body requires actors"))
+        .and_then(|value| string_array(value, "actors"))?;
+    let groups = object
+        .get("groups")
+        .ok_or_else(|| ApiError::bad_request("ACL body requires groups"))
+        .and_then(|value| string_array(value, "groups"))?;
+    let users = object
+        .get("users")
+        .map(|value| string_array(value, "users"))
+        .transpose()?;
+    let clients = object
+        .get("clients")
+        .map(|value| string_array(value, "clients"))
+        .transpose()?;
 
-    let mut actors = Vec::new();
-    if has_users || has_clients {
-        if let Some(users) = object.get("users") {
-            actors.extend(string_array(users, "users")?);
+    match (users, clients) {
+        (None, None) => Ok(Ace {
+            legacy_actors: Some(actors),
+            users: Vec::new(),
+            clients: Vec::new(),
+            groups,
+        }),
+        (Some(users), Some(clients)) => {
+            if !actors.is_empty() {
+                return Err(ApiError::bad_request(
+                    "actors must be empty when users and clients are supplied",
+                ));
+            }
+            Ok(Ace {
+                legacy_actors: None,
+                users,
+                clients,
+                groups,
+            })
         }
-        if let Some(clients) = object.get("clients") {
-            actors.extend(string_array(clients, "clients")?);
-        }
-    } else if let Some(value) = object.get("actors") {
-        actors.extend(string_array(value, "actors")?);
-    } else {
-        return Err(ApiError::bad_request(
-            "ACL body requires actors or users/clients",
-        ));
+        _ => Err(ApiError::bad_request(
+            "ACL body must contain both users and clients",
+        )),
     }
-
-    let groups = match object.get("groups") {
-        Some(value) => string_array(value, "groups")?,
-        None => Vec::new(),
-    };
-
-    Ok(Ace { actors, groups })
 }
 
 fn string_array(value: &Value, field: &str) -> Result<Vec<String>, ApiError> {

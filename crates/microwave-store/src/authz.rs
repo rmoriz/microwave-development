@@ -221,6 +221,103 @@ impl SqliteStore {
         })
     }
 
+    /// Find or create a group that is not scoped to an organization.
+    ///
+    /// Upstream uses these for `server-admins` and the per-organization
+    /// `<org>_read_access_group`; ACL responses render them with a `::`
+    /// prefix.
+    pub fn ensure_global_group(&self, name: &str) -> Result<Group, StoreError> {
+        if let Some(group) = self.find_global_group(name)? {
+            return Ok(group);
+        }
+
+        let id = Uuid::new_v4().simple().to_string();
+        let authz_id = Uuid::new_v4().simple().to_string();
+        let now = crate::identity::now();
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO authz_entities (authz_id, entity_type, org_id, created_at)
+             VALUES (?1, 'group', NULL, ?2)",
+            params![authz_id, now],
+        )?;
+        for permission in Permission::ALL {
+            transaction.execute(
+                "INSERT INTO authz_acl_actor (target_authz_id, permission, actor_authz_id)
+                 VALUES (?1, ?2, ?3)",
+                params![authz_id, permission.as_str(), authz_id],
+            )?;
+        }
+        transaction
+            .execute(
+                "INSERT INTO global_groups (id, authz_id, name, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?4)",
+                params![id, authz_id, name, now],
+            )
+            .map_err(|error| {
+                crate::identity::conflict(error, format!("group {name} already exists"))
+            })?;
+        transaction.commit()?;
+        Ok(Group {
+            id,
+            authz_id,
+            name: name.into(),
+        })
+    }
+
+    pub fn find_global_group(&self, name: &str) -> Result<Option<Group>, StoreError> {
+        let connection = self.connection();
+        Ok(connection
+            .query_row(
+                "SELECT id, authz_id, name FROM global_groups WHERE name = ?1",
+                [name],
+                |row| {
+                    Ok(Group {
+                        id: row.get(0)?,
+                        authz_id: row.get(1)?,
+                        name: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Resolve an ACL group name in the syntax used by Chef Server:
+    /// `name` (the target organization), `org::name` (another organization) or
+    /// `::name` (a global group).
+    pub fn find_scoped_group(
+        &self,
+        org_id: Option<&str>,
+        name: &str,
+    ) -> Result<Option<Group>, StoreError> {
+        if let Some(global_name) = name.strip_prefix("::") {
+            return self.find_global_group(global_name);
+        }
+        if let Some((org_name, group_name)) = name.split_once("::") {
+            let org = self.find_org(org_name)?;
+            return match org {
+                Some(org) => self.find_group(&org.id, group_name),
+                None => Ok(None),
+            };
+        }
+        match org_id {
+            Some(org_id) => self.find_group(org_id, name),
+            None => Ok(None),
+        }
+    }
+
+    pub fn grant_actor_all(
+        &self,
+        target_authz_id: &str,
+        actor_authz_id: &str,
+    ) -> Result<(), StoreError> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        crate::objects::grant_actor_all(&transaction, target_authz_id, actor_authz_id)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn list_groups(&self, org_id: &str) -> Result<Vec<Group>, StoreError> {
         let connection = self.connection();
         let mut statement = connection
@@ -303,18 +400,32 @@ impl SqliteStore {
                 row.get::<_, String>(0)
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        let groups = connection
-            .prepare(
-                "SELECT g.name
-                 FROM authz_group_groups relation
-                 JOIN groups g ON g.authz_id = relation.child_group_authz_id
-                 WHERE relation.parent_group_authz_id = ?1 AND g.org_id = ?2
-                 ORDER BY g.name",
-            )?
-            .query_map(params![group_authz_id, org_id], |row| {
-                row.get::<_, String>(0)
+        let mut statement = connection.prepare(
+            "SELECT g.name, g.org_id, o.name
+             FROM authz_group_groups relation
+             JOIN groups g ON g.authz_id = relation.child_group_authz_id
+             JOIN orgs o ON o.id = g.org_id
+             WHERE relation.parent_group_authz_id = ?1
+             UNION ALL
+             SELECT gg.name, NULL, NULL
+             FROM authz_group_groups relation
+             JOIN global_groups gg ON gg.authz_id = relation.child_group_authz_id
+             WHERE relation.parent_group_authz_id = ?1",
+        )?;
+        let mut groups = statement
+            .query_map([group_authz_id], |row| {
+                let name: String = row.get(0)?;
+                let group_org_id: Option<String> = row.get(1)?;
+                let org_name: Option<String> = row.get(2)?;
+                Ok(render_group_name(
+                    Some(org_id),
+                    &name,
+                    group_org_id.as_deref(),
+                    org_name.as_deref(),
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
+        groups.sort();
         Ok(GroupMembers {
             users,
             clients,
@@ -343,16 +454,11 @@ impl SqliteStore {
         let connection = self.connection();
         let mut child_group_ids = Vec::with_capacity(groups.len());
         for name in groups {
-            let child: Option<String> = connection
-                .query_row(
-                    "SELECT authz_id FROM groups WHERE org_id = ?1 AND name = ?2",
-                    params![org_id, name],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let child = child.ok_or_else(|| {
-                StoreError::Invalid(format!("group {name} does not exist in this organization"))
-            })?;
+            let child = find_scoped_group_in_connection(&connection, Some(org_id), name)?
+                .ok_or_else(|| {
+                    StoreError::Invalid(format!("group {name} does not exist in this organization"))
+                })?;
+            let child = child.authz_id;
             if child == group_authz_id {
                 return Err(StoreError::Invalid("a group cannot contain itself".into()));
             }
@@ -547,13 +653,21 @@ impl SqliteStore {
 
     pub fn associate_user_org(&self, org_id: &str, user_id: &str) -> Result<(), StoreError> {
         let now = crate::identity::now();
-        let connection = self.connection();
-        connection.execute(
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        transaction.execute(
             "INSERT OR IGNORE INTO org_user_associations
              (org_id, user_id, last_updated_by, created_at, updated_at)
              VALUES (?1, ?2, '', ?3, ?3)",
             params![org_id, user_id, now],
         )?;
+        let user_authz_id: String = transaction.query_row(
+            "SELECT authz_id FROM users WHERE id = ?1",
+            [user_id],
+            |row| row.get(0),
+        )?;
+        add_org_read_access_ace(&transaction, org_id, &user_authz_id)?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -694,6 +808,10 @@ impl SqliteStore {
     }
 
     /// Read the full ACL of a target with users and clients kept separate.
+    ///
+    /// Group names are scoped relative to the target's organization: local
+    /// groups are unqualified, groups from other organizations are
+    /// `org::name`, and global groups are `::name`.
     pub fn get_acl_entries(&self, target_authz_id: &str) -> Result<Vec<AclEntry>, StoreError> {
         let connection = self.connection();
         let exists: i64 = connection.query_row(
@@ -706,6 +824,11 @@ impl SqliteStore {
                 "ACL target {target_authz_id}"
             )));
         }
+        let context_org_id: Option<String> = connection.query_row(
+            "SELECT org_id FROM authz_entities WHERE authz_id = ?1",
+            [target_authz_id],
+            |row| row.get(0),
+        )?;
 
         let mut entries = Vec::with_capacity(Permission::ALL.len());
         for permission in Permission::ALL {
@@ -733,18 +856,32 @@ impl SqliteStore {
                     row.get::<_, String>(0)
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
-            let groups = connection
-                .prepare(
-                    "SELECT g.name
-                     FROM authz_acl_group ace
-                     JOIN groups g ON g.authz_id = ace.group_authz_id
-                     WHERE ace.target_authz_id = ?1 AND ace.permission = ?2
-                     ORDER BY g.name",
-                )?
+            let mut statement = connection.prepare(
+                "SELECT g.name, g.org_id, o.name
+                 FROM authz_acl_group ace
+                 JOIN groups g ON g.authz_id = ace.group_authz_id
+                 JOIN orgs o ON o.id = g.org_id
+                 WHERE ace.target_authz_id = ?1 AND ace.permission = ?2
+                 UNION ALL
+                 SELECT gg.name, NULL, NULL
+                 FROM authz_acl_group ace
+                 JOIN global_groups gg ON gg.authz_id = ace.group_authz_id
+                 WHERE ace.target_authz_id = ?1 AND ace.permission = ?2",
+            )?;
+            let mut groups = statement
                 .query_map(params![target_authz_id, permission.as_str()], |row| {
-                    row.get::<_, String>(0)
+                    let name: String = row.get(0)?;
+                    let group_org_id: Option<String> = row.get(1)?;
+                    let org_name: Option<String> = row.get(2)?;
+                    Ok(render_group_name(
+                        context_org_id.as_deref(),
+                        &name,
+                        group_org_id.as_deref(),
+                        org_name.as_deref(),
+                    ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
+            groups.sort();
             entries.push(AclEntry {
                 permission,
                 users,
@@ -767,14 +904,7 @@ impl SqliteStore {
     ) -> Result<(), StoreError> {
         let mut connection = self.connection();
         let transaction = connection.transaction()?;
-        let org_id: Option<String> = transaction
-            .query_row(
-                "SELECT org_id FROM authz_entities WHERE authz_id = ?1",
-                [target_authz_id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or_else(|| StoreError::NotFound(format!("ACL target {target_authz_id}")))?;
+        let org_id = acl_target_org_id(&transaction, target_authz_id)?;
 
         let mut actor_ids = Vec::with_capacity(actors.len());
         for name in actors {
@@ -785,50 +915,54 @@ impl SqliteStore {
             )?);
         }
 
-        let mut group_ids = Vec::with_capacity(groups.len());
-        for name in groups {
+        let group_ids = resolve_group_ids(&transaction, org_id.as_deref(), groups)?;
+        replace_acl_entries(
+            &transaction,
+            target_authz_id,
+            permission,
+            &actor_ids,
+            &group_ids,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Replace one permission's ACE from explicit `users`/`clients` lists.
+    /// Unlike the legacy actor form this never treats a shared name as
+    /// ambiguous, because the caller has named each actor's type.
+    pub fn set_acl_for_permission_split(
+        &self,
+        target_authz_id: &str,
+        permission: Permission,
+        users: &[String],
+        clients: &[String],
+        groups: &[String],
+    ) -> Result<(), StoreError> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        let org_id = acl_target_org_id(&transaction, target_authz_id)?;
+
+        let mut actor_ids = Vec::with_capacity(users.len() + clients.len());
+        for name in users {
+            actor_ids.push(resolve_user_authz_id(&transaction, name)?);
+        }
+        for name in clients {
             let Some(org_id) = org_id.as_deref() else {
-                return Err(StoreError::Invalid(format!("group {name} does not exist")));
+                return Err(StoreError::Invalid(format!(
+                    "client {name} is not allowed in this context"
+                )));
             };
-            let group_id = transaction
-                .query_row(
-                    "SELECT authz_id FROM groups WHERE org_id = ?1 AND name = ?2",
-                    params![org_id, name],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .ok_or_else(|| {
-                    StoreError::Invalid(format!("group {name} does not exist in this organization"))
-                })?;
-            group_ids.push(group_id);
+            actor_ids.push(resolve_client_authz_id(&transaction, org_id, name)?);
         }
 
-        transaction.execute(
-            "DELETE FROM authz_acl_actor
-             WHERE target_authz_id = ?1 AND permission = ?2",
-            params![target_authz_id, permission.as_str()],
+        let group_ids = resolve_group_ids(&transaction, org_id.as_deref(), groups)?;
+        replace_acl_entries(
+            &transaction,
+            target_authz_id,
+            permission,
+            &actor_ids,
+            &group_ids,
         )?;
-        transaction.execute(
-            "DELETE FROM authz_acl_group
-             WHERE target_authz_id = ?1 AND permission = ?2",
-            params![target_authz_id, permission.as_str()],
-        )?;
-        for actor_id in actor_ids {
-            transaction.execute(
-                "INSERT OR IGNORE INTO authz_acl_actor
-                 (target_authz_id, permission, actor_authz_id)
-                 VALUES (?1, ?2, ?3)",
-                params![target_authz_id, permission.as_str(), actor_id],
-            )?;
-        }
-        for group_id in group_ids {
-            transaction.execute(
-                "INSERT OR IGNORE INTO authz_acl_group
-                 (target_authz_id, permission, group_authz_id)
-                 VALUES (?1, ?2, ?3)",
-                params![target_authz_id, permission.as_str(), group_id],
-            )?;
-        }
         transaction.commit()?;
         Ok(())
     }
@@ -902,20 +1036,277 @@ impl SqliteStore {
     }
 }
 
-fn resolve_actor_authz_id(
+pub(crate) fn add_org_read_access_ace(
+    transaction: &Transaction<'_>,
+    org_id: &str,
+    actor_authz_id: &str,
+) -> Result<(), StoreError> {
+    let Some(group_authz_id) = org_read_access_group_authz_id(transaction, org_id)? else {
+        return Ok(());
+    };
+    transaction.execute(
+        "INSERT OR IGNORE INTO authz_acl_group
+         (target_authz_id, permission, group_authz_id)
+         VALUES (?1, 'read', ?2)",
+        params![actor_authz_id, group_authz_id],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn remove_org_read_access_ace(
+    transaction: &Transaction<'_>,
+    org_id: &str,
+    actor_authz_id: &str,
+) -> Result<(), StoreError> {
+    let Some(group_authz_id) = org_read_access_group_authz_id(transaction, org_id)? else {
+        return Ok(());
+    };
+    transaction.execute(
+        "DELETE FROM authz_acl_group
+         WHERE target_authz_id = ?1 AND permission = 'read' AND group_authz_id = ?2",
+        params![actor_authz_id, group_authz_id],
+    )?;
+    Ok(())
+}
+
+fn org_read_access_group_authz_id(
+    transaction: &Transaction<'_>,
+    org_id: &str,
+) -> Result<Option<String>, StoreError> {
+    let org_name: Option<String> = transaction
+        .query_row("SELECT name FROM orgs WHERE id = ?1", [org_id], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    let Some(org_name) = org_name else {
+        return Ok(None);
+    };
+    let group_name = format!("{org_name}_read_access_group");
+    Ok(transaction
+        .query_row(
+            "SELECT authz_id FROM global_groups WHERE name = ?1",
+            [group_name],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+fn acl_target_org_id(
+    transaction: &Transaction<'_>,
+    target_authz_id: &str,
+) -> Result<Option<String>, StoreError> {
+    let org_id: Option<Option<String>> = transaction
+        .query_row(
+            "SELECT org_id FROM authz_entities WHERE authz_id = ?1",
+            [target_authz_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    org_id.ok_or_else(|| StoreError::NotFound(format!("ACL target {target_authz_id}")))
+}
+
+fn resolve_group_ids(
+    transaction: &Transaction<'_>,
+    org_id: Option<&str>,
+    groups: &[String],
+) -> Result<Vec<String>, StoreError> {
+    let mut group_ids = Vec::with_capacity(groups.len());
+    for name in groups {
+        let group =
+            find_scoped_group_in_transaction(transaction, org_id, name)?.ok_or_else(|| {
+                StoreError::Invalid(format!("group {name} does not exist in this organization"))
+            })?;
+        group_ids.push(group.authz_id);
+    }
+    Ok(group_ids)
+}
+
+fn replace_acl_entries(
+    transaction: &Transaction<'_>,
+    target_authz_id: &str,
+    permission: Permission,
+    actor_ids: &[String],
+    group_ids: &[String],
+) -> Result<(), StoreError> {
+    transaction.execute(
+        "DELETE FROM authz_acl_actor
+         WHERE target_authz_id = ?1 AND permission = ?2",
+        params![target_authz_id, permission.as_str()],
+    )?;
+    transaction.execute(
+        "DELETE FROM authz_acl_group
+         WHERE target_authz_id = ?1 AND permission = ?2",
+        params![target_authz_id, permission.as_str()],
+    )?;
+    for actor_id in actor_ids {
+        transaction.execute(
+            "INSERT OR IGNORE INTO authz_acl_actor
+             (target_authz_id, permission, actor_authz_id)
+             VALUES (?1, ?2, ?3)",
+            params![target_authz_id, permission.as_str(), actor_id],
+        )?;
+    }
+    for group_id in group_ids {
+        transaction.execute(
+            "INSERT OR IGNORE INTO authz_acl_group
+             (target_authz_id, permission, group_authz_id)
+             VALUES (?1, ?2, ?3)",
+            params![target_authz_id, permission.as_str(), group_id],
+        )?;
+    }
+    Ok(())
+}
+
+fn render_group_name(
+    context_org_id: Option<&str>,
+    name: &str,
+    group_org_id: Option<&str>,
+    org_name: Option<&str>,
+) -> String {
+    match (group_org_id, org_name) {
+        (None, _) => format!("::{name}"),
+        (Some(group_org_id), Some(org_name)) => {
+            if context_org_id == Some(group_org_id) {
+                name.to_string()
+            } else {
+                format!("{org_name}::{name}")
+            }
+        }
+        (Some(_), None) => name.to_string(),
+    }
+}
+
+fn find_scoped_group_in_connection(
+    connection: &rusqlite::Connection,
+    org_id: Option<&str>,
+    name: &str,
+) -> Result<Option<Group>, StoreError> {
+    if let Some(global_name) = name.strip_prefix("::") {
+        return query_global_group(connection, global_name);
+    }
+    if let Some((org_name, group_name)) = name.split_once("::") {
+        let org_id: Option<String> = connection
+            .query_row("SELECT id FROM orgs WHERE name = ?1", [org_name], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        return match org_id {
+            Some(org_id) => query_org_group(connection, &org_id, group_name),
+            None => Ok(None),
+        };
+    }
+    match org_id {
+        Some(org_id) => query_org_group(connection, org_id, name),
+        None => Ok(None),
+    }
+}
+
+fn find_scoped_group_in_transaction(
     transaction: &Transaction<'_>,
     org_id: Option<&str>,
     name: &str,
-) -> Result<String, StoreError> {
-    let user_id: Option<String> = transaction
+) -> Result<Option<Group>, StoreError> {
+    if let Some(global_name) = name.strip_prefix("::") {
+        return query_global_group(transaction, global_name);
+    }
+    if let Some((org_name, group_name)) = name.split_once("::") {
+        let org_id: Option<String> = transaction
+            .query_row("SELECT id FROM orgs WHERE name = ?1", [org_name], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        return match org_id {
+            Some(org_id) => query_org_group(transaction, &org_id, group_name),
+            None => Ok(None),
+        };
+    }
+    match org_id {
+        Some(org_id) => query_org_group(transaction, org_id, name),
+        None => Ok(None),
+    }
+}
+
+fn query_org_group(
+    connection: &rusqlite::Connection,
+    org_id: &str,
+    name: &str,
+) -> Result<Option<Group>, StoreError> {
+    Ok(connection
+        .query_row(
+            "SELECT id, authz_id, name FROM groups WHERE org_id = ?1 AND name = ?2",
+            params![org_id, name],
+            |row| {
+                Ok(Group {
+                    id: row.get(0)?,
+                    authz_id: row.get(1)?,
+                    name: row.get(2)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+fn query_global_group(
+    connection: &rusqlite::Connection,
+    name: &str,
+) -> Result<Option<Group>, StoreError> {
+    Ok(connection
+        .query_row(
+            "SELECT id, authz_id, name FROM global_groups WHERE name = ?1",
+            [name],
+            |row| {
+                Ok(Group {
+                    id: row.get(0)?,
+                    authz_id: row.get(1)?,
+                    name: row.get(2)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+fn resolve_user_authz_id(transaction: &Transaction<'_>, name: &str) -> Result<String, StoreError> {
+    transaction
         .query_row(
             "SELECT authz_id FROM users WHERE username = ?1",
             [name],
             |row| row.get(0),
         )
+        .optional()?
+        .ok_or_else(|| StoreError::Invalid(format!("user {name} does not exist")))
+}
+
+fn resolve_client_authz_id(
+    transaction: &Transaction<'_>,
+    org_id: &str,
+    name: &str,
+) -> Result<String, StoreError> {
+    transaction
+        .query_row(
+            "SELECT authz_id FROM clients WHERE org_id = ?1 AND name = ?2",
+            params![org_id, name],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            StoreError::Invalid(format!("client {name} does not exist in this organization"))
+        })
+}
+
+fn resolve_actor_authz_id(
+    transaction: &Transaction<'_>,
+    org_id: Option<&str>,
+    name: &str,
+) -> Result<String, StoreError> {
+    let user = transaction
+        .query_row(
+            "SELECT id, authz_id FROM users WHERE username = ?1",
+            [name],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
         .optional()?;
 
-    let client_id = match org_id {
+    let client = match org_id {
         Some(org_id) => transaction
             .query_row(
                 "SELECT authz_id FROM clients WHERE org_id = ?1 AND name = ?2",
@@ -926,12 +1317,31 @@ fn resolve_actor_authz_id(
         None => None,
     };
 
-    match (user_id, client_id) {
-        (Some(_), Some(_)) => Err(StoreError::Invalid(format!(
-            "actor {name} exists as both a client and a user in this organization"
-        ))),
-        (Some(user_id), None) => Ok(user_id),
-        (None, Some(client_id)) => Ok(client_id),
+    match (user, client) {
+        (Some((user_id, _)), Some(client_authz_id)) => {
+            let Some(org_id) = org_id else {
+                return Err(StoreError::Invalid(format!(
+                    "actor {name} exists as both a client and a user"
+                )));
+            };
+            let associated: i64 = transaction.query_row(
+                "SELECT EXISTS (
+                     SELECT 1 FROM org_user_associations
+                     WHERE org_id = ?1 AND user_id = ?2
+                 )",
+                params![org_id, user_id],
+                |row| row.get(0),
+            )?;
+            if associated != 0 {
+                Err(StoreError::Invalid(format!(
+                    "actor {name} exists as both a client and a user in this organization"
+                )))
+            } else {
+                Ok(client_authz_id)
+            }
+        }
+        (Some((_, user_authz_id)), None) => Ok(user_authz_id),
+        (None, Some(client_authz_id)) => Ok(client_authz_id),
         (None, None) => Err(StoreError::Invalid(match org_id {
             Some(_) => format!("actor {name} does not exist in this organization"),
             None => format!("actor {name} does not exist"),

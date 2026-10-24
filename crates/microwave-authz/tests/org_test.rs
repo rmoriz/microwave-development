@@ -31,3 +31,144 @@ fn creates_default_containers_groups_and_acls() {
         .check_permission(&creator.authz_id, &nodes.authz_id, Permission::Read)
         .unwrap());
 }
+
+fn acl_groups(store: &SqliteStore, authz_id: &str, permission: Permission) -> Vec<String> {
+    store
+        .get_acl_entries(authz_id)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.permission == permission)
+        .unwrap()
+        .groups
+}
+
+fn acl_users(store: &SqliteStore, authz_id: &str, permission: Permission) -> Vec<String> {
+    store
+        .get_acl_entries(authz_id)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.permission == permission)
+        .unwrap()
+        .users
+}
+
+#[test]
+fn applies_the_upstream_default_container_and_group_matrices() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    let creator = store
+        .create_user("root", "root@example.com", "bcrypt", "hash", "salt", true)
+        .unwrap();
+    let org =
+        create_organization(&store, "acme", "Acme Corp", &creator.id, &creator.authz_id).unwrap();
+
+    let nodes = store.find_container(&org.id, "nodes").unwrap().unwrap();
+    for permission in [
+        Permission::Create,
+        Permission::Read,
+        Permission::Update,
+        Permission::Delete,
+    ] {
+        assert!(acl_users(&store, &nodes.authz_id, permission).contains(&"root".to_string()));
+    }
+    assert_eq!(
+        acl_groups(&store, &nodes.authz_id, Permission::Create),
+        vec!["admins", "clients", "users"]
+    );
+    assert_eq!(
+        acl_groups(&store, &nodes.authz_id, Permission::Update),
+        vec!["admins", "users"]
+    );
+
+    let clients = store.find_container(&org.id, "clients").unwrap().unwrap();
+    assert_eq!(
+        acl_groups(&store, &clients.authz_id, Permission::Read),
+        vec!["admins", "users"]
+    );
+    assert_eq!(
+        acl_groups(&store, &clients.authz_id, Permission::Delete),
+        vec!["admins", "users"]
+    );
+    assert_eq!(
+        acl_groups(&store, &clients.authz_id, Permission::Grant),
+        vec!["admins"]
+    );
+
+    let admins = store.find_group(&org.id, "admins").unwrap().unwrap();
+    let billing = store
+        .find_group(&org.id, "billing-admins")
+        .unwrap()
+        .unwrap();
+    let public_key_read = store
+        .find_group(&org.id, "public_key_read_access")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        acl_groups(&store, &admins.authz_id, Permission::Grant),
+        vec!["admins"]
+    );
+    assert_eq!(
+        acl_groups(&store, &billing.authz_id, Permission::Read),
+        vec!["billing-admins"]
+    );
+    assert_eq!(
+        acl_groups(&store, &billing.authz_id, Permission::Update),
+        vec!["billing-admins"]
+    );
+    assert!(acl_groups(&store, &billing.authz_id, Permission::Create).is_empty());
+    assert!(acl_groups(&store, &billing.authz_id, Permission::Delete).is_empty());
+    assert!(acl_groups(&store, &billing.authz_id, Permission::Grant).is_empty());
+    assert_eq!(
+        acl_groups(&store, &public_key_read.authz_id, Permission::Read),
+        vec!["admins"]
+    );
+    assert_eq!(
+        acl_groups(&store, &public_key_read.authz_id, Permission::Update),
+        vec!["admins"]
+    );
+    assert!(acl_groups(&store, &public_key_read.authz_id, Permission::Create).is_empty());
+
+    let org_acl = store.get_acl_entries(&org.authz_id).unwrap();
+    let org_read = org_acl
+        .iter()
+        .find(|entry| entry.permission == Permission::Read)
+        .unwrap();
+    assert_eq!(org_read.groups, vec!["admins", "users"]);
+}
+
+#[test]
+fn creates_global_read_access_and_server_admin_groups() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    let creator = store
+        .create_user("root", "root@example.com", "bcrypt", "hash", "salt", true)
+        .unwrap();
+    let org =
+        create_organization(&store, "acme", "Acme Corp", &creator.id, &creator.authz_id).unwrap();
+
+    let read_access = store
+        .find_global_group("acme_read_access_group")
+        .unwrap()
+        .expect("read access group");
+    let members = store
+        .list_group_members(&org.id, &read_access.authz_id)
+        .unwrap();
+    assert_eq!(members.groups, vec!["admins", "users"]);
+
+    let server_admins = store
+        .find_global_group("server-admins")
+        .unwrap()
+        .expect("server admins");
+    assert!(store
+        .user_in_group(&server_admins.authz_id, &creator.authz_id)
+        .unwrap());
+
+    let user_acl = store.get_acl_entries(&creator.authz_id).unwrap();
+    let read = user_acl
+        .iter()
+        .find(|entry| entry.permission == Permission::Read)
+        .unwrap();
+    assert!(read.users.contains(&"root".to_string()));
+    assert!(read
+        .groups
+        .contains(&"::acme_read_access_group".to_string()));
+    assert!(read.groups.contains(&"::server-admins".to_string()));
+}

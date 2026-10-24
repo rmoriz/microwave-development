@@ -59,6 +59,13 @@ impl ApiError {
         }
     }
 
+    pub fn unprocessable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            message: message.into(),
+        }
+    }
+
     pub fn method_not_allowed(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::METHOD_NOT_ALLOWED,
