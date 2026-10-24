@@ -2,6 +2,7 @@ use crate::{context::Context, CtlError};
 use microwave_authz::create_organization;
 use microwave_crypto::hash_password;
 use microwave_store::{Org, SqliteStore, StoreError, User};
+use std::path::Path;
 use uuid::Uuid;
 
 pub fn status(context: &Context) -> Result<(), CtlError> {
@@ -190,6 +191,17 @@ pub fn reindex(org: Option<&str>) -> Result<(), CtlError> {
             "reindex: search reindex is not implemented for the local store; no changes were made"
         ),
     }
+    Ok(())
+}
+
+pub fn migrate_from_legacy(context: &Context, input: &Path) -> Result<(), CtlError> {
+    context.prepare_data_dir()?;
+    microwave_migrate::import_database(&context.database_path, input)?;
+    println!(
+        "Imported migration snapshot from {} into {}",
+        input.display(),
+        context.database_path.display()
+    );
     Ok(())
 }
 

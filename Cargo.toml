@@ -9,8 +9,10 @@ members = [
     "crates/microwave-oauth",
     "crates/microwave-objectstore",
     "crates/microwave-ctl",
+    "crates/microwave-migrate",
     "bin/microwave-server",
     "bin/microwave-ctl",
+    "bin/microwave-migrate",
 ]
 
 [workspace.package]

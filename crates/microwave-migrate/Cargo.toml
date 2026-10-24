@@ -1,0 +1,18 @@
+[package]
+name = "microwave-migrate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chrono.workspace = true
+clap.workspace = true
+microwave-store = { path = "../microwave-store" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+microwave-authz = { path = "../microwave-authz" }
+tempfile.workspace = true

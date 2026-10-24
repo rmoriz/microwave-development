@@ -10,6 +10,7 @@ clap.workspace = true
 microwave-authz = { path = "../microwave-authz" }
 microwave-config = { path = "../microwave-config" }
 microwave-crypto = { path = "../microwave-crypto" }
+microwave-migrate = { path = "../microwave-migrate" }
 microwave-store = { path = "../microwave-store" }
 thiserror.workspace = true
 uuid.workspace = true

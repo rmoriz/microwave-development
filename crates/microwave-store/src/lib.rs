@@ -4,6 +4,7 @@ mod authz;
 mod cookbooks;
 mod identity;
 mod membership;
+mod migration;
 mod oauth;
 mod objects;
 mod policies;
@@ -14,6 +15,7 @@ pub use authz::{Acl, AclEntry, Container, Group, Permission};
 pub use cookbooks::{parse_version, StoredCookbookVersion};
 pub use identity::{ActorKey, ActorType, Client, Org, Principal, User};
 pub use membership::Invitation;
+pub use migration::*;
 pub use oauth::{OAuthAccessGrant, OAuthAccessToken, OAuthApplication};
 pub use objects::{NewNode, StoredDataBagItem, StoredNode, StoredObject};
 pub use policies::{
