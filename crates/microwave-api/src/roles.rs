@@ -53,7 +53,7 @@ async fn create_role(
     require_permission(&state, &auth, &container, Permission::Create)?;
 
     let name = normalize_role(&mut body)?;
-    state
+    let role = state
         .store
         .create_role(
             &org.id,
@@ -62,6 +62,7 @@ async fn create_role(
             &auth.principal.authz_id,
         )
         .map_err(ApiError::from)?;
+    crate::search::index::index_object(&state, org, crate::search::IndexKind::Role, &role).await;
 
     let base = base_url(&headers, &state);
     Ok((
@@ -116,6 +117,7 @@ async fn update_role(
             &serde_json::to_string(&body).map_err(|_| ApiError::internal())?,
         )
         .map_err(ApiError::from)?;
+    crate::search::index::index_object(&state, org, crate::search::IndexKind::Role, &updated).await;
     let value =
         serde_json::from_str(&updated.serialized_object).map_err(|_| ApiError::internal())?;
     Ok(Json(value))
@@ -137,6 +139,7 @@ async fn delete_role(
         .store
         .delete_role(&org.id, &name)
         .map_err(ApiError::from)?;
+    crate::search::index::delete_document(&state, &org.id, &role.id).await;
     Ok(Json(json!({})))
 }
 

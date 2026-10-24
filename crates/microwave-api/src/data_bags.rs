@@ -127,10 +127,17 @@ async fn delete_data_bag(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("data bag {bag_name}")))?;
     require_permission(&state, &auth, &bag.authz_id, Permission::Delete)?;
+    let items = state
+        .store
+        .list_data_bag_items(&org.id, &bag_name)
+        .map_err(ApiError::from)?;
     state
         .store
         .delete_data_bag(&org.id, &bag_name)
         .map_err(ApiError::from)?;
+    for item in items {
+        crate::search::index::delete_document(&state, &org.id, &item.id).await;
+    }
     Ok(Json(json!({})))
 }
 
@@ -154,7 +161,7 @@ async fn create_data_bag_item(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ApiError::bad_request("data bag item id is required"))?;
-    state
+    let item = state
         .store
         .create_data_bag_item(
             &org.id,
@@ -163,6 +170,7 @@ async fn create_data_bag_item(
             &serde_json::to_string(&body).map_err(|_| ApiError::internal())?,
         )
         .map_err(ApiError::from)?;
+    crate::search::index::index_data_bag_item(&state, org, &item).await;
 
     let base = base_url(&headers, &state);
     Ok((
@@ -241,6 +249,7 @@ async fn update_data_bag_item(
             .create_data_bag_item(&org.id, &bag_name, &item_name, &serialized)
             .map_err(ApiError::from)?
     };
+    crate::search::index::index_data_bag_item(&state, org, &item).await;
     let value = serde_json::from_str(&item.serialized_object).map_err(|_| ApiError::internal())?;
     Ok(Json(value))
 }
@@ -257,9 +266,16 @@ async fn delete_data_bag_item(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("data bag {bag_name}")))?;
     require_permission(&state, &auth, &bag.authz_id, Permission::Delete)?;
+    let item = state
+        .store
+        .find_data_bag_item(&org.id, &bag_name, &item_name)
+        .map_err(ApiError::from)?;
     state
         .store
         .delete_data_bag_item(&org.id, &bag_name, &item_name)
         .map_err(ApiError::from)?;
+    if let Some(item) = item {
+        crate::search::index::delete_document(&state, &org.id, &item.id).await;
+    }
     Ok(Json(json!({})))
 }

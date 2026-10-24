@@ -45,6 +45,37 @@ fn env_overrides_toml() {
 }
 
 #[test]
+fn selects_the_opensearch_backend_from_toml() {
+    let c = Config::from_toml_str(
+        r#"
+        [search]
+        backend = "opensearch"
+        url = "http://127.0.0.1:9200"
+    "#,
+    )
+    .unwrap();
+    assert_eq!(c.search.backend, SearchBackend::OpenSearch);
+    assert_eq!(c.search.url.as_deref(), Some("http://127.0.0.1:9200"));
+}
+
+#[test]
+fn search_backend_and_url_can_be_overridden_from_env() {
+    std::env::set_var("MW_SEARCH__BACKEND", "elasticsearch");
+    std::env::set_var("MW_SEARCH__URL", "http://127.0.0.1:9201");
+    let mut c = Config::default();
+    c.apply_env().unwrap();
+    assert_eq!(c.search.backend, SearchBackend::Elasticsearch);
+    assert_eq!(c.search.url.as_deref(), Some("http://127.0.0.1:9201"));
+
+    std::env::set_var("MW_SEARCH__BACKEND", "solr");
+    let mut c = Config::default();
+    assert!(c.apply_env().is_err());
+
+    std::env::remove_var("MW_SEARCH__BACKEND");
+    std::env::remove_var("MW_SEARCH__URL");
+}
+
+#[test]
 fn sqlite_url_is_derived_from_data_dir() {
     let mut c = Config::default();
     c.paths.data_dir = "/tmp/mw".into();

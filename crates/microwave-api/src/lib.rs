@@ -60,12 +60,12 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn status() -> Json<Value> {
+async fn status(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "status": "pong",
         "upstreams": [],
         "keygen": { "status": "ok" },
-        "indexing": { "mode": "embedded" }
+        "indexing": { "mode": state.search.name() }
     }))
 }
 

@@ -66,11 +66,7 @@ fn fixture() -> Fixture {
         ));
 
     Fixture {
-        state: AppState {
-            store,
-            config: Arc::new(config),
-            object_store,
-        },
+        state: AppState::new(store, Arc::new(config), object_store).unwrap(),
         admin_id: admin.id,
     }
 }

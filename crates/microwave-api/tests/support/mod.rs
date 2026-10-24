@@ -16,7 +16,13 @@ pub const PRIVATE_KEY: &str = include_str!("../../../microwave-crypto/tests/fixt
 pub const PUBLIC_KEY: &str =
     include_str!("../../../microwave-crypto/tests/fixtures/test_key_pub.pem");
 
+pub mod mock_opensearch;
+
 pub fn state_with_pivotal() -> AppState {
+    state_with_config(Config::default())
+}
+
+pub fn state_with_config(mut config: Config) -> AppState {
     let store = Arc::new(SqliteStore::open_in_memory().unwrap());
     let user = store
         .create_user("pivotal", "pivotal@example.com", "bcrypt", "h", "s", true)
@@ -24,18 +30,17 @@ pub fn state_with_pivotal() -> AppState {
     store
         .add_actor_key(&user.id, ActorType::User, "default", PUBLIC_KEY)
         .unwrap();
-    let mut config = Config::default();
-    config.object_store.secret = Some("test-secret".into());
+    config
+        .object_store
+        .secret
+        .get_or_insert_with(|| "test-secret".into());
+    let secret = config.object_store.secret.clone().unwrap();
     let object_store: Arc<dyn ObjectStore + Send + Sync> = Arc::new(LocalObjectStore::new(
         std::env::temp_dir().join(format!("mw-test-{}", Uuid::new_v4())),
-        "test-secret",
+        &secret,
         "http://0.0.0.0:8000",
     ));
-    AppState {
-        store,
-        config: Arc::new(config),
-        object_store,
-    }
+    AppState::new(store, Arc::new(config), object_store).unwrap()
 }
 
 pub fn app(state: AppState) -> axum::Router {

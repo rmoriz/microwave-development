@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
 chrono.workspace = true
@@ -15,6 +16,7 @@ microwave-crypto = { path = "../microwave-crypto" }
 microwave-objectstore = { path = "../microwave-objectstore" }
 microwave-oauth = { path = "../microwave-oauth" }
 microwave-store = { path = "../microwave-store" }
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
