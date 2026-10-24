@@ -68,7 +68,7 @@ Everything else in the direct set is current, including `axum`, `tokio`,
 | `opensearchproject/opensearch` | `2.19.7` | Latest 2.x; validated. OpenSearch 3.9.0 exists but is a major upgrade and has not been validated with Chef tooling/our adapter. |
 | `rust` builder | `rust:1-trixie` | Rust 1.99.x on Debian 13. |
 | Runtime base | `debian:trixie-slim` | Debian 13; image builds and binaries start. |
-| PostgreSQL placeholder | `postgres:16-alpine` (commented out) | Not wired to the server yet. PostgreSQL 18 is current; update when the metadata backend is enabled. |
+| PostgreSQL test image | `postgres:18-alpine` | Used by `scripts/run-postgres-tests.sh`; 7/7 integration tests pass. The HA Compose service remains commented out until the API is wired to the PostgreSQL store. |
 
 ## Recommendations
 

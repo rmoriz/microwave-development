@@ -7,7 +7,7 @@
 #   scripts/run-postgres-tests.sh [extra cargo test args...]
 #
 # Environment:
-#   MICROWAVE_POSTGRES_IMAGE   Image to use (default: postgres:16-alpine)
+#   MICROWAVE_POSTGRES_IMAGE   Image to use (default: postgres:18-alpine)
 #   MICROWAVE_KEEP_POSTGRES    Set to 1 to keep the container after the run
 #
 # The script exits 0 with a SKIP message when Docker or its daemon is not
@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-IMAGE="${MICROWAVE_POSTGRES_IMAGE:-postgres:16-alpine}"
+IMAGE="${MICROWAVE_POSTGRES_IMAGE:-postgres:18-alpine}"
 CONTAINER="microwave-postgres-test-$$"
 KEEP="${MICROWAVE_KEEP_POSTGRES:-0}"
 
