@@ -10,7 +10,7 @@
 #
 # Build:
 #   docker build -t microwave-server:local .
-#   docker build --build-arg RUST_VERSION=1.85 -t microwave-server:1.85 .
+#   docker build --build-arg RUST_VERSION=1.94 -t microwave-server:1.94 .
 #
 # The runtime image runs as an unprivileged user and keeps all mutable state
 # under /var/lib/microwave. The configuration is read from
