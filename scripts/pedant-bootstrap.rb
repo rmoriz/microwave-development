@@ -126,11 +126,15 @@ def create_user(username)
     "POST", "/users",
     {
       "username" => username,
-      "email" => "#{username}@example.test",
+      # pedant's authenticate_user expectations derive this from the
+      # requestor's configured name.
+      "email" => "#{username}@chef.io",
       "first_name" => username,
       "last_name" => username,
       "display_name" => username,
-      "password" => "pedant-#{username}-password",
+      # oc-chef-pedant hard-codes "foobar" for the local authenticate_user
+      # examples, so the seeded requestors must use the same password.
+      "password" => "foobar",
       "create_key" => true,
     },
     allowed: [200, 201, 409]

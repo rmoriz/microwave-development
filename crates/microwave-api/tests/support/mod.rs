@@ -54,6 +54,17 @@ pub fn signed_request(
     version: SignVersion,
     user_id: &str,
 ) -> Request<Body> {
+    signed_request_with_api_version(method, path, body, version, user_id, "2")
+}
+
+pub fn signed_request_with_api_version(
+    method: &str,
+    path: &str,
+    body: &[u8],
+    version: SignVersion,
+    user_id: &str,
+    api_version: &str,
+) -> Request<Body> {
     let canonical_path = path.split('?').next().unwrap_or(path);
     let request = CanonicalRequest {
         method,
@@ -61,7 +72,7 @@ pub fn signed_request(
         body,
         user_id,
         timestamp: "2026-10-24T12:00:00Z",
-        api_version: Some("2"),
+        api_version: Some(api_version),
         version,
     };
     let signed = sign_request(PRIVATE_KEY, &request).unwrap();
@@ -80,7 +91,7 @@ pub fn signed_request(
         ("x-ops-userid", user_id.to_string()),
         ("x-ops-timestamp", signed.timestamp),
         ("x-ops-content-hash", signed.content_hash),
-        ("x-ops-server-api-version", "2".to_string()),
+        ("x-ops-server-api-version", api_version.to_string()),
     ] {
         builder = builder.header(name, value);
     }

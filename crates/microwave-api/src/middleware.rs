@@ -5,6 +5,9 @@ use serde_json::json;
 
 pub const MIN_API_VERSION: u8 = 0;
 pub const MAX_API_VERSION: u8 = 2;
+/// Minimum Chef client major version accepted by the API front end, matching
+/// `min_version` in `nginx/habitat/config/dispatch.lua`.
+pub const MIN_CHEF_VERSION: u32 = 10;
 
 pub async fn authenticate(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
@@ -16,6 +19,34 @@ pub async fn authenticate(
         Ok(version) => version,
         Err(value) => return version_error(&value),
     };
+
+    if let Some(version) = request
+        .headers()
+        .get("x-chef-version")
+        .and_then(|value| value.to_str().ok())
+    {
+        if !chef_version_supported(version, MIN_CHEF_VERSION) {
+            return with_version_header(
+                chef_version_error(version),
+                &requested_version.to_string(),
+                &requested_version.to_string(),
+            );
+        }
+    }
+
+    // The credential endpoints only accept POST. Upstream reports 405 before
+    // attempting to authenticate an unsupported method, so let the router
+    // produce the method-not-allowed response.
+    if (path == "/authenticate_user" || path == "/system_recovery")
+        && request.method() != axum::http::Method::POST
+    {
+        let response = next.run(request).await;
+        return with_version_header(
+            response,
+            &requested_version.to_string(),
+            &requested_version.to_string(),
+        );
+    }
 
     if path == "/_status"
         || path == "/server_api_version"
@@ -55,6 +86,10 @@ async fn authenticate_signed(
     let body_bytes = axum::body::to_bytes(body, 16 * 1024 * 1024)
         .await
         .map_err(|_| ApiError::bad_request("request body is too large"))?;
+
+    if parts.method == axum::http::Method::POST {
+        crate::users::validate_credentials_request(parts.uri.path(), &body_bytes)?;
+    }
 
     let headers = &parts.headers;
     let sign = required_header(headers, "x-ops-sign")?;
@@ -184,6 +219,33 @@ fn organization_name_from_path(path: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Match `routes.is_client_version_valid/2`: a version is accepted when its
+/// major component is at or above the minimum, or when it is the legacy
+/// `0.10.x` series.
+fn chef_version_supported(version: &str, min_major: u32) -> bool {
+    let mut parts = version.split('.');
+    let Some(major) = parts.next().and_then(|part| part.parse::<u32>().ok()) else {
+        return false;
+    };
+    let Some(minor) = parts.next().and_then(|part| part.parse::<u32>().ok()) else {
+        return false;
+    };
+    // The upstream parser requires a third dot-delimited component.
+    if parts.next().is_none() {
+        return false;
+    }
+    major >= min_major || (major == 0 && minor == 10)
+}
+
+fn chef_version_error(version: &str) -> Response {
+    let body = json!({
+        "error": format!(
+            "400 - Bad Request: Chef Client version {MIN_CHEF_VERSION} or higher required. Your version of Chef is {version}."
+        )
+    });
+    (StatusCode::BAD_REQUEST, axum::Json(body)).into_response()
 }
 
 fn version_error(requested: &str) -> Response {
