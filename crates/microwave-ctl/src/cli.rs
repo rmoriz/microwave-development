@@ -81,4 +81,12 @@ pub enum Command {
     Backup { path: PathBuf },
     /// Restore metadata and bookshelf data from a backup.
     Restore { path: PathBuf },
+
+    /// Import a Microwave migration snapshot (produced by the
+    /// `microwave-migrate` binary) into the local store.
+    MigrateFromLegacy {
+        /// Snapshot JSON file to import.
+        #[arg(long, value_name = "FILE")]
+        input: PathBuf,
+    },
 }

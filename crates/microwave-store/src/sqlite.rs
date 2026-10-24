@@ -52,6 +52,23 @@ impl SqliteStore {
         })
     }
 
+    /// Open an existing database without running migrations or acquiring a
+    /// write lock. Used by read-only export commands.
+    pub fn open_read_only(path: &Path) -> Result<Self, StoreError> {
+        if !path.is_file() {
+            return Err(StoreError::NotFound(format!("database {}", path.display())));
+        }
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        connection.execute_batch("PRAGMA foreign_keys = ON;")?;
+        Ok(Self {
+            connection: Mutex::new(connection),
+        })
+    }
+
     pub(crate) fn connection(&self) -> MutexGuard<'_, Connection> {
         self.connection
             .lock()

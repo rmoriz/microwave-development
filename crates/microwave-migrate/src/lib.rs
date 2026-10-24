@@ -1,0 +1,258 @@
+//! Offline migration/export-import support for Microwave Server.
+//!
+//! The first migration slice moves data between local `microwave-store`
+//! databases through a versioned JSON snapshot:
+//!
+//! ```text
+//! microwave-migrate export --data-dir ./data --output snapshot.json
+//! microwave-migrate import --data-dir ./new-data --input snapshot.json
+//! ```
+//!
+//! The live-API crawler (`from-api`) is intentionally deferred; see
+//! `README.md` and [`from_api`].
+
+use chrono::{SecondsFormat, Utc};
+use microwave_store::{SqliteStore, StoreError, StoreSnapshot};
+use serde::{Deserialize, Serialize};
+use std::io::{BufReader, BufWriter, Write};
+use std::path::{Path, PathBuf};
+use thiserror::Error;
+
+/// Value of the snapshot envelope's `format` field.
+pub const SNAPSHOT_FORMAT: &str = "microwave-server-snapshot";
+/// Snapshot schema version supported by this build.
+pub const SNAPSHOT_VERSION: u32 = 1;
+/// Database file name used inside a data directory.
+pub const DATABASE_FILE: &str = "microwave.db";
+
+/// A versioned, full-fidelity migration snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub format: String,
+    pub version: u32,
+    pub generated_at: String,
+    pub source: SnapshotSource,
+    pub data: StoreSnapshot,
+}
+
+/// Where a snapshot came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SnapshotSource {
+    pub kind: SnapshotSourceKind,
+    pub url: Option<String>,
+    pub data_dir: Option<String>,
+}
+
+impl Default for SnapshotSource {
+    fn default() -> Self {
+        Self {
+            kind: SnapshotSourceKind::LocalStore,
+            url: None,
+            data_dir: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SnapshotSourceKind {
+    #[default]
+    LocalStore,
+    LegacyApi,
+}
+
+#[derive(Debug, Error)]
+pub enum MigrateError {
+    #[error("failed to read {path}: {source}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to write {path}: {source}")]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("database {} does not exist", .0.display())]
+    MissingDatabase(PathBuf),
+    #[error("invalid snapshot JSON: {0}")]
+    InvalidJson(#[from] serde_json::Error),
+    #[error("unsupported snapshot format {0:?}; expected {SNAPSHOT_FORMAT:?}")]
+    UnsupportedFormat(String),
+    #[error("unsupported snapshot version {found}; this build supports {supported}")]
+    UnsupportedVersion { found: u32, supported: u32 },
+    #[error("storage error: {0}")]
+    Store(#[from] StoreError),
+    #[error("not implemented: {0}")]
+    NotImplemented(String),
+}
+
+/// Export the store under `data_dir` to a JSON snapshot at `output`.
+pub fn export(data_dir: &Path, output: &Path) -> Result<(), MigrateError> {
+    export_database(&data_dir.join(DATABASE_FILE), output)
+}
+
+/// Export a specific SQLite database to a JSON snapshot.
+pub fn export_database(database: &Path, output: &Path) -> Result<(), MigrateError> {
+    if !database.is_file() {
+        return Err(MigrateError::MissingDatabase(database.to_path_buf()));
+    }
+
+    let store = SqliteStore::open_read_only(database)?;
+    let data = store.export_snapshot()?;
+    let snapshot = Snapshot {
+        format: SNAPSHOT_FORMAT.to_string(),
+        version: SNAPSHOT_VERSION,
+        generated_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        source: SnapshotSource {
+            kind: SnapshotSourceKind::LocalStore,
+            url: None,
+            data_dir: Some(data_dir_of(database)),
+        },
+        data,
+    };
+    write_snapshot(&snapshot, output)
+}
+
+/// Import a JSON snapshot into the store under `data_dir`, creating the
+/// database when needed.
+pub fn import(data_dir: &Path, input: &Path) -> Result<(), MigrateError> {
+    import_database(&data_dir.join(DATABASE_FILE), input)
+}
+
+/// Import a JSON snapshot into a specific SQLite database.
+pub fn import_database(database: &Path, input: &Path) -> Result<(), MigrateError> {
+    let snapshot = read_snapshot(input)?;
+    if let Some(parent) = database.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|source| MigrateError::Write {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+    }
+    let store = SqliteStore::open(database)?;
+    store.import_snapshot(&snapshot.data)?;
+    Ok(())
+}
+
+/// Crawl a live legacy Chef Infra Server into the snapshot format.
+///
+/// Deferred for this slice. The command validates the shape of the request and
+/// returns a clear error without writing an output file.
+pub fn from_api(
+    url: &str,
+    client_name: &str,
+    key_path: &Path,
+    output: &Path,
+) -> Result<(), MigrateError> {
+    Err(MigrateError::NotImplemented(format!(
+        "from-api is not implemented yet; no file was written to {}. A future slice will sign \
+         requests with microwave-crypto::sign_request and crawl {url} as client {client_name} \
+         using the key at {}. For now, export a local store with `microwave-migrate export` or \
+         import a `microwave-migrate` snapshot.",
+        output.display(),
+        key_path.display()
+    )))
+}
+
+/// Read and validate a snapshot file.
+pub fn read_snapshot(input: &Path) -> Result<Snapshot, MigrateError> {
+    let file = std::fs::File::open(input).map_err(|source| MigrateError::Read {
+        path: input.to_path_buf(),
+        source,
+    })?;
+    let snapshot: Snapshot =
+        serde_json::from_reader(BufReader::new(file)).map_err(MigrateError::InvalidJson)?;
+    validate(&snapshot)?;
+    Ok(snapshot)
+}
+
+/// Validate the envelope format and version.
+pub fn validate(snapshot: &Snapshot) -> Result<(), MigrateError> {
+    if snapshot.format != SNAPSHOT_FORMAT {
+        return Err(MigrateError::UnsupportedFormat(snapshot.format.clone()));
+    }
+    if snapshot.version != SNAPSHOT_VERSION {
+        return Err(MigrateError::UnsupportedVersion {
+            found: snapshot.version,
+            supported: SNAPSHOT_VERSION,
+        });
+    }
+    Ok(())
+}
+
+/// Write a snapshot atomically with owner-only permissions.
+pub fn write_snapshot(snapshot: &Snapshot, output: &Path) -> Result<(), MigrateError> {
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|source| MigrateError::Write {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+    }
+
+    let temporary = temporary_path(output);
+    let result = (|| -> Result<(), MigrateError> {
+        let file = std::fs::File::create(&temporary).map_err(|source| MigrateError::Write {
+            path: temporary.clone(),
+            source,
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600)).map_err(
+                |source| MigrateError::Write {
+                    path: temporary.clone(),
+                    source,
+                },
+            )?;
+        }
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer_pretty(&mut writer, snapshot)?;
+        writer
+            .write_all(b"\n")
+            .map_err(|source| MigrateError::Write {
+                path: temporary.clone(),
+                source,
+            })?;
+        writer.flush().map_err(|source| MigrateError::Write {
+            path: temporary.clone(),
+            source,
+        })?;
+        std::fs::rename(&temporary, output).map_err(|source| MigrateError::Write {
+            path: output.to_path_buf(),
+            source,
+        })?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn temporary_path(output: &Path) -> PathBuf {
+    let name = output
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "snapshot.json".into());
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    output.with_file_name(format!(".{name}.tmp-{}-{suffix}", std::process::id()))
+}
+
+fn data_dir_of(database: &Path) -> String {
+    database
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .display()
+        .to_string()
+}

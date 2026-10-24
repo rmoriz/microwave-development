@@ -19,5 +19,6 @@ microwave-ctl = { path = "../../crates/microwave-ctl" }
 [dev-dependencies]
 assert_cmd.workspace = true
 microwave-crypto = { path = "../../crates/microwave-crypto" }
+microwave-migrate = { path = "../../crates/microwave-migrate" }
 microwave-store = { path = "../../crates/microwave-store" }
 tempfile.workspace = true

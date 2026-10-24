@@ -1,0 +1,19 @@
+[package]
+name = "microwave-migrate-bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "microwave-migrate"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+microwave-migrate = { path = "../../crates/microwave-migrate" }
+
+[dev-dependencies]
+assert_cmd.workspace = true
+microwave-store = { path = "../../crates/microwave-store" }
+tempfile.workspace = true

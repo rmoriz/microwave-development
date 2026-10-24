@@ -326,3 +326,58 @@ fn reindex_reports_that_it_is_not_implemented() {
     assert_success(&output);
     assert!(stdout(&output).contains("not implemented"));
 }
+
+#[test]
+fn migrate_from_legacy_imports_a_snapshot() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&source.path().join("microwave.db")).unwrap();
+    let user = store
+        .create_user(
+            "legacy",
+            "legacy@example.com",
+            "sha1+bcrypt",
+            "legacy-hash",
+            "legacy-salt",
+            true,
+        )
+        .unwrap();
+    drop(store);
+
+    let snapshots = tempfile::tempdir().unwrap();
+    let snapshot = snapshots.path().join("migration.json");
+    microwave_migrate::export(source.path(), &snapshot).unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    let imported = run(
+        target.path(),
+        &["migrate-from-legacy", "--input", snapshot.to_str().unwrap()],
+    );
+    assert_success(&imported);
+    assert!(stdout(&imported).contains("Imported migration snapshot"));
+
+    let restored = SqliteStore::open(&target.path().join("microwave.db")).unwrap();
+    let restored_user = restored.find_user("legacy").unwrap().unwrap();
+    assert_eq!(restored_user.id, user.id);
+    assert_eq!(restored_user.password_hash, "legacy-hash");
+    assert_eq!(restored_user.hash_type, "sha1+bcrypt");
+    assert!(restored_user.admin);
+}
+
+#[test]
+fn migrate_from_legacy_rejects_unsupported_snapshots() {
+    let snapshots = tempfile::tempdir().unwrap();
+    let snapshot = snapshots.path().join("future.json");
+    std::fs::write(
+        &snapshot,
+        r#"{"format":"microwave-server-snapshot","version":99,"generated_at":"2026-10-24T00:00:00Z","source":{"kind":"local-store"},"data":{}}"#,
+    )
+    .unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    let imported = run(
+        target.path(),
+        &["migrate-from-legacy", "--input", snapshot.to_str().unwrap()],
+    );
+    assert!(!imported.status.success());
+    assert!(stderr(&imported).contains("unsupported snapshot version 99"));
+}

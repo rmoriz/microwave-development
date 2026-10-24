@@ -830,6 +830,7 @@ dependencies = [
  "microwave-authz",
  "microwave-config",
  "microwave-crypto",
+ "microwave-migrate",
  "microwave-store",
  "thiserror",
  "uuid",
@@ -842,6 +843,32 @@ dependencies = [
  "assert_cmd",
  "microwave-crypto",
  "microwave-ctl",
+ "microwave-migrate",
+ "microwave-store",
+ "tempfile",
+]
+
+[[package]]
+name = "microwave-migrate"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "microwave-authz",
+ "microwave-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "microwave-migrate-bin"
+version = "0.1.0"
+dependencies = [
+ "assert_cmd",
+ "clap",
+ "microwave-migrate",
  "microwave-store",
  "tempfile",
 ]

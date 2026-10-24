@@ -11,7 +11,8 @@ The repository contains a working vertical slice:
 - **Storage** — SQLite schema for identity, ACLs, containers, groups, nodes, roles, environments, data bags, sandboxes, and cookbooks.
 - **Authorization** — recursive ACL/group checks, cycle rejection, the default organization policy, and ACL read/write endpoints with granular `users`/`clients` responses.
 - **HTTP API** — `/_status`, `/server_api_version`, `/license`, users, organizations, clients, principals, key management, organization memberships/invitations, nodes, environments, roles, data bags, sandboxes, bookshelf uploads, cookbooks, cookbook resolution, policyfiles/policy groups, ACL endpoints, and search (node/role/environment/client/data-bag indexes with a query subset and partial search).
-- **Operations CLI** — `microwave-ctl` with a `chef-server-ctl` compatibility binary: user/org administration, org membership, password reset, status, local backup/restore, and a clear not-implemented response for reindex.
+- **Operations CLI** — `microwave-ctl` with a `chef-server-ctl` compatibility binary: user/org administration, org membership, password reset, status, local backup/restore, `migrate-from-legacy` snapshot import, and a clear not-implemented response for reindex.
+- **Migration** — `microwave-migrate` exports a versioned JSON snapshot of the local store (users with password hashes, organizations, clients, keys, authz ACLs, nodes, roles, environments, data bags, checksums, cookbooks, policies, and OAuth applications) and imports it with original ids, authz ids, timestamps, and keys intact. The live legacy API crawler (`from-api`) is deferred and reports a clear not-implemented error.
 - **Object storage** — local content-addressed store with signed upload/download URLs.
 - **Server** — `microwave-server serve` bootstraps a `pivotal` superuser and listens on the configured address.
 
@@ -21,8 +22,6 @@ Testing and formatting are green:
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
-
-The workspace currently has 127 passing tests.
 
 ## Run Locally
 
@@ -35,7 +34,7 @@ The first run creates `./data/pivotal.pem` (superuser private key), `./data/pivo
 
 ## Not Yet Implemented
 
-- `oc-id` OAuth and the legacy migration tool.
+- `oc-id` OAuth and the live legacy API crawler (`microwave-migrate from-api`). Local snapshot export/import and `microwave-ctl migrate-from-legacy` are available.
 - The remaining `chef-server-ctl` command surface (key rotation, secrets, maintenance, HA, pedant runner, full tar backup format).
 - PostgreSQL, OpenSearch, and S3/Garage backends.
 - Full dependency-constraint solving; the current resolver selects the latest version per cookbook.
