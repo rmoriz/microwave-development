@@ -51,9 +51,7 @@ The full workspace suite is green.
 - The live legacy API crawler (`microwave-migrate from-api`). Local snapshot export/import and `microwave-ctl migrate-from-legacy` are available.
 - The remaining `chef-server-ctl` command surface (credential rotation, `reconfigure`, pedant runner, full tar backup format).
 - HTTP enforcement of maintenance mode. `microwave-ctl maintenance on` persists the flag, but the request middleware does not return `503` yet; the command says so explicitly.
-- PostgreSQL, OpenSearch, and S3/Garage backends.
-- Full dependency-constraint solving; the current resolver selects the latest version per cookbook.
-- S3 SigV4 compatibility; the built-in local object store uses HMAC-signed URLs.
+- PostgreSQL metadata backend (SQLite is the only implemented store). S3/Garage and OpenSearch/Elasticsearch are implemented.
 - A full `oc-chef-pedant` pass and end-to-end `chef-client` converge verification.
 
 ### Pedant Compatibility
