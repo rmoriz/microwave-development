@@ -8,6 +8,7 @@ pub mod depsolver;
 pub mod environments;
 pub mod error;
 pub mod helpers;
+pub mod keys;
 pub mod middleware;
 pub mod nodes;
 pub mod organizations;
@@ -32,6 +33,7 @@ pub fn router(state: AppState) -> Router {
         .merge(users::routes())
         .merge(organizations::routes())
         .merge(clients::routes())
+        .merge(keys::routes())
         .merge(nodes::routes())
         .merge(environments::routes())
         .merge(roles::routes())

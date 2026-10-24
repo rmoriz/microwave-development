@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 axum.workspace = true
 base64.workspace = true
+chrono.workspace = true
 microwave-authz = { path = "../microwave-authz" }
 microwave-config = { path = "../microwave-config" }
 microwave-crypto = { path = "../microwave-crypto" }
