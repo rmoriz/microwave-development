@@ -456,8 +456,18 @@ scripts/run-pedant.sh headers users organizations clients nodes
 
 The `headers` failure is the known plain-HTTP pedant artifact (`"https"` → `"http"` `sub!` returns nil). Four `clients` failures are pedant's own `NameError: undefined local variable 'chef_key'`; several of the remaining client failures are v1 canonical-behavior trade-offs documented in `docs/pedant-org-client-followup.md`.
 
+### Clients tag completion
+
+`scripts/run-pedant.sh clients` now reports **142 examples, 0 failures, 3
+pending** (exit 0). The five real `[v1+]` failures were fixed in the server;
+the admin-group failure was a pedant config-metadata issue and the four
+`NameError` examples only appear when the whole tag is forced to API v1. The
+generated pedant config now uses `server_api_version 0` (matching
+`chef-server/src/chef-server-ctl/habitat/config/pedant_config.rb`), with the
+`[v1+]` examples opting into newer versions as designed. Details:
+`docs/pedant-clients-followup.md`.
+
 ### Next highest-impact work
 
 1. `users` tag: user create/update validation, verbose/list filters, `first_name`/`last_name`/`display_name`, v1 `public_key` omission, rename and outside-user authorization.
-2. `clients` tag: finish v1 canonical key/`public_key` behavior and re-check the remaining non-pedant failures.
-3. Broaden the harness beyond these five tags: keys, ACLs, data bags, cookbooks, sandboxes, search, policies, oauth, license, depsolver.
+2. Broaden the harness beyond these five tags: keys, ACLs, data bags, cookbooks, sandboxes, search, policies, oauth, license, depsolver.
