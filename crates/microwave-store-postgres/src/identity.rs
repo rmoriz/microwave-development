@@ -303,10 +303,10 @@ impl IdentityRepository for PostgresStore {
         let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {USER_COLUMNS} FROM users WHERE id = $1"
         )))
-            .bind(id)
-            .fetch_optional(self.pool())
-            .await
-            .map_err(db)?;
+        .bind(id)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(db)?;
         row.map(|row| user_from_row(&row)).transpose().map_err(db)
     }
 
