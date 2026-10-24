@@ -20,7 +20,10 @@ SUPERUSER_NAME = ENV.fetch("PEDANT_SUPERUSER_NAME", "pivotal")
 SUPERUSER_KEY_PATH = ENV.fetch("PEDANT_SUPERUSER_KEY")
 ORG = ENV.fetch("PEDANT_ORG", "pedant_testorg")
 ARTIFACTS = ENV.fetch("PEDANT_ARTIFACTS")
-API_VERSION = ENV.fetch("PEDANT_API_VERSION", "1")
+# The unversioned pedant API suites target the legacy (v0) surface; specs that
+# deliberately exercise server API v1+ switch to the maximum version
+# themselves (see versioned_behaviors/server_api_v1_spec.rb).
+API_VERSION = ENV.fetch("PEDANT_API_VERSION", "0")
 
 ADMIN_USER = ENV.fetch("PEDANT_ADMIN_USER", "pedant_admin_user")
 NON_ADMIN_USER = ENV.fetch("PEDANT_NON_ADMIN_USER", "pedant_user")

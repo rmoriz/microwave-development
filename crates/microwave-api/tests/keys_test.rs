@@ -42,7 +42,7 @@ async fn create_org(app: &Router) {
 
 async fn create_user_with_public_key(app: &Router, username: &str) {
     let body = format!(
-        r#"{{"username":"{username}","email":"{username}@example.com","password":"secret","public_key":{}}}"#,
+        r#"{{"username":"{username}","email":"{username}@example.com","display_name":"{username}","password":"secret","public_key":{}}}"#,
         serde_json::to_string(support::PUBLIC_KEY).unwrap()
     );
     let (status, _) = send(app, "POST", "/users", body.as_bytes(), "pivotal").await;

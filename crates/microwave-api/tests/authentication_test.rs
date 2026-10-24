@@ -464,8 +464,8 @@ async fn create_user_with_version(
 }
 
 #[tokio::test]
-async fn user_creation_always_generates_a_default_key() {
-    let body = br#"{"username":"alice","email":"alice@chef.io","password":"secret"}"#;
+async fn user_creation_key_defaults_differ_by_api_version() {
+    let body = br#"{"username":"alice","email":"alice@chef.io","display_name":"alice","password":"secret"}"#;
 
     let (status, v0) = create_user_with_version(support::state_with_pivotal(), "0", body).await;
     assert_eq!(status, StatusCode::CREATED);
@@ -478,21 +478,7 @@ async fn user_creation_always_generates_a_default_key() {
 
     let (status, v1) = create_user_with_version(support::state_with_pivotal(), "1", body).await;
     assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(v1["uri"], "http://0.0.0.0:8000/users/alice");
-    assert_eq!(
-        v1["chef_key"]["uri"],
-        "http://0.0.0.0:8000/users/alice/keys/default"
-    );
-    assert_eq!(v1["chef_key"]["name"], "default");
-    assert_eq!(v1["chef_key"]["expiration_date"], "infinity");
-    assert!(v1["chef_key"]["private_key"]
-        .as_str()
-        .unwrap()
-        .contains("BEGIN PRIVATE KEY"));
-    assert!(v1["chef_key"]["public_key"]
-        .as_str()
-        .unwrap()
-        .contains("BEGIN PUBLIC KEY"));
+    assert_eq!(v1, json!({"uri": "http://0.0.0.0:8000/users/alice"}));
 }
 
 #[tokio::test]
@@ -500,7 +486,7 @@ async fn user_creation_uses_a_supplied_public_key() {
     let public_key = support::PUBLIC_KEY.replace('\n', "\\n");
     let body: &'static [u8] = Box::leak(
         format!(
-            r#"{{"username":"alice","email":"alice@chef.io","password":"secret","public_key":"{public_key}"}}"#
+            r#"{{"username":"alice","email":"alice@chef.io","display_name":"alice","password":"secret","public_key":"{public_key}"}}"#
         )
         .into_bytes()
         .into_boxed_slice(),
@@ -524,7 +510,7 @@ async fn user_creation_rejects_conflicting_key_flags() {
     let public_key = support::PUBLIC_KEY.replace('\n', "\\n");
     let body: &'static [u8] = Box::leak(
         format!(
-            r#"{{"username":"alice","email":"alice@chef.io","password":"secret","public_key":"{public_key}","create_key":true}}"#
+            r#"{{"username":"alice","email":"alice@chef.io","display_name":"alice","password":"secret","public_key":"{public_key}","create_key":true}}"#
         )
         .into_bytes()
         .into_boxed_slice(),

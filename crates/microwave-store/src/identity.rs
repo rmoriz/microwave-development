@@ -39,8 +39,41 @@ pub struct User {
     pub hash_type: String,
     pub admin: bool,
     pub recovery_authentication_enabled: bool,
+    pub external_authentication_uid: Option<String>,
+    pub display_name: Option<String>,
+    pub first_name: Option<String>,
+    pub middle_name: Option<String>,
+    pub last_name: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Profile fields stored alongside a user. Missing values are omitted from
+/// the serialized user document.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserProfile {
+    pub external_authentication_uid: Option<String>,
+    pub display_name: Option<String>,
+    pub first_name: Option<String>,
+    pub middle_name: Option<String>,
+    pub last_name: Option<String>,
+}
+
+/// A partial user update. For profile fields the outer `Option` says whether
+/// the request supplied the field and the inner `Option` is its new value
+/// (`None` clears it).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserPatch {
+    pub new_username: Option<String>,
+    pub email: Option<String>,
+    pub password: Option<(String, String, String)>,
+    pub admin: Option<bool>,
+    pub recovery_authentication_enabled: Option<bool>,
+    pub external_authentication_uid: Option<Option<String>>,
+    pub display_name: Option<Option<String>>,
+    pub first_name: Option<Option<String>>,
+    pub middle_name: Option<Option<String>>,
+    pub last_name: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,6 +201,9 @@ impl SqliteStore {
         Ok(orgs)
     }
 
+    /// Create a user with the legacy signature. The profile defaults to the
+    /// username so callers that only know a name still produce a complete
+    /// user document.
     pub fn create_user(
         &self,
         username: &str,
@@ -177,18 +213,61 @@ impl SqliteStore {
         password_salt: &str,
         admin: bool,
     ) -> Result<User, StoreError> {
+        self.create_user_with_profile(
+            username,
+            Some(email),
+            hash_type,
+            password_hash,
+            password_salt,
+            admin,
+            &UserProfile {
+                display_name: Some(username.into()),
+                first_name: Some(username.into()),
+                last_name: Some(username.into()),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Create a user and persist the optional profile fields.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_user_with_profile(
+        &self,
+        username: &str,
+        email: Option<&str>,
+        hash_type: &str,
+        password_hash: &str,
+        password_salt: &str,
+        admin: bool,
+        profile: &UserProfile,
+    ) -> Result<User, StoreError> {
         let id = new_id();
         let authz_id = new_id();
         let now = now();
+        let email = email.map(str::to_lowercase);
         let mut connection = self.connection();
         let transaction = connection.transaction()?;
+
+        if let Some(email) = email.as_deref() {
+            let taken: i64 = transaction.query_row(
+                "SELECT EXISTS (SELECT 1 FROM users WHERE lower(email) = lower(?1))",
+                [email],
+                |row| row.get(0),
+            )?;
+            if taken != 0 {
+                return Err(StoreError::Conflict(
+                    "Username or email address already in use.".into(),
+                ));
+            }
+        }
 
         transaction
             .execute(
                 "INSERT INTO users
                  (id, authz_id, username, email, password_hash, password_salt, hash_type,
-                  admin, recovery_authentication_enabled, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?9)",
+                  admin, recovery_authentication_enabled, external_authentication_uid,
+                  display_name, first_name, middle_name, last_name, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
                 params![
                     id,
                     authz_id,
@@ -198,10 +277,20 @@ impl SqliteStore {
                     password_salt,
                     hash_type,
                     admin as i64,
+                    profile.external_authentication_uid,
+                    profile.display_name,
+                    profile.first_name,
+                    profile.middle_name,
+                    profile.last_name,
                     now
                 ],
             )
-            .map_err(|error| conflict(error, format!("user {username} already exists")))?;
+            .map_err(|error| {
+                conflict(
+                    error,
+                    "Username or email address already in use.".to_string(),
+                )
+            })?;
         transaction
             .execute(
                 "INSERT INTO authz_entities (authz_id, entity_type, org_id, created_at)
@@ -215,12 +304,17 @@ impl SqliteStore {
             id,
             authz_id,
             username: username.into(),
-            email: Some(email.into()),
+            email,
             password_hash: password_hash.into(),
             password_salt: password_salt.into(),
             hash_type: hash_type.into(),
             admin,
             recovery_authentication_enabled: false,
+            external_authentication_uid: profile.external_authentication_uid.clone(),
+            display_name: profile.display_name.clone(),
+            first_name: profile.first_name.clone(),
+            middle_name: profile.middle_name.clone(),
+            last_name: profile.last_name.clone(),
             created_at: now.clone(),
             updated_at: now,
         })
@@ -231,24 +325,12 @@ impl SqliteStore {
         Ok(connection
             .query_row(
                 "SELECT id, authz_id, username, email, password_hash, password_salt,
-                        hash_type, admin, recovery_authentication_enabled, created_at, updated_at
+                        hash_type, admin, recovery_authentication_enabled,
+                        external_authentication_uid, display_name, first_name, middle_name,
+                        last_name, created_at, updated_at
                  FROM users WHERE username = ?1",
                 [username],
-                |row| {
-                    Ok(User {
-                        id: row.get(0)?,
-                        authz_id: row.get(1)?,
-                        username: row.get(2)?,
-                        email: row.get(3)?,
-                        password_hash: row.get(4)?,
-                        password_salt: row.get(5)?,
-                        hash_type: row.get(6)?,
-                        admin: row.get::<_, i64>(7)? != 0,
-                        recovery_authentication_enabled: row.get::<_, i64>(8)? != 0,
-                        created_at: row.get(9)?,
-                        updated_at: row.get(10)?,
-                    })
-                },
+                user_from_row,
             )
             .optional()?)
     }
@@ -258,24 +340,12 @@ impl SqliteStore {
         Ok(connection
             .query_row(
                 "SELECT id, authz_id, username, email, password_hash, password_salt,
-                        hash_type, admin, recovery_authentication_enabled, created_at, updated_at
+                        hash_type, admin, recovery_authentication_enabled,
+                        external_authentication_uid, display_name, first_name, middle_name,
+                        last_name, created_at, updated_at
                  FROM users WHERE id = ?1",
                 [id],
-                |row| {
-                    Ok(User {
-                        id: row.get(0)?,
-                        authz_id: row.get(1)?,
-                        username: row.get(2)?,
-                        email: row.get(3)?,
-                        password_hash: row.get(4)?,
-                        password_salt: row.get(5)?,
-                        hash_type: row.get(6)?,
-                        admin: row.get::<_, i64>(7)? != 0,
-                        recovery_authentication_enabled: row.get::<_, i64>(8)? != 0,
-                        created_at: row.get(9)?,
-                        updated_at: row.get(10)?,
-                    })
-                },
+                user_from_row,
             )
             .optional()?)
     }
@@ -720,27 +790,29 @@ impl SqliteStore {
     }
 
     pub fn list_users(&self) -> Result<Vec<User>, StoreError> {
+        self.list_users_filtered(None, None)
+    }
+
+    /// List users, optionally filtered by case-insensitive email or exact
+    /// external authentication uid.
+    pub fn list_users_filtered(
+        &self,
+        email: Option<&str>,
+        external_authentication_uid: Option<&str>,
+    ) -> Result<Vec<User>, StoreError> {
         let connection = self.connection();
         let mut statement = connection.prepare(
             "SELECT id, authz_id, username, email, password_hash, password_salt,
-                    hash_type, admin, recovery_authentication_enabled, created_at, updated_at
-             FROM users ORDER BY username",
+                    hash_type, admin, recovery_authentication_enabled,
+                    external_authentication_uid, display_name, first_name, middle_name,
+                    last_name, created_at, updated_at
+             FROM users
+             WHERE (?1 IS NULL OR lower(email) = lower(?1))
+               AND (?2 IS NULL OR external_authentication_uid = ?2)
+             ORDER BY username",
         )?;
-        let rows = statement.query_map([], |row| {
-            Ok(User {
-                id: row.get(0)?,
-                authz_id: row.get(1)?,
-                username: row.get(2)?,
-                email: row.get(3)?,
-                password_hash: row.get(4)?,
-                password_salt: row.get(5)?,
-                hash_type: row.get(6)?,
-                admin: row.get::<_, i64>(7)? != 0,
-                recovery_authentication_enabled: row.get::<_, i64>(8)? != 0,
-                created_at: row.get(9)?,
-                updated_at: row.get(10)?,
-            })
-        })?;
+        let rows =
+            statement.query_map(params![email, external_authentication_uid], user_from_row)?;
 
         let mut users = Vec::new();
         for row in rows {
@@ -756,33 +828,131 @@ impl SqliteStore {
         password: Option<(&str, &str, &str)>,
         admin: Option<bool>,
     ) -> Result<User, StoreError> {
+        self.update_user_patch(
+            username,
+            &UserPatch {
+                email: email.map(ToString::to_string),
+                password: password.map(|(hash, salt, hash_type)| {
+                    (hash.to_string(), salt.to_string(), hash_type.to_string())
+                }),
+                admin,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Apply a validated partial update, including optional renames. Email
+    /// uniqueness is compared case-insensitively, matching upstream's
+    /// functional index on `lower(email)`.
+    pub fn update_user_patch(&self, username: &str, patch: &UserPatch) -> Result<User, StoreError> {
+        let current = self
+            .find_user(username)?
+            .ok_or_else(|| StoreError::NotFound(format!("user {username}")))?;
+        let new_username = patch
+            .new_username
+            .as_deref()
+            .unwrap_or(current.username.as_str());
+        let new_email = patch
+            .email
+            .as_ref()
+            .map(|email| email.to_lowercase())
+            .or(current.email.clone());
+
+        if new_username != current.username && self.find_user(new_username)?.is_some() {
+            return Err(StoreError::Conflict(
+                "Username or email address already in use.".into(),
+            ));
+        }
+        if let Some(email) = new_email.as_deref() {
+            let taken: i64 = self.connection().query_row(
+                "SELECT EXISTS (
+                     SELECT 1 FROM users WHERE lower(email) = lower(?1) AND id <> ?2
+                 )",
+                params![email, current.id],
+                |row| row.get(0),
+            )?;
+            if taken != 0 {
+                return Err(StoreError::Conflict(
+                    "Username or email address already in use.".into(),
+                ));
+            }
+        }
+
         let now = now();
-        let connection = self.connection();
-        let changed = connection.execute(
+        let profile =
+            |value: &Option<Option<String>>| (value.is_some() as i64, value.clone().flatten());
+        let (ext_set, ext_value) = profile(&patch.external_authentication_uid);
+        let (display_set, display_value) = profile(&patch.display_name);
+        let (first_set, first_value) = profile(&patch.first_name);
+        let (middle_set, middle_value) = profile(&patch.middle_name);
+        let (last_set, last_value) = profile(&patch.last_name);
+        let changed = self.connection().execute(
             "UPDATE users
-             SET email = COALESCE(?2, email),
-                 password_hash = COALESCE(?3, password_hash),
-                 password_salt = COALESCE(?4, password_salt),
-                 hash_type = COALESCE(?5, hash_type),
-                 admin = COALESCE(?6, admin),
-                 updated_at = ?7
-             WHERE username = ?1",
+             SET username = ?2,
+                 email = ?3,
+                 password_hash = COALESCE(?4, password_hash),
+                 password_salt = COALESCE(?5, password_salt),
+                 hash_type = COALESCE(?6, hash_type),
+                 admin = COALESCE(?7, admin),
+                 recovery_authentication_enabled = COALESCE(?8, recovery_authentication_enabled),
+                 external_authentication_uid =
+                     CASE WHEN ?9 THEN ?10 ELSE external_authentication_uid END,
+                 display_name = CASE WHEN ?11 THEN ?12 ELSE display_name END,
+                 first_name = CASE WHEN ?13 THEN ?14 ELSE first_name END,
+                 middle_name = CASE WHEN ?15 THEN ?16 ELSE middle_name END,
+                 last_name = CASE WHEN ?17 THEN ?18 ELSE last_name END,
+                 updated_at = ?19
+             WHERE id = ?1",
             params![
-                username,
-                email,
-                password.map(|value| value.0),
-                password.map(|value| value.1),
-                password.map(|value| value.2),
-                admin.map(|value| value as i64),
+                current.id,
+                new_username,
+                new_email,
+                patch.password.as_ref().map(|value| value.0.as_str()),
+                patch.password.as_ref().map(|value| value.1.as_str()),
+                patch.password.as_ref().map(|value| value.2.as_str()),
+                patch.admin.map(|value| value as i64),
+                patch
+                    .recovery_authentication_enabled
+                    .map(|value| value as i64),
+                ext_set,
+                ext_value,
+                display_set,
+                display_value,
+                first_set,
+                first_value,
+                middle_set,
+                middle_value,
+                last_set,
+                last_value,
                 now
             ],
         )?;
         if changed == 0 {
             return Err(StoreError::NotFound(format!("user {username}")));
         }
-        drop(connection);
-        self.find_user(username)?
-            .ok_or_else(|| StoreError::NotFound(format!("user {username}")))
+        self.find_user(new_username)?
+            .ok_or_else(|| StoreError::NotFound(format!("user {new_username}")))
+    }
+
+    /// True when both users belong to at least one common organization.
+    pub fn users_share_org(
+        &self,
+        left_user_id: &str,
+        right_user_id: &str,
+    ) -> Result<bool, StoreError> {
+        let connection = self.connection();
+        let shared: i64 = connection.query_row(
+            "SELECT EXISTS (
+                 SELECT 1
+                 FROM org_user_associations left_assoc
+                 JOIN org_user_associations right_assoc
+                   ON left_assoc.org_id = right_assoc.org_id
+                 WHERE left_assoc.user_id = ?1 AND right_assoc.user_id = ?2
+             )",
+            params![left_user_id, right_user_id],
+            |row| row.get(0),
+        )?;
+        Ok(shared != 0)
     }
 
     /// Enable or disable password-based system recovery for a user.
@@ -826,6 +996,28 @@ impl SqliteStore {
         transaction.commit()?;
         Ok(())
     }
+}
+
+/// Decode the canonical user column order used by every user query.
+pub(crate) fn user_from_row(row: &Row<'_>) -> rusqlite::Result<User> {
+    Ok(User {
+        id: row.get(0)?,
+        authz_id: row.get(1)?,
+        username: row.get(2)?,
+        email: row.get(3)?,
+        password_hash: row.get(4)?,
+        password_salt: row.get(5)?,
+        hash_type: row.get(6)?,
+        admin: row.get::<_, i64>(7)? != 0,
+        recovery_authentication_enabled: row.get::<_, i64>(8)? != 0,
+        external_authentication_uid: row.get(9)?,
+        display_name: row.get(10)?,
+        first_name: row.get(11)?,
+        middle_name: row.get(12)?,
+        last_name: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
+    })
 }
 
 fn actor_key_from_row(row: &Row<'_>) -> rusqlite::Result<ActorKey> {

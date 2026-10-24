@@ -1,14 +1,17 @@
+use crate::helpers::{base_url, is_superuser, require_superuser};
 use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::body::Bytes;
-use axum::extract::{Extension, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Extension, Path, Query, State};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use microwave_crypto::{
-    generate_rsa_keypair, hash_password, needs_upgrade, verify_password, PasswordHash,
+    generate_rsa_keypair, hash_password, needs_upgrade, parse_public_key_pem, verify_password,
+    PasswordHash,
 };
-use microwave_store::{ActorType, User};
+use microwave_store::{ActorType, User, UserPatch, UserProfile};
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 
 const AUTHENTICATION_FAILED: &str = "Failed to authenticate: Username and password incorrect";
 
@@ -25,140 +28,154 @@ pub fn routes() -> Router<AppState> {
 
 async fn list_users(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
+    require_superuser(&auth)?;
     let base = base_url(&headers, &state);
-    let mut users = Map::new();
-    for user in state.store.list_users().map_err(ApiError::from)? {
-        users.insert(
+
+    if params.get("verbose").map(String::as_str) == Some("true") {
+        let mut users = Map::new();
+        for user in state.store.list_users().map_err(ApiError::from)? {
+            users.insert(
+                user.username.clone(),
+                json!({
+                    "email": user.email,
+                    "first_name": user.first_name.unwrap_or_default(),
+                    "last_name": user.last_name.unwrap_or_default(),
+                    "display_name": user.display_name.unwrap_or_default(),
+                }),
+            );
+        }
+        return Ok(Json(Value::Object(users)));
+    }
+
+    let email = params
+        .get("email")
+        .map(String::as_str)
+        .filter(|value| !value.is_empty());
+    let external_uid = params
+        .get("external_authentication_uid")
+        .map(String::as_str)
+        .filter(|value| !value.is_empty());
+    let users = state
+        .store
+        .list_users_filtered(email, external_uid)
+        .map_err(ApiError::from)?;
+    let mut body = Map::new();
+    for user in users {
+        body.insert(
             user.username.clone(),
             json!(format!("{base}/users/{}", user.username)),
         );
     }
-    Ok(Json(Value::Object(users)))
+    Ok(Json(Value::Object(body)))
 }
 
 async fn create_user(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Extension(ApiVersion(api_version)): Extension<ApiVersion>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let username = body
-        .get("username")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ApiError::bad_request("username is required"))?;
-    let email = body
-        .get("email")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ApiError::bad_request("email is required"))?;
-    let password = body
-        .get("password")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ApiError::bad_request("password is required"))?;
+    require_superuser(&auth)?;
+    let body = body
+        .as_object()
+        .ok_or_else(|| ApiError::bad_request("request body must be a JSON object"))?;
 
-    let password_hash =
-        hash_password(password).map_err(|_| ApiError::bad_request("password must not be empty"))?;
-    let admin = body.get("admin").and_then(Value::as_bool).unwrap_or(false);
+    let username = username_from_body(body)?;
+    validate_username(&username)?;
+    let display_name = required_string(body, "display_name")?.to_string();
+    let first_name = optional_string(body, "first_name")?;
+    let middle_name = optional_string(body, "middle_name")?;
+    let last_name = optional_string(body, "last_name")?;
+    let external_authentication_uid =
+        optional_string(body, "external_authentication_uid")?.filter(|value| !value.is_empty());
+    let external_auth = external_authentication_uid.is_some();
 
+    let email = match optional_string(body, "email")? {
+        Some(email) if !email.is_empty() => {
+            validate_email(&email)?;
+            Some(email.to_lowercase())
+        }
+        _ if external_auth => None,
+        _ => return Err(ApiError::bad_request("email is required")),
+    };
+
+    let password_hash = match optional_string(body, "password")? {
+        Some(password) => hash_password(&password)
+            .map_err(|_| ApiError::bad_request("Password must have at least 6 characters"))?,
+        None if external_auth => PasswordHash {
+            hash: String::new(),
+            salt: String::new(),
+            hash_type: "bcrypt".into(),
+        },
+        None => return Err(ApiError::bad_request("password is required")),
+    };
+    let admin = optional_bool(body, "admin")?.unwrap_or(false);
+
+    let key = prepare_create_key(body, api_version)?;
+
+    let profile = UserProfile {
+        external_authentication_uid,
+        display_name: Some(display_name),
+        first_name,
+        middle_name,
+        last_name,
+    };
     let user = state
         .store
-        .create_user(
-            username,
-            email,
+        .create_user_with_profile(
+            &username,
+            email.as_deref(),
             &password_hash.hash_type,
             &password_hash.hash,
             &password_hash.salt,
             admin,
+            &profile,
         )
         .map_err(ApiError::from)?;
 
-    if body
-        .get("recovery_authentication_enabled")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
+    if optional_bool(body, "recovery_authentication_enabled")?.unwrap_or(false) {
         state
             .store
-            .set_recovery_authentication_enabled(username, true)
+            .set_recovery_authentication_enabled(&username, true)
             .map_err(ApiError::from)?;
-    }
-
-    let create_key = match body.get("create_key") {
-        None => false,
-        Some(Value::Bool(value)) => *value,
-        Some(_) => return Err(ApiError::bad_request("create_key must be a boolean")),
-    };
-    let supplied_public_key = match body.get("public_key") {
-        None => None,
-        Some(Value::String(public_key)) if !public_key.trim().is_empty() => {
-            Some(public_key.clone())
-        }
-        Some(_) => {
-            return Err(ApiError::bad_request(
-                "public_key must be a non-empty string",
-            ))
-        }
-    };
-
-    if api_version > 0 {
-        if body.get("private_key").is_some() {
-            return Err(ApiError::bad_request(
-                "private_key is not supported in this API version",
-            ));
-        }
-        if create_key && supplied_public_key.is_some() {
-            return Err(ApiError::bad_request(
-                "public_key and create_key cannot both be specified",
-            ));
-        }
     }
 
     let base = base_url(&headers, &state);
     let mut response = json!({ "uri": format!("{base}/users/{username}") });
 
-    // Upstream generates a default key for API v0 whenever the caller did not
-    // supply one. API v1+ normally only generates on `create_key`, but pedant's
-    // shared fixture setup relies on a key being present by default, so we
-    // always provision one and shape the response for the requested version.
-    let generated = match supplied_public_key.as_deref() {
-        Some(public_key) => {
-            state
-                .store
-                .add_actor_key(&user.id, ActorType::User, "default", public_key)
-                .map_err(ApiError::from)?;
-            None
-        }
-        None => {
+    let (public_key, private_key) = match key {
+        CreateKey::None => (None, None),
+        CreateKey::Supplied(public_key) => (Some(public_key), None),
+        CreateKey::Generated => {
             let (private_key, public_key) =
                 generate_rsa_keypair().map_err(|_| ApiError::internal())?;
-            state
-                .store
-                .add_actor_key(&user.id, ActorType::User, "default", &public_key)
-                .map_err(ApiError::from)?;
-            Some((private_key, public_key))
+            (Some(public_key), Some(private_key))
         }
     };
+    if let Some(public_key) = public_key.as_deref() {
+        state
+            .store
+            .add_actor_key(&user.id, ActorType::User, "default", public_key)
+            .map_err(ApiError::from)?;
+    }
 
     if api_version == 0 {
-        if let Some((private_key, _)) = generated {
+        if let Some(private_key) = private_key {
             response["private_key"] = json!(private_key);
         }
-    } else {
-        let key_uri = format!("{base}/users/{username}/keys/default");
-        let public_key = match &generated {
-            Some((_, public_key)) => public_key.clone(),
-            None => supplied_public_key.unwrap_or_default(),
-        };
+    } else if let Some(public_key) = public_key {
         let mut chef_key = json!({
-            "uri": key_uri,
+            "uri": format!("{base}/users/{username}/keys/default"),
             "name": "default",
             "public_key": public_key,
             "expiration_date": "infinity"
         });
-        if let Some((private_key, _)) = generated {
+        if let Some(private_key) = private_key {
             chef_key["private_key"] = json!(private_key);
         }
         response["chef_key"] = chef_key;
@@ -169,48 +186,413 @@ async fn create_user(
 
 async fn get_user(
     State(state): State<AppState>,
-    axum::extract::Path(username): axum::extract::Path<String>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(ApiVersion(api_version)): Extension<ApiVersion>,
+    Path(username): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let user = state
         .store
         .find_user(&username)
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("user {username}")))?;
-    Ok(Json(user_json(&state, &user)?))
+
+    authorize_read(&state, &auth, &user)?;
+    Ok(Json(user_json(&state, &user, api_version)?))
 }
 
 async fn update_user(
     State(state): State<AppState>,
-    axum::extract::Path(username): axum::extract::Path<String>,
+    Extension(auth): Extension<AuthContext>,
+    Extension(ApiVersion(api_version)): Extension<ApiVersion>,
+    Path(username): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    let email = body.get("email").and_then(Value::as_str);
-    let admin = body.get("admin").and_then(Value::as_bool);
-    let password_data = match body.get("password").and_then(Value::as_str) {
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
+    let current = state
+        .store
+        .find_user(&username)
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::not_found(format!("user {username}")))?;
+    require_superuser(&auth)?;
+
+    let body = body
+        .as_object()
+        .ok_or_else(|| ApiError::bad_request("request body must be a JSON object"))?;
+    let new_username = username_from_body(body)?;
+    validate_username(&new_username)?;
+    let display_name = required_string(body, "display_name")?.to_string();
+    let first_name = optional_patch_string(body, "first_name")?;
+    let middle_name = optional_patch_string(body, "middle_name")?;
+    let last_name = optional_patch_string(body, "last_name")?;
+
+    let external_authentication_uid = match body.get("external_authentication_uid") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(Value::String(value)) => Some(Some(value.clone()).filter(|value| !value.is_empty())),
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "external_authentication_uid must be a string",
+            ))
+        }
+    };
+    let external_auth = external_authentication_uid
+        .clone()
+        .flatten()
+        .or_else(|| current.external_authentication_uid.clone())
+        .is_some();
+
+    let email = match optional_string(body, "email")? {
+        Some(email) if !email.is_empty() => {
+            validate_email(&email)?;
+            Some(email.to_lowercase())
+        }
+        Some(_) if external_auth => None,
+        Some(_) => return Err(ApiError::bad_request("email must be valid")),
+        None if external_auth => None,
+        None => return Err(ApiError::bad_request("email is required")),
+    };
+
+    let password = match optional_string(body, "password")? {
         Some(password) => {
-            let hash = hash_password(password)
-                .map_err(|_| ApiError::bad_request("password must not be empty"))?;
+            let hash = hash_password(&password)
+                .map_err(|_| ApiError::bad_request("Password must have at least 6 characters"))?;
             Some((hash.hash, hash.salt, hash.hash_type))
         }
         None => None,
     };
-    let password = password_data
-        .as_ref()
-        .map(|(hash, salt, kind)| (hash.as_str(), salt.as_str(), kind.as_str()));
+    let recovery = optional_bool(body, "recovery_authentication_enabled")?;
 
+    let key = prepare_update_key(body, api_version)?;
+
+    let patch = UserPatch {
+        new_username: Some(new_username.clone()),
+        email,
+        password,
+        admin: optional_bool(body, "admin")?,
+        recovery_authentication_enabled: recovery,
+        external_authentication_uid,
+        display_name: Some(Some(display_name)),
+        first_name,
+        middle_name,
+        last_name,
+    };
     let user = state
         .store
-        .update_user(&username, email, password, admin)
+        .update_user_patch(&username, &patch)
         .map_err(ApiError::from)?;
-    Ok(Json(user_json(&state, &user)?))
+
+    let mut private_key = None;
+    match key {
+        UpdateKey::None => {}
+        UpdateKey::Supplied(public_key) => {
+            state
+                .store
+                .update_or_create_default_key(&user.id, ActorType::User, &public_key)
+                .map_err(ApiError::from)?;
+        }
+        UpdateKey::Generated => {
+            let (generated_private, public_key) =
+                generate_rsa_keypair().map_err(|_| ApiError::internal())?;
+            state
+                .store
+                .update_or_create_default_key(&user.id, ActorType::User, &public_key)
+                .map_err(ApiError::from)?;
+            private_key = Some(generated_private);
+        }
+    }
+
+    let base = base_url(&headers, &state);
+    let uri = format!("{base}/users/{}", user.username);
+    let mut response = json!({ "uri": uri });
+    if let Some(private_key) = private_key {
+        response["private_key"] = json!(private_key);
+    }
+
+    let mut response_headers = HeaderMap::new();
+    let renamed = user.username != username;
+    if renamed {
+        response_headers.insert(
+            header::LOCATION,
+            HeaderValue::from_str(&uri).map_err(|_| ApiError::internal())?,
+        );
+    }
+    let status = if renamed {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, response_headers, Json(response)))
 }
 
 async fn delete_user(
     State(state): State<AppState>,
-    axum::extract::Path(username): axum::extract::Path<String>,
+    Extension(auth): Extension<AuthContext>,
+    Path(username): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    require_superuser(&auth)?;
     state.store.delete_user(&username).map_err(ApiError::from)?;
     Ok(Json(json!({})))
+}
+
+/// Key work that needs to happen before or after the user row is written.
+enum CreateKey {
+    None,
+    Supplied(String),
+    Generated,
+}
+
+enum UpdateKey {
+    None,
+    Supplied(String),
+    Generated,
+}
+
+fn prepare_create_key(
+    body: &serde_json::Map<String, Value>,
+    api_version: u8,
+) -> Result<CreateKey, ApiError> {
+    let private_key = optional_bool(body, "private_key")?;
+    let create_key = optional_bool(body, "create_key")?;
+    let public_key = optional_public_key(body)?;
+
+    if api_version > 0 {
+        if body.contains_key("private_key") {
+            return Err(ApiError::bad_request(
+                "private_key is not supported in this API version",
+            ));
+        }
+        if create_key == Some(true) && public_key.is_some() {
+            return Err(ApiError::bad_request(
+                "public_key and create_key cannot both be specified",
+            ));
+        }
+        return Ok(if create_key == Some(true) {
+            CreateKey::Generated
+        } else if let Some(public_key) = public_key {
+            CreateKey::Supplied(public_key)
+        } else {
+            CreateKey::None
+        });
+    }
+
+    // API v0 always provisions a default key. An explicit private_key request
+    // discards any public key/certificate in the payload.
+    if private_key == Some(true) {
+        return Ok(CreateKey::Generated);
+    }
+    Ok(match public_key {
+        Some(public_key) => CreateKey::Supplied(public_key),
+        None => CreateKey::Generated,
+    })
+}
+
+fn prepare_update_key(
+    body: &serde_json::Map<String, Value>,
+    api_version: u8,
+) -> Result<UpdateKey, ApiError> {
+    if api_version > 0 {
+        for field in ["create_key", "public_key", "private_key"] {
+            if body.contains_key(field) {
+                return Err(ApiError::bad_request(format!(
+                    "{field} is not supported in this API version"
+                )));
+            }
+        }
+        return Ok(UpdateKey::None);
+    }
+
+    let private_key = optional_bool(body, "private_key")?;
+    let create_key = optional_bool(body, "create_key")?;
+    if private_key == Some(true) || create_key == Some(true) {
+        return Ok(UpdateKey::Generated);
+    }
+    Ok(match optional_public_key(body)? {
+        Some(public_key) => UpdateKey::Supplied(public_key),
+        None => UpdateKey::None,
+    })
+}
+
+fn authorize_read(state: &AppState, auth: &AuthContext, user: &User) -> Result<(), ApiError> {
+    if is_superuser(auth) || auth.principal.actor_id == user.id {
+        return Ok(());
+    }
+    if state
+        .store
+        .users_share_org(&auth.principal.actor_id, &user.id)
+        .map_err(ApiError::from)?
+    {
+        return Ok(());
+    }
+    Err(ApiError::forbidden())
+}
+
+fn username_from_body(body: &serde_json::Map<String, Value>) -> Result<String, ApiError> {
+    let username = body
+        .get("name")
+        .and_then(Value::as_str)
+        .or_else(|| body.get("username").and_then(Value::as_str))
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("username is required"))?;
+    Ok(username.to_string())
+}
+
+fn validate_username(username: &str) -> Result<(), ApiError> {
+    let valid = !username.is_empty()
+        && username.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || "._-".contains(character)
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(
+            "Malformed user name. Must only contain a-z, 0-9, _, or -",
+        ))
+    }
+}
+
+fn validate_email(email: &str) -> Result<(), ApiError> {
+    if email.chars().any(char::is_whitespace) || email.len() > 254 {
+        return Err(ApiError::bad_request("email must be valid"));
+    }
+    let mut parts = email.split('@');
+    let (Some(local), Some(domain), None) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(ApiError::bad_request("email must be valid"));
+    };
+    if local.is_empty() || local.len() > 64 || domain.is_empty() {
+        return Err(ApiError::bad_request("email must be valid"));
+    }
+    let local_valid = local.chars().all(|character| {
+        character.is_ascii_alphanumeric() || "!#$%&'*+/=?^_`{|}~.-".contains(character)
+    });
+    if !local_valid || local.starts_with('.') || local.ends_with('.') || local.contains("..") {
+        return Err(ApiError::bad_request("email must be valid"));
+    }
+    let domain_valid = domain.contains('.')
+        && domain.split('.').all(|label| {
+            !label.is_empty()
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        });
+    if domain_valid {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request("email must be valid"))
+    }
+}
+
+fn required_string<'a>(
+    body: &'a serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<&'a str, ApiError> {
+    match body.get(field) {
+        Some(Value::String(value)) => Ok(value),
+        Some(_) => Err(ApiError::bad_request(format!("{field} must be a string"))),
+        None => Err(ApiError::bad_request(format!("{field} is required"))),
+    }
+}
+
+fn optional_string(
+    body: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<Option<String>, ApiError> {
+    match body.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(ApiError::bad_request(format!("{field} must be a string"))),
+    }
+}
+
+/// Distinguish an absent update field from an explicit JSON null. Absent
+/// fields are left alone; null clears the stored value.
+fn optional_patch_string(
+    body: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<Option<Option<String>>, ApiError> {
+    match body.get(field) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(value)) => Ok(Some(Some(value.clone()))),
+        Some(_) => Err(ApiError::bad_request(format!("{field} must be a string"))),
+    }
+}
+
+fn optional_bool(
+    body: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<Option<bool>, ApiError> {
+    match body.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(ApiError::bad_request(format!("{field} must be a boolean"))),
+    }
+}
+
+fn optional_public_key(body: &serde_json::Map<String, Value>) -> Result<Option<String>, ApiError> {
+    match body.get("public_key") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Err(ApiError::bad_request(
+                    "public_key must be a non-empty string",
+                ));
+            }
+            parse_public_key_pem(trimmed)
+                .map_err(|_| ApiError::bad_request("Public Key must be a valid key."))?;
+            // Preserve the caller's exact PEM text (including the trailing
+            // newline); pedant compares it byte-for-byte on a later GET.
+            Ok(Some(value.clone()))
+        }
+        Some(_) => Err(ApiError::bad_request(
+            "public_key must be a non-empty string",
+        )),
+    }
+}
+
+pub(crate) fn user_json(state: &AppState, user: &User, api_version: u8) -> Result<Value, ApiError> {
+    let mut value = json!({
+        "username": user.username,
+        "email": user.email.clone().unwrap_or_default(),
+    });
+    if let Some(display_name) = &user.display_name {
+        value["display_name"] = json!(display_name);
+    }
+    if let Some(first_name) = &user.first_name {
+        value["first_name"] = json!(first_name);
+    }
+    if let Some(middle_name) = &user.middle_name {
+        value["middle_name"] = json!(middle_name);
+    }
+    if let Some(last_name) = &user.last_name {
+        value["last_name"] = json!(last_name);
+    }
+    if let Some(external_uid) = &user.external_authentication_uid {
+        value["external_authentication_uid"] = json!(external_uid);
+    }
+    if user.recovery_authentication_enabled {
+        value["recovery_authentication_enabled"] = json!(true);
+    }
+
+    if api_version == 0 {
+        let keys = state
+            .store
+            .find_actor_keys(&user.id, ActorType::User)
+            .map_err(ApiError::from)?;
+        if let Some(public_key) = keys
+            .iter()
+            .find(|key| key.key_name == "default")
+            .or_else(|| keys.first())
+            .map(|key| key.public_key.as_str())
+        {
+            value["public_key"] = json!(public_key);
+        }
+    }
+    Ok(value)
 }
 
 /// Verify a user's local password and return the upstream `linked` payload.
@@ -295,9 +677,9 @@ async fn system_recovery(
     Ok(Json(json!({
         "username": user.username,
         "email": user.email.clone().unwrap_or_default(),
-        "first_name": user.username,
-        "last_name": user.username,
-        "display_name": user.username,
+        "first_name": user.first_name.clone().unwrap_or_else(|| user.username.clone()),
+        "last_name": user.last_name.clone().unwrap_or_else(|| user.username.clone()),
+        "display_name": user.display_name.clone().unwrap_or_else(|| user.username.clone()),
         "recovery_authentication_enabled": true
     })))
 }
@@ -371,44 +753,8 @@ fn authentication_user_json(user: &User) -> Value {
     json!({
         "username": user.username,
         "email": user.email.clone().unwrap_or_default(),
-        "first_name": user.username,
-        "last_name": user.username,
-        "display_name": user.username
+        "first_name": user.first_name.clone().unwrap_or_else(|| user.username.clone()),
+        "last_name": user.last_name.clone().unwrap_or_else(|| user.username.clone()),
+        "display_name": user.display_name.clone().unwrap_or_else(|| user.username.clone())
     })
-}
-
-pub(crate) fn user_json(state: &AppState, user: &User) -> Result<Value, ApiError> {
-    let keys = state
-        .store
-        .find_actor_keys(&user.id, ActorType::User)
-        .map_err(ApiError::from)?;
-    let public_key = keys
-        .iter()
-        .find(|key| key.key_name == "default")
-        .or_else(|| keys.first())
-        .map(|key| key.public_key.as_str());
-
-    let mut value = json!({
-        "username": user.username,
-        "email": user.email,
-        "admin": user.admin,
-        "recovery_authentication_enabled": user.recovery_authentication_enabled
-    });
-    if let Some(public_key) = public_key {
-        value["public_key"] = json!(public_key);
-    }
-    Ok(value)
-}
-
-fn base_url(headers: &HeaderMap, state: &AppState) -> String {
-    let host = headers
-        .get("x-forwarded-host")
-        .or_else(|| headers.get("host"))
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or(state.config.server.bind.as_str());
-    let proto = headers
-        .get("x-forwarded-proto")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("http");
-    format!("{proto}://{host}")
 }

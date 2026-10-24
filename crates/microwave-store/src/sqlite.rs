@@ -152,5 +152,32 @@ fn configure(connection: &Connection, disk: bool) -> Result<(), StoreError> {
 
 fn migrate(connection: &Connection) -> Result<(), StoreError> {
     connection.execute_batch(include_str!("../migrations/0001_initial.sql"))?;
+
+    // `0001_initial.sql` uses `CREATE TABLE IF NOT EXISTS`, so databases
+    // created before the user profile columns existed keep their old shape.
+    // Add each column only when it is missing to keep startup idempotent.
+    for column in ["display_name", "first_name", "middle_name", "last_name"] {
+        add_column_if_missing(connection, "users", column, "TEXT")?;
+    }
+    Ok(())
+}
+
+fn add_column_if_missing(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    declaration: &str,
+) -> Result<(), StoreError> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(());
+        }
+    }
+    connection.execute_batch(&format!(
+        "ALTER TABLE {table} ADD COLUMN {column} {declaration}"
+    ))?;
     Ok(())
 }

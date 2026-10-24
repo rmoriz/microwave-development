@@ -13,7 +13,7 @@ mod sqlite;
 
 pub use authz::{Acl, AclEntry, Container, Group, GroupMembers, Permission};
 pub use cookbooks::{parse_version, StoredCookbookVersion};
-pub use identity::{ActorKey, ActorType, Client, Org, Principal, User};
+pub use identity::{ActorKey, ActorType, Client, Org, Principal, User, UserPatch, UserProfile};
 pub use membership::Invitation;
 pub use migration::*;
 pub use oauth::{OAuthAccessGrant, OAuthAccessToken, OAuthApplication};

@@ -1,4 +1,4 @@
-use crate::identity::{new_id, now, Org, User};
+use crate::identity::{new_id, now, user_from_row, Org, User};
 use crate::sqlite::{SqliteStore, StoreError};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
@@ -28,7 +28,8 @@ impl SqliteStore {
         let mut statement = connection.prepare(
             "SELECT u.id, u.authz_id, u.username, u.email, u.password_hash, u.password_salt,
                     u.hash_type, u.admin, u.recovery_authentication_enabled,
-                    u.created_at, u.updated_at
+                    u.external_authentication_uid, u.display_name, u.first_name,
+                    u.middle_name, u.last_name, u.created_at, u.updated_at
              FROM users u
              JOIN org_user_associations a ON a.user_id = u.id
              WHERE a.org_id = ?1
@@ -358,21 +359,5 @@ fn invitation_from_row(row: &Row<'_>) -> rusqlite::Result<Invitation> {
         username: row.get(4)?,
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
-    })
-}
-
-fn user_from_row(row: &Row<'_>) -> rusqlite::Result<User> {
-    Ok(User {
-        id: row.get(0)?,
-        authz_id: row.get(1)?,
-        username: row.get(2)?,
-        email: row.get(3)?,
-        password_hash: row.get(4)?,
-        password_salt: row.get(5)?,
-        hash_type: row.get(6)?,
-        admin: row.get::<_, i64>(7)? != 0,
-        recovery_authentication_enabled: row.get::<_, i64>(8)? != 0,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
     })
 }
