@@ -53,13 +53,6 @@ fn apply_default_policy(
         containers.push(store.create_container_for_org(&org.id, name)?);
     }
 
-    store.create_environment(
-        &org.id,
-        "_default",
-        r#"{"name":"_default","description":"The default Chef environment","json_class":"Chef::Environment","chef_type":"environment","cookbook_versions":{},"default_attributes":{},"override_attributes":{}}"#,
-        creator_authz_id,
-    )?;
-
     let mut groups = Vec::with_capacity(DEFAULT_GROUPS.len());
     for name in DEFAULT_GROUPS {
         groups.push(store.create_group_for_org(&org.id, name)?);
@@ -222,6 +215,19 @@ fn apply_default_policy(
         &[Permission::Read, Permission::Update],
         None,
         Some(&billing_admins.authz_id),
+    )?;
+
+    // The default environment must be created after the container ACLs are in
+    // place: object ACLs are copied from their container at creation time, so
+    // creating it earlier leaves it without the `clients` read grant and every
+    // chef-client converge fails with 403 on the environment read. Upstream
+    // `oc_chef_wm_organizations` also creates `_default` only after the org
+    // creator policy has been applied.
+    store.create_environment(
+        &org.id,
+        "_default",
+        r#"{"name":"_default","description":"The default Chef environment","json_class":"Chef::Environment","chef_type":"environment","cookbook_versions":{},"default_attributes":{},"override_attributes":{}}"#,
+        creator_authz_id,
     )?;
 
     Ok(())
