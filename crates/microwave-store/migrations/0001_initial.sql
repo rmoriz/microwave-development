@@ -214,6 +214,21 @@ CREATE TABLE IF NOT EXISTS checksums (
     PRIMARY KEY (org_id, checksum)
 );
 
+CREATE TABLE IF NOT EXISTS sandboxes (
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    sandbox_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, sandbox_id)
+);
+
+CREATE TABLE IF NOT EXISTS sandbox_checksums (
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    sandbox_id TEXT NOT NULL,
+    checksum TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (sandbox_id, org_id, checksum)
+);
+
 CREATE TABLE IF NOT EXISTS sandboxed_checksums (
     org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     sandbox_id TEXT NOT NULL,

@@ -70,7 +70,7 @@ async fn uploads_and_reads_a_cookbook_version() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let manifest = format!(
-        r#"{{"name":"apache","version":"1.0.0","metadata":{{"version":"1.0.0"}},"recipes":[{{"name":"default.rb","path":"recipes/default.rb","checksum":"{checksum}","specificity":"default"}}]}}"#
+        r#"{{"name":"apache-1.0.0","cookbook_name":"apache","version":"1.0.0","json_class":"Chef::CookbookVersion","chef_type":"cookbook_version","frozen?":false,"metadata":{{"version":"1.0.0"}},"all_files":[{{"name":"recipes/default.rb","path":"recipes/default.rb","checksum":"{checksum}","specificity":"default"}}]}}"#
     );
     let response = app
         .clone()
@@ -113,7 +113,7 @@ async fn uploads_and_reads_a_cookbook_version() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let fetched = support::response_json(response).await;
-    let url = fetched["recipes"][0]["url"].as_str().unwrap();
+    let url = fetched["all_files"][0]["url"].as_str().unwrap();
     assert!(url.contains("/bookshelf/organizations/"));
     assert!(url.contains("/checksums/"));
     let path = url.strip_prefix("http://0.0.0.0:8000").unwrap();
@@ -141,7 +141,7 @@ async fn uploads_and_reads_a_cookbook_version() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let solved = support::response_json(response).await;
-    assert_eq!(solved["apache"]["name"], "apache");
+    assert_eq!(solved["apache"]["cookbook_name"], "apache");
 
     let response = app
         .oneshot(support::signed_request(

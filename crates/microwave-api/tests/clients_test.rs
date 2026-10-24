@@ -186,7 +186,7 @@ async fn request_v0(
     (status, value)
 }
 
-fn add_user(state: &microwave_api::AppState, name: &str) -> String {
+fn add_user(state: &microwave_api::AppState, name: &str) -> microwave_store::User {
     let user = state
         .store
         .create_user(
@@ -202,15 +202,23 @@ fn add_user(state: &microwave_api::AppState, name: &str) -> String {
         .store
         .add_actor_key(&user.id, ActorType::User, "default", support::PUBLIC_KEY)
         .unwrap();
-    user.authz_id
+    user
 }
 
-fn add_member(state: &microwave_api::AppState, org_name: &str, group: &str, authz_id: &str) {
+fn add_member(
+    state: &microwave_api::AppState,
+    org_name: &str,
+    group: &str,
+    user: &microwave_store::User,
+) {
     let org = state.store.find_org(org_name).unwrap().unwrap();
+    if !state.store.is_user_in_org(&org.id, &user.id).unwrap() {
+        state.store.add_user_to_org(&org.id, &user.id).unwrap();
+    }
     let group = state.store.find_group(&org.id, group).unwrap().unwrap();
     state
         .store
-        .add_group_member(&group.authz_id, authz_id)
+        .add_group_member(&group.authz_id, &user.authz_id)
         .unwrap();
 }
 

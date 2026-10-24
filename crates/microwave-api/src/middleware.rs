@@ -1,6 +1,7 @@
 use crate::error::ApiError;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use microwave_store::ActorType;
 use serde_json::json;
 
 pub const MIN_API_VERSION: u8 = 0;
@@ -107,10 +108,10 @@ async fn authenticate_signed(
     let timestamp = required_header(headers, "x-ops-timestamp")?;
     let content_hash = required_header(headers, "x-ops-content-hash")?;
     let authorization = authorization_lines(headers)?;
-    let signature =
-        microwave_crypto::decode_signature(&authorization).map_err(|_| ApiError::unauthorized())?;
+    let signature = microwave_crypto::decode_signature(&authorization)
+        .map_err(|_| authentication_failure(&user_id))?;
     let version =
-        microwave_crypto::parse_sign_header(&sign).map_err(|_| ApiError::unauthorized())?;
+        microwave_crypto::parse_sign_header(&sign).map_err(|_| authentication_failure(&user_id))?;
 
     let auth_headers = microwave_crypto::AuthHeaders {
         version,
@@ -138,7 +139,7 @@ async fn authenticate_signed(
         .find_principals(org.as_ref().map(|org| org.id.as_str()), &user_id)
         .map_err(ApiError::from)?;
     if principals.is_empty() {
-        return Err(ApiError::unauthorized());
+        return Err(authentication_failure(&user_id));
     }
 
     let api_version_string = api_version.to_string();
@@ -170,7 +171,21 @@ async fn authenticate_signed(
         }
     }
 
-    let principal = authenticated.ok_or_else(ApiError::unauthorized)?;
+    let principal = authenticated.ok_or_else(|| authentication_failure(&user_id))?;
+    if let Some(org) = &org {
+        if principal.actor_type == ActorType::User
+            && principal.name != "pivotal"
+            && !state
+                .store
+                .is_user_in_org(&org.id, &principal.actor_id)
+                .map_err(ApiError::from)?
+        {
+            return Err(ApiError::forbidden_with(format!(
+                "'{user_id}' not associated with organization '{}'",
+                org.name
+            )));
+        }
+    }
     let mut request = axum::extract::Request::from_parts(parts, axum::body::Body::from(body_bytes));
     request
         .extensions_mut()
@@ -195,6 +210,12 @@ fn parse_api_version(headers: &HeaderMap) -> Result<u8, String> {
             }
         }
     }
+}
+
+fn authentication_failure(user_id: &str) -> ApiError {
+    ApiError::unauthorized_with(format!(
+        "Failed to authenticate as '{user_id}'. Ensure that your node_name and client key are correct."
+    ))
 }
 
 fn required_header(headers: &HeaderMap, name: &str) -> Result<String, ApiError> {

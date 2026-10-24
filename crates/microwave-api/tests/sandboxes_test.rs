@@ -21,6 +21,36 @@ async fn create_org(app: &axum::Router) {
 }
 
 #[tokio::test]
+async fn sandbox_creation_validates_checksums() {
+    let app = support::app(support::state_with_pivotal());
+    create_org(&app).await;
+
+    for (body, message) in [
+        (r#"{}"#, "Field 'checksums' missing"),
+        (r#"{"checksums":{}}"#, "Bad checksums!"),
+        (
+            r#"{"checksums":{"5d41402abc4b2a76b9719d911017c592":"foo"}}"#,
+            "Bad checksums!",
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(support::signed_request(
+                "POST",
+                "/organizations/acme/sandboxes",
+                body.as_bytes(),
+                SignVersion::V1_3,
+                "pivotal",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let created = support::response_json(response).await;
+        assert_eq!(created["error"][0], message);
+    }
+}
+
+#[tokio::test]
 async fn sandbox_upload_and_commit() {
     let app = support::app(support::state_with_pivotal());
     create_org(&app).await;

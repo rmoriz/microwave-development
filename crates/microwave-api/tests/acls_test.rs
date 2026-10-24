@@ -53,7 +53,7 @@ async fn create_node(app: &axum::Router) {
     assert_eq!(status, StatusCode::CREATED);
 }
 
-fn add_user(state: &microwave_api::AppState, name: &str) {
+fn add_user(state: &microwave_api::AppState, name: &str) -> microwave_store::User {
     let user = state
         .store
         .create_user(
@@ -69,6 +69,7 @@ fn add_user(state: &microwave_api::AppState, name: &str) {
         .store
         .add_actor_key(&user.id, ActorType::User, "default", support::PUBLIC_KEY)
         .unwrap();
+    user
 }
 
 #[tokio::test]
@@ -161,9 +162,16 @@ async fn organization_acl_put_accepts_a_permission_envelope() {
 #[tokio::test]
 async fn node_acl_grants_read_without_granting_update() {
     let state = support::state_with_pivotal();
-    add_user(&state, "second");
-    let app = support::app(state);
+    let second = add_user(&state, "second");
+    let app = support::app(state.clone());
     create_org(&app).await;
+    let org = state.store.find_org("acme").unwrap().unwrap();
+    support::associate(&state, &org, &second);
+    let users = state.store.find_group(&org.id, "users").unwrap().unwrap();
+    state
+        .store
+        .remove_group_member(&users.authz_id, &second.authz_id)
+        .unwrap();
     create_node(&app).await;
 
     let (status, body) = request(

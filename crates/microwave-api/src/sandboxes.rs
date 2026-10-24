@@ -5,6 +5,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::{Extension, Json, Router};
+use chrono::{SecondsFormat, Utc};
 use microwave_store::Permission;
 use serde_json::{json, Value};
 
@@ -74,13 +75,21 @@ async fn commit_sandbox(
         .store
         .sandbox_checksums(&org.id, &sandbox_id)
         .map_err(ApiError::from)?;
+    let create_time = state
+        .store
+        .sandbox_created_at(&org.id, &sandbox_id)
+        .map_err(ApiError::from)?
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(&value).ok())
+        .map(|value| value.to_rfc3339_opts(SecondsFormat::Secs, false))
+        .unwrap_or_else(|| Utc::now().to_rfc3339_opts(SecondsFormat::Secs, false));
     let missing: Vec<String> = checksums
-        .into_iter()
+        .iter()
         .filter(|checksum| !state.object_store.exists(&org.id, checksum))
+        .cloned()
         .collect();
     if !missing.is_empty() {
         return Err(ApiError::service_unavailable(format!(
-            "the following checksums have not been uploaded: {}",
+            "Cannot update sandbox {sandbox_id}: the following checksums have not been uploaded: {}",
             missing.join(", ")
         )));
     }
@@ -92,6 +101,11 @@ async fn commit_sandbox(
     let base = base_url(&headers, &state);
     Ok(Json(json!({
         "uri": format!("{base}/organizations/{}/sandboxes/{sandbox_id}", org.name),
-        "sandbox_id": sandbox_id
+        "sandbox_id": sandbox_id.clone(),
+        "guid": sandbox_id.clone(),
+        "name": sandbox_id,
+        "checksums": checksums,
+        "create_time": create_time,
+        "is_completed": true,
     })))
 }

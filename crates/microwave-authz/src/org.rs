@@ -53,7 +53,7 @@ fn apply_default_policy(
         containers.push(store.create_container_for_org(&org.id, name)?);
     }
 
-    store.create_environment(
+    let default_environment = store.create_environment(
         &org.id,
         "_default",
         r#"{"name":"_default","description":"The default Chef environment","json_class":"Chef::Environment","chef_type":"environment","cookbook_versions":{},"default_attributes":{},"override_attributes":{}}"#,
@@ -94,6 +94,34 @@ fn apply_default_policy(
             Some(&admins.authz_id),
         )?;
     }
+    // The default environment was created before the container grants were in
+    // place, so give it the same inherited ACL as an API-created environment.
+    grant(
+        store,
+        &default_environment.authz_id,
+        &Permission::ALL,
+        None,
+        Some(&admins.authz_id),
+    )?;
+    grant(
+        store,
+        &default_environment.authz_id,
+        &[
+            Permission::Create,
+            Permission::Read,
+            Permission::Update,
+            Permission::Delete,
+        ],
+        None,
+        Some(&users.authz_id),
+    )?;
+    grant(
+        store,
+        &default_environment.authz_id,
+        &[Permission::Read],
+        None,
+        Some(&clients.authz_id),
+    )?;
     for group in &groups {
         grant(
             store,

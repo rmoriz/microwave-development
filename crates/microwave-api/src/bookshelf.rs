@@ -105,8 +105,13 @@ async fn delete_object(
 pub fn checksums_from_body(body: &serde_json::Value) -> Result<Vec<String>, ApiError> {
     let checksums = body
         .get("checksums")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| ApiError::bad_request("checksums is required"))?;
+        .ok_or_else(|| ApiError::bad_request("Field 'checksums' missing"))?
+        .as_object()
+        .filter(|checksums| !checksums.is_empty())
+        .ok_or_else(|| ApiError::bad_request("Bad checksums!"))?;
+    if checksums.values().any(|value| !value.is_null()) {
+        return Err(ApiError::bad_request("Bad checksums!"));
+    }
     Ok(checksums.keys().cloned().collect())
 }
 
@@ -117,16 +122,15 @@ pub fn checksum_map(
 ) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     for check in checks {
-        let url = state
-            .object_store
-            .presigned_url("PUT", org_id, &check.checksum);
-        map.insert(
-            check.checksum,
-            serde_json::json!({
-                "needs_upload": check.needs_upload,
-                "url": url
-            }),
-        );
+        let mut entry = serde_json::Map::new();
+        entry.insert("needs_upload".into(), serde_json::json!(check.needs_upload));
+        if check.needs_upload {
+            let url = state
+                .object_store
+                .presigned_url("PUT", org_id, &check.checksum);
+            entry.insert("url".into(), serde_json::json!(url));
+        }
+        map.insert(check.checksum, serde_json::Value::Object(entry));
     }
     serde_json::Value::Object(map)
 }
