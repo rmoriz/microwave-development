@@ -459,7 +459,7 @@ impl SqliteStore {
              FROM policy_group_revision_associations
              WHERE org_id = ?1 AND policy_revision_name = ?2
                AND policy_revision_revision_id = ?3
-             ORDER BY policy_group_name",
+             ORDER BY rowid",
         )?;
         let rows = statement.query_map(params![org_id, policy_name, revision_id], |row| {
             row.get::<_, String>(0)

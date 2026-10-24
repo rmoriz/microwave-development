@@ -33,7 +33,7 @@ pub use microwave_oauth as oauth;
 pub use state::{ApiVersion, AppState, AuthContext};
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let inner = Router::new()
         .route("/_status", get(status))
         .route("/server_api_version", get(server_api_version))
         .route("/license", get(license))
@@ -61,7 +61,22 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             middleware::authenticate,
         ))
-        .with_state(state)
+        .with_state(state);
+
+    // Axum adds the `Allow` header for method-not-allowed responses in its
+    // top-level `RouteFuture`, after all route middleware has run. Wrapping the
+    // whole router lets us rewrite it to the upstream spacing and drop `HEAD`.
+    Router::new().fallback_service(tower::service_fn(move |request| {
+        let inner = inner.clone();
+        async move {
+            let mut response = match tower::ServiceExt::oneshot(inner, request).await {
+                Ok(response) => response,
+                Err(error) => match error {},
+            };
+            middleware::normalize_allow_header(&mut response);
+            Ok::<_, std::convert::Infallible>(response)
+        }
+    }))
 }
 
 async fn status(State(state): State<AppState>) -> Json<Value> {

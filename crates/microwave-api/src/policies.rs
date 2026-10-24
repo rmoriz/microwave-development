@@ -80,7 +80,7 @@ async fn create_policy(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let org = organization(&auth)?;
-    let (name, revision_id) = revision_fields(&body, None)?;
+    let (name, revision_id) = validate_policy_revision(&body, None)?;
     require_create_revision_permission(&state, &auth, org, &name)?;
     let serialized = serde_json::to_string(&body).map_err(|_| ApiError::internal())?;
     state
@@ -134,11 +134,16 @@ async fn delete_policy(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("policy {name}")))?;
     require_permission(&state, &auth, &policy.authz_id, Permission::Delete)?;
+    let revisions = state
+        .store
+        .list_policy_revisions(&org.id, &name)
+        .map_err(ApiError::from)?;
+    let body = json!({ "revisions": revisions_map(&revisions) });
     state
         .store
         .delete_policy(&org.id, &name)
         .map_err(ApiError::from)?;
-    Ok(Json(json!({})))
+    Ok(Json(body))
 }
 
 async fn list_policy_revisions(
@@ -163,12 +168,11 @@ async fn list_policy_revisions(
 async fn create_policy_revision(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-    headers: HeaderMap,
     Path((_organization, name)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let org = organization(&auth)?;
-    let (name, revision_id) = revision_fields(&body, Some(&name))?;
+    let (name, revision_id) = validate_policy_revision(&body, Some(&name))?;
     require_create_revision_permission(&state, &auth, org, &name)?;
     let serialized = serde_json::to_string(&body).map_err(|_| ApiError::internal())?;
     state
@@ -182,13 +186,7 @@ async fn create_policy_revision(
         )
         .map_err(ApiError::from)?;
 
-    let base = base_url(&headers, &state);
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "uri": format!("{base}/organizations/{}/policies/{name}", org.name)
-        })),
-    ))
+    Ok((StatusCode::CREATED, Json(body)))
 }
 
 async fn get_policy_revision(
@@ -226,11 +224,13 @@ async fn delete_policy_revision(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("policy {name} revision {revision}")))?;
     require_permission(&state, &auth, &found.policy_authz_id, Permission::Delete)?;
+    let body: Value =
+        serde_json::from_str(&found.serialized_object).map_err(|_| ApiError::internal())?;
     state
         .store
         .delete_policy_revision(&org.id, &name, &revision)
         .map_err(ApiError::from)?;
-    Ok(Json(json!({})))
+    Ok(Json(body))
 }
 
 async fn list_policy_groups(
@@ -325,6 +325,7 @@ async fn get_policy_group(
 async fn delete_policy_group(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    headers: HeaderMap,
     Path((_organization, name)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
@@ -334,11 +335,20 @@ async fn delete_policy_group(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("policy group {name}")))?;
     require_permission(&state, &auth, &group.authz_id, Permission::Delete)?;
+    let associations = state
+        .store
+        .list_policy_group_associations(&org.id, &name)
+        .map_err(ApiError::from)?;
+    let base = base_url(&headers, &state);
+    let body = json!({
+        "uri": format!("{base}/organizations/{}/policy_groups/{name}", org.name),
+        "policies": associations_map(&associations),
+    });
     state
         .store
         .delete_policy_group(&org.id, &name)
         .map_err(ApiError::from)?;
-    Ok(Json(json!({})))
+    Ok(Json(body))
 }
 
 async fn get_policy_group_association(
@@ -369,7 +379,7 @@ async fn put_policy_group_association(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let org = organization(&auth)?;
-    let (name, revision_id) = revision_fields(&body, Some(&policy))?;
+    let (name, revision_id) = validate_policy_revision(&body, Some(&policy))?;
 
     match state
         .store
@@ -401,7 +411,7 @@ async fn put_policy_group_association(
     let serialized = serde_json::to_string(&body).map_err(|_| ApiError::internal())?;
     let group_body =
         serde_json::to_string(&json!({ "name": group })).map_err(|_| ApiError::internal())?;
-    let (association, created) = state
+    let (_, created) = state
         .store
         .associate_policy_revision(
             &org.id,
@@ -414,15 +424,13 @@ async fn put_policy_group_association(
         )
         .map_err(ApiError::from)?;
 
-    let response: Value =
-        serde_json::from_str(&association.serialized_object).map_err(|_| ApiError::internal())?;
     Ok((
         if created {
             StatusCode::CREATED
         } else {
             StatusCode::OK
         },
-        Json(response),
+        Json(body),
     ))
 }
 
@@ -433,11 +441,22 @@ async fn delete_policy_group_association(
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
     require_policy_and_group(&state, &auth, org, &policy, &group, Permission::Delete)?;
+    let association = state
+        .store
+        .find_policy_group_association(&org.id, &group, &policy)
+        .map_err(ApiError::from)?
+        .ok_or_else(|| {
+            ApiError::not_found(format!(
+                "Cannot load policy {policy} in policy group {group}"
+            ))
+        })?;
+    let body: Value =
+        serde_json::from_str(&association.serialized_object).map_err(|_| ApiError::internal())?;
     state
         .store
         .delete_policy_group_association(&org.id, &group, &policy)
         .map_err(ApiError::from)?;
-    Ok(Json(json!({})))
+    Ok(Json(body))
 }
 
 fn require_create_revision_permission(
@@ -501,38 +520,125 @@ fn associations_map(associations: &[StoredPolicyGroupAssociation]) -> Value {
     Value::Object(map)
 }
 
-fn revision_fields(body: &Value, path_name: Option<&str>) -> Result<(String, String), ApiError> {
-    if !body.is_object() {
-        return Err(ApiError::bad_request(
-            "policy revision must be a JSON object",
-        ));
-    }
-    let revision_id = body
-        .get("revision_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ApiError::bad_request("Field 'revision_id' missing"))?
-        .to_string();
+fn validate_policy_revision(
+    body: &Value,
+    path_name: Option<&str>,
+) -> Result<(String, String), ApiError> {
+    let object = body
+        .as_object()
+        .ok_or_else(|| ApiError::bad_request("Incorrect JSON type for request body"))?;
 
-    let name = match path_name {
-        Some(path_name) => {
-            if let Some(value) = body.get("name") {
-                let value = value
-                    .as_str()
-                    .ok_or_else(|| ApiError::bad_request("Field 'name' invalid"))?;
-                if value != path_name {
-                    return Err(ApiError::bad_request(format!(
-                        "Field 'name' invalid : {path_name} does not match {value}"
-                    )));
-                }
-            }
-            path_name.to_string()
-        }
-        None => body
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ApiError::bad_request("Field 'name' missing"))?
-            .to_string(),
+    let revision_id = match object.get("revision_id") {
+        None => return Err(ApiError::bad_request("Field 'revision_id' missing")),
+        Some(Value::String(value)) if valid_limited_token(value) => value.clone(),
+        Some(_) => return Err(ApiError::bad_request("Field 'revision_id' invalid")),
     };
 
+    let name = match object.get("name") {
+        None => return Err(ApiError::bad_request("Field 'name' missing")),
+        Some(Value::String(value)) if valid_limited_token(value) => value.clone(),
+        Some(_) => return Err(ApiError::bad_request("Field 'name' invalid")),
+    };
+
+    match object.get("run_list") {
+        None => return Err(ApiError::bad_request("Field 'run_list' missing")),
+        Some(Value::Array(items)) if items.iter().all(valid_policy_run_list_item) => {}
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "Field 'run_list' is not a valid run list",
+            ))
+        }
+    }
+
+    match object.get("cookbook_locks") {
+        None => return Err(ApiError::bad_request("Field 'cookbook_locks' missing")),
+        Some(Value::Object(locks)) => {
+            for (cookbook, lock) in locks {
+                if !valid_cookbook_name(cookbook) {
+                    return Err(ApiError::bad_request("Field 'cookbook_locks' invalid"));
+                }
+                let lock = lock
+                    .as_object()
+                    .ok_or_else(|| ApiError::bad_request("Field 'cookbook_locks' invalid"))?;
+                match lock.get("identifier") {
+                    None => {
+                        return Err(ApiError::bad_request("Field 'identifier' missing"));
+                    }
+                    Some(Value::String(identifier)) if valid_limited_token(identifier) => {}
+                    Some(_) => {
+                        return Err(ApiError::bad_request("Field 'identifier' invalid"));
+                    }
+                }
+                match lock.get("version") {
+                    None => return Err(ApiError::bad_request("Field 'version' missing")),
+                    Some(Value::String(version)) if valid_cookbook_version(version) => {}
+                    Some(_) => {
+                        return Err(ApiError::bad_request(
+                            "Field 'version' is not a valid version",
+                        ));
+                    }
+                }
+                if let Some(value) = lock.get("dotted_decimal_identifier") {
+                    match value {
+                        Value::String(version) if valid_cookbook_version(version) => {}
+                        _ => {
+                            return Err(ApiError::bad_request(
+                                "Field 'dotted_decimal_identifier' is not a valid version",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        Some(_) => return Err(ApiError::bad_request("Field 'cookbook_locks' invalid")),
+    }
+
+    if let Some(path_name) = path_name {
+        if name != path_name {
+            return Err(ApiError::bad_request(format!(
+                "Field 'name' invalid : {path_name} does not match {name}"
+            )));
+        }
+    }
+
     Ok((name, revision_id))
+}
+
+fn valid_limited_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && value.chars().all(|character| {
+            character.is_alphanumeric() || matches!(character, '_' | '-' | ':' | '.')
+        })
+}
+
+fn valid_cookbook_name(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_alphanumeric() || matches!(character, '_' | '-' | '.'))
+}
+
+fn valid_policy_run_list_item(value: &Value) -> bool {
+    let Some(value) = value.as_str() else {
+        return false;
+    };
+    let Some(inner) = value
+        .strip_prefix("recipe[")
+        .and_then(|value| value.strip_suffix(']'))
+    else {
+        return false;
+    };
+    let mut parts = inner.split("::");
+    let cookbook = parts.next().unwrap_or_default();
+    let recipe = parts.next().unwrap_or_default();
+    parts.next().is_none() && valid_cookbook_name(cookbook) && valid_cookbook_name(recipe)
+}
+
+fn valid_cookbook_version(value: &str) -> bool {
+    let parts: Vec<&str> = value.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
 }
