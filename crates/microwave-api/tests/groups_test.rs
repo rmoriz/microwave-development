@@ -334,4 +334,22 @@ fn replacement_group_members_are_validated_and_apply_per_bucket() {
         )
         .unwrap_err();
     assert!(matches!(error, microwave_store::StoreError::Invalid(_)));
+
+    // Clients calling the groups API send their combined actor list in the
+    // `users` bucket as well as the typed `clients` bucket.
+    store
+        .create_client_with_acl(&org.id, "robot", false, false, Some(&creator.authz_id))
+        .unwrap();
+    store
+        .replace_group_members(
+            &org.id,
+            &group.authz_id,
+            Some(&["robot".to_string()]),
+            Some(&["robot".to_string()]),
+            None,
+        )
+        .unwrap();
+    let members = store.list_group_members(&org.id, &group.authz_id).unwrap();
+    assert!(members.users.is_empty());
+    assert_eq!(members.clients, vec!["robot"]);
 }

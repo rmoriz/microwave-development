@@ -597,6 +597,38 @@ async fn data_bag_acl_route_is_not_shadowed_by_the_item_route() {
 }
 
 #[tokio::test]
+async fn acl_updates_accept_global_and_cross_organization_groups() {
+    let state = support::state_with_pivotal();
+    let app = support::app(state.clone());
+    create_org(&app).await;
+    create_node(&app).await;
+    support::add_org(&state, "other");
+
+    let (status, body) = request(
+        &app,
+        "PUT",
+        "/organizations/acme/nodes/web1/_acl/read",
+        br#"{"actors":["pivotal"],"groups":["::server-admins","other::admins"]}"#,
+        "pivotal",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, acl) = request(
+        &app,
+        "GET",
+        "/organizations/acme/nodes/web1/_acl",
+        b"",
+        "pivotal",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let groups = acl["read"]["groups"].as_array().unwrap();
+    assert!(groups.contains(&serde_json::json!("::server-admins")));
+    assert!(groups.contains(&serde_json::json!("other::admins")));
+}
+
+#[tokio::test]
 async fn ambiguous_client_and_user_names_require_split_actor_lists() {
     let state = support::state_with_pivotal();
     let app = support::app(state.clone());

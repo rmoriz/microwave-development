@@ -486,9 +486,12 @@ impl SqliteStore {
             .map_err(|error| conflict(error, format!("client {name} already exists")))?;
         let granted = creator_authz_id.unwrap_or(&authz_id);
         crate::objects::grant_actor_all(&transaction, &authz_id, granted)?;
-        // Authz actors are always placed in their own ACL upstream. The
-        // creator's grants are additive, not a replacement.
-        crate::objects::grant_actor_all(&transaction, &authz_id, &authz_id)?;
+        // Non-validator clients are placed in their own ACL upstream; the
+        // creator's grants are additive, not a replacement. Validators have no
+        // self-service permissions.
+        if !validator {
+            crate::objects::grant_actor_all(&transaction, &authz_id, &authz_id)?;
+        }
         transaction.commit()?;
 
         Ok(Client {

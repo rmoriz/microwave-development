@@ -491,9 +491,14 @@ impl SqliteStore {
                     |row| row.get(0),
                 )
                 .optional()?;
-            actor_ids.push(
-                id.ok_or_else(|| StoreError::Invalid(format!("user {name} does not exist")))?,
-            );
+            match id {
+                Some(id) => actor_ids.push(id),
+                // Clients calling the groups API send the combined actor list
+                // in `users` as well as the typed `clients` list. A name that
+                // is only a client is added by the loop below.
+                None if clients.iter().any(|client| client == name) => {}
+                None => return Err(StoreError::Invalid(format!("user {name} does not exist"))),
+            }
         }
         for name in clients {
             let id: Option<String> = connection
