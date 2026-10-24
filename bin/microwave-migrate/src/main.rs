@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use microwave_migrate::{export, from_api, import};
+use microwave_migrate::{export, from_api_with_options, import, FromApiOptions};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -7,7 +7,7 @@ use std::process::ExitCode;
 #[command(
     name = "microwave-migrate",
     version,
-    about = "Export and import Microwave Server migration snapshots"
+    about = "Export, import, and crawl Microwave Server migration snapshots"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -34,7 +34,7 @@ enum Command {
         #[arg(long, value_name = "FILE")]
         input: PathBuf,
     },
-    /// Crawl a live legacy Chef Infra Server into a snapshot (not implemented).
+    /// Crawl a live legacy Chef Infra Server into a snapshot.
     FromApi {
         /// Base URL of the legacy server.
         #[arg(long, value_name = "URL")]
@@ -48,6 +48,12 @@ enum Command {
         /// Snapshot file to write.
         #[arg(long, value_name = "FILE")]
         output: PathBuf,
+        /// Crawl only this organization.
+        #[arg(long, value_name = "NAME")]
+        org: Option<String>,
+        /// X-Ops-Server-API-Version to send with every request.
+        #[arg(long, value_name = "VERSION", default_value_t = 2)]
+        api_version: u32,
     },
 }
 
@@ -63,7 +69,15 @@ fn main() -> ExitCode {
             client_name,
             key,
             output,
-        } => from_api(&url, &client_name, &key, &output),
+            org,
+            api_version,
+        } => {
+            let mut options = FromApiOptions::new(&url, &client_name, &key, &output);
+            options.org = org;
+            options.api_version = api_version;
+            from_api_with_options(&options)
+                .map(|()| println!("Wrote legacy API snapshot to {}", output.display()))
+        }
     };
 
     match result {

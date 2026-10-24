@@ -102,7 +102,7 @@ fn import_rejects_an_unsupported_snapshot_version() {
 }
 
 #[test]
-fn from_api_reports_not_implemented_without_writing_a_file() {
+fn from_api_reports_a_missing_key_without_writing_a_file() {
     let dir = tempfile::tempdir().unwrap();
     let output = dir.path().join("snapshot.json");
     let result = run(&[
@@ -118,6 +118,16 @@ fn from_api_reports_not_implemented_without_writing_a_file() {
     ]);
     assert!(!result.status.success());
     let message = stderr(&result);
-    assert!(message.contains("from-api is not implemented yet"));
+    assert!(message.contains("migration.pem"));
     assert!(!output.exists());
+}
+
+#[test]
+fn from_api_help_lists_org_and_api_version() {
+    let output = run(&["from-api", "--help"]);
+    assert!(output.status.success());
+    let message = stdout(&output);
+    assert!(message.contains("--org"));
+    assert!(message.contains("--api-version"));
+    assert!(message.contains("Crawl a live legacy Chef Infra Server"));
 }
