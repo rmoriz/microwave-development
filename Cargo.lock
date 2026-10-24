@@ -823,6 +823,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "microwave-ctl"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "microwave-authz",
+ "microwave-config",
+ "microwave-crypto",
+ "microwave-store",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "microwave-ctl-bin"
+version = "0.1.0"
+dependencies = [
+ "assert_cmd",
+ "microwave-crypto",
+ "microwave-ctl",
+ "microwave-store",
+ "tempfile",
+]
+
+[[package]]
 name = "microwave-objectstore"
 version = "0.1.0"
 dependencies = [

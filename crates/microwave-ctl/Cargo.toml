@@ -1,0 +1,15 @@
+[package]
+name = "microwave-ctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+clap.workspace = true
+microwave-authz = { path = "../microwave-authz" }
+microwave-config = { path = "../microwave-config" }
+microwave-crypto = { path = "../microwave-crypto" }
+microwave-store = { path = "../microwave-store" }
+thiserror.workspace = true
+uuid.workspace = true
