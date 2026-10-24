@@ -1,6 +1,7 @@
 use crate::{ApiError, AppState, AuthContext};
 use axum::http::HeaderMap;
 use microwave_store::{Org, Permission};
+use serde_json::Value;
 
 pub fn organization(auth: &AuthContext) -> Result<&Org, ApiError> {
     auth.org
@@ -40,6 +41,9 @@ pub fn require_permission(
     target_authz_id: &str,
     permission: Permission,
 ) -> Result<(), ApiError> {
+    if is_superuser(auth) {
+        return Ok(());
+    }
     if state
         .store
         .check_permission(&auth.principal.authz_id, target_authz_id, permission)
@@ -48,5 +52,34 @@ pub fn require_permission(
         Ok(())
     } else {
         Err(ApiError::forbidden())
+    }
+}
+
+pub fn is_superuser(auth: &AuthContext) -> bool {
+    auth.principal.name == "pivotal"
+}
+
+pub fn require_superuser(auth: &AuthContext) -> Result<(), ApiError> {
+    if is_superuser(auth) {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden())
+    }
+}
+
+/// Validate a `public_key` member. A missing or JSON null value means "no key
+/// was supplied"; every other value must be a valid PEM public key.
+pub fn parse_public_key(body: &Value) -> Result<Option<String>, ApiError> {
+    match body.get("public_key") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => {
+            if value.trim().is_empty() {
+                return Err(ApiError::bad_request("Field 'public_key' is invalid"));
+            }
+            microwave_crypto::parse_public_key_pem(value.trim())
+                .map_err(|_| ApiError::bad_request("Field 'public_key' is invalid"))?;
+            Ok(Some(value.clone()))
+        }
+        Some(_) => Err(ApiError::bad_request("Field 'public_key' is invalid")),
     }
 }

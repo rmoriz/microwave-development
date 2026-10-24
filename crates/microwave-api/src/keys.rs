@@ -1,4 +1,4 @@
-use crate::helpers::{base_url, organization};
+use crate::helpers::{base_url, is_superuser, organization, require_permission};
 use crate::{ApiError, AppState, AuthContext};
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -6,7 +6,7 @@ use axum::routing::get;
 use axum::{Extension, Json, Router};
 use chrono::{DateTime, SecondsFormat, Utc};
 use microwave_crypto::{generate_rsa_keypair, parse_public_key_pem};
-use microwave_store::{ActorKey, ActorType};
+use microwave_store::{ActorKey, ActorType, Permission};
 use serde_json::{json, Value};
 
 pub fn routes() -> Router<AppState> {
@@ -43,8 +43,10 @@ pub fn routes() -> Router<AppState> {
 
 struct KeyTarget {
     actor_id: String,
+    authz_id: String,
     actor_type: ActorType,
     actor_name: String,
+    validator: bool,
     uri: String,
 }
 
@@ -55,7 +57,7 @@ async fn list_user_keys(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let target = user_target(&state, &headers, &username)?;
-    authorize(&auth, &target)?;
+    authorize(&state, &auth, &target, Permission::Read)?;
     list_keys(&state, &target)
 }
 
@@ -67,7 +69,7 @@ async fn create_user_key(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let target = user_target(&state, &headers, &username)?;
-    authorize(&auth, &target)?;
+    authorize(&state, &auth, &target, Permission::Update)?;
     create_key(&state, &target, &body)
 }
 
@@ -78,7 +80,7 @@ async fn get_user_key(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let target = user_target(&state, &headers, &username)?;
-    authorize(&auth, &target)?;
+    authorize(&state, &auth, &target, Permission::Read)?;
     get_key(&state, &target, &key_name)
 }
 
@@ -90,7 +92,7 @@ async fn update_user_key(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let target = user_target(&state, &headers, &username)?;
-    authorize(&auth, &target)?;
+    authorize(&state, &auth, &target, Permission::Update)?;
     update_key(&state, &target, &key_name, &body)
 }
 
@@ -101,7 +103,7 @@ async fn delete_user_key(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let target = user_target(&state, &headers, &username)?;
-    authorize(&auth, &target)?;
+    authorize(&state, &auth, &target, Permission::Update)?;
     delete_key(&state, &target, &key_name)
 }
 
@@ -112,7 +114,7 @@ async fn list_client_keys(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let target = client_target(&state, &auth, &headers, &client_name)?;
-    authorize(&auth, &target)?;
+    authorize(&state, &auth, &target, Permission::Read)?;
     list_keys(&state, &target)
 }
 
@@ -124,7 +126,7 @@ async fn create_client_key(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let target = client_target(&state, &auth, &headers, &client_name)?;
-    authorize(&auth, &target)?;
+    authorize(&state, &auth, &target, Permission::Update)?;
     create_key(&state, &target, &body)
 }
 
@@ -135,7 +137,7 @@ async fn get_client_key(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let target = client_target(&state, &auth, &headers, &client_name)?;
-    authorize(&auth, &target)?;
+    authorize(&state, &auth, &target, Permission::Read)?;
     get_key(&state, &target, &key_name)
 }
 
@@ -147,7 +149,7 @@ async fn update_client_key(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let target = client_target(&state, &auth, &headers, &client_name)?;
-    authorize(&auth, &target)?;
+    authorize(&state, &auth, &target, Permission::Update)?;
     update_key(&state, &target, &key_name, &body)
 }
 
@@ -158,7 +160,7 @@ async fn delete_client_key(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let target = client_target(&state, &auth, &headers, &client_name)?;
-    authorize(&auth, &target)?;
+    authorize(&state, &auth, &target, Permission::Update)?;
     delete_key(&state, &target, &key_name)
 }
 
@@ -169,7 +171,7 @@ async fn list_org_user_keys(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let target = org_user_target(&state, &auth, &headers, &username)?;
-    authorize(&auth, &target)?;
+    authorize(&state, &auth, &target, Permission::Read)?;
     list_keys(&state, &target)
 }
 
@@ -180,7 +182,7 @@ async fn get_org_user_key(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let target = org_user_target(&state, &auth, &headers, &username)?;
-    authorize(&auth, &target)?;
+    authorize(&state, &auth, &target, Permission::Read)?;
     get_key(&state, &target, &key_name)
 }
 
@@ -196,8 +198,10 @@ fn user_target(
         .ok_or_else(|| ApiError::not_found(format!("user {username}")))?;
     Ok(KeyTarget {
         actor_id: user.id,
+        authz_id: user.authz_id,
         actor_type: ActorType::User,
         actor_name: user.username,
+        validator: false,
         uri: format!("{}/users/{username}/keys", base_url(headers, state)),
     })
 }
@@ -216,8 +220,10 @@ fn org_user_target(
         .ok_or_else(|| ApiError::not_found(format!("user {username}")))?;
     Ok(KeyTarget {
         actor_id: user.id,
+        authz_id: user.authz_id,
         actor_type: ActorType::User,
         actor_name: user.username,
+        validator: false,
         uri: format!(
             "{}/organizations/{}/users/{username}/keys",
             base_url(headers, state),
@@ -240,8 +246,10 @@ fn client_target(
         .ok_or_else(|| ApiError::not_found(format!("client {client_name}")))?;
     Ok(KeyTarget {
         actor_id: client.id,
+        authz_id: client.authz_id,
         actor_type: ActorType::Client,
         actor_name: client.name,
+        validator: client.validator,
         uri: format!(
             "{}/organizations/{}/clients/{client_name}/keys",
             base_url(headers, state),
@@ -250,14 +258,26 @@ fn client_target(
     })
 }
 
-/// Keys are owned by an actor. Until the full ACL engine is wired into this
-/// surface, the platform superuser and the actor itself may manage its keys.
-fn authorize(auth: &AuthContext, target: &KeyTarget) -> Result<(), ApiError> {
-    if auth.principal.name == "pivotal" || auth.principal.name == target.actor_name {
-        Ok(())
-    } else {
-        Err(ApiError::forbidden())
+/// Keys follow the ACL of their actor. The platform superuser may manage any
+/// key, users may manage their own, and non-validator clients may manage their
+/// own keys (validators have no self-service permissions).
+fn authorize(
+    state: &AppState,
+    auth: &AuthContext,
+    target: &KeyTarget,
+    permission: Permission,
+) -> Result<(), ApiError> {
+    if is_superuser(auth) {
+        return Ok(());
     }
+    if auth.principal.name == target.actor_name {
+        match target.actor_type {
+            ActorType::User => return Ok(()),
+            ActorType::Client if !target.validator => return Ok(()),
+            ActorType::Client => {}
+        }
+    }
+    require_permission(state, auth, &target.authz_id, permission)
 }
 
 fn list_keys(state: &AppState, target: &KeyTarget) -> Result<Json<Value>, ApiError> {

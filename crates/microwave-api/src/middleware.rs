@@ -5,6 +5,7 @@ use serde_json::json;
 
 pub const MIN_API_VERSION: u8 = 0;
 pub const MAX_API_VERSION: u8 = 2;
+pub const MAX_REQUEST_SIZE: usize = 2_000_000;
 
 pub async fn authenticate(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
@@ -52,9 +53,9 @@ async fn authenticate_signed(
     next: axum::middleware::Next,
 ) -> Result<Response, ApiError> {
     let (parts, body) = request.into_parts();
-    let body_bytes = axum::body::to_bytes(body, 16 * 1024 * 1024)
+    let body_bytes = axum::body::to_bytes(body, MAX_REQUEST_SIZE)
         .await
-        .map_err(|_| ApiError::bad_request("request body is too large"))?;
+        .map_err(|_| ApiError::payload_too_large("JSON must be no more than 2000000 bytes."))?;
 
     let headers = &parts.headers;
     let sign = required_header(headers, "x-ops-sign")?;

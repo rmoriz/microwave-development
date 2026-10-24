@@ -3,11 +3,13 @@
 pub mod acls;
 pub mod bookshelf;
 pub mod clients;
+pub mod containers;
 pub mod cookbooks;
 pub mod data_bags;
 pub mod depsolver;
 pub mod environments;
 pub mod error;
+pub mod groups;
 pub mod helpers;
 pub mod keys;
 pub mod membership;
@@ -40,6 +42,8 @@ pub fn router(state: AppState) -> Router {
         .merge(organizations::routes())
         .merge(membership::routes())
         .merge(clients::routes())
+        .merge(groups::routes())
+        .merge(containers::routes())
         .merge(keys::routes())
         .merge(nodes::routes())
         .merge(policies::routes())

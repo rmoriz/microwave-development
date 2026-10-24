@@ -16,6 +16,15 @@ pub struct Group {
     pub name: String,
 }
 
+/// The members of an organization group, in the three buckets the upstream
+/// API exposes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupMembers {
+    pub users: Vec<String>,
+    pub clients: Vec<String>,
+    pub groups: Vec<String>,
+}
+
 /// An ACL as `(permission, actor names, group names)` entries.
 pub type Acl = Vec<(Permission, Vec<String>, Vec<String>)>;
 
@@ -101,11 +110,15 @@ impl SqliteStore {
              VALUES (?1, 'container', ?2, ?3)",
             params![authz_id, org_id, now],
         )?;
-        transaction.execute(
-            "INSERT INTO containers (id, org_id, authz_id, name, created_at, updated_at)
+        transaction
+            .execute(
+                "INSERT INTO containers (id, org_id, authz_id, name, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-            params![id, org_id, authz_id, name, now],
-        )?;
+                params![id, org_id, authz_id, name, now],
+            )
+            .map_err(|error| {
+                crate::identity::conflict(error, format!("container {name} already exists"))
+            })?;
         transaction.commit()?;
         Ok(Container {
             id,
@@ -125,17 +138,371 @@ impl SqliteStore {
              VALUES (?1, 'group', ?2, ?3)",
             params![authz_id, org_id, now],
         )?;
-        transaction.execute(
-            "INSERT INTO groups (id, org_id, authz_id, name, created_at, updated_at)
+        transaction
+            .execute(
+                "INSERT INTO groups (id, org_id, authz_id, name, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-            params![id, org_id, authz_id, name, now],
-        )?;
+                params![id, org_id, authz_id, name, now],
+            )
+            .map_err(|error| {
+                crate::identity::conflict(error, format!("group {name} already exists"))
+            })?;
         transaction.commit()?;
         Ok(Group {
             id,
             authz_id,
             name: name.into(),
         })
+    }
+
+    /// Create a group that inherits the org's `groups` container ACL and then
+    /// grants the creating actor all permissions on it.
+    pub fn create_group_for_org_with_acl(
+        &self,
+        org_id: &str,
+        name: &str,
+        creator_authz_id: &str,
+    ) -> Result<Group, StoreError> {
+        let id = Uuid::new_v4().simple().to_string();
+        let authz_id = Uuid::new_v4().simple().to_string();
+        let now = crate::identity::now();
+        let container_authz_id: String = {
+            let connection = self.connection();
+            connection
+                .query_row(
+                    "SELECT authz_id FROM containers WHERE org_id = ?1 AND name = 'groups'",
+                    [org_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| StoreError::NotFound("container groups".into()))?
+        };
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO authz_entities (authz_id, entity_type, org_id, created_at)
+             VALUES (?1, 'group', ?2, ?3)",
+            params![authz_id, org_id, now],
+        )?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO authz_acl_actor (target_authz_id, permission, actor_authz_id)
+             SELECT ?1, permission, actor_authz_id FROM authz_acl_actor
+             WHERE target_authz_id = ?2",
+            params![authz_id, container_authz_id],
+        )?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO authz_acl_group (target_authz_id, permission, group_authz_id)
+             SELECT ?1, permission, group_authz_id FROM authz_acl_group
+             WHERE target_authz_id = ?2",
+            params![authz_id, container_authz_id],
+        )?;
+        for permission in Permission::ALL {
+            transaction.execute(
+                "INSERT OR IGNORE INTO authz_acl_actor
+                 (target_authz_id, permission, actor_authz_id)
+                 VALUES (?1, ?2, ?3)",
+                params![authz_id, permission.as_str(), creator_authz_id],
+            )?;
+        }
+        transaction
+            .execute(
+                "INSERT INTO groups (id, org_id, authz_id, name, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                params![id, org_id, authz_id, name, now],
+            )
+            .map_err(|error| {
+                crate::identity::conflict(error, format!("group {name} already exists"))
+            })?;
+        transaction.commit()?;
+        Ok(Group {
+            id,
+            authz_id,
+            name: name.into(),
+        })
+    }
+
+    pub fn list_groups(&self, org_id: &str) -> Result<Vec<Group>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection
+            .prepare("SELECT id, authz_id, name FROM groups WHERE org_id = ?1 ORDER BY name")?;
+        let rows = statement.query_map([org_id], |row| {
+            Ok(Group {
+                id: row.get(0)?,
+                authz_id: row.get(1)?,
+                name: row.get(2)?,
+            })
+        })?;
+        let mut groups = Vec::new();
+        for row in rows {
+            groups.push(row?);
+        }
+        Ok(groups)
+    }
+
+    pub fn rename_group(
+        &self,
+        org_id: &str,
+        name: &str,
+        new_name: &str,
+    ) -> Result<Group, StoreError> {
+        let now = crate::identity::now();
+        let connection = self.connection();
+        let changed = connection
+            .execute(
+                "UPDATE groups SET name = ?3, updated_at = ?4 WHERE org_id = ?1 AND name = ?2",
+                params![org_id, name, new_name, now],
+            )
+            .map_err(|error| {
+                crate::identity::conflict(error, format!("group {new_name} already exists"))
+            })?;
+        if changed == 0 {
+            return Err(StoreError::NotFound(format!("group {name}")));
+        }
+        drop(connection);
+        self.find_group(org_id, new_name)?
+            .ok_or_else(|| StoreError::NotFound(format!("group {new_name}")))
+    }
+
+    pub fn delete_group(&self, org_id: &str, name: &str) -> Result<(), StoreError> {
+        let group = self
+            .find_group(org_id, name)?
+            .ok_or_else(|| StoreError::NotFound(format!("group {name}")))?;
+        let connection = self.connection();
+        connection.execute(
+            "DELETE FROM authz_entities WHERE authz_id = ?1",
+            [&group.authz_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_group_members(
+        &self,
+        org_id: &str,
+        group_authz_id: &str,
+    ) -> Result<GroupMembers, StoreError> {
+        let connection = self.connection();
+        let users = connection
+            .prepare(
+                "SELECT u.username
+                 FROM authz_group_actors member
+                 JOIN users u ON u.authz_id = member.actor_authz_id
+                 WHERE member.group_authz_id = ?1
+                 ORDER BY u.username",
+            )?
+            .query_map([group_authz_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let clients = connection
+            .prepare(
+                "SELECT c.name
+                 FROM authz_group_actors member
+                 JOIN clients c ON c.authz_id = member.actor_authz_id
+                 WHERE member.group_authz_id = ?1 AND c.org_id = ?2
+                 ORDER BY c.name",
+            )?
+            .query_map(params![group_authz_id, org_id], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let groups = connection
+            .prepare(
+                "SELECT g.name
+                 FROM authz_group_groups relation
+                 JOIN groups g ON g.authz_id = relation.child_group_authz_id
+                 WHERE relation.parent_group_authz_id = ?1 AND g.org_id = ?2
+                 ORDER BY g.name",
+            )?
+            .query_map(params![group_authz_id, org_id], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(GroupMembers {
+            users,
+            clients,
+            groups,
+        })
+    }
+
+    /// Replace the members in each provided bucket. Buckets passed as `None`
+    /// keep their existing membership, matching the upstream PATCH-like PUT
+    /// semantics.
+    pub fn replace_group_members(
+        &self,
+        org_id: &str,
+        group_authz_id: &str,
+        users: Option<&[String]>,
+        clients: Option<&[String]>,
+        groups: Option<&[String]>,
+    ) -> Result<(), StoreError> {
+        let current = self.list_group_members(org_id, group_authz_id)?;
+        let users = users.unwrap_or(&current.users);
+        let clients = clients.unwrap_or(&current.clients);
+        let groups = groups.unwrap_or(&current.groups);
+
+        // Verify group targets before taking the write lock. This also rejects
+        // self membership and cycles.
+        let connection = self.connection();
+        let mut child_group_ids = Vec::with_capacity(groups.len());
+        for name in groups {
+            let child: Option<String> = connection
+                .query_row(
+                    "SELECT authz_id FROM groups WHERE org_id = ?1 AND name = ?2",
+                    params![org_id, name],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let child = child.ok_or_else(|| {
+                StoreError::Invalid(format!("group {name} does not exist in this organization"))
+            })?;
+            if child == group_authz_id {
+                return Err(StoreError::Invalid("a group cannot contain itself".into()));
+            }
+            let creates_cycle: i64 = connection.query_row(
+                "WITH RECURSIVE descendants(authz_id) AS (
+                     SELECT child_group_authz_id
+                     FROM authz_group_groups
+                     WHERE parent_group_authz_id = ?1
+                     UNION
+                     SELECT relation.child_group_authz_id
+                     FROM authz_group_groups relation
+                     JOIN descendants ON relation.parent_group_authz_id = descendants.authz_id
+                 )
+                 SELECT EXISTS (SELECT 1 FROM descendants WHERE authz_id = ?2)",
+                params![child, group_authz_id],
+                |row| row.get(0),
+            )?;
+            if creates_cycle != 0 {
+                return Err(StoreError::Invalid("group cycle detected".into()));
+            }
+            child_group_ids.push(child);
+        }
+
+        let mut actor_ids = Vec::with_capacity(users.len() + clients.len());
+        for name in users {
+            let id: Option<String> = connection
+                .query_row(
+                    "SELECT authz_id FROM users WHERE username = ?1",
+                    [name],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            actor_ids.push(
+                id.ok_or_else(|| StoreError::Invalid(format!("user {name} does not exist")))?,
+            );
+        }
+        for name in clients {
+            let id: Option<String> = connection
+                .query_row(
+                    "SELECT authz_id FROM clients WHERE org_id = ?1 AND name = ?2",
+                    params![org_id, name],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            actor_ids.push(
+                id.ok_or_else(|| StoreError::Invalid(format!("client {name} does not exist")))?,
+            );
+        }
+        drop(connection);
+
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "DELETE FROM authz_group_actors WHERE group_authz_id = ?1",
+            [group_authz_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM authz_group_groups WHERE parent_group_authz_id = ?1",
+            [group_authz_id],
+        )?;
+        for actor_id in actor_ids {
+            transaction.execute(
+                "INSERT OR IGNORE INTO authz_group_actors (group_authz_id, actor_authz_id)
+                 VALUES (?1, ?2)",
+                params![group_authz_id, actor_id],
+            )?;
+        }
+        for child_id in child_group_ids {
+            transaction.execute(
+                "INSERT OR IGNORE INTO authz_group_groups
+                 (parent_group_authz_id, child_group_authz_id)
+                 VALUES (?1, ?2)",
+                params![group_authz_id, child_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Create a container and grant the creator every permission on it.
+    /// Containers do not inherit their parent container's ACL upstream.
+    pub fn create_container_for_org_with_acl(
+        &self,
+        org_id: &str,
+        name: &str,
+        creator_authz_id: &str,
+    ) -> Result<Container, StoreError> {
+        let id = Uuid::new_v4().simple().to_string();
+        let authz_id = Uuid::new_v4().simple().to_string();
+        let now = crate::identity::now();
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO authz_entities (authz_id, entity_type, org_id, created_at)
+             VALUES (?1, 'container', ?2, ?3)",
+            params![authz_id, org_id, now],
+        )?;
+        for permission in Permission::ALL {
+            transaction.execute(
+                "INSERT OR IGNORE INTO authz_acl_actor
+                 (target_authz_id, permission, actor_authz_id)
+                 VALUES (?1, ?2, ?3)",
+                params![authz_id, permission.as_str(), creator_authz_id],
+            )?;
+        }
+        transaction
+            .execute(
+                "INSERT INTO containers (id, org_id, authz_id, name, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                params![id, org_id, authz_id, name, now],
+            )
+            .map_err(|error| {
+                crate::identity::conflict(error, format!("container {name} already exists"))
+            })?;
+        transaction.commit()?;
+        Ok(Container {
+            id,
+            authz_id,
+            name: name.into(),
+        })
+    }
+
+    pub fn list_containers(&self, org_id: &str) -> Result<Vec<Container>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection
+            .prepare("SELECT id, authz_id, name FROM containers WHERE org_id = ?1 ORDER BY name")?;
+        let rows = statement.query_map([org_id], |row| {
+            Ok(Container {
+                id: row.get(0)?,
+                authz_id: row.get(1)?,
+                name: row.get(2)?,
+            })
+        })?;
+        let mut containers = Vec::new();
+        for row in rows {
+            containers.push(row?);
+        }
+        Ok(containers)
+    }
+
+    pub fn delete_container(&self, org_id: &str, name: &str) -> Result<(), StoreError> {
+        let container = self
+            .find_container(org_id, name)?
+            .ok_or_else(|| StoreError::NotFound(format!("container {name}")))?;
+        let connection = self.connection();
+        connection.execute(
+            "DELETE FROM authz_entities WHERE authz_id = ?1",
+            [&container.authz_id],
+        )?;
+        Ok(())
     }
 
     pub fn find_container(
