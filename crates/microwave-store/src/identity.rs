@@ -666,6 +666,26 @@ impl SqliteStore {
             .ok_or_else(|| StoreError::NotFound(format!("user {username}")))
     }
 
+    /// Enable or disable password-based system recovery for a user.
+    pub fn set_recovery_authentication_enabled(
+        &self,
+        username: &str,
+        enabled: bool,
+    ) -> Result<(), StoreError> {
+        let now = now();
+        let connection = self.connection();
+        let changed = connection.execute(
+            "UPDATE users
+             SET recovery_authentication_enabled = ?2, updated_at = ?3
+             WHERE username = ?1",
+            params![username, enabled as i64, now],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NotFound(format!("user {username}")));
+        }
+        Ok(())
+    }
+
     pub fn delete_user(&self, username: &str) -> Result<(), StoreError> {
         let mut connection = self.connection();
         let transaction = connection.transaction()?;

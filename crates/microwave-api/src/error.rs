@@ -24,6 +24,13 @@ impl ApiError {
         }
     }
 
+    pub fn unauthorized_with(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: message.into(),
+        }
+    }
+
     pub fn forbidden() -> Self {
         Self {
             status: StatusCode::FORBIDDEN,
