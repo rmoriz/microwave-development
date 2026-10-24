@@ -8,11 +8,11 @@ The repository contains a working vertical slice:
 
 - **Configuration** — TOML plus `MW_*` environment overrides.
 - **Authentication** — `X-Ops-Sign` 1.0/1.1/1.3 canonicalization, RSA signing/verification, key reassembly, and legacy password hash compatibility.
-- **Storage** — SQLite schema for identity, ACLs, containers, groups, nodes, roles, environments, data bags, sandboxes, and cookbooks.
+- **Storage** — SQLite schema for identity, ACLs, containers, groups, nodes, roles, environments, data bags, sandboxes, and cookbooks; a PostgreSQL store slice with a tested schema and repositories (the HTTP runtime still uses SQLite).
 - **Authorization** — recursive ACL/group checks, cycle rejection, the default organization policy, and ACL read/write endpoints with granular `users`/`clients` responses.
 - **HTTP API** — `/_status`, `/server_api_version`, `/license`, users, organizations, clients, principals, key management, organization memberships/invitations, nodes, environments, roles, data bags, sandboxes, bookshelf uploads, cookbooks, cookbook resolution, policyfiles/policy groups, ACL endpoints, and search (node/role/environment/client/data-bag indexes with a query subset and partial search).
 - **Operations CLI** — `microwave-ctl` with a `chef-server-ctl` compatibility binary: user/org administration, server-admin grant/remove/list, org membership, password reset, key rotation (add/list/delete user and client keys), secrets management, maintenance state, `check-config`, `ha-status`, `psql`, status, local backup/restore, `migrate-from-legacy` snapshot import, and a clear not-implemented response for reindex.
-- **Migration** — `microwave-migrate` exports a versioned JSON snapshot of the local store (users with password hashes, organizations, clients, keys, authz ACLs, nodes, roles, environments, data bags, checksums, cookbooks, policies, and OAuth applications) and imports it with original ids, authz ids, timestamps, and keys intact. The live legacy API crawler (`from-api`) is deferred and reports a clear not-implemented error.
+- **Migration** — `microwave-migrate` exports a versioned JSON snapshot of the local store (users with password hashes, organizations, clients, keys, authz ACLs, nodes, roles, environments, data bags, checksums, cookbooks, policies, and OAuth applications) and imports it with original ids, authz ids, timestamps, and keys intact. The live legacy API crawler (`from-api`) is implemented.
 - **OAuth/identity** — `/id` sign-in/sessions, OAuth application management, authorization-code and refresh-token flows, `/id/v1/me`, `/id/v1/me/organizations`, `/id/v1/status`, profile/password/key regeneration, and password-reset tokens.
 - **Dependency solving** — Chef version constraints (`=`, `>`, `<`, `>=`, `<=`, `~>`), deterministic backtracking, environment constraints, role expansion, timeouts, and upstream-shaped 412 failures.
 - **External backends** — S3/Garage object storage with SigV4 signing and presigned URLs, and OpenSearch/Elasticsearch search with bulk indexing and query translation. The local object store and embedded search remain the defaults.
@@ -53,13 +53,15 @@ Packaging artifacts: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
 - **Maintenance.** `maintenance on`, `maintenance off`, and `maintenance status` persist a flag in `kvpair` (`maintenance:enabled`). **HTTP enforcement is pending:** running servers do not return `503` while maintenance mode is on, and the command prints that limitation.
 - **Diagnostics.** `check-config` loads the resolved configuration and validates the data directory, database URL/driver, bind address, search backend, object-store credentials, and superuser name. `ha-status` reports a single-node deployment; multi-node, DRBD, and keepalived HA are not implemented. `psql` execs `sqlite3` against the configured database, or `psql` with a configured PostgreSQL URL, and passes trailing arguments through.
 
-## Not Yet Implemented
+## Remaining Work
 
-- The live legacy API crawler (`microwave-migrate from-api`). Local snapshot export/import and `microwave-ctl migrate-from-legacy` are available.
-- The remaining `chef-server-ctl` command surface (credential rotation, `reconfigure`, pedant runner, full tar backup format).
+- A full extended `oc-chef-pedant` pass. The core tags are near-green (the only failure is a known plain-HTTP pedant artifact), but the extended suites need a complete re-run after the recent cookbook, ACL, OAuth, search, and manifest fixes.
+- Wiring the PostgreSQL store into `AppState` and the HTTP API. The schema and repositories are implemented and pass 7/7 integration tests; the running server still selects SQLite.
 - HTTP enforcement of maintenance mode. `microwave-ctl maintenance on` persists the flag, but the request middleware does not return `503` yet; the command says so explicitly.
-- PostgreSQL metadata backend (SQLite is the only implemented store). S3/Garage and OpenSearch/Elasticsearch are implemented.
-- A full `oc-chef-pedant` pass and stock end-to-end `chef-client` converge. The harness is `scripts/run-chef-client-e2e.sh`; [`docs/chef-client-e2e-report.md`](docs/chef-client-e2e-report.md) records the current converge result and the remaining server gaps.
+- The remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup format).
+- TLS listener, `_stats`/metrics, key-generation cache, transparent `serialized_object` compression, and the dual-backend test matrix.
+- A strict stock `chef-client` converge without compatibility shims. The two server-side fixes are merged; the harness is [`scripts/run-chef-client-e2e.sh`](scripts/run-chef-client-e2e.sh).
+- OpenSearch 3.x evaluation and multi-node HA/performance validation.
 
 ### Pedant Compatibility
 

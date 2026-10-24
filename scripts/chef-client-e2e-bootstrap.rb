@@ -281,7 +281,7 @@ def file_records(entries, segment)
 end
 
 manifest = {
-  "name" => COOKBOOK,
+  "name" => "#{COOKBOOK}-#{COOKBOOK_VERSION}",
   "version" => COOKBOOK_VERSION,
   "cookbook_name" => COOKBOOK,
   "metadata" => {

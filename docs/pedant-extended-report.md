@@ -8,6 +8,8 @@
 `scripts/pedant-solr-stub.rb` (new)
 **Branch:** `subagent/pedant-more`
 
+> **Post-merge status (2026-10-24):** the counts below predate the cookbook/artifact, ACL, OAuth, principal/license/search, and v2 manifest fixes. After those merges, the ACL suite dropped to 199 failures (from 555), keys to 86 (from 139), OAuth passed 13 examples / 0 failures / 5 pending, and sandboxes, data bags, policies, and cookbook artifacts are green. A complete extended re-run is still required for a final score.
+>
 > The suites were first captured on `41abe62`. `main` then gained the ctl,
 > object-store-secret, and full-depsolver changes; the branch was rebased onto
 > `ad0a865` and `depsolver` and `cookbooks` were re-run. The intervening
