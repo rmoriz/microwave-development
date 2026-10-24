@@ -398,7 +398,9 @@ This is a server limitation, not a configuration mistake.
   at one PostgreSQL database. OAuth tokens, sessions, keys, and ACLs are
   shared, and the schema migration is serialized with an advisory lock. Use
   S3/Garage for blobs and share nothing else; this topology has not been
-  load-validated.
+  load-validated. On every server start, `PostgresStore::connect` applies the
+  embedded idempotent schema under that advisory lock before bootstrap runs,
+  so replicas can start concurrently without manual migration steps.
 - **Active/passive**: keep a second host ready, replicate backups/config, and
   move traffic at the load balancer. With SQLite only one server may write the
   metadata database at a time.

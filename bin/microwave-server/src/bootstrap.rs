@@ -125,11 +125,26 @@ pub async fn ensure_object_store_secret(
             &candidate,
         )
         .await?;
-    if secret != candidate {
-        tracing::info!(
-            "another replica initialized the object-store secret; using the stored value"
-        );
-    }
+    // A legacy row may contain only whitespace. `get_secret` treats it as
+    // absent, but `set_secret_if_absent` preserves it, so replace it instead
+    // of handing `LocalObjectStore` an empty HMAC key.
+    let secret = if secret.trim().is_empty() {
+        store
+            .set_secret(
+                OBJECT_STORE_SECRET_GROUP,
+                OBJECT_STORE_SECRET_NAME,
+                &candidate,
+            )
+            .await?;
+        candidate
+    } else {
+        if secret != candidate {
+            tracing::info!(
+                "another replica initialized the object-store secret; using the stored value"
+            );
+        }
+        secret
+    };
     write_private_file(&path, &secret)?;
     Ok(secret)
 }
@@ -161,4 +176,73 @@ pub async fn apply_bookshelf_secrets(
             .await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use microwave_store::SqliteStore;
+
+    fn scratch_config(data_dir: &Path) -> Config {
+        let mut config = Config::default();
+        config.paths.data_dir = data_dir.to_string_lossy().into_owned();
+        config.object_store.secret = None;
+        config
+    }
+
+    #[tokio::test]
+    async fn replaces_a_whitespace_only_object_store_secret() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .set_secret(OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME, "   ")
+            .unwrap();
+        let config = scratch_config(data_dir.path());
+
+        let secret = ensure_object_store_secret(&config, &store)
+            .await
+            .expect("bootstrap secret");
+
+        assert!(!secret.trim().is_empty(), "empty HMAC key would be unsafe");
+        assert!(secret.starts_with("os-"));
+        assert_eq!(
+            store
+                .get_secret(OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME)
+                .unwrap()
+                .as_deref(),
+            Some(secret.as_str()),
+            "the store must be healed, not just the return value"
+        );
+        assert_eq!(
+            std::fs::read_to_string(data_dir.path().join("objectstore.secret")).unwrap(),
+            secret
+        );
+    }
+
+    #[tokio::test]
+    async fn reuses_an_existing_non_empty_object_store_secret() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .set_secret(
+                OBJECT_STORE_SECRET_GROUP,
+                OBJECT_STORE_SECRET_NAME,
+                "existing-secret",
+            )
+            .unwrap();
+        let config = scratch_config(data_dir.path());
+
+        let secret = ensure_object_store_secret(&config, &store)
+            .await
+            .expect("bootstrap secret");
+
+        assert_eq!(secret, "existing-secret");
+        assert_eq!(
+            store
+                .get_secret(OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME)
+                .unwrap()
+                .as_deref(),
+            Some("existing-secret")
+        );
+    }
 }

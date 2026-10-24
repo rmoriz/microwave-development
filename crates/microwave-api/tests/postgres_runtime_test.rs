@@ -11,7 +11,7 @@ use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use axum::Router;
 use microwave_api::AppState;
-use microwave_config::Config;
+use microwave_config::{Config, DatabaseDriver};
 use microwave_crypto::SignVersion;
 use microwave_objectstore::{LocalObjectStore, ObjectStore};
 use microwave_store::{ActorType, IdentityRepository, MetadataStore, OAuthRepository, SqliteStore};
@@ -46,8 +46,10 @@ async fn postgres_store() -> Option<PostgresStore> {
     )
 }
 
-/// Returns the router plus the store handle used for direct setup.
-async fn pg_state(store: PostgresStore) -> (Router, PostgresStore, AppState) {
+/// Returns the router plus the store handle used for direct setup. The
+/// temporary object-store directory is owned by the returned guard so it is
+/// removed when the test finishes.
+async fn pg_state(store: PostgresStore) -> (tempfile::TempDir, Router, PostgresStore, AppState) {
     let store = Arc::new(store);
     // Authentication uses the real middleware, so the superuser needs a key
     // matching the fixture private key.
@@ -78,16 +80,18 @@ async fn pg_state(store: PostgresStore) -> (Router, PostgresStore, AppState) {
     }
 
     let mut config = Config::default();
+    config.database.driver = DatabaseDriver::Postgres;
     config.object_store.secret = Some("pg-runtime-secret".into());
+    let object_dir = tempfile::tempdir().expect("create object-store temp dir");
     let object_store: Arc<dyn ObjectStore + Send + Sync> = Arc::new(LocalObjectStore::new(
-        std::env::temp_dir().join(format!("mw-pg-runtime-{}", suffix())),
+        object_dir.path().join("bookshelf"),
         "pg-runtime-secret",
         "http://0.0.0.0:8000",
     ));
     let state =
         AppState::new(store.clone(), Arc::new(config), object_store).expect("build app state");
     let app = microwave_api::router(state.clone());
-    (app, (*store).clone(), state)
+    (object_dir, app, (*store).clone(), state)
 }
 
 fn signed(method: &str, path: &str, body: &[u8]) -> Request<Body> {
@@ -113,7 +117,7 @@ async fn core_api_works_against_postgresql() {
     let Some(store) = postgres_store().await else {
         return;
     };
-    let (app, store, state) = pg_state(store).await;
+    let (_object_dir, app, store, state) = pg_state(store).await;
     assert!(
         state.sqlite.is_none(),
         "the PostgreSQL runtime must not expose a SQLite escape hatch"

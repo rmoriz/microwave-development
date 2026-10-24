@@ -30,25 +30,31 @@ impl SecretsRepository for PostgresStore {
             return Err(StoreError::Invalid("secret value must not be empty".into()));
         }
         let key = secret_kv_key(group, name);
-        let inserted: Option<String> = sqlx::query_scalar(
+        // One statement handles both insert and conflict. A pre-existing NULL
+        // (possible in imported/legacy rows) is treated as absent and filled
+        // with the candidate, so the caller never receives a value the store
+        // did not actually retain.
+        let stored: Option<String> = sqlx::query_scalar(
             "INSERT INTO kvpair (key, value, updated_at) VALUES ($1, $2, $3)
-             ON CONFLICT (key) DO NOTHING
+             ON CONFLICT (key) DO UPDATE
+             SET value = COALESCE(kvpair.value, EXCLUDED.value),
+                 updated_at = CASE
+                     WHEN kvpair.value IS NULL THEN EXCLUDED.updated_at
+                     ELSE kvpair.updated_at
+                 END
              RETURNING value",
         )
         .bind(&key)
         .bind(value)
         .bind(crate::store::now())
-        .fetch_optional(self.pool())
+        .fetch_one(self.pool())
         .await
         .map_err(crate::store::db)?;
-        if let Some(inserted) = inserted {
-            return Ok(inserted);
-        }
-        sqlx::query_scalar("SELECT value FROM kvpair WHERE key = $1")
-            .bind(&key)
-            .fetch_one(self.pool())
-            .await
-            .map_err(crate::store::db)
+        stored.ok_or_else(|| {
+            StoreError::Postgres(format!(
+                "secret {group}.{name} returned NULL from set_secret_if_absent"
+            ))
+        })
     }
 
     async fn remove_secret(&self, group: &str, name: &str) -> Result<(), StoreError> {

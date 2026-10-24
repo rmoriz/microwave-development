@@ -1461,6 +1461,35 @@ async fn stores_kv_and_secrets() {
         Err(StoreError::Invalid(_))
     ));
     store.remove_secret(group, &absent).await.expect("cleanup");
+
+    // A legacy row with a SQL NULL value must be healed instead of panicking
+    // or returning a value the store did not retain.
+    let null_name = format!("null-{}", suffix());
+    let null_key = microwave_store::secret_kv_key(group, &null_name);
+    sqlx::query("INSERT INTO kvpair (key, value, updated_at) VALUES ($1, NULL, $2)")
+        .bind(&null_key)
+        .bind("2026-10-25T00:00:00Z")
+        .execute(store.pool())
+        .await
+        .expect("insert NULL secret row");
+    assert_eq!(
+        store
+            .set_secret_if_absent(group, &null_name, "healed")
+            .await
+            .expect("heal NULL secret"),
+        "healed"
+    );
+    assert_eq!(
+        store
+            .get_secret(group, &null_name)
+            .await
+            .expect("read healed secret"),
+        Some("healed".into())
+    );
+    store
+        .remove_secret(group, &null_name)
+        .await
+        .expect("cleanup NULL secret");
 }
 
 #[tokio::test]

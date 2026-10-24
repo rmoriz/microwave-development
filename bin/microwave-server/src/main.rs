@@ -51,32 +51,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", env!("CARGO_PKG_VERSION"));
         }
         Command::Config { config } => {
-            let config = Config::load(config.as_deref())?;
+            let mut config = Config::load(config.as_deref())?;
+            // `config` is a user-facing diagnostic. Never print credentials
+            // embedded in a PostgreSQL URL.
+            config.database.url = config.database.url.as_deref().map(redact_database_url);
             println!("{}", serde_json::to_string_pretty(&config)?);
         }
         Command::Serve { config, check } => {
             let mut config = Config::load(config.as_deref())?;
+            let database_url = config.resolved_database_url();
             let (store, sqlite): (Arc<dyn MetadataStore>, Option<Arc<SqliteStore>>) =
                 match config.database.driver {
                     DatabaseDriver::Sqlite => {
-                        let path = database_path(&config);
-                        let store = Arc::new(SqliteStore::open(Path::new(&path))?);
+                        let path = sqlite_path(&database_url);
+                        let store = Arc::new(SqliteStore::open(Path::new(path))?);
                         (store.clone(), Some(store))
                     }
                     DatabaseDriver::Postgres => {
-                        let url = config
-                            .database
-                            .url
-                            .as_deref()
-                            .filter(|url| {
-                                url.starts_with("postgres://") || url.starts_with("postgresql://")
-                            })
-                            .ok_or(
-                                "database.driver = postgres requires database.url / \
-                                 MW_DATABASE__URL with a postgres:// URL",
-                            )?;
-                        let store =
-                            Arc::new(microwave_store_postgres::PostgresStore::connect(url).await?);
+                        if !(database_url.starts_with("postgres://")
+                            || database_url.starts_with("postgresql://"))
+                        {
+                            return Err("database.driver = postgres requires database.url / \
+                                 MW_DATABASE__URL with a postgres:// URL"
+                                .into());
+                        }
+                        let store = Arc::new(
+                            microwave_store_postgres::PostgresStore::connect(&database_url).await?,
+                        );
                         (store, None)
                     }
                 };
@@ -101,7 +102,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if check {
                 // Never print the database URL: it may contain credentials.
                 let backend = match config.database.driver {
-                    DatabaseDriver::Sqlite => format!("sqlite ({})", database_path(&config)),
+                    DatabaseDriver::Sqlite => {
+                        format!("sqlite ({})", sqlite_path(&database_url))
+                    }
                     DatabaseDriver::Postgres => "postgres".to_string(),
                 };
                 eprintln!(
@@ -125,9 +128,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn database_path(config: &Config) -> String {
-    let url = config.resolved_database_url();
-    url.strip_prefix("sqlite://").unwrap_or(&url).to_string()
+fn sqlite_path(database_url: &str) -> &str {
+    database_url
+        .strip_prefix("sqlite://")
+        .unwrap_or(database_url)
+}
+
+/// Hide the password in a database URL before printing configuration.
+///
+/// `postgres://user:secret@host/db` becomes `postgres://user:***@host/db`.
+/// URLs without credentials are returned unchanged.
+fn redact_database_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let Some((userinfo, host)) = rest.rsplit_once('@') else {
+        return url.to_string();
+    };
+    let Some((user, _password)) = userinfo.split_once(':') else {
+        return url.to_string();
+    };
+    format!("{scheme}://{user}:***@{host}")
 }
 
 fn build_object_store(
@@ -171,5 +192,34 @@ fn build_object_store(
             s3_config.path_style = config.object_store.path_style;
             Ok(Arc::new(S3ObjectStore::new(s3_config)?))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_database_url;
+
+    #[test]
+    fn redacts_the_password_from_a_database_url() {
+        assert_eq!(
+            redact_database_url("postgres://microwave:s3cr3t@db.example.com/microwave"),
+            "postgres://microwave:***@db.example.com/microwave"
+        );
+        assert_eq!(
+            redact_database_url("postgresql://user:p:a@ss@db/microwave"),
+            "postgresql://user:***@db/microwave"
+        );
+    }
+
+    #[test]
+    fn leaves_credential_free_urls_unchanged() {
+        assert_eq!(
+            redact_database_url("sqlite:///var/lib/microwave/microwave.db"),
+            "sqlite:///var/lib/microwave/microwave.db"
+        );
+        assert_eq!(
+            redact_database_url("postgres://db.example.com/microwave"),
+            "postgres://db.example.com/microwave"
+        );
     }
 }

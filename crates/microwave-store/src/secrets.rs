@@ -60,16 +60,28 @@ impl SqliteStore {
         }
         let key = secret_kv_key(group, name);
         let connection = self.connection();
-        connection.execute(
-            "INSERT OR IGNORE INTO kvpair (key, value, updated_at) VALUES (?1, ?2, ?3)",
-            rusqlite::params![key, value, now()],
-        )?;
-        Ok(connection
-            .query_row("SELECT value FROM kvpair WHERE key = ?1", [key], |row| {
-                row.get(0)
-            })
-            .optional()?
-            .unwrap_or_else(|| value.to_string()))
+        // One statement handles both insert and conflict, and returns the
+        // value actually retained by the row. A legacy NULL value is treated
+        // as absent and filled with the candidate.
+        let stored: Option<String> = connection
+            .query_row(
+                "INSERT INTO kvpair (key, value, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE
+                 SET value = COALESCE(kvpair.value, excluded.value),
+                     updated_at = CASE
+                         WHEN kvpair.value IS NULL THEN excluded.updated_at
+                         ELSE kvpair.updated_at
+                     END
+                 RETURNING value",
+                rusqlite::params![key, value, now()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        stored.ok_or_else(|| {
+            StoreError::Invalid(format!(
+                "secret {group}.{name} was not retained by set_secret_if_absent"
+            ))
+        })
     }
 
     /// Remove a secret. Removing a missing secret is reported as `NotFound` so

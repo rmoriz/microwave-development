@@ -796,7 +796,8 @@ pub trait SecretsRepository: Send + Sync {
     async fn set_secret(&self, group: &str, name: &str, value: &str) -> Result<(), StoreError>;
 
     /// Insert a secret only when it does not exist and return the value that is
-    /// stored afterwards. This is the HA-safe bootstrap primitive.
+    /// stored afterwards. An existing SQL `NULL` is treated as absent. This is
+    /// the HA-safe bootstrap primitive.
     async fn set_secret_if_absent(
         &self,
         group: &str,
