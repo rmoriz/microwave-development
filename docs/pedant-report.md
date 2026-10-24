@@ -471,3 +471,30 @@ generated pedant config now uses `server_api_version 0` (matching
 
 1. `users` tag: user create/update validation, verbose/list filters, `first_name`/`last_name`/`display_name`, v1 `public_key` omission, rename and outside-user authorization.
 2. Broaden the harness beyond these five tags: keys, ACLs, data bags, cookbooks, sandboxes, search, policies, oauth, license, depsolver.
+
+---
+
+## Final merged run
+
+Run on merged `main` after the users and clients fixes:
+
+```sh
+scripts/run-pedant.sh headers users organizations clients nodes
+```
+
+| Tag | Examples | Passed | Failed | Pending |
+| --- | ---: | ---: | ---: | ---: |
+| headers | 7 | 6 | 1 | 0 |
+| users | 165 | 165 | 0 | 0 |
+| organizations | 15 | 15 | 0 | 0 |
+| clients | 142 | 139 | 0 | 3 |
+| nodes | 331 | 326 | 0 | 5 |
+| **Total** | **660** | **651** | **1** | **8** |
+
+The only failure is the known plain-HTTP pedant artifact in `header_spec.rb` (`"https"` → `"http"` `sub!` returns nil). The 8 pending examples are pedant's own skips.
+
+Artifacts: `/private/var/folders/yv/wmw_npmn7y5c2lwxjywt_f800000gn/T/opencode/pedant-final`.
+
+### Remaining coverage
+
+These five tags are green. The harness should next be extended to keys, ACLs, data bags, cookbooks, sandboxes, search, policies, OAuth, license, depsolver, and the remaining versioned behaviors.

@@ -51,13 +51,13 @@ The first `oc-chef-pedant` run is recorded in [`docs/pedant-report.md`](docs/ped
 | Tag | Passed | Failed | Pending |
 | --- | ---: | ---: | ---: |
 | headers | 6 | 1 | 0 |
-| users | 81 | 84 | 0 |
+| users | 165 | 0 | 0 |
 | organizations | 15 | 0 | 0 |
-| clients | 129 | 10 | 3 |
+| clients | 139 | 0 | 3 |
 | nodes | 326 | 0 | 5 |
-| **Total** | **557** | **95** | **8** |
+| **Total** | **651** | **1** | **8** |
 
-The harness is `scripts/run-pedant.sh`. Organizations and nodes now pass with zero failures in this tag set. The remaining failures are concentrated in `users` (84) and `clients` (10, several of which are pedant bugs), plus one known plain-HTTP `headers` artifact. See the report for the prioritized next work.
+The harness is `scripts/run-pedant.sh`. Users, organizations, clients, and nodes now pass with zero failures in this tag set. The only failure is the known plain-HTTP `headers` artifact; the 8 pending examples are pedant's own skips.
 
 See `docs/superpowers/specs/2026-10-24-microwave-server-design.md` and `TODO.md` for the full target and remaining work.
 
