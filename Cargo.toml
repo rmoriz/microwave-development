@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/microwave-config",
     "crates/microwave-crypto",
+    "crates/microwave-depsolver",
     "crates/microwave-store",
     "crates/microwave-authz",
     "crates/microwave-api",
