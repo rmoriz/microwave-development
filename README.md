@@ -52,7 +52,7 @@ The full workspace suite is green.
 - The remaining `chef-server-ctl` command surface (credential rotation, `reconfigure`, pedant runner, full tar backup format).
 - HTTP enforcement of maintenance mode. `microwave-ctl maintenance on` persists the flag, but the request middleware does not return `503` yet; the command says so explicitly.
 - PostgreSQL metadata backend (SQLite is the only implemented store). S3/Garage and OpenSearch/Elasticsearch are implemented.
-- A full `oc-chef-pedant` pass and end-to-end `chef-client` converge verification.
+- A full `oc-chef-pedant` pass and stock end-to-end `chef-client` converge. The harness is `scripts/run-chef-client-e2e.sh`; [`docs/chef-client-e2e-report.md`](docs/chef-client-e2e-report.md) records the current converge result and the remaining server gaps.
 
 ### Pedant Compatibility
 
