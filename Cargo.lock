@@ -1301,14 +1301,21 @@ version = "0.1.0"
 name = "microwave-migrate"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "base64 0.22.1",
  "chrono",
  "clap",
+ "hex",
  "microwave-authz",
+ "microwave-crypto",
  "microwave-store",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
+ "tokio",
+ "ureq",
 ]
 
 [[package]]

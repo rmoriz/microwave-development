@@ -1,15 +1,17 @@
 //! Offline migration/export-import support for Microwave Server.
 //!
-//! The first migration slice moves data between local `microwave-store`
-//! databases through a versioned JSON snapshot:
+//! Migration moves data between local `microwave-store` databases and a live
+//! legacy Chef Infra Server through a versioned JSON snapshot:
 //!
 //! ```text
 //! microwave-migrate export --data-dir ./data --output snapshot.json
 //! microwave-migrate import --data-dir ./new-data --input snapshot.json
+//! microwave-migrate from-api --url https://chef.example.com \
+//!     --client-name migrator --key migrator.pem --output snapshot.json
 //! ```
 //!
-//! The live-API crawler (`from-api`) is intentionally deferred; see
-//! `README.md` and [`from_api`].
+//! The live crawler signs every request with `microwave-crypto::sign_request`
+//! and writes the same snapshot envelope as a local export.
 
 use chrono::{SecondsFormat, Utc};
 use microwave_store::{SqliteStore, StoreError, StoreSnapshot};
@@ -17,6 +19,10 @@ use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+
+mod from_api;
+
+pub use from_api::{crawl_from_api, from_api_with_options, read_private_key, FromApiOptions};
 
 /// Value of the snapshot envelope's `format` field.
 pub const SNAPSHOT_FORMAT: &str = "microwave-server-snapshot";
@@ -86,8 +92,20 @@ pub enum MigrateError {
     UnsupportedVersion { found: u32, supported: u32 },
     #[error("storage error: {0}")]
     Store(#[from] StoreError),
-    #[error("not implemented: {0}")]
-    NotImplemented(String),
+    #[error("invalid legacy API URL {0:?}; expected an http:// or https:// URL")]
+    InvalidUrl(String),
+    #[error("legacy API request to {url} failed with HTTP {status}: {message}")]
+    Api {
+        url: String,
+        status: u16,
+        message: String,
+    },
+    #[error("legacy API request to {url} failed: {message}")]
+    Transport { url: String, message: String },
+    #[error("invalid response from {url}: {message}")]
+    InvalidApiResponse { url: String, message: String },
+    #[error("crypto error: {0}")]
+    Crypto(#[from] microwave_crypto::CryptoError),
 }
 
 /// Export the store under `data_dir` to a JSON snapshot at `output`.
@@ -141,22 +159,16 @@ pub fn import_database(database: &Path, input: &Path) -> Result<(), MigrateError
 
 /// Crawl a live legacy Chef Infra Server into the snapshot format.
 ///
-/// Deferred for this slice. The command validates the shape of the request and
-/// returns a clear error without writing an output file.
+/// This is the compatibility entry point for callers that do not need an
+/// organization filter or a non-default API version. Use
+/// [`from_api_with_options`] for `--org` and `--api-version`.
 pub fn from_api(
     url: &str,
     client_name: &str,
     key_path: &Path,
     output: &Path,
 ) -> Result<(), MigrateError> {
-    Err(MigrateError::NotImplemented(format!(
-        "from-api is not implemented yet; no file was written to {}. A future slice will sign \
-         requests with microwave-crypto::sign_request and crawl {url} as client {client_name} \
-         using the key at {}. For now, export a local store with `microwave-migrate export` or \
-         import a `microwave-migrate` snapshot.",
-        output.display(),
-        key_path.display()
-    )))
+    from_api_with_options(&FromApiOptions::new(url, client_name, key_path, output))
 }
 
 /// Read and validate a snapshot file.

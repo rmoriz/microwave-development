@@ -1,8 +1,9 @@
 # microwave-migrate
 
-Offline migration support for Microwave Server. This crate owns the versioned
-JSON snapshot format and the `microwave-migrate` binary. The live legacy API
-crawler is deferred to a later slice (see [Deferred live-API crawler](#deferred-live-api-crawler)).
+Migration support for Microwave Server. This crate owns the versioned JSON
+snapshot format and the `microwave-migrate` binary. It can export a local
+store, import a snapshot, or crawl a live legacy Chef Infra Server into the
+same snapshot envelope.
 
 ## Commands
 
@@ -13,6 +14,22 @@ microwave-migrate export --data-dir ./data --output migration.json
 # Create or merge into ./new-data/microwave.db
 microwave-migrate import --data-dir ./new-data --input migration.json
 
+# Crawl a live legacy server as a superuser
+microwave-migrate from-api \
+  --url https://chef.example.com \
+  --client-name migrator \
+  --key migrator.pem \
+  --output migration.json
+
+# Crawl one organization with a non-default API version
+microwave-migrate from-api \
+  --url https://chef.example.com \
+  --client-name migrator \
+  --key migrator.pem \
+  --org acme \
+  --api-version 2 \
+  --output acme.json
+
 # Import through the operational CLI (uses the configured database path)
 microwave-ctl migrate-from-legacy --input migration.json
 ```
@@ -20,6 +37,12 @@ microwave-ctl migrate-from-legacy --input migration.json
 `import` validates the envelope before touching the database. Invalid JSON,
 an unexpected `format`, or an unsupported `version` exit non-zero and do not
 create or modify the target database.
+
+`from-api` reads the PEM key, signs every request with
+`microwave-crypto::sign_request` (`X-Ops-Sign: algorithm=sha256;version=1.3;`),
+and writes the snapshot atomically with owner-only permissions. It never
+writes the private key or a plaintext user password. If a request fails
+authentication, the crawl aborts and no output file is written.
 
 ## Snapshot format
 
@@ -80,8 +103,8 @@ schema version `1`.
 | `format` | Always `microwave-server-snapshot`; anything else is rejected. |
 | `version` | Snapshot schema version. This build accepts `1`. |
 | `generated_at` | RFC 3339 UTC export time. |
-| `source.kind` | `local-store` today; `legacy-api` is reserved for the crawler. |
-| `source.url` | Legacy API URL, when applicable. |
+| `source.kind` | `local-store` for local exports, `legacy-api` for crawler output. |
+| `source.url` | Legacy API URL for `legacy-api`; `null` otherwise. |
 | `source.data_dir` | Local data directory the snapshot was exported from. |
 | `data` | Table-shaped store rows, described below. |
 
@@ -89,6 +112,12 @@ schema version `1`.
 
 All rows preserve the source primary keys, authz ids, and RFC 3339
 timestamps. Fields that are nullable in the store are JSON `null`.
+
+Local exports preserve those values exactly. The legacy API does not expose
+internal ids, authz ids, or object timestamps, so `from-api` derives stable
+32-hex ids from organization and object names. That keeps repeated crawls and
+repeated imports idempotent, but the ids will not match a legacy server's
+database ids. See [Live legacy API crawler](#live-legacy-api-crawler).
 
 | Collection | Notable fields |
 |---|---|
@@ -145,15 +174,54 @@ so:
 Name uniqueness still applies: a row with the same unique name but a different
 id is rejected by SQLite rather than silently rewritten.
 
-## Deferred live-API crawler
+## Live legacy API crawler
 
-`from-api --url URL --client-name NAME --key PATH --output FILE` is present so
-the command surface does not change later, but it currently exits non-zero with
-a clear `from-api is not implemented yet` message and writes no file.
+`from-api` reads the legacy server through its read-only HTTP API. It supports
+`--org NAME` to limit the crawl to one organization and `--api-version N`
+(default `2`) to set `X-Ops-Server-API-Version`. Every request is signed with
+`X-Ops-Sign: algorithm=sha256;version=1.3;` and the canonical path, body hash,
+user id, timestamp, and API version required by Chef's signature protocol.
 
-The planned implementation will read the PEM key, sign each request with
-`microwave-crypto::sign_request`, and crawl organizations plus each
-organization's clients, nodes, roles, environments, data bags/items, cookbooks,
-and policies into the same `microwave-server-snapshot` envelope (with
-`source.kind = "legacy-api"` and `source.url` set). Until then, the supported
-path is a local store export/import.
+### What is crawled
+
+- organizations, including `guid`, `name`, and `full_name`
+- users and their public keys
+- organization memberships (`org_user_associations`)
+- clients and their public keys
+- groups and their actor/group membership
+- nodes, roles, and environments
+- data bags and data bag items
+- cookbooks and cookbook versions, including file checksums and metadata
+- policies, policy revisions, policy groups, and group-to-revision assignments
+- object ACLs for organizations, users, clients, groups, nodes, roles,
+  environments, data bags, cookbooks, policies, and policy groups
+
+Lists may be JSON URL maps, arrays, or `results`/`items` pages with a `next`
+link. Optional collections, keys, and ACL endpoints that return `404` are
+skipped. A `401`/`403`, an explicit `--org` that does not exist, or any other
+unexpected status aborts the crawl without writing the output file.
+
+### Identity and limitations
+
+The legacy API does not expose internal database ids, authz ids, creation or
+update timestamps, user password hashes, or the `admin` flag. The crawler:
+
+- preserves organization `guid` values as organization ids;
+- derives all other ids and authz ids deterministically from names, so the
+  same source produces the same snapshot;
+- uses the crawl time for `created_at`/`updated_at`/`assigned_at`;
+- leaves user password hashes/salts empty and `admin` false;
+- stores only public keys from the keys API (or an inline `public_key` on
+  older API versions), never private keys.
+
+When an ACL actor name matches both a user and a client in the organization,
+the client is preferred because ACLs are organization scoped.
+
+### Deferred
+
+This slice does not crawl containers, cookbook artifacts (Policyfile
+artifacts), sandboxes/sandboxed checksums, OAuth applications, invitation
+records, search indexes, or cookbook blobs. It also does not copy user
+password hashes, which the legacy API never returns; users will need a
+password reset or an external identity provider after migration. Copy
+cookbook blobs/bookshelf data separately and let the search index rebuild.

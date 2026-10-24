@@ -399,20 +399,16 @@ fn rejects_malformed_and_unsupported_snapshots() {
 }
 
 #[test]
-fn from_api_reports_a_clear_not_implemented_error() {
+fn from_api_requires_a_readable_private_key() {
     let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("snapshot.json");
     let error = microwave_migrate::from_api(
         "https://chef.example.com",
         "migration-client",
         &dir.path().join("migration-client.pem"),
-        &dir.path().join("snapshot.json"),
+        &output,
     )
     .unwrap_err();
-    match error {
-        MigrateError::NotImplemented(message) => {
-            assert!(message.contains("from-api"));
-            assert!(message.contains("not implemented"));
-        }
-        other => panic!("unexpected error: {other:?}"),
-    }
+    assert!(matches!(error, MigrateError::Read { .. }));
+    assert!(!output.exists());
 }
