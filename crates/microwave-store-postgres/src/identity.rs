@@ -289,9 +289,9 @@ impl IdentityRepository for PostgresStore {
     }
 
     async fn find_user(&self, username: &str) -> Result<Option<User>, StoreError> {
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {USER_COLUMNS} FROM users WHERE username = $1"
-        ))
+        )))
         .bind(username)
         .fetch_optional(self.pool())
         .await
@@ -300,7 +300,9 @@ impl IdentityRepository for PostgresStore {
     }
 
     async fn find_user_by_id(&self, id: &str) -> Result<Option<User>, StoreError> {
-        let row = sqlx::query(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = $1"))
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {USER_COLUMNS} FROM users WHERE id = $1"
+        )))
             .bind(id)
             .fetch_optional(self.pool())
             .await
@@ -317,13 +319,13 @@ impl IdentityRepository for PostgresStore {
         email: Option<&str>,
         external_authentication_uid: Option<&str>,
     ) -> Result<Vec<User>, StoreError> {
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {USER_COLUMNS}
              FROM users
              WHERE ($1::text IS NULL OR lower(email) = lower($1))
                AND ($2::text IS NULL OR external_authentication_uid = $2)
              ORDER BY username"
-        ))
+        )))
         .bind(email)
         .bind(external_authentication_uid)
         .fetch_all(self.pool())

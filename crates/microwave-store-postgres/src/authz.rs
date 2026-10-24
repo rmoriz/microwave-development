@@ -887,7 +887,7 @@ impl AuthzRepository for PostgresStore {
             _ => return Ok(None),
         };
         let sql = format!("SELECT authz_id FROM {table} WHERE org_id = $1 AND name = $2");
-        sqlx::query_scalar(&sql)
+        sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
             .bind(org_id)
             .bind(name)
             .fetch_optional(self.pool())

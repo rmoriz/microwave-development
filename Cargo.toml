@@ -40,7 +40,7 @@ hmac = "0.12"
 md-5 = "0.10"
 rand = "0.8"
 rusqlite = { version = "0.32", features = ["bundled"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "tls-rustls-ring", "macros", "json", "chrono", "uuid"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "tls-rustls-ring", "macros", "json", "chrono", "uuid"] }
 uuid = { version = "1", features = ["v4"] }
 axum = "0.8"
 async-trait = "0.1"

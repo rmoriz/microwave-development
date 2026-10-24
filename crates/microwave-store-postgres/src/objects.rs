@@ -27,7 +27,7 @@ impl PostgresStore {
              (id, authz_id, org_id, name, serialized_object, last_updated_by, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $7)"
         );
-        sqlx::query(&sql)
+        sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(&id)
             .bind(&authz_id)
             .bind(org_id)
@@ -59,7 +59,7 @@ impl PostgresStore {
             "SELECT id, authz_id, name, serialized_object, created_at, updated_at
              FROM {table} WHERE org_id = $1 AND name = $2"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(org_id)
             .bind(name)
             .fetch_optional(self.pool())
@@ -79,7 +79,7 @@ impl PostgresStore {
             "SELECT id, authz_id, name, serialized_object, created_at, updated_at
              FROM {table} WHERE org_id = $1 ORDER BY name"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(org_id)
             .fetch_all(self.pool())
             .await
@@ -102,7 +102,7 @@ impl PostgresStore {
             "UPDATE {table} SET serialized_object = $3, updated_at = $4
              WHERE org_id = $1 AND name = $2"
         );
-        let result = sqlx::query(&sql)
+        let result = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(org_id)
             .bind(name)
             .bind(body)
@@ -126,7 +126,7 @@ impl PostgresStore {
     ) -> Result<(), StoreError> {
         let mut transaction = self.pool().begin().await.map_err(db)?;
         let sql = format!("SELECT authz_id FROM {table} WHERE org_id = $1 AND name = $2");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(org_id)
             .bind(name)
             .fetch_optional(&mut *transaction)
