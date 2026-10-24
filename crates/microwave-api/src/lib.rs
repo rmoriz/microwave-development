@@ -1,5 +1,6 @@
 //! HTTP API for Microwave Server.
 
+pub mod acls;
 pub mod bookshelf;
 pub mod clients;
 pub mod cookbooks;
@@ -31,6 +32,7 @@ pub fn router(state: AppState) -> Router {
         .route("/server_api_version", get(server_api_version))
         .route("/license", get(license))
         .merge(users::routes())
+        .merge(acls::routes())
         .merge(organizations::routes())
         .merge(clients::routes())
         .merge(keys::routes())

@@ -44,9 +44,10 @@ pub fn signed_request(
     version: SignVersion,
     user_id: &str,
 ) -> Request<Body> {
+    let canonical_path = path.split('?').next().unwrap_or(path);
     let request = CanonicalRequest {
         method,
-        path,
+        path: canonical_path,
         body,
         user_id,
         timestamp: "2026-10-24T12:00:00Z",
