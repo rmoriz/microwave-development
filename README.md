@@ -18,11 +18,12 @@ The repository contains a working vertical slice:
 - **External backends** — S3/Garage object storage with SigV4 signing and presigned URLs, and OpenSearch/Elasticsearch search with bulk indexing and query translation. The local object store and embedded search remain the defaults.
 - **Server** — `microwave-server serve` bootstraps a `pivotal` superuser and listens on the configured address.
 
-Testing and formatting are green:
+Testing and formatting are green, and a strict stock `chef-client` converge passes without compatibility shims (`MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0`):
 
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+scripts/run-chef-client-e2e.sh
 ```
 
 ## Run Locally
@@ -60,8 +61,8 @@ Packaging artifacts: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
 - HTTP enforcement of maintenance mode. `microwave-ctl maintenance on` persists the flag, but the request middleware does not return `503` yet; the command says so explicitly.
 - The remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup format).
 - TLS listener, `_stats`/metrics, key-generation cache, transparent `serialized_object` compression, and the dual-backend test matrix.
-- A strict stock `chef-client` converge without compatibility shims. The two server-side fixes are merged; the harness is [`scripts/run-chef-client-e2e.sh`](scripts/run-chef-client-e2e.sh).
 - OpenSearch 3.x evaluation and multi-node HA/performance validation.
+- Data Collector forwarding, `required_recipe`, and telemetry export.
 
 ### Pedant Compatibility
 
