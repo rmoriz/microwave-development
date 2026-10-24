@@ -24,6 +24,7 @@ Testing and formatting are green, and a strict stock `chef-client` converge pass
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 scripts/run-chef-client-e2e.sh
+scripts/run-postgres-tests.sh
 ```
 
 ## Run Locally
@@ -56,8 +57,8 @@ Packaging artifacts: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
 
 ## Remaining Work
 
-- A full extended `oc-chef-pedant` pass. The core tags are near-green (the only failure is a known plain-HTTP pedant artifact), but the extended suites need a complete re-run after the recent cookbook, ACL, OAuth, search, and manifest fixes.
-- PostgreSQL operational tooling. The HTTP runtime, OAuth, authorization, search, and bootstrap run against PostgreSQL, but `microwave-ctl`/`microwave-migrate` and the local backup/restore path stay SQLite-only, and a multi-replica HA topology has not been load-validated.
+- Fix the remaining extended `oc-chef-pedant` failures: `keys` (86), `acls` (70), `search` (3), and `depsolver` (3). The core tags are near-green; the only failure is a known plain-HTTP pedant artifact.
+- PostgreSQL operational tooling. The HTTP runtime, OAuth, authorization, search, and bootstrap run against PostgreSQL; 16 store integration tests and 2 HTTP runtime tests pass. `microwave-ctl`/`microwave-migrate` and local backup/restore stay SQLite-only, and a multi-replica HA topology has not been load-validated.
 - HTTP enforcement of maintenance mode. `microwave-ctl maintenance on` persists the flag, but the request middleware does not return `503` yet; the command says so explicitly.
 - The remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup format).
 - TLS listener, `_stats`/metrics, key-generation cache, transparent `serialized_object` compression, and the dual-backend test matrix.
