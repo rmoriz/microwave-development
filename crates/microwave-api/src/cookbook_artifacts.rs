@@ -36,13 +36,14 @@ async fn list_artifacts(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "cookbook_artifacts")?;
-    require_permission(&state, &auth, &container, Permission::Read)?;
+    let container = container_authz(&state, org, "cookbook_artifacts").await?;
+    require_permission(&state, &auth, &container, Permission::Read).await?;
 
     let base = base_url(&headers, &state);
     let artifacts = state
         .store
         .list_cookbook_artifacts(&org.id)
+        .await
         .map_err(ApiError::from)?;
     let mut map = Map::new();
     for artifact in artifacts {
@@ -58,12 +59,13 @@ async fn get_artifact(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "cookbook_artifacts")?;
-    require_permission(&state, &auth, &container, Permission::Read)?;
+    let container = container_authz(&state, org, "cookbook_artifacts").await?;
+    require_permission(&state, &auth, &container, Permission::Read).await?;
 
     let artifact = state
         .store
         .find_cookbook_artifact(&org.id, &name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(not_found)?;
     let base = base_url(&headers, &state);
@@ -82,9 +84,10 @@ async fn get_artifact_version(
     let artifact = state
         .store
         .find_cookbook_artifact_version(&org.id, &name, &identifier)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(not_found)?;
-    require_permission(&state, &auth, &artifact.authz_id, Permission::Read)?;
+    require_permission(&state, &auth, &artifact.authz_id, Permission::Read).await?;
 
     let mut manifest = render_manifest(&artifact.manifest, api_version, Some(&state), &org.id)?;
     remove_json_class(&mut manifest);
@@ -103,23 +106,25 @@ async fn put_artifact_version(
     let existing = state
         .store
         .find_cookbook_artifact_version(&org.id, &name, &identifier)
+        .await
         .map_err(ApiError::from)?;
     if let Some(existing) = existing {
-        require_permission(&state, &auth, &existing.authz_id, Permission::Update)?;
+        require_permission(&state, &auth, &existing.authz_id, Permission::Update).await?;
         return Ok((
             StatusCode::CONFLICT,
             Json(json!({ "error": "Cookbook artifact already exists" })),
         ));
     }
 
-    let container = container_authz(&state, org, "cookbook_artifacts")?;
-    require_permission(&state, &auth, &container, Permission::Create)?;
+    let container = container_authz(&state, org, "cookbook_artifacts").await?;
+    require_permission(&state, &auth, &container, Permission::Create).await?;
 
     let checksums = manifest_checksums(&body);
     for checksum in &checksums {
         if !state
             .store
             .checksum_exists(&org.id, checksum)
+            .await
             .map_err(ApiError::from)?
         {
             return Err(ApiError::bad_request(
@@ -138,6 +143,7 @@ async fn put_artifact_version(
             &checksums,
             &auth.principal.authz_id,
         )
+        .await
         .map_err(ApiError::from)?;
 
     Ok((StatusCode::CREATED, Json(body)))
@@ -153,13 +159,15 @@ async fn delete_artifact_version(
     let artifact = state
         .store
         .find_cookbook_artifact_version(&org.id, &name, &identifier)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(not_found)?;
-    require_permission(&state, &auth, &artifact.authz_id, Permission::Delete)?;
+    require_permission(&state, &auth, &artifact.authz_id, Permission::Delete).await?;
 
     let (deleted, removed) = state
         .store
         .delete_cookbook_artifact_version(&org.id, &name, &identifier)
+        .await
         .map_err(ApiError::from)?;
     delete_blobs(&state, &org.id, &removed);
 

@@ -13,6 +13,7 @@ microwave-config = { path = "../../crates/microwave-config" }
 microwave-crypto = { path = "../../crates/microwave-crypto" }
 microwave-objectstore = { path = "../../crates/microwave-objectstore" }
 microwave-store = { path = "../../crates/microwave-store" }
+microwave-store-postgres = { path = "../../crates/microwave-store-postgres" }
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true

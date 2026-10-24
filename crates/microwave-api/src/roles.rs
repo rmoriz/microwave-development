@@ -25,12 +25,17 @@ async fn list_roles(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "roles")?;
-    require_permission(&state, &auth, &container, Permission::Read)?;
+    let container = container_authz(&state, org, "roles").await?;
+    require_permission(&state, &auth, &container, Permission::Read).await?;
 
     let base = base_url(&headers, &state);
     let mut roles = serde_json::Map::new();
-    for role in state.store.list_roles(&org.id).map_err(ApiError::from)? {
+    for role in state
+        .store
+        .list_roles(&org.id)
+        .await
+        .map_err(ApiError::from)?
+    {
         roles.insert(
             role.name.clone(),
             json!(format!(
@@ -49,8 +54,8 @@ async fn create_role(
     Json(mut body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "roles")?;
-    require_permission(&state, &auth, &container, Permission::Create)?;
+    let container = container_authz(&state, org, "roles").await?;
+    require_permission(&state, &auth, &container, Permission::Create).await?;
 
     let name = normalize_role(&mut body)?;
     let role = state
@@ -61,6 +66,7 @@ async fn create_role(
             &serde_json::to_string(&body).map_err(|_| ApiError::internal())?,
             &auth.principal.authz_id,
         )
+        .await
         .map_err(ApiError::from)?;
     crate::search::index::index_object(&state, org, crate::search::IndexKind::Role, &role).await;
 
@@ -82,9 +88,10 @@ async fn get_role(
     let role = state
         .store
         .find_role(&org.id, &name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("role {name}")))?;
-    require_permission(&state, &auth, &role.authz_id, Permission::Read)?;
+    require_permission(&state, &auth, &role.authz_id, Permission::Read).await?;
     let value = serde_json::from_str(&role.serialized_object).map_err(|_| ApiError::internal())?;
     Ok(Json(value))
 }
@@ -99,9 +106,10 @@ async fn update_role(
     let role = state
         .store
         .find_role(&org.id, &name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("role {name}")))?;
-    require_permission(&state, &auth, &role.authz_id, Permission::Update)?;
+    require_permission(&state, &auth, &role.authz_id, Permission::Update).await?;
 
     let body_name = normalize_role(&mut body)?;
     if body_name != name {
@@ -116,6 +124,7 @@ async fn update_role(
             &name,
             &serde_json::to_string(&body).map_err(|_| ApiError::internal())?,
         )
+        .await
         .map_err(ApiError::from)?;
     crate::search::index::index_object(&state, org, crate::search::IndexKind::Role, &updated).await;
     let value =
@@ -132,12 +141,14 @@ async fn delete_role(
     let role = state
         .store
         .find_role(&org.id, &name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("role {name}")))?;
-    require_permission(&state, &auth, &role.authz_id, Permission::Delete)?;
+    require_permission(&state, &auth, &role.authz_id, Permission::Delete).await?;
     state
         .store
         .delete_role(&org.id, &name)
+        .await
         .map_err(ApiError::from)?;
     crate::search::index::delete_document(&state, &org.id, &role.id).await;
     Ok(Json(json!({})))

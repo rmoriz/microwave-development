@@ -1,12 +1,15 @@
 //! PostgreSQL metadata store for Microwave Server.
 //!
-//! This crate is the first slice of the HA metadata backend described in the
-//! design document. It implements the backend-neutral repository traits from
-//! `microwave-store` against the unified PostgreSQL schema in
-//! `migrations/0001_initial.sql`.
+//! This crate implements the backend-neutral repository traits from
+//! `microwave-store` (`IdentityRepository`, `AuthzRepository`,
+//! `ObjectRepository`, `SandboxRepository`, `CookbookRepository`,
+//! `ArtifactRepository`, `PolicyRepository`, `MembershipRepository`,
+//! `OAuthRepository`, `KvRepository` and `SecretsRepository`) against the
+//! unified PostgreSQL schema in `migrations/0001_initial.sql`. `PostgresStore`
+//! therefore satisfies [`MetadataStore`](microwave_store::MetadataStore).
 //!
 //! ```no_run
-//! use microwave_store::{IdentityRepository, MetadataStore};
+//! use microwave_store::IdentityRepository;
 //! use microwave_store_postgres::PostgresStore;
 //!
 //! # async fn example() -> Result<(), microwave_store::StoreError> {
@@ -16,14 +19,20 @@
 //! # }
 //! ```
 //!
-//! See `README.md` for the remaining `AppState` integration work.
+//! The server selects this backend through `database.driver = "postgres"`; see
+//! `README.md` for the runtime wiring and deferred operational work.
 
+mod artifacts;
 mod authz;
 mod cookbooks;
 mod identity;
+mod kv;
+mod membership;
+mod oauth;
 mod objects;
 mod policies;
 mod sandboxes;
+mod secrets;
 mod store;
 
 pub use store::PostgresStore;

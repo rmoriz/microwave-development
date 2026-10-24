@@ -156,6 +156,14 @@ CREATE TABLE IF NOT EXISTS groups (
     UNIQUE (org_id, name)
 );
 
+CREATE TABLE IF NOT EXISTS global_groups (
+    id TEXT PRIMARY KEY,
+    authz_id TEXT NOT NULL UNIQUE REFERENCES authz_entities(authz_id) ON DELETE CASCADE,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY,
     authz_id TEXT NOT NULL UNIQUE REFERENCES authz_entities(authz_id) ON DELETE CASCADE,
@@ -242,6 +250,25 @@ CREATE TABLE IF NOT EXISTS sandboxed_checksums (
 
 CREATE INDEX IF NOT EXISTS sandboxed_checksums_sandbox_index
     ON sandboxed_checksums (org_id, sandbox_id);
+
+-- A sandbox exists independently of its uploads: an empty sandbox must still
+-- be visible to `sandbox_exists` and `sandbox_created_at`, matching SQLite.
+CREATE TABLE IF NOT EXISTS sandboxes (
+    org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    sandbox_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, sandbox_id)
+);
+
+-- Backfill sandbox rows for databases created before the explicit table
+-- existed. In-flight uploads were previously inferred from
+-- `sandboxed_checksums`, so make them visible again without overwriting any
+-- row that already exists.
+INSERT INTO sandboxes (org_id, sandbox_id, created_at)
+SELECT org_id, sandbox_id, MIN(created_at)
+FROM sandboxed_checksums
+GROUP BY org_id, sandbox_id
+ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS cookbooks (
     id BIGSERIAL PRIMARY KEY,
@@ -378,7 +405,7 @@ CREATE TABLE IF NOT EXISTS oauth_access_grants (
     resource_owner_id TEXT NOT NULL,
     application_id BIGINT NOT NULL REFERENCES oauth_applications(id) ON DELETE CASCADE,
     token TEXT NOT NULL UNIQUE,
-    expires_in INTEGER NOT NULL,
+    expires_in BIGINT NOT NULL,
     redirect_uri TEXT NOT NULL,
     scopes TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
@@ -391,11 +418,18 @@ CREATE TABLE IF NOT EXISTS oauth_access_tokens (
     application_id BIGINT REFERENCES oauth_applications(id) ON DELETE CASCADE,
     token TEXT NOT NULL UNIQUE,
     refresh_token TEXT UNIQUE,
-    expires_in INTEGER,
+    expires_in BIGINT,
     scopes TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     revoked_at TEXT
 );
+
+-- Older deployments created the OAuth expiry columns as INTEGER. The domain
+-- type is i64, so widen them in place; re-running the ALTER is a no-op.
+ALTER TABLE oauth_access_grants
+    ALTER COLUMN expires_in TYPE BIGINT;
+ALTER TABLE oauth_access_tokens
+    ALTER COLUMN expires_in TYPE BIGINT;
 
 CREATE TABLE IF NOT EXISTS kvpair (
     key TEXT PRIMARY KEY,

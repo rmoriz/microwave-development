@@ -47,14 +47,15 @@ async fn list_policies(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let policies_container = container_authz(&state, org, "policies")?;
-    require_permission(&state, &auth, &policies_container, Permission::Read)?;
+    let policies_container = container_authz(&state, org, "policies").await?;
+    require_permission(&state, &auth, &policies_container, Permission::Read).await?;
 
     let base = base_url(&headers, &state);
     let mut policies = Map::new();
     for revision in state
         .store
         .list_all_policy_revisions(&org.id)
+        .await
         .map_err(ApiError::from)?
     {
         let entry = policies.entry(revision.name.clone()).or_insert_with(|| {
@@ -81,7 +82,7 @@ async fn create_policy(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let (name, revision_id) = validate_policy_revision(&body, None)?;
-    require_create_revision_permission(&state, &auth, org, &name)?;
+    require_create_revision_permission(&state, &auth, org, &name).await?;
     let serialized = serde_json::to_string(&body).map_err(|_| ApiError::internal())?;
     state
         .store
@@ -92,6 +93,7 @@ async fn create_policy(
             &serialized,
             &auth.principal.authz_id,
         )
+        .await
         .map_err(ApiError::from)?;
 
     let base = base_url(&headers, &state);
@@ -112,12 +114,14 @@ async fn get_policy(
     let policy = state
         .store
         .find_policy(&org.id, &name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("policy {name}")))?;
-    require_permission(&state, &auth, &policy.authz_id, Permission::Read)?;
+    require_permission(&state, &auth, &policy.authz_id, Permission::Read).await?;
     let revisions = state
         .store
         .list_policy_revisions(&org.id, &name)
+        .await
         .map_err(ApiError::from)?;
     Ok(Json(json!({ "revisions": revisions_map(&revisions) })))
 }
@@ -131,17 +135,20 @@ async fn delete_policy(
     let policy = state
         .store
         .find_policy(&org.id, &name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("policy {name}")))?;
-    require_permission(&state, &auth, &policy.authz_id, Permission::Delete)?;
+    require_permission(&state, &auth, &policy.authz_id, Permission::Delete).await?;
     let revisions = state
         .store
         .list_policy_revisions(&org.id, &name)
+        .await
         .map_err(ApiError::from)?;
     let body = json!({ "revisions": revisions_map(&revisions) });
     state
         .store
         .delete_policy(&org.id, &name)
+        .await
         .map_err(ApiError::from)?;
     Ok(Json(body))
 }
@@ -155,12 +162,14 @@ async fn list_policy_revisions(
     let policy = state
         .store
         .find_policy(&org.id, &name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("policy {name}")))?;
-    require_permission(&state, &auth, &policy.authz_id, Permission::Read)?;
+    require_permission(&state, &auth, &policy.authz_id, Permission::Read).await?;
     let revisions = state
         .store
         .list_policy_revisions(&org.id, &name)
+        .await
         .map_err(ApiError::from)?;
     Ok(Json(json!({ "revisions": revisions_map(&revisions) })))
 }
@@ -173,7 +182,7 @@ async fn create_policy_revision(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let (name, revision_id) = validate_policy_revision(&body, Some(&name))?;
-    require_create_revision_permission(&state, &auth, org, &name)?;
+    require_create_revision_permission(&state, &auth, org, &name).await?;
     let serialized = serde_json::to_string(&body).map_err(|_| ApiError::internal())?;
     state
         .store
@@ -184,6 +193,7 @@ async fn create_policy_revision(
             &serialized,
             &auth.principal.authz_id,
         )
+        .await
         .map_err(ApiError::from)?;
 
     Ok((StatusCode::CREATED, Json(body)))
@@ -198,15 +208,17 @@ async fn get_policy_revision(
     let revision = state
         .store
         .find_policy_revision(&org.id, &name, &revision)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("policy {name} revision {revision}")))?;
-    require_permission(&state, &auth, &revision.policy_authz_id, Permission::Read)?;
+    require_permission(&state, &auth, &revision.policy_authz_id, Permission::Read).await?;
 
     let mut body: Value =
         serde_json::from_str(&revision.serialized_object).map_err(|_| ApiError::internal())?;
     let groups = state
         .store
         .list_policy_groups_for_revision(&org.id, &name, &revision.revision_id)
+        .await
         .map_err(ApiError::from)?;
     body["policy_group_list"] = json!(groups);
     Ok(Json(body))
@@ -221,14 +233,16 @@ async fn delete_policy_revision(
     let found = state
         .store
         .find_policy_revision(&org.id, &name, &revision)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("policy {name} revision {revision}")))?;
-    require_permission(&state, &auth, &found.policy_authz_id, Permission::Delete)?;
+    require_permission(&state, &auth, &found.policy_authz_id, Permission::Delete).await?;
     let body: Value =
         serde_json::from_str(&found.serialized_object).map_err(|_| ApiError::internal())?;
     state
         .store
         .delete_policy_revision(&org.id, &name, &revision)
+        .await
         .map_err(ApiError::from)?;
     Ok(Json(body))
 }
@@ -239,19 +253,21 @@ async fn list_policy_groups(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let groups_container = container_authz(&state, org, "policy_groups")?;
-    require_permission(&state, &auth, &groups_container, Permission::Read)?;
+    let groups_container = container_authz(&state, org, "policy_groups").await?;
+    require_permission(&state, &auth, &groups_container, Permission::Read).await?;
 
     let base = base_url(&headers, &state);
     let mut groups = Map::new();
     for group in state
         .store
         .list_policy_groups(&org.id)
+        .await
         .map_err(ApiError::from)?
     {
         let associations = state
             .store
             .list_policy_group_associations(&org.id, &group.name)
+            .await
             .map_err(ApiError::from)?;
         let mut entry = json!({
             "uri": format!(
@@ -279,13 +295,14 @@ async fn create_policy_group(
         .and_then(Value::as_str)
         .filter(|name| !name.is_empty())
         .ok_or_else(|| ApiError::bad_request("Field 'name' missing"))?;
-    let groups_container = container_authz(&state, org, "policy_groups")?;
-    require_permission(&state, &auth, &groups_container, Permission::Create)?;
+    let groups_container = container_authz(&state, org, "policy_groups").await?;
+    require_permission(&state, &auth, &groups_container, Permission::Create).await?;
 
     let serialized = serde_json::to_string(&body).map_err(|_| ApiError::internal())?;
     state
         .store
         .create_policy_group(&org.id, name, &serialized, &auth.principal.authz_id)
+        .await
         .map_err(ApiError::from)?;
 
     let base = base_url(&headers, &state);
@@ -307,13 +324,15 @@ async fn get_policy_group(
     let group = state
         .store
         .find_policy_group(&org.id, &name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("policy group {name}")))?;
-    require_permission(&state, &auth, &group.authz_id, Permission::Read)?;
+    require_permission(&state, &auth, &group.authz_id, Permission::Read).await?;
 
     let associations = state
         .store
         .list_policy_group_associations(&org.id, &name)
+        .await
         .map_err(ApiError::from)?;
     let base = base_url(&headers, &state);
     Ok(Json(json!({
@@ -332,12 +351,14 @@ async fn delete_policy_group(
     let group = state
         .store
         .find_policy_group(&org.id, &name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("policy group {name}")))?;
-    require_permission(&state, &auth, &group.authz_id, Permission::Delete)?;
+    require_permission(&state, &auth, &group.authz_id, Permission::Delete).await?;
     let associations = state
         .store
         .list_policy_group_associations(&org.id, &name)
+        .await
         .map_err(ApiError::from)?;
     let base = base_url(&headers, &state);
     let body = json!({
@@ -347,6 +368,7 @@ async fn delete_policy_group(
     state
         .store
         .delete_policy_group(&org.id, &name)
+        .await
         .map_err(ApiError::from)?;
     Ok(Json(body))
 }
@@ -357,10 +379,11 @@ async fn get_policy_group_association(
     Path((_organization, group, policy)): Path<(String, String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    require_policy_and_group(&state, &auth, org, &policy, &group, Permission::Read)?;
+    require_policy_and_group(&state, &auth, org, &policy, &group, Permission::Read).await?;
     let association = state
         .store
         .find_policy_group_association(&org.id, &group, &policy)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| {
             ApiError::not_found(format!(
@@ -384,27 +407,29 @@ async fn put_policy_group_association(
     match state
         .store
         .find_policy(&org.id, &name)
+        .await
         .map_err(ApiError::from)?
     {
         Some(existing) => {
-            require_permission(&state, &auth, &existing.authz_id, Permission::Update)?
+            require_permission(&state, &auth, &existing.authz_id, Permission::Update).await?
         }
         None => {
-            let container = container_authz(&state, org, "policies")?;
-            require_permission(&state, &auth, &container, Permission::Create)?;
+            let container = container_authz(&state, org, "policies").await?;
+            require_permission(&state, &auth, &container, Permission::Create).await?;
         }
     }
     match state
         .store
         .find_policy_group(&org.id, &group)
+        .await
         .map_err(ApiError::from)?
     {
         Some(existing) => {
-            require_permission(&state, &auth, &existing.authz_id, Permission::Update)?
+            require_permission(&state, &auth, &existing.authz_id, Permission::Update).await?
         }
         None => {
-            let container = container_authz(&state, org, "policy_groups")?;
-            require_permission(&state, &auth, &container, Permission::Create)?;
+            let container = container_authz(&state, org, "policy_groups").await?;
+            require_permission(&state, &auth, &container, Permission::Create).await?;
         }
     }
 
@@ -422,6 +447,7 @@ async fn put_policy_group_association(
             &group_body,
             &auth.principal.authz_id,
         )
+        .await
         .map_err(ApiError::from)?;
 
     Ok((
@@ -440,10 +466,11 @@ async fn delete_policy_group_association(
     Path((_organization, group, policy)): Path<(String, String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    require_policy_and_group(&state, &auth, org, &policy, &group, Permission::Delete)?;
+    require_policy_and_group(&state, &auth, org, &policy, &group, Permission::Delete).await?;
     let association = state
         .store
         .find_policy_group_association(&org.id, &group, &policy)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| {
             ApiError::not_found(format!(
@@ -455,11 +482,12 @@ async fn delete_policy_group_association(
     state
         .store
         .delete_policy_group_association(&org.id, &group, &policy)
+        .await
         .map_err(ApiError::from)?;
     Ok(Json(body))
 }
 
-fn require_create_revision_permission(
+async fn require_create_revision_permission(
     state: &AppState,
     auth: &AuthContext,
     org: &microwave_store::Org,
@@ -468,17 +496,20 @@ fn require_create_revision_permission(
     match state
         .store
         .find_policy(&org.id, name)
+        .await
         .map_err(ApiError::from)?
     {
-        Some(existing) => require_permission(state, auth, &existing.authz_id, Permission::Create),
+        Some(existing) => {
+            require_permission(state, auth, &existing.authz_id, Permission::Create).await
+        }
         None => {
-            let container = container_authz(state, org, "policies")?;
-            require_permission(state, auth, &container, Permission::Create)
+            let container = container_authz(state, org, "policies").await?;
+            require_permission(state, auth, &container, Permission::Create).await
         }
     }
 }
 
-fn require_policy_and_group(
+async fn require_policy_and_group(
     state: &AppState,
     auth: &AuthContext,
     org: &microwave_store::Org,
@@ -489,15 +520,17 @@ fn require_policy_and_group(
     let policy = state
         .store
         .find_policy(&org.id, policy_name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("policy {policy_name}")))?;
     let group = state
         .store
         .find_policy_group(&org.id, group_name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("policy group {group_name}")))?;
-    require_permission(state, auth, &policy.authz_id, permission)?;
-    require_permission(state, auth, &group.authz_id, permission)?;
+    require_permission(state, auth, &policy.authz_id, permission).await?;
+    require_permission(state, auth, &group.authz_id, permission).await?;
     Ok(())
 }
 

@@ -28,7 +28,7 @@ fn state_with_pivotal() -> AppState {
         "test",
         "http://0.0.0.0:8000",
     ));
-    AppState::new(store, Arc::new(config), object_store).unwrap()
+    AppState::from_sqlite(store, Arc::new(config), object_store).unwrap()
 }
 
 fn signed_headers(

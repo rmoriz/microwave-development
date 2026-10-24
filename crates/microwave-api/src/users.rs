@@ -37,7 +37,7 @@ async fn list_users(
 
     if params.get("verbose").map(String::as_str) == Some("true") {
         let mut users = Map::new();
-        for user in state.store.list_users().map_err(ApiError::from)? {
+        for user in state.store.list_users().await.map_err(ApiError::from)? {
             users.insert(
                 user.username.clone(),
                 json!({
@@ -62,6 +62,7 @@ async fn list_users(
     let users = state
         .store
         .list_users_filtered(email, external_uid)
+        .await
         .map_err(ApiError::from)?;
     let mut body = Map::new();
     for user in users {
@@ -136,6 +137,7 @@ async fn create_user(
             admin,
             &profile,
         )
+        .await
         .map_err(ApiError::from)?;
 
     // The account service gives the creating superuser every permission on a
@@ -143,12 +145,14 @@ async fn create_user(
     state
         .store
         .grant_actor_all(&user.authz_id, &auth.principal.authz_id)
+        .await
         .map_err(ApiError::from)?;
 
     if optional_bool(body, "recovery_authentication_enabled")?.unwrap_or(false) {
         state
             .store
             .set_recovery_authentication_enabled(&username, true)
+            .await
             .map_err(ApiError::from)?;
     }
 
@@ -168,6 +172,7 @@ async fn create_user(
         state
             .store
             .add_actor_key(&user.id, ActorType::User, "default", public_key)
+            .await
             .map_err(ApiError::from)?;
     }
 
@@ -200,11 +205,12 @@ async fn get_user(
     let user = state
         .store
         .find_user(&username)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("user {username}")))?;
 
-    authorize_read(&state, &auth, &user)?;
-    Ok(Json(user_json(&state, &user, api_version)?))
+    authorize_read(&state, &auth, &user).await?;
+    Ok(Json(user_json(&state, &user, api_version).await?))
 }
 
 async fn update_user(
@@ -218,6 +224,7 @@ async fn update_user(
     let current = state
         .store
         .find_user(&username)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("user {username}")))?;
     require_superuser(&auth)?;
@@ -286,6 +293,7 @@ async fn update_user(
     let user = state
         .store
         .update_user_patch(&username, &patch)
+        .await
         .map_err(ApiError::from)?;
 
     let mut private_key = None;
@@ -295,6 +303,7 @@ async fn update_user(
             state
                 .store
                 .update_or_create_default_key(&user.id, ActorType::User, &public_key)
+                .await
                 .map_err(ApiError::from)?;
         }
         UpdateKey::Generated => {
@@ -303,6 +312,7 @@ async fn update_user(
             state
                 .store
                 .update_or_create_default_key(&user.id, ActorType::User, &public_key)
+                .await
                 .map_err(ApiError::from)?;
             private_key = Some(generated_private);
         }
@@ -337,7 +347,11 @@ async fn delete_user(
     Path(username): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     require_superuser(&auth)?;
-    state.store.delete_user(&username).map_err(ApiError::from)?;
+    state
+        .store
+        .delete_user(&username)
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(json!({})))
 }
 
@@ -419,13 +433,14 @@ fn prepare_update_key(
     })
 }
 
-fn authorize_read(state: &AppState, auth: &AuthContext, user: &User) -> Result<(), ApiError> {
+async fn authorize_read(state: &AppState, auth: &AuthContext, user: &User) -> Result<(), ApiError> {
     if is_superuser(auth) || auth.principal.actor_id == user.id {
         return Ok(());
     }
     if state
         .store
         .users_share_org(&auth.principal.actor_id, &user.id)
+        .await
         .map_err(ApiError::from)?
     {
         return Ok(());
@@ -561,7 +576,11 @@ fn optional_public_key(body: &serde_json::Map<String, Value>) -> Result<Option<S
     }
 }
 
-pub(crate) fn user_json(state: &AppState, user: &User, api_version: u8) -> Result<Value, ApiError> {
+pub(crate) async fn user_json(
+    state: &AppState,
+    user: &User,
+    api_version: u8,
+) -> Result<Value, ApiError> {
     let mut value = json!({
         "username": user.username,
         "email": user.email.clone().unwrap_or_default(),
@@ -589,6 +608,7 @@ pub(crate) fn user_json(state: &AppState, user: &User, api_version: u8) -> Resul
         let keys = state
             .store
             .find_actor_keys(&user.id, ActorType::User)
+            .await
             .map_err(ApiError::from)?;
         if let Some(public_key) = keys
             .iter()
@@ -618,6 +638,7 @@ async fn authenticate_user(
     let user = state
         .store
         .find_user(&username)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::unauthorized_with(AUTHENTICATION_FAILED))?;
     let stored = PasswordHash {
@@ -643,6 +664,7 @@ async fn authenticate_user(
                 )),
                 None,
             )
+            .await
             .map_err(ApiError::from)?;
     }
 
@@ -664,7 +686,12 @@ async fn system_recovery(
     let (username, password) = parse_recovery_body(&body)?;
     authorize_superuser_target(&state, &auth, &username)?;
 
-    let user = match state.store.find_user(&username).map_err(ApiError::from)? {
+    let user = match state
+        .store
+        .find_user(&username)
+        .await
+        .map_err(ApiError::from)?
+    {
         Some(user) if user.recovery_authentication_enabled => user,
         _ => {
             return Err(ApiError::forbidden_with(

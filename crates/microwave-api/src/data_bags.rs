@@ -63,14 +63,15 @@ async fn list_data_bags(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "data")?;
-    require_permission(&state, &auth, &container, Permission::Read)?;
+    let container = container_authz(&state, org, "data").await?;
+    require_permission(&state, &auth, &container, Permission::Read).await?;
 
     let base = base_url(&headers, &state);
     let mut bags = Map::new();
     for bag in state
         .store
         .list_data_bags(&org.id)
+        .await
         .map_err(ApiError::from)?
     {
         bags.insert(
@@ -91,8 +92,8 @@ async fn create_data_bag(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "data")?;
-    require_permission(&state, &auth, &container, Permission::Create)?;
+    let container = container_authz(&state, org, "data").await?;
+    require_permission(&state, &auth, &container, Permission::Create).await?;
 
     let name = match body.get("name") {
         None => return Err(ApiError::bad_request("Field 'name' missing")),
@@ -102,6 +103,7 @@ async fn create_data_bag(
     state
         .store
         .create_data_bag(&org.id, &name, &auth.principal.authz_id)
+        .await
         .map_err(ApiError::from)?;
 
     let base = base_url(&headers, &state);
@@ -123,15 +125,17 @@ async fn get_data_bag(
     let bag = state
         .store
         .find_data_bag(&org.id, &bag_name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| data_bag_not_found(&bag_name))?;
-    require_permission(&state, &auth, &bag.authz_id, Permission::Read)?;
+    require_permission(&state, &auth, &bag.authz_id, Permission::Read).await?;
 
     let base = base_url(&headers, &state);
     let mut items = Map::new();
     for item in state
         .store
         .list_data_bag_items(&org.id, &bag_name)
+        .await
         .map_err(ApiError::from)?
     {
         items.insert(
@@ -154,16 +158,19 @@ async fn delete_data_bag(
     let bag = state
         .store
         .find_data_bag(&org.id, &bag_name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| data_bag_not_found(&bag_name))?;
-    require_permission(&state, &auth, &bag.authz_id, Permission::Delete)?;
+    require_permission(&state, &auth, &bag.authz_id, Permission::Delete).await?;
     let items = state
         .store
         .list_data_bag_items(&org.id, &bag_name)
+        .await
         .map_err(ApiError::from)?;
     state
         .store
         .delete_data_bag(&org.id, &bag_name)
+        .await
         .map_err(ApiError::from)?;
     for item in items {
         crate::search::index::delete_document(&state, &org.id, &item.id).await;
@@ -184,14 +191,14 @@ async fn create_data_bag_item(
     let org = organization(&auth)?;
     let bag = state
         .store
-        .find_data_bag(&org.id, &bag_name)
+        .find_data_bag(&org.id, &bag_name).await
         .map_err(ApiError::from)?
         .ok_or_else(|| {
             ApiError::not_found(format!(
                 "No data bag '{bag_name}' could be found. Please create this data bag before adding items to it."
             ))
         })?;
-    require_permission(&state, &auth, &bag.authz_id, Permission::Create)?;
+    require_permission(&state, &auth, &bag.authz_id, Permission::Create).await?;
 
     let item_name = match body.get("id") {
         None => return Err(ApiError::bad_request("Field 'id' missing")),
@@ -201,6 +208,7 @@ async fn create_data_bag_item(
     if state
         .store
         .find_data_bag_item(&org.id, &bag_name, &item_name)
+        .await
         .map_err(ApiError::from)?
         .is_some()
     {
@@ -217,6 +225,7 @@ async fn create_data_bag_item(
             &item_name,
             &serde_json::to_string(&body).map_err(|_| ApiError::internal())?,
         )
+        .await
         .map_err(ApiError::from)?;
     crate::search::index::index_data_bag_item(&state, org, &item).await;
 
@@ -232,13 +241,15 @@ async fn get_data_bag_item(
     let bag = state
         .store
         .find_data_bag(&org.id, &bag_name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| item_not_found(&bag_name, &item_name))?;
-    require_permission(&state, &auth, &bag.authz_id, Permission::Read)?;
+    require_permission(&state, &auth, &bag.authz_id, Permission::Read).await?;
 
     let item = state
         .store
         .find_data_bag_item(&org.id, &bag_name, &item_name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| item_not_found(&bag_name, &item_name))?;
     let value = serde_json::from_str(&item.serialized_object).map_err(|_| ApiError::internal())?;
@@ -255,18 +266,20 @@ async fn update_data_bag_item(
     let bag = state
         .store
         .find_data_bag(&org.id, &bag_name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| item_not_found(&bag_name, &item_name))?;
 
     if state
         .store
         .find_data_bag_item(&org.id, &bag_name, &item_name)
+        .await
         .map_err(ApiError::from)?
         .is_none()
     {
         return Err(item_not_found(&bag_name, &item_name));
     }
-    require_permission(&state, &auth, &bag.authz_id, Permission::Update)?;
+    require_permission(&state, &auth, &bag.authz_id, Permission::Update).await?;
 
     let mut body = match body {
         Value::Object(map) => Value::Object(map),
@@ -296,6 +309,7 @@ async fn update_data_bag_item(
     let item = state
         .store
         .update_data_bag_item(&org.id, &bag_name, &item_name, &serialized)
+        .await
         .map_err(ApiError::from)?;
     crate::search::index::index_data_bag_item(&state, org, &item).await;
     Ok(Json(item_response(&bag_name, &body)))
@@ -310,12 +324,14 @@ async fn delete_data_bag_item(
     let bag = state
         .store
         .find_data_bag(&org.id, &bag_name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| item_not_found_from_delete(&bag_name, &item_name))?;
-    require_permission(&state, &auth, &bag.authz_id, Permission::Delete)?;
+    require_permission(&state, &auth, &bag.authz_id, Permission::Delete).await?;
     let item = state
         .store
         .find_data_bag_item(&org.id, &bag_name, &item_name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| item_not_found_from_delete(&bag_name, &item_name))?;
     let raw_data: Value =
@@ -323,6 +339,7 @@ async fn delete_data_bag_item(
     state
         .store
         .delete_data_bag_item(&org.id, &bag_name, &item_name)
+        .await
         .map_err(ApiError::from)?;
     crate::search::index::delete_document(&state, &org.id, &item.id).await;
     Ok(Json(json!({

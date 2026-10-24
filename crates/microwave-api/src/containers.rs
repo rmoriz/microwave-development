@@ -25,13 +25,14 @@ async fn list_containers(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "containers")?;
-    require_permission(&state, &auth, &container, Permission::Read)?;
+    let container = container_authz(&state, org, "containers").await?;
+    require_permission(&state, &auth, &container, Permission::Read).await?;
     let base = base_url(&headers, &state);
     let mut containers = Map::new();
     for container in state
         .store
         .list_containers(&org.id)
+        .await
         .map_err(ApiError::from)?
     {
         containers.insert(
@@ -52,13 +53,14 @@ async fn create_container(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "containers")?;
-    require_permission(&state, &auth, &container, Permission::Create)?;
+    let container = container_authz(&state, org, "containers").await?;
+    require_permission(&state, &auth, &container, Permission::Create).await?;
     let name = container_name(&body)?;
 
     let container = state
         .store
         .create_container_for_org_with_acl(&org.id, &name, &auth.principal.authz_id)
+        .await
         .map_err(ApiError::from)?;
     let base = base_url(&headers, &state);
     Ok((
@@ -78,8 +80,8 @@ async fn get_container(
     Path((_organization, container_name)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let container = find_container(&state, org, &container_name)?;
-    require_permission(&state, &auth, &container.authz_id, Permission::Read)?;
+    let container = find_container(&state, org, &container_name).await?;
+    require_permission(&state, &auth, &container.authz_id, Permission::Read).await?;
     Ok(Json(container_json(&container)))
 }
 
@@ -89,8 +91,8 @@ async fn delete_container(
     Path((_organization, container_name)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let container = find_container(&state, org, &container_name)?;
-    require_permission(&state, &auth, &container.authz_id, Permission::Delete)?;
+    let container = find_container(&state, org, &container_name).await?;
+    require_permission(&state, &auth, &container.authz_id, Permission::Delete).await?;
     if microwave_authz::DEFAULT_CONTAINERS.contains(&container.name.as_str()) {
         return Err(ApiError::forbidden_with(
             "default organization containers cannot be deleted",
@@ -100,18 +102,20 @@ async fn delete_container(
     state
         .store
         .delete_container(&org.id, &container_name)
+        .await
         .map_err(ApiError::from)?;
     Ok(Json(response))
 }
 
-fn container_authz(state: &AppState, org: &Org, name: &str) -> Result<String, ApiError> {
-    Ok(find_container(state, org, name)?.authz_id)
+async fn container_authz(state: &AppState, org: &Org, name: &str) -> Result<String, ApiError> {
+    Ok(find_container(state, org, name).await?.authz_id)
 }
 
-fn find_container(state: &AppState, org: &Org, name: &str) -> Result<Container, ApiError> {
+async fn find_container(state: &AppState, org: &Org, name: &str) -> Result<Container, ApiError> {
     state
         .store
         .find_container(&org.id, name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("container {name}")))
 }

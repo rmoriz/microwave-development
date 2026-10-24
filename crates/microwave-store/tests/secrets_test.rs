@@ -87,6 +87,35 @@ fn removing_a_missing_secret_reports_not_found() {
 }
 
 #[test]
+fn setting_a_secret_if_absent_keeps_the_first_value() {
+    let store = SqliteStore::open_in_memory().unwrap();
+
+    assert_eq!(
+        store
+            .set_secret_if_absent("object_store", "secret", "first")
+            .unwrap(),
+        "first"
+    );
+    assert_eq!(
+        store
+            .set_secret_if_absent("object_store", "secret", "second")
+            .unwrap(),
+        "first"
+    );
+    assert_eq!(
+        store
+            .get_secret("object_store", "secret")
+            .unwrap()
+            .as_deref(),
+        Some("first")
+    );
+    assert!(matches!(
+        store.set_secret_if_absent("object_store", "secret", ""),
+        Err(StoreError::Invalid(_))
+    ));
+}
+
+#[test]
 fn maintenance_defaults_to_disabled_and_persists() {
     let store = SqliteStore::open_in_memory().unwrap();
 

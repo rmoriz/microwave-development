@@ -80,7 +80,7 @@ async fn create_node(app: &axum::Router) {
 
 fn add_user(state: &microwave_api::AppState, name: &str) -> microwave_store::User {
     let user = state
-        .store
+        .sqlite()
         .create_user(
             name,
             &format!("{name}@example.com"),
@@ -91,7 +91,7 @@ fn add_user(state: &microwave_api::AppState, name: &str) -> microwave_store::Use
         )
         .unwrap();
     state
-        .store
+        .sqlite()
         .add_actor_key(&user.id, ActorType::User, "default", support::PUBLIC_KEY)
         .unwrap();
     user
@@ -191,11 +191,15 @@ async fn node_acl_grants_read_without_granting_update() {
     let second = add_user(&state, "second");
     let app = support::app(state.clone());
     create_org(&app).await;
-    let org = state.store.find_org("acme").unwrap().unwrap();
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
     support::associate(&state, &org, &second);
-    let users = state.store.find_group(&org.id, "users").unwrap().unwrap();
+    let users = state
+        .sqlite()
+        .find_group(&org.id, "users")
+        .unwrap()
+        .unwrap();
     state
-        .store
+        .sqlite()
         .remove_group_member(&users.authz_id, &second.authz_id)
         .unwrap();
     create_node(&app).await;
@@ -258,9 +262,9 @@ async fn granular_acl_splits_users_and_clients() {
     let app = support::app(state.clone());
     create_org(&app).await;
     create_node(&app).await;
-    let org = state.store.find_org("acme").unwrap().unwrap();
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
     state
-        .store
+        .sqlite()
         .create_client(&org.id, "robot", false, false)
         .unwrap();
 
@@ -380,9 +384,9 @@ async fn user_acls_are_global_and_use_actor_names() {
     add_user(&state, "second");
     let app = support::app(state.clone());
     create_org(&app).await;
-    let org = state.store.find_org("acme").unwrap().unwrap();
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
     state
-        .store
+        .sqlite()
         .create_client(&org.id, "robot", false, false)
         .unwrap();
 
@@ -439,15 +443,19 @@ fn add_org_admin(
     username: &str,
 ) -> microwave_store::User {
     let user = support::add_user(state, username, &format!("{username}@example.com"), false);
-    let pivotal = state.store.find_user("pivotal").unwrap().unwrap();
+    let pivotal = state.sqlite().find_user("pivotal").unwrap().unwrap();
     state
-        .store
+        .sqlite()
         .grant_actor_all(&user.authz_id, &pivotal.authz_id)
         .unwrap();
     support::associate(state, org, &user);
-    let admins = state.store.find_group(&org.id, "admins").unwrap().unwrap();
+    let admins = state
+        .sqlite()
+        .find_group(&org.id, "admins")
+        .unwrap()
+        .unwrap();
     state
-        .store
+        .sqlite()
         .add_group_member(&admins.authz_id, &user.authz_id)
         .unwrap();
     user
@@ -458,7 +466,7 @@ async fn user_acl_has_creator_self_and_global_groups_and_admits_org_admins() {
     let state = support::state_with_pivotal();
     let app = support::app(state.clone());
     create_org(&app).await;
-    let org = state.store.find_org("acme").unwrap().unwrap();
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
     add_org_admin(&state, &org, "orgadmin");
 
     let (status, acl) = request(&app, "GET", "/users/orgadmin/_acl", b"", "orgadmin").await;
@@ -499,7 +507,7 @@ async fn non_superusers_cannot_remove_the_admins_group_from_a_grant_ace() {
     create_org(&app).await;
     create_node(&app).await;
 
-    let org = state.store.find_org("acme").unwrap().unwrap();
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
     add_org_admin(&state, &org, "orgadmin");
 
     let (status, _) = request(
@@ -528,7 +536,7 @@ async fn new_objects_inherit_the_container_acl_and_creator_grants() {
     let state = support::state_with_pivotal();
     let app = support::app(state.clone());
     create_org(&app).await;
-    let org = state.store.find_org("acme").unwrap().unwrap();
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
     add_org_admin(&state, &org, "orgadmin");
 
     let (status, _) = request(
@@ -602,7 +610,7 @@ async fn acl_updates_accept_global_and_cross_organization_groups() {
     let app = support::app(state.clone());
     create_org(&app).await;
     create_node(&app).await;
-    support::add_org(&state, "other");
+    support::add_org(&state, "other").await;
 
     let (status, body) = request(
         &app,
@@ -633,11 +641,11 @@ async fn ambiguous_client_and_user_names_require_split_actor_lists() {
     let state = support::state_with_pivotal();
     let app = support::app(state.clone());
     create_org(&app).await;
-    let org = state.store.find_org("acme").unwrap().unwrap();
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
     let user = support::add_user(&state, "shared", "shared@example.com", false);
-    let pivotal = state.store.find_user("pivotal").unwrap().unwrap();
+    let pivotal = state.sqlite().find_user("pivotal").unwrap().unwrap();
     state
-        .store
+        .sqlite()
         .create_client_with_acl(&org.id, "shared", false, false, Some(&pivotal.authz_id))
         .unwrap();
 

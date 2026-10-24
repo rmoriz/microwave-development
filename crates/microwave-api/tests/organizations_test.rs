@@ -109,21 +109,25 @@ async fn creates_a_validator_client_with_a_usable_key() {
     assert!(private_key.contains("BEGIN PRIVATE KEY"));
     assert_eq!(created["chef_key"]["name"], "default");
 
-    let org = state.store.find_org("acme").unwrap().unwrap();
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
     let validator = state
-        .store
+        .sqlite()
         .find_client(&org.id, "acme-validator")
         .unwrap()
         .unwrap();
     assert!(validator.validator);
     assert!(state
-        .store
+        .sqlite()
         .find_actor_key(&validator.id, microwave_store::ActorType::Client, "default")
         .unwrap()
         .is_some());
-    let clients_group = state.store.find_group(&org.id, "clients").unwrap().unwrap();
+    let clients_group = state
+        .sqlite()
+        .find_group(&org.id, "clients")
+        .unwrap()
+        .unwrap();
     let members = state
-        .store
+        .sqlite()
         .list_group_members(&org.id, &clients_group.authz_id)
         .unwrap();
     assert!(members.clients.contains(&"acme-validator".to_string()));

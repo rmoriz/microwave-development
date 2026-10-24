@@ -1,10 +1,9 @@
 //! Backend-neutral metadata store contract.
 //!
-//! `AppState` currently holds a concrete [`SqliteStore`](crate::SqliteStore).
-//! To run the same API handlers against PostgreSQL, the state must depend on
-//! this trait instead of a concrete backend. The contract is split into one
-//! repository trait per domain so that the eventual `AppState<S: MetadataStore>`
-//! change stays mechanical:
+//! `AppState` holds `Arc<dyn MetadataStore>`, so the same API handlers, OAuth
+//! surface, embedded search, authorization policy, and bootstrap run against
+//! SQLite or PostgreSQL. The contract is split into one repository trait per
+//! domain:
 //!
 //! * [`IdentityRepository`] — orgs, users, clients, actor keys, principals.
 //! * [`AuthzRepository`] — authz entities, groups, containers, ACLs and the
@@ -12,20 +11,28 @@
 //! * [`ObjectRepository`] — nodes, roles, environments, data bags and items.
 //! * [`SandboxRepository`] — sandbox uploads and checksum commits.
 //! * [`CookbookRepository`] — cookbook versions and their checksums.
+//! * [`ArtifactRepository`] — cookbook artifacts and their versions.
 //! * [`PolicyRepository`] — policyfiles, revisions and group associations.
+//! * [`MembershipRepository`] — org memberships and invitations.
+//! * [`OAuthRepository`] — OAuth applications, grants, tokens, sessions and
+//!   password-reset tokens.
+//! * [`KvRepository`] — the raw key/value table and maintenance flag.
+//! * [`SecretsRepository`] — operator-managed secrets stored in the KV table.
 //!
 //! [`MetadataStore`] is a blanket supertrait, so a backend only implements the
-//! six repository traits and `AppState` can be bounded by `S: MetadataStore`.
+//! repository traits. Code that is generic over one domain accepts
+//! `S: SomeRepository + ?Sized` so it also works with `&dyn MetadataStore`.
 //!
-//! OAuth (`oauth`) and key/value (`kv`), org membership/invites and the legacy
-//! migration helpers are intentionally **not** part of this first slice. They
-//! must be added as `OAuthRepository`, `KvRepository` and
-//! `MembershipRepository` before `AppState` is fully backend-agnostic; see the
-//! `microwave-store-postgres` README for the migration checklist.
+//! The legacy migration helpers are still intentionally **not** part of this
+//! contract; see the `microwave-store-postgres` README for the migration
+//! checklist.
 
+use crate::artifacts::{StoredCookbookArtifact, StoredCookbookArtifactVersion};
 use crate::authz::{Acl, AclEntry, Container, Group, GroupMembers, Permission};
 use crate::cookbooks::StoredCookbookVersion;
 use crate::identity::{ActorKey, ActorType, Client, Org, Principal, User, UserPatch, UserProfile};
+use crate::membership::Invitation;
+use crate::oauth::{OAuthAccessGrant, OAuthAccessToken, OAuthApplication};
 use crate::objects::{NewNode, StoredDataBagItem, StoredNode, StoredObject};
 use crate::policies::{
     StoredPolicy, StoredPolicyGroup, StoredPolicyGroupAssociation, StoredPolicyRevision,
@@ -41,6 +48,7 @@ pub trait IdentityRepository: Send + Sync {
     async fn create_org(&self, name: &str, full_name: &str) -> Result<Org, StoreError>;
     async fn update_org(&self, name: &str, full_name: &str) -> Result<Org, StoreError>;
     async fn find_org(&self, name: &str) -> Result<Option<Org>, StoreError>;
+    async fn find_org_by_id(&self, id: &str) -> Result<Option<Org>, StoreError>;
     async fn list_orgs(&self) -> Result<Vec<Org>, StoreError>;
 
     async fn create_user(
@@ -306,6 +314,24 @@ pub trait AuthzRepository: Send + Sync {
         groups: &[String],
     ) -> Result<(), StoreError>;
 
+    async fn set_acl_for_permission_split(
+        &self,
+        target_authz_id: &str,
+        permission: Permission,
+        users: &[String],
+        clients: &[String],
+        groups: &[String],
+    ) -> Result<(), StoreError>;
+
+    async fn grant_actor_all(
+        &self,
+        target_authz_id: &str,
+        actor_authz_id: &str,
+    ) -> Result<(), StoreError>;
+
+    async fn ensure_global_group(&self, name: &str) -> Result<Group, StoreError>;
+    async fn find_global_group(&self, name: &str) -> Result<Option<Group>, StoreError>;
+
     async fn check_permission(
         &self,
         actor_authz_id: &str,
@@ -330,6 +356,7 @@ pub trait ObjectRepository: Send + Sync {
     async fn create_node(&self, org_id: &str, node: NewNode<'_>) -> Result<StoredNode, StoreError>;
     async fn find_node(&self, org_id: &str, name: &str) -> Result<Option<StoredNode>, StoreError>;
     async fn list_nodes(&self, org_id: &str) -> Result<Vec<StoredNode>, StoreError>;
+    async fn count_nodes(&self) -> Result<u64, StoreError>;
     async fn list_nodes_in_environment(
         &self,
         org_id: &str,
@@ -465,6 +492,7 @@ pub trait SandboxRepository: Send + Sync {
 /// Cookbook versions and their checksums.
 #[async_trait]
 pub trait CookbookRepository: Send + Sync {
+    #[allow(clippy::too_many_arguments)]
     async fn create_cookbook_version(
         &self,
         org_id: &str,
@@ -472,6 +500,7 @@ pub trait CookbookRepository: Send + Sync {
         version: &str,
         manifest: &str,
         checksums: &[String],
+        frozen: bool,
         creator_authz_id: &str,
     ) -> Result<StoredCookbookVersion, StoreError>;
 
@@ -487,12 +516,24 @@ pub trait CookbookRepository: Send + Sync {
         org_id: &str,
     ) -> Result<Vec<StoredCookbookVersion>, StoreError>;
 
+    #[allow(clippy::too_many_arguments)]
+    async fn update_cookbook_version(
+        &self,
+        org_id: &str,
+        name: &str,
+        version: &str,
+        manifest: &str,
+        checksums: &[String],
+        frozen: bool,
+        updater_authz_id: &str,
+    ) -> Result<(StoredCookbookVersion, Vec<String>), StoreError>;
+
     async fn delete_cookbook_version(
         &self,
         org_id: &str,
         name: &str,
         version: &str,
-    ) -> Result<(), StoreError>;
+    ) -> Result<(StoredCookbookVersion, Vec<String>), StoreError>;
 }
 
 /// Policyfiles, revisions, groups and group/revision associations.
@@ -588,19 +629,201 @@ pub trait PolicyRepository: Send + Sync {
     ) -> Result<(), StoreError>;
 }
 
-/// The complete metadata store contract for the first PostgreSQL slice.
+/// Cookbook artifacts and their versions.
+#[async_trait]
+pub trait ArtifactRepository: Send + Sync {
+    async fn list_cookbook_artifacts(
+        &self,
+        org_id: &str,
+    ) -> Result<Vec<StoredCookbookArtifact>, StoreError>;
+
+    async fn find_cookbook_artifact(
+        &self,
+        org_id: &str,
+        name: &str,
+    ) -> Result<Option<StoredCookbookArtifact>, StoreError>;
+
+    async fn find_cookbook_artifact_version(
+        &self,
+        org_id: &str,
+        name: &str,
+        identifier: &str,
+    ) -> Result<Option<StoredCookbookArtifactVersion>, StoreError>;
+
+    async fn create_cookbook_artifact_version(
+        &self,
+        org_id: &str,
+        name: &str,
+        identifier: &str,
+        manifest: &str,
+        checksums: &[String],
+        creator_authz_id: &str,
+    ) -> Result<StoredCookbookArtifactVersion, StoreError>;
+
+    async fn delete_cookbook_artifact_version(
+        &self,
+        org_id: &str,
+        name: &str,
+        identifier: &str,
+    ) -> Result<(StoredCookbookArtifactVersion, Vec<String>), StoreError>;
+}
+
+/// Organization memberships and invitations.
+#[async_trait]
+pub trait MembershipRepository: Send + Sync {
+    async fn list_org_users(&self, org_id: &str) -> Result<Vec<User>, StoreError>;
+    async fn is_user_in_org(&self, org_id: &str, user_id: &str) -> Result<bool, StoreError>;
+    async fn add_user_to_org(&self, org_id: &str, user_id: &str) -> Result<(), StoreError>;
+    async fn remove_user_from_org(
+        &self,
+        org_id: &str,
+        user_id: &str,
+        username: &str,
+    ) -> Result<(), StoreError>;
+    async fn list_user_orgs(&self, user_id: &str) -> Result<Vec<Org>, StoreError>;
+    async fn user_in_group(
+        &self,
+        group_authz_id: &str,
+        actor_authz_id: &str,
+    ) -> Result<bool, StoreError>;
+    async fn is_org_admin_for_user(
+        &self,
+        actor_authz_id: &str,
+        user_id: &str,
+    ) -> Result<bool, StoreError>;
+
+    async fn create_invitation(
+        &self,
+        org_id: &str,
+        user_id: &str,
+        last_updated_by: &str,
+    ) -> Result<Invitation, StoreError>;
+    async fn find_invitation(&self, id: &str) -> Result<Option<Invitation>, StoreError>;
+    async fn list_org_invitations(&self, org_id: &str) -> Result<Vec<Invitation>, StoreError>;
+    async fn list_user_invitations(&self, user_id: &str) -> Result<Vec<Invitation>, StoreError>;
+    async fn count_user_invitations(&self, user_id: &str) -> Result<usize, StoreError>;
+    async fn delete_invitation(&self, id: &str) -> Result<(), StoreError>;
+    async fn accept_invitation(&self, id: &str) -> Result<Invitation, StoreError>;
+    async fn reject_invitation(&self, id: &str) -> Result<Invitation, StoreError>;
+}
+
+/// OAuth applications, grants, tokens, browser sessions and password resets.
+#[async_trait]
+#[allow(clippy::too_many_arguments)]
+pub trait OAuthRepository: Send + Sync {
+    async fn create_oauth_application(
+        &self,
+        name: &str,
+        redirect_uri: &str,
+        scopes: &str,
+        confidential: bool,
+    ) -> Result<OAuthApplication, StoreError>;
+    async fn find_oauth_application(&self, id: i64)
+        -> Result<Option<OAuthApplication>, StoreError>;
+    async fn find_oauth_application_by_uid(
+        &self,
+        uid: &str,
+    ) -> Result<Option<OAuthApplication>, StoreError>;
+    async fn list_oauth_applications(&self) -> Result<Vec<OAuthApplication>, StoreError>;
+    async fn update_oauth_application(
+        &self,
+        id: i64,
+        name: Option<&str>,
+        redirect_uri: Option<&str>,
+    ) -> Result<OAuthApplication, StoreError>;
+    async fn delete_oauth_application(&self, id: i64) -> Result<(), StoreError>;
+
+    async fn create_oauth_access_grant(
+        &self,
+        resource_owner_id: &str,
+        application_id: i64,
+        redirect_uri: &str,
+        scopes: &str,
+        expires_in: i64,
+    ) -> Result<OAuthAccessGrant, StoreError>;
+    async fn find_oauth_access_grant(
+        &self,
+        token: &str,
+    ) -> Result<Option<OAuthAccessGrant>, StoreError>;
+    async fn revoke_oauth_access_grant(&self, token: &str) -> Result<(), StoreError>;
+
+    async fn create_oauth_access_token(
+        &self,
+        resource_owner_id: &str,
+        application_id: i64,
+        scopes: &str,
+        expires_in: Option<i64>,
+        include_refresh_token: bool,
+    ) -> Result<OAuthAccessToken, StoreError>;
+    async fn find_oauth_access_token(
+        &self,
+        token: &str,
+    ) -> Result<Option<OAuthAccessToken>, StoreError>;
+    async fn find_oauth_access_token_by_refresh(
+        &self,
+        refresh_token: &str,
+    ) -> Result<Option<OAuthAccessToken>, StoreError>;
+    async fn revoke_oauth_access_token(&self, token: &str) -> Result<(), StoreError>;
+    async fn revoke_oauth_access_token_by_refresh(
+        &self,
+        refresh_token: &str,
+    ) -> Result<(), StoreError>;
+
+    async fn create_id_session(&self, username: &str) -> Result<String, StoreError>;
+    async fn find_id_session(&self, token: &str) -> Result<Option<String>, StoreError>;
+    async fn delete_id_session(&self, token: &str) -> Result<(), StoreError>;
+
+    async fn create_password_reset_token(&self, username: &str) -> Result<String, StoreError>;
+    async fn find_password_reset_token(&self, token: &str) -> Result<Option<String>, StoreError>;
+    async fn consume_password_reset_token(&self, token: &str)
+        -> Result<Option<String>, StoreError>;
+}
+
+/// Raw key/value storage plus the operator maintenance flag.
+#[async_trait]
+pub trait KvRepository: Send + Sync {
+    async fn get_kv(&self, key: &str) -> Result<Option<String>, StoreError>;
+    async fn set_kv(&self, key: &str, value: &str) -> Result<(), StoreError>;
+    async fn remove_kv(&self, key: &str) -> Result<bool, StoreError>;
+    async fn maintenance_enabled(&self) -> Result<bool, StoreError>;
+    async fn set_maintenance_enabled(&self, enabled: bool) -> Result<(), StoreError>;
+}
+
+/// Operator-managed secrets stored under namespaced KV keys.
+#[async_trait]
+pub trait SecretsRepository: Send + Sync {
+    async fn get_secret(&self, group: &str, name: &str) -> Result<Option<String>, StoreError>;
+    async fn set_secret(&self, group: &str, name: &str, value: &str) -> Result<(), StoreError>;
+
+    /// Insert a secret only when it does not exist and return the value that is
+    /// stored afterwards. An existing SQL `NULL` is treated as absent. This is
+    /// the HA-safe bootstrap primitive.
+    async fn set_secret_if_absent(
+        &self,
+        group: &str,
+        name: &str,
+        value: &str,
+    ) -> Result<String, StoreError>;
+
+    async fn remove_secret(&self, group: &str, name: &str) -> Result<(), StoreError>;
+}
+
+/// The complete metadata store contract.
 ///
-/// `AppState` should eventually hold `Arc<S>` where `S: MetadataStore`. The
-/// remaining repository traits (`OAuthRepository`, `KvRepository`,
-/// `MembershipRepository`, `MigrationRepository`) are listed in the
-/// `microwave-store-postgres` README.
+/// The server holds `Arc<dyn MetadataStore>`. The legacy `MigrationRepository`
+/// helpers are the only remaining domain outside this contract.
 pub trait MetadataStore:
     IdentityRepository
     + AuthzRepository
     + ObjectRepository
     + SandboxRepository
     + CookbookRepository
+    + ArtifactRepository
     + PolicyRepository
+    + MembershipRepository
+    + OAuthRepository
+    + KvRepository
+    + SecretsRepository
     + Send
     + Sync
 {
@@ -612,7 +835,12 @@ impl<T> MetadataStore for T where
         + ObjectRepository
         + SandboxRepository
         + CookbookRepository
+        + ArtifactRepository
         + PolicyRepository
+        + MembershipRepository
+        + OAuthRepository
+        + KvRepository
+        + SecretsRepository
         + Send
         + Sync
 {

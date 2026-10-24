@@ -4,6 +4,7 @@ use microwave_store::{
 };
 use sqlx::postgres::Postgres;
 use sqlx::{Row, Transaction};
+use std::collections::BTreeSet;
 
 use crate::store::{db, new_id, now, unique, PostgresStore};
 
@@ -16,6 +17,7 @@ impl CookbookRepository for PostgresStore {
         version: &str,
         manifest: &str,
         checksums: &[String],
+        frozen: bool,
         creator_authz_id: &str,
     ) -> Result<StoredCookbookVersion, StoreError> {
         let (major, minor, patch) = parse_version(version)?;
@@ -55,7 +57,7 @@ impl CookbookRepository for PostgresStore {
              (id, cookbook_id, org_id, name, major, minor, patch, frozen,
               meta_attributes, meta_deps, meta_long_desc, metadata, serialized_object,
               last_updated_by, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, NULL, '{}', NULL, $8, $8, $9, $10, $10)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, '{}', NULL, NULL, $9, $10, $11, $11)",
         )
         .bind(&version_id)
         .bind(cookbook_id)
@@ -64,6 +66,7 @@ impl CookbookRepository for PostgresStore {
         .bind(major)
         .bind(minor)
         .bind(patch)
+        .bind(frozen)
         .bind(manifest)
         .bind(creator_authz_id)
         .bind(&timestamp)
@@ -98,7 +101,7 @@ impl CookbookRepository for PostgresStore {
             manifest: manifest.into(),
             checksums: checksums.to_vec(),
             authz_id,
-            frozen: false,
+            frozen,
             created_at: timestamp.clone(),
             updated_at: timestamp,
         })
@@ -113,7 +116,7 @@ impl CookbookRepository for PostgresStore {
         let (major, minor, patch) = parse_version(version)?;
         let row = sqlx::query(
             "SELECT cv.id, cv.name, cv.serialized_object, cv.created_at, cv.updated_at,
-                    c.authz_id, cv.major, cv.minor, cv.patch
+                    c.authz_id, cv.major, cv.minor, cv.patch, cv.frozen
              FROM cookbook_versions cv
              JOIN cookbooks c ON c.id = cv.cookbook_id
              WHERE cv.org_id = $1 AND cv.name = $2
@@ -143,7 +146,7 @@ impl CookbookRepository for PostgresStore {
             manifest: row.try_get(2).map_err(db)?,
             checksums,
             authz_id: row.try_get(5).map_err(db)?,
-            frozen: false,
+            frozen: row.try_get(9).map_err(db)?,
             created_at: row.try_get(3).map_err(db)?,
             updated_at: row.try_get(4).map_err(db)?,
         }))
@@ -155,7 +158,7 @@ impl CookbookRepository for PostgresStore {
     ) -> Result<Vec<StoredCookbookVersion>, StoreError> {
         let rows = sqlx::query(
             "SELECT cv.id, cv.name, cv.serialized_object, cv.created_at, cv.updated_at,
-                    c.authz_id, cv.major, cv.minor, cv.patch
+                    c.authz_id, cv.major, cv.minor, cv.patch, cv.frozen
              FROM cookbook_versions cv
              JOIN cookbooks c ON c.id = cv.cookbook_id
              WHERE cv.org_id = $1
@@ -181,7 +184,7 @@ impl CookbookRepository for PostgresStore {
                 manifest: row.try_get(2).map_err(db)?,
                 checksums,
                 authz_id: row.try_get(5).map_err(db)?,
-                frozen: false,
+                frozen: row.try_get(9).map_err(db)?,
                 created_at: row.try_get(3).map_err(db)?,
                 updated_at: row.try_get(4).map_err(db)?,
             });
@@ -189,16 +192,118 @@ impl CookbookRepository for PostgresStore {
         Ok(versions)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn update_cookbook_version(
+        &self,
+        org_id: &str,
+        name: &str,
+        version: &str,
+        manifest: &str,
+        checksums: &[String],
+        frozen: bool,
+        updater_authz_id: &str,
+    ) -> Result<(StoredCookbookVersion, Vec<String>), StoreError> {
+        let (major, minor, patch) = parse_version(version)?;
+        let timestamp = now();
+        let mut transaction = self.pool().begin().await.map_err(db)?;
+
+        let row = sqlx::query(
+            "SELECT cv.id, cv.created_at, c.authz_id
+             FROM cookbook_versions cv
+             JOIN cookbooks c ON c.id = cv.cookbook_id
+             WHERE cv.org_id = $1 AND cv.name = $2
+               AND cv.major = $3 AND cv.minor = $4 AND cv.patch = $5",
+        )
+        .bind(org_id)
+        .bind(name)
+        .bind(major)
+        .bind(minor)
+        .bind(patch)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(db)?
+        .ok_or_else(|| StoreError::NotFound(format!("cookbook version {name} {version}")))?;
+        let version_id: String = row.try_get(0).map_err(db)?;
+        let created_at: String = row.try_get(1).map_err(db)?;
+        let authz_id: String = row.try_get(2).map_err(db)?;
+
+        let old_checksums: Vec<String> = sqlx::query_scalar(
+            "SELECT checksum FROM cookbook_version_checksums
+             WHERE cookbook_version_id = $1 ORDER BY checksum",
+        )
+        .bind(&version_id)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(db)?;
+
+        sqlx::query(
+            "UPDATE cookbook_versions
+             SET serialized_object = $2, frozen = $3, updated_at = $4, last_updated_by = $5
+             WHERE id = $1",
+        )
+        .bind(&version_id)
+        .bind(manifest)
+        .bind(frozen)
+        .bind(&timestamp)
+        .bind(updater_authz_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(db)?;
+        sqlx::query("DELETE FROM cookbook_version_checksums WHERE cookbook_version_id = $1")
+            .bind(&version_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db)?;
+        for checksum in checksums {
+            sqlx::query(
+                "INSERT INTO cookbook_version_checksums
+                 (cookbook_version_id, org_id, checksum)
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(&version_id)
+            .bind(org_id)
+            .bind(checksum)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db)?;
+        }
+
+        let new_checksums: BTreeSet<&String> = checksums.iter().collect();
+        let removed_candidates: Vec<String> = old_checksums
+            .into_iter()
+            .filter(|checksum| !new_checksums.contains(checksum))
+            .collect();
+        let deleted_checksums =
+            cleanup_unreferenced_checksums(&mut transaction, org_id, removed_candidates).await?;
+
+        transaction.commit().await.map_err(db)?;
+        Ok((
+            StoredCookbookVersion {
+                id: version_id,
+                name: name.into(),
+                version: format_version(major, minor, patch),
+                manifest: manifest.into(),
+                checksums: checksums.to_vec(),
+                frozen,
+                authz_id,
+                created_at,
+                updated_at: timestamp,
+            },
+            deleted_checksums,
+        ))
+    }
+
     async fn delete_cookbook_version(
         &self,
         org_id: &str,
         name: &str,
         version: &str,
-    ) -> Result<(), StoreError> {
+    ) -> Result<(StoredCookbookVersion, Vec<String>), StoreError> {
         let (major, minor, patch) = parse_version(version)?;
         let mut transaction = self.pool().begin().await.map_err(db)?;
         let row = sqlx::query(
-            "SELECT cv.id, cv.cookbook_id, c.authz_id
+            "SELECT cv.id, cv.cookbook_id, c.authz_id, cv.serialized_object,
+                    cv.created_at, cv.frozen
              FROM cookbook_versions cv
              JOIN cookbooks c ON c.id = cv.cookbook_id
              WHERE cv.org_id = $1 AND cv.name = $2
@@ -216,6 +321,18 @@ impl CookbookRepository for PostgresStore {
         let version_id: String = row.try_get(0).map_err(db)?;
         let cookbook_id: i64 = row.try_get(1).map_err(db)?;
         let authz_id: String = row.try_get(2).map_err(db)?;
+        let manifest: String = row.try_get(3).map_err(db)?;
+        let created_at: String = row.try_get(4).map_err(db)?;
+        let frozen: bool = row.try_get(5).map_err(db)?;
+
+        let checksums: Vec<String> = sqlx::query_scalar(
+            "SELECT checksum FROM cookbook_version_checksums
+             WHERE cookbook_version_id = $1 ORDER BY checksum",
+        )
+        .bind(&version_id)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(db)?;
 
         sqlx::query("DELETE FROM cookbook_versions WHERE id = $1")
             .bind(&version_id)
@@ -240,8 +357,24 @@ impl CookbookRepository for PostgresStore {
                 .await
                 .map_err(db)?;
         }
+        let deleted_checksums =
+            cleanup_unreferenced_checksums(&mut transaction, org_id, checksums.clone()).await?;
         transaction.commit().await.map_err(db)?;
-        Ok(())
+
+        Ok((
+            StoredCookbookVersion {
+                id: version_id,
+                name: name.into(),
+                version: format_version(major, minor, patch),
+                manifest,
+                checksums,
+                frozen,
+                authz_id,
+                created_at: created_at.clone(),
+                updated_at: created_at,
+            },
+            deleted_checksums,
+        ))
     }
 }
 
@@ -256,6 +389,46 @@ impl PostgresStore {
         .await
         .map_err(db)
     }
+}
+
+pub(crate) async fn cleanup_unreferenced_checksums(
+    transaction: &mut Transaction<'_, Postgres>,
+    org_id: &str,
+    candidates: Vec<String>,
+) -> Result<Vec<String>, StoreError> {
+    let mut deleted = Vec::new();
+    let mut seen = BTreeSet::new();
+    for checksum in candidates {
+        if !seen.insert(checksum.clone()) {
+            continue;
+        }
+        let referenced: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM cookbook_version_checksums
+                 WHERE org_id = $1 AND checksum = $2
+             ) OR EXISTS (
+                 SELECT 1 FROM cookbook_artifact_version_checksums
+                 WHERE org_id = $1 AND checksum = $2
+             )",
+        )
+        .bind(org_id)
+        .bind(&checksum)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(db)?;
+        if !referenced {
+            let removed = sqlx::query("DELETE FROM checksums WHERE org_id = $1 AND checksum = $2")
+                .bind(org_id)
+                .bind(&checksum)
+                .execute(&mut **transaction)
+                .await
+                .map_err(db)?;
+            if removed.rows_affected() > 0 {
+                deleted.push(checksum);
+            }
+        }
+    }
+    Ok(deleted)
 }
 
 async fn create_cookbook_authz(

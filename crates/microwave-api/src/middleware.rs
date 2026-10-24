@@ -143,6 +143,7 @@ async fn authenticate_signed(
             state
                 .store
                 .find_org(&name)
+                .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::not_found(format!("organization {name} not found")))?,
         ),
@@ -152,6 +153,7 @@ async fn authenticate_signed(
     let principals = state
         .store
         .find_principals(org.as_ref().map(|org| org.id.as_str()), &user_id)
+        .await
         .map_err(ApiError::from)?;
     if principals.is_empty() {
         return Err(authentication_failure(&user_id));
@@ -173,6 +175,7 @@ async fn authenticate_signed(
         let keys = state
             .store
             .find_principal_keys(&principal)
+            .await
             .map_err(ApiError::from)?;
         for key in keys {
             if microwave_crypto::verify_request(&key.public_key, &auth_headers, &canonical).is_ok()
@@ -193,6 +196,7 @@ async fn authenticate_signed(
             && !state
                 .store
                 .is_user_in_org(&org.id, &principal.actor_id)
+                .await
                 .map_err(ApiError::from)?
         {
             return Err(ApiError::forbidden_with(format!(

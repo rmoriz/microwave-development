@@ -117,7 +117,16 @@ pub fn org_create(
             "creator user {creator_name} does not exist; create it first or pass --creator"
         ))
     })?;
-    let org = create_organization(&store, name, full_name, &creator.id, &creator.authz_id)?;
+    // The CLI is synchronous and SQLite-only. The authorization policy now
+    // lives behind async repository traits, so bridge into a small runtime for
+    // this single call instead of making the whole CLI async.
+    let org = block_on(create_organization(
+        &store,
+        name,
+        full_name,
+        &creator.id,
+        &creator.authz_id,
+    ))?;
     println!("Created organization {} ({})", org.name, org.full_name);
     Ok(())
 }
@@ -289,4 +298,16 @@ pub(crate) fn find_org(store: &SqliteStore, name: &str) -> Result<Org, CtlError>
 
 fn random_password() -> String {
     format!("mw-{}", Uuid::new_v4().simple())
+}
+
+/// Run one future to completion on a fresh current-thread runtime.
+///
+/// `microwave-ctl` deliberately stays synchronous; only `org_create` crosses
+/// into the async store contract.
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime")
+        .block_on(future)
 }

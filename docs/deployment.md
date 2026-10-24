@@ -10,11 +10,13 @@ For the architecture and the compatibility target see
 For the current implementation gaps see "Not Yet Implemented" in
 [`README.md`](../README.md).
 
-> **Reality check.** The supported deployment today is **one server process
-> with SQLite metadata**. PostgreSQL metadata is a design goal, not an
-> implemented backend, so there is no active/active HA yet. OpenSearch and
-> S3/Garage *are* implemented and can be used from a single server. The
-> limitations are called out in place rather than hidden.
+> **Reality check.** SQLite metadata is the default and the best-tested
+> deployment: **one server process per database**. PostgreSQL metadata is
+> implemented and selectable through `database.driver`; several replicas can
+> point at one PostgreSQL database, but that topology has not been
+> load-validated and is not yet covered by the backup/migration CLI. OpenSearch
+> and S3/Garage can be used from either backend. The limitations are called out
+> in place rather than hidden.
 
 ## Contents
 
@@ -98,8 +100,8 @@ A complete annotated example is
 | `server.bind` | `MW_SERVER__BIND` | `0.0.0.0:8000` | Plain HTTP listener. Terminate TLS in front. |
 | `server.worker_threads` | `MW_SERVER__WORKER_THREADS` | `0` | `0` = size from available CPUs. |
 | `paths.data_dir` | `MW_PATHS__DATA_DIR` | `./data` | All mutable state. |
-| `database.driver` | `MW_DATABASE__DRIVER` | `sqlite` | Only `sqlite` is implemented. |
-| `database.url` | `MW_DATABASE__URL` | `sqlite://<data_dir>/microwave.db` | Must be `sqlite://<path>` today. |
+| `database.driver` | `MW_DATABASE__DRIVER` | `sqlite` | `sqlite` or `postgres`. |
+| `database.url` | `MW_DATABASE__URL` | `sqlite://<data_dir>/microwave.db` | `sqlite://<path>` or a `postgres://` URL. The CLI tools still require SQLite. |
 | `search.backend` | `MW_SEARCH__BACKEND` | `embedded` | `embedded`, `opensearch`, `elasticsearch`. |
 | `search.url` | `MW_SEARCH__URL` | unset | Required for the remote backends, e.g. `http://opensearch:9200`. |
 | `object_store.backend` | `MW_OBJECT_STORE__BACKEND` | `local` | `local`, `s3`, `garage`. |
@@ -247,8 +249,8 @@ docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --build
 
 This profile:
 
-- keeps SQLite metadata on the local volume (the only implemented metadata
-  backend);
+- keeps SQLite metadata on the local volume (the default backend; switch
+  `MW_DATABASE__DRIVER=postgres` to use PostgreSQL instead);
 - sets `MW_SEARCH__BACKEND=opensearch` and `MW_SEARCH__URL=http://opensearch:9200`;
 - sets `MW_OBJECT_STORE__BACKEND=garage` with bucket `chef-cookbooks` and the
   placeholder credentials defined in the compose file and `packaging/garage.toml`;
@@ -391,24 +393,32 @@ This is a server limitation, not a configuration mistake.
 - **Embedded single node** (`SQLite` + in-process search + local bookshelf):
   the default. One process, one host, one writer.
 - **Single node with shared OpenSearch and S3/Garage**: removes blob and
-  search state from the host, but metadata is still SQLite on a local volume.
+  search state from the host, but SQLite metadata is still on a local volume.
+- **PostgreSQL metadata (experimental HA)**: several server replicas may point
+  at one PostgreSQL database. OAuth tokens, sessions, keys, and ACLs are
+  shared, and the schema migration is serialized with an advisory lock. Use
+  S3/Garage for blobs and share nothing else; this topology has not been
+  load-validated. On every server start, `PostgresStore::connect` applies the
+  embedded idempotent schema under that advisory lock before bootstrap runs,
+  so replicas can start concurrently without manual migration steps.
 - **Active/passive**: keep a second host ready, replicate backups/config, and
-  move traffic at the load balancer. Only one server may write the metadata
-  database at a time.
+  move traffic at the load balancer. With SQLite only one server may write the
+  metadata database at a time.
 
 ### What is not supported
 
 - **Multiple replicas sharing one SQLite database.** SQLite allows a single
-  writer; network filesystems add locking hazards. Do not scale the compose
-  service and do not point two hosts at the same database file.
-- **PostgreSQL metadata.** `database.driver = "postgres"` is parsed for
-  forward compatibility, but the server has no PostgreSQL store yet. Treat any
-  PostgreSQL service in an example manifest as a placeholder.
+  writer; network filesystems add locking hazards. Do not point two hosts at
+  the same database file. Use PostgreSQL instead.
+- **PostgreSQL CLI tooling and backup.** `microwave-ctl` and
+  `microwave-migrate` only open SQLite stores, and `microwave-ctl backup` is a
+  SQLite `VACUUM INTO` snapshot. Use `pg_dump` plus your object-store backup
+  for PostgreSQL deployments.
 - **DRBD/keepalived style clustering.** `microwave-ctl ha-status` reports
   `mode: standalone`, `nodes: 1`, `high_availability: not configured`, and
   says so explicitly.
 
-### Target layout (when PostgreSQL lands)
+### Target layout with PostgreSQL metadata
 
 ```text
 clients ──TLS──> L7 load balancer ──HTTP──> microwave-server replica A ─┐
@@ -434,8 +444,8 @@ Design notes that already hold:
   topology, distribute the superuser key material through your secret manager
   and use S3 for blobs.
 
-Until PostgreSQL exists, plan capacity vertically and use backups plus a warm
-standby rather than active/active.
+Until the PostgreSQL topology is load-tested, prefer vertical capacity,
+`pg_dump` backups, and a warm standby over active/active.
 
 ## 9. Backup and restore
 
@@ -576,8 +586,8 @@ time, and keep the legacy server read-only until the new one is verified.
 | `GET /license` | signed | Static license payload; telemetry is disabled. |
 
 `/_status` is a **liveness** probe, not a readiness probe. It always reports
-`pong` when the HTTP process is up; it does not check SQLite, OpenSearch, S3,
-or keygen health. Check dependencies separately:
+`pong` when the HTTP process is up; it does not check the metadata backend,
+OpenSearch, S3, or keygen health. Check dependencies separately:
 
 ```sh
 curl -fsS http://127.0.0.1:8000/_status
@@ -599,9 +609,11 @@ microwave-ctl --config /etc/microwave/microwave.toml psql 'select count(*) from 
 
 `status` reports the data directory, driver, database path, whether the
 database is readable, and whether the superuser exists. `ha-status` always
-reports a single standalone node. `psql` execs `sqlite3` against the SQLite
-database (install `sqlite3` on the host; the container image includes it) and
-passes trailing arguments through.
+reports a single standalone node. `psql` execs `sqlite3` for a SQLite database
+(install `sqlite3` on the host; the container image includes it), or `psql` for
+a configured PostgreSQL URL, and passes trailing arguments through.
+`microwave-ctl` and `microwave-migrate` do not open PostgreSQL stores, so
+server administration and snapshot import/export remain SQLite-only.
 
 ### Logs
 
@@ -629,8 +641,10 @@ dropped — drain traffic at the load balancer before stopping or restarting.
 - **Reindex is a no-op.** `microwave-ctl reindex` prints that it is not
   implemented. The embedded backend always reads the store, so it needs no
   index; a remote OpenSearch backend has no backfill path yet.
-- **No PostgreSQL.** Only SQLite metadata is available; scaling out replicas
-  is not possible. `ha-status` says so.
+- **No PostgreSQL CLI.** The HTTP server runs against PostgreSQL, but
+  `microwave-ctl`, `microwave-migrate`, and the local backup/restore path only
+  open SQLite. Use `psql`/`pg_dump` for PostgreSQL operations, and keep
+  `ha-status` (which still reports a single node) out of HA automation.
 - **Single writer.** SQLite is opened in WAL mode with a 5 s busy timeout. A
   heavy `microwave-ctl` write (import, key rotation, user creation) can
   contend with request writes; run bulk operations in a window.

@@ -44,7 +44,7 @@ async fn create_org(app: &axum::Router) {
 
 fn add_user(state: &AppState, name: &str) {
     let user = state
-        .store
+        .sqlite()
         .create_user(
             name,
             &format!("{name}@example.com"),
@@ -55,7 +55,7 @@ fn add_user(state: &AppState, name: &str) {
         )
         .unwrap();
     state
-        .store
+        .sqlite()
         .add_actor_key(&user.id, ActorType::User, "default", support::PUBLIC_KEY)
         .unwrap();
 }
@@ -146,7 +146,7 @@ async fn creates_and_accepts_an_invitation() {
     let org_id = {
         let app = support::app(state.clone());
         create_org(&app).await;
-        state.store.find_org("acme").unwrap().unwrap().id
+        state.sqlite().find_org("acme").unwrap().unwrap().id
     };
     let app = support::app(state.clone());
 
@@ -211,10 +211,14 @@ async fn creates_and_accepts_an_invitation() {
     assert_eq!(status, StatusCode::OK);
     assert!(users["bob"].is_string());
 
-    let bob = state.store.find_user("bob").unwrap().unwrap();
-    let users_group = state.store.find_group(&org_id, "users").unwrap().unwrap();
+    let bob = state.sqlite().find_user("bob").unwrap().unwrap();
+    let users_group = state
+        .sqlite()
+        .find_group(&org_id, "users")
+        .unwrap()
+        .unwrap();
     assert!(state
-        .store
+        .sqlite()
         .user_in_group(&users_group.authz_id, &bob.authz_id)
         .unwrap());
 }
@@ -226,7 +230,7 @@ async fn rejects_an_invitation() {
     let org_id = {
         let app = support::app(state.clone());
         create_org(&app).await;
-        state.store.find_org("acme").unwrap().unwrap().id
+        state.sqlite().find_org("acme").unwrap().unwrap().id
     };
     let app = support::app(state.clone());
 
@@ -257,8 +261,8 @@ async fn rejects_an_invitation() {
     assert_eq!(status, StatusCode::OK);
     assert!(users.get("carol").is_none());
 
-    let carol = state.store.find_user("carol").unwrap().unwrap();
-    assert!(!state.store.is_user_in_org(&org_id, &carol.id).unwrap());
+    let carol = state.sqlite().find_user("carol").unwrap().unwrap();
+    assert!(!state.sqlite().is_user_in_org(&org_id, &carol.id).unwrap());
 
     let (status, _) = request(
         &app,
@@ -288,11 +292,15 @@ async fn refuses_to_remove_an_org_admin() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
 
-    let org = state.store.find_org("acme").unwrap().unwrap();
-    let dave = state.store.find_user("dave").unwrap().unwrap();
-    let admins = state.store.find_group(&org.id, "admins").unwrap().unwrap();
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
+    let dave = state.sqlite().find_user("dave").unwrap().unwrap();
+    let admins = state
+        .sqlite()
+        .find_group(&org.id, "admins")
+        .unwrap()
+        .unwrap();
     state
-        .store
+        .sqlite()
         .add_group_member(&admins.authz_id, &dave.authz_id)
         .unwrap();
 
@@ -311,7 +319,7 @@ async fn refuses_to_remove_an_org_admin() {
     );
 
     state
-        .store
+        .sqlite()
         .remove_group_member(&admins.authz_id, &dave.authz_id)
         .unwrap();
     let (status, _) = request(

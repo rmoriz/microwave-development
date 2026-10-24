@@ -16,7 +16,7 @@ fn actor_type_str(actor_type: ActorType) -> &'static str {
     }
 }
 
-fn user_from_row(row: &PgRow) -> Result<User, sqlx::Error> {
+pub(crate) fn user_from_row(row: &PgRow) -> Result<User, sqlx::Error> {
     Ok(User {
         id: row.try_get(0)?,
         authz_id: row.try_get(1)?,
@@ -166,6 +166,20 @@ impl IdentityRepository for PostgresStore {
         rows.iter()
             .map(crate::store::org_from_row)
             .collect::<Result<Vec<_>, _>>()
+            .map_err(db)
+    }
+
+    async fn find_org_by_id(&self, id: &str) -> Result<Option<Org>, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, authz_id, name, full_name, created_at, updated_at
+             FROM orgs WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(db)?;
+        row.map(|row| crate::store::org_from_row(&row))
+            .transpose()
             .map_err(db)
     }
 

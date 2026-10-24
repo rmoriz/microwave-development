@@ -14,7 +14,7 @@ suite:
 | `base64` | 0.22.1 | 0.23.1 | No source changes required. |
 | `bcrypt` | 0.17.1 | 0.19.3 | No source changes required. |
 | `toml` | 0.8.23 | 1.1.8 | No source changes required. |
-| `sqlx` | 0.8.6 | 0.9.0 | Dynamic SQL is wrapped in `sqlx::AssertSqlSafe`; PostgreSQL tests pass 7/7. |
+| `sqlx` | 0.8.6 | 0.9.0 | Dynamic SQL is wrapped in `sqlx::AssertSqlSafe`; the PostgreSQL integration and API runtime tests pass. |
 | `reqwest` | 0.12.28 | 0.13.5 | Feature `rustls-tls` replaced by `rustls`. |
 | `ureq` | 2.12.1 | 3.5.0 | Migrated to `Agent::config_builder`, `http::Response<Body>`, and status-as-value handling. |
 | `rusqlite` | 0.32.1 | 0.39.0 | Newest version compatible with `sqlx`'s optional `sqlx-sqlite` (`libsqlite3-sys < 0.38`). |
@@ -68,7 +68,7 @@ Everything else in the direct set is current, including `axum`, `tokio`,
 | `opensearchproject/opensearch` | `2.19.7` | Latest 2.x; validated. OpenSearch 3.9.0 exists but is a major upgrade and has not been validated with Chef tooling/our adapter. |
 | `rust` builder | `rust:1-trixie` | Rust 1.99.x on Debian 13. |
 | Runtime base | `debian:trixie-slim` | Debian 13; image builds and binaries start. |
-| PostgreSQL test image | `postgres:18-alpine` | Used by `scripts/run-postgres-tests.sh`; 7/7 integration tests pass. The HA Compose service remains commented out until the API is wired to the PostgreSQL store. |
+| PostgreSQL test image | `postgres:18-alpine` | Used by `scripts/run-postgres-tests.sh`; the PostgreSQL integration suite and the API PostgreSQL runtime test pass. The HA Compose service remains commented out until the multi-replica topology is validated. |
 
 ## Recommendations
 

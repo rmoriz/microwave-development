@@ -22,7 +22,7 @@ pub fn base_url(headers: &HeaderMap, state: &AppState) -> String {
     format!("{proto}://{host}")
 }
 
-pub fn container_authz(
+pub async fn container_authz(
     state: &AppState,
     org: &Org,
     container_name: &str,
@@ -30,12 +30,13 @@ pub fn container_authz(
     Ok(state
         .store
         .find_container(&org.id, container_name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("container {container_name}")))?
         .authz_id)
 }
 
-pub fn require_permission(
+pub async fn require_permission(
     state: &AppState,
     auth: &AuthContext,
     target_authz_id: &str,
@@ -47,6 +48,7 @@ pub fn require_permission(
     if state
         .store
         .check_permission(&auth.principal.authz_id, target_authz_id, permission)
+        .await
         .map_err(ApiError::from)?
     {
         Ok(())

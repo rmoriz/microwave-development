@@ -38,14 +38,15 @@ async fn list_environments(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "environments")?;
-    require_permission(&state, &auth, &container, Permission::Read)?;
+    let container = container_authz(&state, org, "environments").await?;
+    require_permission(&state, &auth, &container, Permission::Read).await?;
 
     let base = base_url(&headers, &state);
     let mut environments = serde_json::Map::new();
     for environment in state
         .store
         .list_environments(&org.id)
+        .await
         .map_err(ApiError::from)?
     {
         environments.insert(
@@ -66,8 +67,8 @@ async fn create_environment(
     Json(mut body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "environments")?;
-    require_permission(&state, &auth, &container, Permission::Create)?;
+    let container = container_authz(&state, org, "environments").await?;
+    require_permission(&state, &auth, &container, Permission::Create).await?;
 
     let name = normalize_environment(&mut body)?;
     let environment = state
@@ -78,6 +79,7 @@ async fn create_environment(
             &serde_json::to_string(&body).map_err(|_| ApiError::internal())?,
             &auth.principal.authz_id,
         )
+        .await
         .map_err(ApiError::from)?;
     crate::search::index::index_object(
         &state,
@@ -105,9 +107,10 @@ async fn get_environment(
     let environment = state
         .store
         .find_environment(&org.id, &name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("environment {name}")))?;
-    require_permission(&state, &auth, &environment.authz_id, Permission::Read)?;
+    require_permission(&state, &auth, &environment.authz_id, Permission::Read).await?;
     let value =
         serde_json::from_str(&environment.serialized_object).map_err(|_| ApiError::internal())?;
     Ok(Json(value))
@@ -124,9 +127,10 @@ async fn update_environment(
     let environment = state
         .store
         .find_environment(&org.id, &name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("environment {name}")))?;
-    require_permission(&state, &auth, &environment.authz_id, Permission::Update)?;
+    require_permission(&state, &auth, &environment.authz_id, Permission::Update).await?;
 
     let body_name = normalize_environment(&mut body)?;
     if body_name != name {
@@ -141,6 +145,7 @@ async fn update_environment(
             &name,
             &serde_json::to_string(&body).map_err(|_| ApiError::internal())?,
         )
+        .await
         .map_err(ApiError::from)?;
     crate::search::index::index_object(
         &state,
@@ -164,12 +169,14 @@ async fn delete_environment(
     let environment = state
         .store
         .find_environment(&org.id, &name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("environment {name}")))?;
-    require_permission(&state, &auth, &environment.authz_id, Permission::Delete)?;
+    require_permission(&state, &auth, &environment.authz_id, Permission::Delete).await?;
     state
         .store
         .delete_environment(&org.id, &name)
+        .await
         .map_err(ApiError::from)?;
     crate::search::index::delete_document(&state, &org.id, &environment.id).await;
     Ok(Json(json!({})))
@@ -183,12 +190,13 @@ async fn list_environment_cookbooks(
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let environment = find_environment_for_cookbooks(&state, &auth, org, &environment_name)?;
+    let environment = find_environment_for_cookbooks(&state, &auth, org, &environment_name).await?;
     let num_versions = parse_num_versions(query.get("num_versions"), NumVersions::Count(1))?;
 
     let versions = state
         .store
         .list_cookbook_versions(&org.id)
+        .await
         .map_err(ApiError::from)?;
     let constraints = environment_constraints(&environment)?;
     let base = base_url(&headers, &state);
@@ -222,12 +230,13 @@ async fn get_environment_cookbook(
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let environment = find_environment_for_cookbooks(&state, &auth, org, &environment_name)?;
+    let environment = find_environment_for_cookbooks(&state, &auth, org, &environment_name).await?;
     let num_versions = parse_num_versions(query.get("num_versions"), NumVersions::All)?;
 
     let versions = state
         .store
         .list_cookbook_versions(&org.id)
+        .await
         .map_err(ApiError::from)?;
     let mut versions: Vec<_> = versions
         .into_iter()
@@ -252,7 +261,7 @@ async fn get_environment_cookbook(
     Ok(Json(Value::Object(result)))
 }
 
-fn find_environment_for_cookbooks(
+async fn find_environment_for_cookbooks(
     state: &AppState,
     auth: &AuthContext,
     org: &Org,
@@ -261,9 +270,10 @@ fn find_environment_for_cookbooks(
     let environment = state
         .store
         .find_environment(&org.id, name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("Cannot load environment {name}")))?;
-    require_permission(state, auth, &environment.authz_id, Permission::Read)?;
+    require_permission(state, auth, &environment.authz_id, Permission::Read).await?;
     Ok(environment)
 }
 

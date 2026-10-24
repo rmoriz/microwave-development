@@ -21,7 +21,7 @@ pub async fn home(
         return Ok(Json(json!({
             "status": "ok",
             "service": "oc-id",
-            "authenticated": current_user(&state, &headers)?.is_some()
+            "authenticated": current_user(&state, &headers).await?.is_some()
         }))
         .into_response());
     }
@@ -42,14 +42,14 @@ pub async fn signin(
 ) -> Result<Response, OAuthError> {
     if wants_json(&headers) {
         return Ok(Json(json!({
-            "authenticated": current_user(&state, &headers)?.is_some()
+            "authenticated": current_user(&state, &headers).await?.is_some()
         }))
         .into_response());
     }
 
     // Upstream `SessionsController#new` redirects an already signed-in user to
     // the authorized-applications page.
-    if current_user(&state, &headers)?.is_some() {
+    if current_user(&state, &headers).await?.is_some() {
         return Ok(redirect("/id/oauth/authorized_applications"));
     }
 
@@ -101,19 +101,14 @@ pub async fn create_session(
         .or_else(|| query.get("password").cloned())
         .unwrap_or_default();
 
-    let user = state.store.find_user(&username)?.or_else(|| {
-        username
-            .contains('@')
-            .then(|| {
-                state
-                    .store
-                    .list_users()
-                    .ok()?
-                    .into_iter()
-                    .find(|candidate| candidate.email.as_deref() == Some(username.as_str()))
-            })
-            .flatten()
-    });
+    let mut user = state.store.find_user(&username).await?;
+    if user.is_none() && username.contains('@') {
+        user = state.store.list_users().await.ok().and_then(|users| {
+            users
+                .into_iter()
+                .find(|candidate| candidate.email.as_deref() == Some(username.as_str()))
+        });
+    }
 
     let authenticated = user.filter(|user| {
         verify_password(
@@ -135,7 +130,7 @@ pub async fn create_session(
         ));
     };
 
-    let token = state.store.create_id_session(&user.username)?;
+    let token = state.store.create_id_session(&user.username).await?;
     let cookie = cookie_header(&token);
 
     if wants_json(&headers) {
@@ -163,7 +158,7 @@ pub async fn signout(
     headers: HeaderMap,
 ) -> Result<Response, OAuthError> {
     if let Some(token) = session_token(&headers) {
-        state.store.delete_id_session(&token)?;
+        state.store.delete_id_session(&token).await?;
     }
     if wants_json(&headers) {
         let mut response = Json(json!({})).into_response();
@@ -198,7 +193,7 @@ pub async fn authorized_applications(
     State(state): State<OAuthState>,
     headers: HeaderMap,
 ) -> Result<Response, OAuthError> {
-    let user: User = match current_user(&state, &headers)? {
+    let user: User = match current_user(&state, &headers).await? {
         Some(user) => user,
         None => return Ok(redirect("/id/signin")),
     };

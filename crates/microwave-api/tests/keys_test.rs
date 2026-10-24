@@ -485,9 +485,9 @@ async fn org_scoped_key_reads_follow_public_key_read_access_membership() {
     create_user_with_public_key(&app, "alice").await;
     create_user_with_public_key(&app, "bob").await;
 
-    let org = state.store.find_org("acme").unwrap().unwrap();
-    let bob = state.store.find_user("bob").unwrap().unwrap();
-    state.store.add_user_to_org(&org.id, &bob.id).unwrap();
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
+    let bob = state.sqlite().find_user("bob").unwrap().unwrap();
+    state.sqlite().add_user_to_org(&org.id, &bob.id).unwrap();
 
     let (status, _) = send(
         &app,
@@ -520,12 +520,12 @@ async fn org_scoped_key_reads_follow_public_key_read_access_membership() {
     assert_eq!(status, StatusCode::OK);
 
     let public_key_read = state
-        .store
+        .sqlite()
         .find_group(&org.id, "public_key_read_access")
         .unwrap()
         .unwrap();
     state
-        .store
+        .sqlite()
         .replace_group_members(&org.id, &public_key_read.authz_id, None, None, Some(&[]))
         .unwrap();
 
@@ -549,7 +549,7 @@ async fn org_scoped_key_reads_follow_public_key_read_access_membership() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     state
-        .store
+        .sqlite()
         .replace_group_members(
             &org.id,
             &public_key_read.authz_id,

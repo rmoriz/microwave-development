@@ -16,7 +16,7 @@ fn add_user(
 ) -> User {
     let hash = hash_password(password).unwrap();
     let user = state
-        .store
+        .sqlite()
         .create_user(
             username,
             &format!("{username}@chef.io"),
@@ -27,12 +27,12 @@ fn add_user(
         )
         .unwrap();
     state
-        .store
+        .sqlite()
         .add_actor_key(&user.id, ActorType::User, "default", support::PUBLIC_KEY)
         .unwrap();
     if recovery_enabled {
         state
-            .store
+            .sqlite()
             .set_recovery_authentication_enabled(username, true)
             .unwrap();
     }
@@ -276,7 +276,7 @@ async fn authenticate_user_upgrades_legacy_passwords() {
     let state = support::state_with_pivotal();
     // Ancient "ec" SHA1 hash of "secret" with salt "mysalt".
     state
-        .store
+        .sqlite()
         .create_user(
             "legacy",
             "legacy@chef.io",
@@ -300,7 +300,7 @@ async fn authenticate_user_upgrades_legacy_passwords() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let user = state.store.find_user("legacy").unwrap().unwrap();
+    let user = state.sqlite().find_user("legacy").unwrap().unwrap();
     assert_eq!(user.hash_type, "bcrypt");
     assert!(verify_password(
         "secret",

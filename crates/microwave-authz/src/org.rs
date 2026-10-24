@@ -1,4 +1,7 @@
-use microwave_store::{Container, Group, Org, Permission, SqliteStore, StoreError};
+use microwave_store::{
+    AuthzRepository, Container, Group, IdentityRepository, ObjectRepository, Org, Permission,
+    StoreError,
+};
 
 pub const DEFAULT_CONTAINERS: [&str; 12] = [
     "clients",
@@ -25,61 +28,80 @@ pub const DEFAULT_GROUPS: [&str; 5] = [
 
 /// Create an organization and apply the default container/group/ACL policy.
 /// The organization row is removed again if any policy step fails.
-pub fn create_organization(
-    store: &SqliteStore,
+pub async fn create_organization<S>(
+    store: &S,
     name: &str,
     full_name: &str,
     creator_user_id: &str,
     creator_authz_id: &str,
-) -> Result<Org, StoreError> {
-    let org = store.create_org(name, full_name)?;
+) -> Result<Org, StoreError>
+where
+    S: IdentityRepository + AuthzRepository + ObjectRepository + ?Sized,
+{
+    let org = store.create_org(name, full_name).await?;
 
-    if let Err(error) = apply_default_policy(store, &org, creator_user_id, creator_authz_id) {
-        let _ = store.delete_org(&org.id);
+    if let Err(error) = apply_default_policy(store, &org, creator_user_id, creator_authz_id).await {
+        let _ = store.delete_org(&org.id).await;
         return Err(error);
     }
 
     Ok(org)
 }
 
-fn apply_default_policy(
-    store: &SqliteStore,
+async fn apply_default_policy<S>(
+    store: &S,
     org: &Org,
     creator_user_id: &str,
     creator_authz_id: &str,
-) -> Result<(), StoreError> {
+) -> Result<(), StoreError>
+where
+    S: IdentityRepository + AuthzRepository + ObjectRepository + ?Sized,
+{
     let mut containers = Vec::with_capacity(DEFAULT_CONTAINERS.len());
     for name in DEFAULT_CONTAINERS {
-        containers.push(store.create_container_for_org(&org.id, name)?);
+        containers.push(store.create_container_for_org(&org.id, name).await?);
     }
 
     let mut groups = Vec::with_capacity(DEFAULT_GROUPS.len());
     for name in DEFAULT_GROUPS {
-        groups.push(store.create_group_for_org(&org.id, name)?);
+        groups.push(store.create_group_for_org(&org.id, name).await?);
     }
 
     // Upstream creates a global `<org>_read_access_group` and makes the org's
     // admins and users groups members of it. It is rendered as
     // `::<org>_read_access_group` in ACL responses.
-    let read_access_group =
-        store.ensure_global_group(&format!("{}_read_access_group", org.name))?;
+    let read_access_group = store
+        .ensure_global_group(&format!("{}_read_access_group", org.name))
+        .await?;
     // Keep the global server-admins group available even on servers where the
     // superuser was created by an older bootstrap path.
-    store.ensure_global_group("server-admins")?;
+    store.ensure_global_group("server-admins").await?;
 
-    store.associate_user_org(&org.id, creator_user_id)?;
+    store.associate_user_org(&org.id, creator_user_id).await?;
 
     let admins = group(&groups, "admins")?;
     let users = group(&groups, "users")?;
     let clients = group(&groups, "clients")?;
     let public_key_read_access = group(&groups, "public_key_read_access")?;
 
-    store.add_group_member(&admins.authz_id, creator_authz_id)?;
-    store.add_group_member(&users.authz_id, creator_authz_id)?;
-    store.add_group_child(&read_access_group.authz_id, &admins.authz_id)?;
-    store.add_group_child(&read_access_group.authz_id, &users.authz_id)?;
-    store.add_group_child(&public_key_read_access.authz_id, &users.authz_id)?;
-    store.add_group_child(&public_key_read_access.authz_id, &clients.authz_id)?;
+    store
+        .add_group_member(&admins.authz_id, creator_authz_id)
+        .await?;
+    store
+        .add_group_member(&users.authz_id, creator_authz_id)
+        .await?;
+    store
+        .add_group_child(&read_access_group.authz_id, &admins.authz_id)
+        .await?;
+    store
+        .add_group_child(&read_access_group.authz_id, &users.authz_id)
+        .await?;
+    store
+        .add_group_child(&public_key_read_access.authz_id, &users.authz_id)
+        .await?;
+    store
+        .add_group_child(&public_key_read_access.authz_id, &clients.authz_id)
+        .await?;
 
     // The creator gets every permission on every object created by the policy.
     for container in &containers {
@@ -89,14 +111,16 @@ fn apply_default_policy(
             &Permission::ALL,
             Some(creator_authz_id),
             None,
-        )?;
+        )
+        .await?;
         grant(
             store,
             &container.authz_id,
             &Permission::ALL,
             None,
             Some(&admins.authz_id),
-        )?;
+        )
+        .await?;
     }
     for group in &groups {
         grant(
@@ -105,7 +129,8 @@ fn apply_default_policy(
             &Permission::ALL,
             Some(creator_authz_id),
             None,
-        )?;
+        )
+        .await?;
     }
     grant(
         store,
@@ -113,7 +138,8 @@ fn apply_default_policy(
         &Permission::ALL,
         Some(creator_authz_id),
         None,
-    )?;
+    )
+    .await?;
     for name in ["admins", "clients", "users"] {
         grant(
             store,
@@ -121,7 +147,8 @@ fn apply_default_policy(
             &Permission::ALL,
             None,
             Some(&admins.authz_id),
-        )?;
+        )
+        .await?;
     }
     grant(
         store,
@@ -129,21 +156,24 @@ fn apply_default_policy(
         &[Permission::Read, Permission::Update],
         None,
         Some(&admins.authz_id),
-    )?;
+    )
+    .await?;
     grant(
         store,
         &org.authz_id,
         &Permission::ALL,
         Some(creator_authz_id),
         None,
-    )?;
+    )
+    .await?;
     grant(
         store,
         &org.authz_id,
         &Permission::ALL,
         None,
         Some(&admins.authz_id),
-    )?;
+    )
+    .await?;
 
     // Normal users can manage cookbooks, data, nodes, roles, environments and policies.
     let users_manage = [
@@ -168,7 +198,8 @@ fn apply_default_policy(
             ],
             None,
             Some(&users.authz_id),
-        )?;
+        )
+        .await?;
     }
     grant(
         store,
@@ -176,14 +207,16 @@ fn apply_default_policy(
         &[Permission::Read, Permission::Delete],
         None,
         Some(&users.authz_id),
-    )?;
+    )
+    .await?;
     grant(
         store,
         &container(&containers, "sandboxes")?.authz_id,
         &[Permission::Create],
         None,
         Some(&users.authz_id),
-    )?;
+    )
+    .await?;
     for name in ["groups", "containers"] {
         grant(
             store,
@@ -191,7 +224,8 @@ fn apply_default_policy(
             &[Permission::Read],
             None,
             Some(&users.authz_id),
-        )?;
+        )
+        .await?;
     }
     grant(
         store,
@@ -199,7 +233,8 @@ fn apply_default_policy(
         &[Permission::Read],
         None,
         Some(&users.authz_id),
-    )?;
+    )
+    .await?;
 
     // Clients may update nodes and read the objects needed for a converge.
     grant(
@@ -208,7 +243,8 @@ fn apply_default_policy(
         &[Permission::Read, Permission::Create],
         None,
         Some(&clients.authz_id),
-    )?;
+    )
+    .await?;
     for name in [
         "policies",
         "policy_groups",
@@ -224,7 +260,8 @@ fn apply_default_policy(
             &[Permission::Read],
             None,
             Some(&clients.authz_id),
-        )?;
+        )
+        .await?;
     }
 
     // Billing admins can read and update the billing-admins group.
@@ -235,14 +272,16 @@ fn apply_default_policy(
         &[Permission::Read, Permission::Update],
         Some(creator_authz_id),
         None,
-    )?;
+    )
+    .await?;
     grant(
         store,
         &billing_admins.authz_id,
         &[Permission::Read, Permission::Update],
         None,
         Some(&billing_admins.authz_id),
-    )?;
+    )
+    .await?;
 
     // Create the default environment only after every container ACL has been
     // applied. Object ACLs are copied from their container at creation time,
@@ -253,14 +292,15 @@ fn apply_default_policy(
         "_default",
         r#"{"name":"_default","description":"The default Chef environment","json_class":"Chef::Environment","chef_type":"environment","cookbook_versions":{},"default_attributes":{},"override_attributes":{}}"#,
         creator_authz_id,
-    )?;
+    ).await?;
     grant(
         store,
         &default_environment.authz_id,
         &Permission::ALL,
         None,
         Some(&admins.authz_id),
-    )?;
+    )
+    .await?;
     grant(
         store,
         &default_environment.authz_id,
@@ -272,27 +312,34 @@ fn apply_default_policy(
         ],
         None,
         Some(&users.authz_id),
-    )?;
+    )
+    .await?;
     grant(
         store,
         &default_environment.authz_id,
         &[Permission::Read],
         None,
         Some(&clients.authz_id),
-    )?;
+    )
+    .await?;
 
     Ok(())
 }
 
-fn grant(
-    store: &SqliteStore,
+async fn grant<S>(
+    store: &S,
     target_authz_id: &str,
     permissions: &[Permission],
     actor_authz_id: Option<&str>,
     group_authz_id: Option<&str>,
-) -> Result<(), StoreError> {
+) -> Result<(), StoreError>
+where
+    S: AuthzRepository + ?Sized,
+{
     for permission in permissions {
-        store.set_acl(target_authz_id, *permission, actor_authz_id, group_authz_id)?;
+        store
+            .set_acl(target_authz_id, *permission, actor_authz_id, group_authz_id)
+            .await?;
     }
     Ok(())
 }

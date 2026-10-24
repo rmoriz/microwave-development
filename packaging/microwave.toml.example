@@ -27,12 +27,15 @@ worker_threads = 0
 data_dir = "/var/lib/microwave"
 
 [database]
-# Only the SQLite metadata store is implemented today. `postgres` is parsed by
-# the configuration loader but the server does not have a PostgreSQL metadata
-# backend yet (see "Not Yet Implemented" in README.md). Leave this at sqlite.
+# `sqlite` (default) or `postgres`. The HTTP server supports both; the
+# microwave-ctl/microwave-migrate tools and the local backup path require
+# SQLite.
 driver = "sqlite"
 # Defaults to sqlite://<paths.data_dir>/microwave.db when omitted.
 # url = "sqlite:///var/lib/microwave/microwave.db"
+# PostgreSQL example:
+# driver = "postgres"
+# url = "postgres://microwave:secret@db/microwave"
 
 [search]
 # `embedded` reads the relational store directly and needs no extra service.

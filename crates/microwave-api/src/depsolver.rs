@@ -25,29 +25,31 @@ async fn solve(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "cookbooks")?;
-    require_permission(&state, &auth, &container, Permission::Read)?;
+    let container = container_authz(&state, org, "cookbooks").await?;
+    require_permission(&state, &auth, &container, Permission::Read).await?;
 
     let environment = state
         .store
         .find_environment(&org.id, &environment_name)
+        .await
         .map_err(ApiError::from)?
         .ok_or_else(|| {
             ApiError::not_found(format!("environment '{environment_name}' not found"))
         })?;
-    require_permission(&state, &auth, &environment.authz_id, Permission::Read)?;
+    require_permission(&state, &auth, &environment.authz_id, Permission::Read).await?;
 
     let run_list = match body.get("run_list") {
         None => Vec::new(),
         Some(Value::Array(items)) => items.clone(),
         Some(_) => return Err(invalid_run_list()),
     };
-    let goals = resolve_run_list(&state, &auth, org, &environment_name, &run_list)?;
+    let goals = resolve_run_list(&state, &auth, org, &environment_name, &run_list).await?;
     let environment_constraints = environment_constraints(&environment)?;
 
     let versions = state
         .store
         .list_cookbook_versions(&org.id)
+        .await
         .map_err(ApiError::from)?;
     let world = cookbook_world(&versions)?;
 
@@ -147,7 +149,7 @@ fn environment_constraints(
     Ok(constraints)
 }
 
-fn resolve_run_list(
+async fn resolve_run_list(
     state: &AppState,
     auth: &AuthContext,
     org: &Org,
@@ -166,7 +168,8 @@ fn resolve_run_list(
             &mut BTreeSet::new(),
             &mut targets,
             0,
-        )?;
+        )
+        .await?;
     }
 
     let mut seen = BTreeSet::new();
@@ -178,7 +181,7 @@ fn resolve_run_list(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn collect_run_list_item(
+async fn collect_run_list_item(
     state: &AppState,
     auth: &AuthContext,
     org: &Org,
@@ -206,13 +209,14 @@ fn collect_run_list_item(
             let role = state
                 .store
                 .find_role(&org.id, &name)
+                .await
                 .map_err(ApiError::from)?
                 .ok_or_else(|| ApiError::not_found(format!("role {name}")))?;
-            require_permission(state, auth, &role.authz_id, Permission::Read)?;
+            require_permission(state, auth, &role.authz_id, Permission::Read).await?;
             let value: Value =
                 serde_json::from_str(&role.serialized_object).map_err(|_| ApiError::internal())?;
             for entry in role_run_list(&value, environment_name)? {
-                collect_run_list_item(
+                Box::pin(collect_run_list_item(
                     state,
                     auth,
                     org,
@@ -221,7 +225,8 @@ fn collect_run_list_item(
                     visited_roles,
                     targets,
                     depth + 1,
-                )?;
+                ))
+                .await?;
             }
             visited_roles.remove(&name);
         }

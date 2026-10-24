@@ -64,6 +64,7 @@ async fn list_indexes(
     for data_bag in state
         .store
         .list_data_bags(&org.id)
+        .await
         .map_err(ApiError::from)?
     {
         indexes.insert(
@@ -88,7 +89,7 @@ async fn search(
     let org = organization(&auth)?;
     let hits = execute_search(&state, &auth, org, &index, &params).await?;
 
-    let entries = hydrate(&state, org, &index, &hits.ids)?;
+    let entries = hydrate(&state, org, &index, &hits.ids).await?;
     let rows: Vec<Value> = entries
         .into_iter()
         .map(|mut entry| {
@@ -117,7 +118,7 @@ async fn partial_search(
     let paths = parse_partial_paths(body.map_err(json_rejection)?)?;
     let hits = execute_search(&state, &auth, org, &index, &params).await?;
 
-    let entries = hydrate(&state, org, &index, &hits.ids)?;
+    let entries = hydrate(&state, org, &index, &hits.ids).await?;
     let base = base_url(&headers, &state);
     let rows: Vec<Value> = entries
         .into_iter()
@@ -175,7 +176,7 @@ async fn execute_search(
     params: &SearchParams,
 ) -> Result<ExecutedSearch, ApiError> {
     let kind = IndexKind::from_index(index);
-    authorize_index(state, auth, org, &kind)?;
+    authorize_index(state, auth, org, &kind).await?;
     let query = parse_query(params.q.as_deref())?;
     let start = parse_non_negative("start", params.start.as_deref(), 0)?;
     let rows = parse_non_negative("rows", params.rows.as_deref(), 1000)?;
@@ -200,7 +201,7 @@ async fn execute_search(
     })
 }
 
-fn authorize_index(
+async fn authorize_index(
     state: &AppState,
     auth: &AuthContext,
     org: &Org,
@@ -213,13 +214,14 @@ fn authorize_index(
         IndexKind::Client => "clients",
         IndexKind::DataBag(_) => "data",
     };
-    let container = container_authz(state, org, container_name)?;
-    require_permission(state, auth, &container, Permission::Read)?;
+    let container = container_authz(state, org, container_name).await?;
+    require_permission(state, auth, &container, Permission::Read).await?;
 
     if let IndexKind::DataBag(name) = kind {
         if state
             .store
             .find_data_bag(&org.id, name)
+            .await
             .map_err(ApiError::from)?
             .is_none()
         {
@@ -230,14 +232,14 @@ fn authorize_index(
     Ok(())
 }
 
-fn hydrate(
+async fn hydrate(
     state: &AppState,
     org: &Org,
     index: &str,
     ids: &[String],
 ) -> Result<Vec<index::SearchEntry>, ApiError> {
     let kind = IndexKind::from_index(index);
-    let mut entries = index::load_entries(&state.store, &org.id, &kind)?;
+    let mut entries = index::load_entries(state.store.as_ref(), &org.id, &kind).await?;
     let mut by_id: HashMap<String, index::SearchEntry> = entries
         .drain(..)
         .map(|entry| (entry.id.clone(), entry))

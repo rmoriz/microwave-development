@@ -6,7 +6,9 @@
 //! backend. Callers must treat values as sensitive: only the explicit
 //! `show-secret` command prints them.
 
+use crate::identity::now;
 use crate::sqlite::{SqliteStore, StoreError};
+use rusqlite::OptionalExtension;
 
 /// Group used for the local object-store HMAC secret.
 pub const OBJECT_STORE_SECRET_GROUP: &str = "object_store";
@@ -38,6 +40,48 @@ impl SqliteStore {
             return Err(StoreError::Invalid("secret value must not be empty".into()));
         }
         self.set_kv(&secret_kv_key(group, name), value)
+    }
+
+    /// Insert a secret only when it does not exist yet.
+    ///
+    /// Returns the value that is stored after the call: `value` when this call
+    /// inserted it, or the existing value when another writer won the race.
+    /// This makes first-start bootstrap safe across multiple HA replicas.
+    pub fn set_secret_if_absent(
+        &self,
+        group: &str,
+        name: &str,
+        value: &str,
+    ) -> Result<String, StoreError> {
+        validate_component("secret group", group)?;
+        validate_component("secret name", name)?;
+        if value.is_empty() {
+            return Err(StoreError::Invalid("secret value must not be empty".into()));
+        }
+        let key = secret_kv_key(group, name);
+        let connection = self.connection();
+        // One statement handles both insert and conflict, and returns the
+        // value actually retained by the row. A legacy NULL value is treated
+        // as absent and filled with the candidate.
+        let stored: Option<String> = connection
+            .query_row(
+                "INSERT INTO kvpair (key, value, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE
+                 SET value = COALESCE(kvpair.value, excluded.value),
+                     updated_at = CASE
+                         WHEN kvpair.value IS NULL THEN excluded.updated_at
+                         ELSE kvpair.updated_at
+                     END
+                 RETURNING value",
+                rusqlite::params![key, value, now()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        stored.ok_or_else(|| {
+            StoreError::Invalid(format!(
+                "secret {group}.{name} was not retained by set_secret_if_absent"
+            ))
+        })
     }
 
     /// Remove a secret. Removing a missing secret is reported as `NotFound` so

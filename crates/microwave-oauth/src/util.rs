@@ -121,20 +121,27 @@ pub fn session_token(headers: &HeaderMap) -> Option<String> {
         })
 }
 
-pub fn current_user(state: &OAuthState, headers: &HeaderMap) -> Result<Option<User>, OAuthError> {
+pub async fn current_user(
+    state: &OAuthState,
+    headers: &HeaderMap,
+) -> Result<Option<User>, OAuthError> {
     if let Some(token) = session_token(headers) {
-        if let Some(username) = state.store.find_id_session(&token)? {
-            return state.store.find_user(&username).map_err(OAuthError::from);
+        if let Some(username) = state.store.find_id_session(&token).await? {
+            return state
+                .store
+                .find_user(&username)
+                .await
+                .map_err(OAuthError::from);
         }
     }
     if let Some(token) = bearer_token(headers) {
-        return bearer_user(state, &token);
+        return bearer_user(state, &token).await;
     }
     Ok(None)
 }
 
-pub fn bearer_user(state: &OAuthState, token: &str) -> Result<Option<User>, OAuthError> {
-    let Some(access_token) = state.store.find_oauth_access_token(token)? else {
+pub async fn bearer_user(state: &OAuthState, token: &str) -> Result<Option<User>, OAuthError> {
+    let Some(access_token) = state.store.find_oauth_access_token(token).await? else {
         return Ok(None);
     };
     if !token_is_valid(&access_token) {
@@ -146,16 +153,18 @@ pub fn bearer_user(state: &OAuthState, token: &str) -> Result<Option<User>, OAut
     state
         .store
         .find_user_by_id(&resource_owner_id)
+        .await
         .map_err(OAuthError::from)
 }
 
-pub fn require_user(state: &OAuthState, headers: &HeaderMap) -> Result<User, OAuthError> {
-    current_user(state, headers)?
+pub async fn require_user(state: &OAuthState, headers: &HeaderMap) -> Result<User, OAuthError> {
+    current_user(state, headers)
+        .await?
         .ok_or_else(|| OAuthError::unauthorized("authentication is required"))
 }
 
-pub fn require_admin(state: &OAuthState, headers: &HeaderMap) -> Result<User, OAuthError> {
-    let user = require_user(state, headers)?;
+pub async fn require_admin(state: &OAuthState, headers: &HeaderMap) -> Result<User, OAuthError> {
+    let user = require_user(state, headers).await?;
     if user.admin || user.username == state.config.auth.superuser_name {
         Ok(user)
     } else {
@@ -268,10 +277,11 @@ pub fn page(title: &str, body: &str) -> Html<String> {
     page_with_token(title, body, &csrf_token())
 }
 
-pub fn user_json(state: &OAuthState, user: &User) -> Value {
+pub async fn user_json(state: &OAuthState, user: &User) -> Value {
     let public_key = state
         .store
         .find_actor_keys(&user.id, microwave_store::ActorType::User)
+        .await
         .ok()
         .and_then(|keys| {
             keys.iter()

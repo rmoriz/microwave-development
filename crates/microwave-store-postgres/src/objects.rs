@@ -223,6 +223,14 @@ impl ObjectRepository for PostgresStore {
             .map_err(db)
     }
 
+    async fn count_nodes(&self) -> Result<u64, StoreError> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes")
+            .fetch_one(self.pool())
+            .await
+            .map_err(db)?;
+        Ok(count as u64)
+    }
+
     async fn list_nodes_in_environment(
         &self,
         org_id: &str,

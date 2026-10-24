@@ -1,27 +1,30 @@
 # microwave-store-postgres
 
-PostgreSQL metadata-store backend for Microwave Server (first slice).
+PostgreSQL metadata-store backend for Microwave Server.
 
 This crate implements the backend-neutral repository traits from
 `microwave-store` against a schema equivalent to the unified SQLite schema in
-`crates/microwave-store/migrations/0001_initial.sql`. It is intentionally
-additive: the SQLite backend, the API crate, and the `AppState` wiring are
-unchanged.
+`crates/microwave-store/migrations/0001_initial.sql`. The HTTP server selects
+it when `database.driver = "postgres"`; SQLite remains the default.
 
 ## What is implemented
 
 | Domain | Repository trait | Methods |
 | --- | --- | --- |
 | Orgs, users, clients, actor keys, principals | `IdentityRepository` | create/update/find/list/delete, profile patches, case-insensitive email uniqueness, key rotation |
-| Authz graph and ACLs | `AuthzRepository` | entities, containers, groups, membership, nested groups, cycle detection, ACL read/replace, recursive permission checks, ACL target lookup |
+| Authz graph and ACLs | `AuthzRepository` | entities, containers, groups, membership, nested and global groups, cycle detection, ACL read/replace, recursive permission checks, ACL target lookup, org read-access ACEs |
 | Nodes, roles, environments, data bags/items | `ObjectRepository` | full CRUD, environment/policy indexes, container-inherited ACLs |
-| Sandboxes and checksums | `SandboxRepository` | create sandbox, upload-needed checks, checksum commit, lookup |
-| Cookbooks | `CookbookRepository` | create/find/list/delete versions with checksum links |
+| Sandboxes and checksums | `SandboxRepository` | explicit sandbox rows (including empty sandboxes), upload-needed checks, checksum commit, lookup |
+| Cookbooks | `CookbookRepository` | create (including `frozen`)/find/list/update/delete versions with checksum links and purge lists |
+| Cookbook artifacts | `ArtifactRepository` | list/find artifacts and identifiers, create/find/delete versions with checksums and purge lists |
 | Policyfiles | `PolicyRepository` | policies, revisions, policy groups and group/revision associations |
+| Organization membership | `MembershipRepository` | org users, associations, `users`/`admins` groups, invitations and accept/reject |
+| OAuth | `OAuthRepository` | applications, grants, access/refresh tokens, ID sessions and password-reset tokens (sessions and resets use `kvpair`, mirroring SQLite) |
+| Key/value | `KvRepository` | raw `kvpair` access and the maintenance flag |
+| Secrets | `SecretsRepository` | namespaced operator secrets under `secret:<group>:<name>` |
 
-PostgreSQL tables that are migrated but do **not** yet have repository methods:
-`oauth_applications`, `oauth_access_grants`, `oauth_access_tokens`, `kvpair`,
-`telemetry`, `org_user_invites`, `cookbook_artifacts*`.
+`PostgresStore` implements the full contract, so it satisfies
+`microwave_store::MetadataStore`.
 
 ## Schema choices
 
@@ -38,7 +41,9 @@ PostgreSQL tables that are migrated but do **not** yet have repository methods:
 - **ACL and key maintenance stays in Rust transactions** — no triggers or
   PL/pgSQL, matching architectural guardrail 2 in the design document.
 - The embedded migration is idempotent and guarded by
-  `pg_advisory_xact_lock` so several replicas can start at once.
+  `pg_advisory_xact_lock` so several replicas can start at once. It adds the
+  `sandboxes` table, resolves global groups from `global_groups`, and widens
+  legacy OAuth `expires_in` columns to `BIGINT`.
 
 ## Usage
 
@@ -72,31 +77,32 @@ green on machines without Docker.
 Each test uses a unique org/name suffix so the suite can run in parallel
 against one database.
 
-## Remaining work: making `AppState` backend-agnostic
+## Runtime integration
 
-The trait already lives in `microwave-store` (`src/backend.rs`), not in this
-backend crate, so the API can depend on the contract rather than on PostgreSQL.
-`MetadataStore` is a blanket supertrait over the six repository traits.
+`AppState` holds `Arc<dyn MetadataStore>`, so the API handlers, OAuth/identity
+surface, embedded search, authorization policy, and bootstrap use the same code
+for both backends. The server selects the backend in
+`bin/microwave-server/src/main.rs`:
 
-To finish the integration:
+```sh
+MW_DATABASE__DRIVER=postgres \
+MW_DATABASE__URL=postgres://microwave:secret@db/microwave \
+microwave-server serve
+```
 
-1. **Implement the repository traits for `SqliteStore`.** The methods are
-   currently inherent and synchronous; add `async_trait` forwarding impls.
-   Keep the inherent methods for existing callers during the transition.
-2. **Add the remaining repository traits.** `OAuthRepository`
-   (`create_application`, token/grant CRUD, revocation), `KvRepository`
-   (`get/set/delete`), `MembershipRepository` (invites, org-user association
-   listing), `MigrationRepository` (export/import helpers) and a read-side
-   `SearchDocumentSource` for the Tantivy indexer. The PostgreSQL schema for
-   OAuth and KV already exists.
-3. **Change `AppState`.** Replace `pub store: Arc<SqliteStore>` with
-   `pub store: Arc<dyn MetadataStore>` (all methods are object-safe through
-   `async_trait`). `AuthContext` and handlers then operate on the trait.
-4. **Abstract search construction.** `microwave-api::state::build_search_backend`
-   currently accepts `Arc<SqliteStore>`; switch it to the read-side trait above.
-5. **Select the backend in configuration.** Add `metadata.backend =
-   "sqlite" | "postgres"` plus a `database_url` to `microwave-config`, and
-   construct the appropriate store at startup. Default remains SQLite.
-6. **Operational follow-ups.** Connection retry/backoff, per-query timeouts,
-   advisory locks for cluster-wide cleanup jobs, and backup/restore support for
-   PostgreSQL (the current backup path is SQLite `VACUUM INTO`).
+`AppState::from_sqlite` keeps the concrete SQLite handle available for tests
+and SQLite-only helpers; `AppState::new` is backend-neutral.
+`SecretsRepository::set_secret_if_absent` provides the atomic first-start
+bootstrap (`INSERT ... ON CONFLICT DO NOTHING`), so several replicas starting
+against one database converge on one object-store secret.
+
+## Deferred work
+
+- `microwave-ctl` and `microwave-migrate` still open SQLite stores only.
+  PostgreSQL administration uses `psql`; snapshot import/export and key
+  rotation are not ported.
+- `microwave-ctl backup`/`restore` are SQLite-only (`VACUUM INTO`). Use
+  `pg_dump` plus the object-store backup for PostgreSQL deployments.
+- Multi-replica HA has not been load-validated. Connection retry/backoff,
+  per-query timeouts, and advisory locks for cluster-wide cleanup jobs remain
+  follow-ups.

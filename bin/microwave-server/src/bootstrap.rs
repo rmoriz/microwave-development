@@ -1,7 +1,7 @@
 use microwave_config::Config;
 use microwave_crypto::{generate_rsa_keypair, hash_password};
 use microwave_store::{
-    ActorType, SqliteStore, BOOKSHELF_ACCESS_KEY_ID, BOOKSHELF_SECRET_ACCESS_KEY,
+    ActorType, MetadataStore, StoreError, BOOKSHELF_ACCESS_KEY_ID, BOOKSHELF_SECRET_ACCESS_KEY,
     BOOKSHELF_SECRET_GROUP, OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME,
 };
 use std::path::Path;
@@ -12,36 +12,57 @@ use uuid::Uuid;
 /// On first start this creates `pivotal`, writes its private key to
 /// `<data_dir>/pivotal.pem`, and writes a random login password to
 /// `<data_dir>/pivotal.password`. Neither file is logged.
-pub fn ensure_superuser(
-    store: &SqliteStore,
+///
+/// Several replicas may start at once. When another replica wins the
+/// `create_user` race this re-reads the existing row instead of failing.
+pub async fn ensure_superuser(
+    store: &dyn MetadataStore,
     config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = Path::new(&config.paths.data_dir);
     std::fs::create_dir_all(data_dir)?;
 
-    let user = match store.find_user("pivotal")? {
+    let user = match store.find_user("pivotal").await? {
         Some(user) => user,
         None => {
             let password = format!("mw-{}", Uuid::new_v4().simple());
             let hash = hash_password(&password)?;
-            let user = store.create_user(
-                "pivotal",
-                "pivotal@localhost",
-                &hash.hash_type,
-                &hash.hash,
-                &hash.salt,
-                true,
-            )?;
-            write_private_file(&data_dir.join("pivotal.password"), &password)?;
-            user
+            let created = store
+                .create_user(
+                    "pivotal",
+                    "pivotal@localhost",
+                    &hash.hash_type,
+                    &hash.hash,
+                    &hash.salt,
+                    true,
+                )
+                .await;
+            match created {
+                Ok(user) => {
+                    write_private_file(&data_dir.join("pivotal.password"), &password)?;
+                    user
+                }
+                Err(StoreError::Conflict(_)) => store
+                    .find_user("pivotal")
+                    .await?
+                    .ok_or("superuser creation lost a race but the user could not be read back")?,
+                Err(error) => return Err(error.into()),
+            }
         }
     };
 
-    let keys = store.find_actor_keys(&user.id, ActorType::User)?;
+    let keys = store.find_actor_keys(&user.id, ActorType::User).await?;
     if keys.is_empty() {
         let (private_key, public_key) = generate_rsa_keypair()?;
-        store.add_actor_key(&user.id, ActorType::User, "default", &public_key)?;
-        write_private_file(&data_dir.join("pivotal.pem"), &private_key)?;
+        match store
+            .add_actor_key(&user.id, ActorType::User, "default", &public_key)
+            .await
+        {
+            Ok(()) => write_private_file(&data_dir.join("pivotal.pem"), &private_key)?,
+            // Another replica already created the default key.
+            Err(StoreError::Conflict(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
     }
 
     Ok(())
@@ -63,9 +84,13 @@ fn write_private_file(path: &Path, contents: &str) -> Result<(), std::io::Error>
 /// in the metadata store, then `<data_dir>/objectstore.secret`, and finally a
 /// freshly generated value. File-backed values are copied into the secret
 /// store so `microwave-ctl show-secret object_store secret` can report them.
-pub fn ensure_object_store_secret(
+///
+/// The store write uses [`MetadataStore`]'s atomic `set_secret_if_absent`
+/// primitive, so concurrent first starts of several replicas converge on a
+/// single secret instead of overwriting each other.
+pub async fn ensure_object_store_secret(
     config: &Config,
-    store: &SqliteStore,
+    store: &dyn MetadataStore,
 ) -> Result<String, Box<dyn std::error::Error>> {
     if let Some(secret) = &config.object_store.secret {
         if !secret.is_empty() {
@@ -73,14 +98,17 @@ pub fn ensure_object_store_secret(
         }
     }
 
-    if let Some(secret) = store.get_secret(OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME)? {
+    if let Some(secret) = store
+        .get_secret(OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME)
+        .await?
+    {
         if !secret.trim().is_empty() {
             return Ok(secret);
         }
     }
 
     let path = Path::new(&config.paths.data_dir).join("objectstore.secret");
-    let secret = if path.is_file() {
+    let candidate = if path.is_file() {
         let secret = std::fs::read_to_string(&path)?;
         if secret.trim().is_empty() {
             format!("os-{}", Uuid::new_v4().simple())
@@ -90,16 +118,42 @@ pub fn ensure_object_store_secret(
     } else {
         format!("os-{}", Uuid::new_v4().simple())
     };
+    let secret = store
+        .set_secret_if_absent(
+            OBJECT_STORE_SECRET_GROUP,
+            OBJECT_STORE_SECRET_NAME,
+            &candidate,
+        )
+        .await?;
+    // A legacy row may contain only whitespace. `get_secret` treats it as
+    // absent, but `set_secret_if_absent` preserves it, so replace it instead
+    // of handing `LocalObjectStore` an empty HMAC key.
+    let secret = if secret.trim().is_empty() {
+        store
+            .set_secret(
+                OBJECT_STORE_SECRET_GROUP,
+                OBJECT_STORE_SECRET_NAME,
+                &candidate,
+            )
+            .await?;
+        candidate
+    } else {
+        if secret != candidate {
+            tracing::info!(
+                "another replica initialized the object-store secret; using the stored value"
+            );
+        }
+        secret
+    };
     write_private_file(&path, &secret)?;
-    store.set_secret(OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME, &secret)?;
     Ok(secret)
 }
 
 /// Fill S3/Garage credentials from the secret store when configuration does
 /// not provide them. Explicit configuration always wins.
-pub fn apply_bookshelf_secrets(
+pub async fn apply_bookshelf_secrets(
     config: &mut Config,
-    store: &SqliteStore,
+    store: &dyn MetadataStore,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if config
         .object_store
@@ -107,8 +161,9 @@ pub fn apply_bookshelf_secrets(
         .as_deref()
         .is_none_or(str::is_empty)
     {
-        config.object_store.access_key =
-            store.get_secret(BOOKSHELF_SECRET_GROUP, BOOKSHELF_ACCESS_KEY_ID)?;
+        config.object_store.access_key = store
+            .get_secret(BOOKSHELF_SECRET_GROUP, BOOKSHELF_ACCESS_KEY_ID)
+            .await?;
     }
     if config
         .object_store
@@ -116,8 +171,78 @@ pub fn apply_bookshelf_secrets(
         .as_deref()
         .is_none_or(str::is_empty)
     {
-        config.object_store.secret_key =
-            store.get_secret(BOOKSHELF_SECRET_GROUP, BOOKSHELF_SECRET_ACCESS_KEY)?;
+        config.object_store.secret_key = store
+            .get_secret(BOOKSHELF_SECRET_GROUP, BOOKSHELF_SECRET_ACCESS_KEY)
+            .await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use microwave_store::SqliteStore;
+
+    fn scratch_config(data_dir: &Path) -> Config {
+        let mut config = Config::default();
+        config.paths.data_dir = data_dir.to_string_lossy().into_owned();
+        config.object_store.secret = None;
+        config
+    }
+
+    #[tokio::test]
+    async fn replaces_a_whitespace_only_object_store_secret() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .set_secret(OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME, "   ")
+            .unwrap();
+        let config = scratch_config(data_dir.path());
+
+        let secret = ensure_object_store_secret(&config, &store)
+            .await
+            .expect("bootstrap secret");
+
+        assert!(!secret.trim().is_empty(), "empty HMAC key would be unsafe");
+        assert!(secret.starts_with("os-"));
+        assert_eq!(
+            store
+                .get_secret(OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME)
+                .unwrap()
+                .as_deref(),
+            Some(secret.as_str()),
+            "the store must be healed, not just the return value"
+        );
+        assert_eq!(
+            std::fs::read_to_string(data_dir.path().join("objectstore.secret")).unwrap(),
+            secret
+        );
+    }
+
+    #[tokio::test]
+    async fn reuses_an_existing_non_empty_object_store_secret() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .set_secret(
+                OBJECT_STORE_SECRET_GROUP,
+                OBJECT_STORE_SECRET_NAME,
+                "existing-secret",
+            )
+            .unwrap();
+        let config = scratch_config(data_dir.path());
+
+        let secret = ensure_object_store_secret(&config, &store)
+            .await
+            .expect("bootstrap secret");
+
+        assert_eq!(secret, "existing-secret");
+        assert_eq!(
+            store
+                .get_secret(OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME)
+                .unwrap()
+                .as_deref(),
+            Some("existing-secret")
+        );
+    }
 }

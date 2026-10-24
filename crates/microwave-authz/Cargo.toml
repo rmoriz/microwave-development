@@ -8,3 +8,6 @@ rust-version.workspace = true
 [dependencies]
 microwave-store = { path = "../microwave-store" }
 thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
