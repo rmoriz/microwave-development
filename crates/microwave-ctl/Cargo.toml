@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+chrono.workspace = true
 clap.workspace = true
 microwave-authz = { path = "../microwave-authz" }
 microwave-config = { path = "../microwave-config" }

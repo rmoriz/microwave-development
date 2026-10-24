@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -14,6 +14,16 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Command,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum MaintenanceAction {
+    /// Enable maintenance mode.
+    On,
+    /// Disable maintenance mode.
+    Off,
+    /// Report the current maintenance mode.
+    Status,
 }
 
 #[derive(Debug, Subcommand)]
@@ -68,8 +78,130 @@ pub enum Command {
     /// Remove a user from an organization.
     OrgUserRemove { org: String, user: String },
 
+    /// Grant a user platform administrator (server-admin) privileges.
+    GrantServerAdminPermissions { user: String },
+    /// Remove platform administrator (server-admin) privileges from a user.
+    RemoveServerAdminPermissions { user: String },
+    /// List users with platform administrator (server-admin) privileges.
+    ListServerAdmins,
+
     /// Generate and set a new password, printing it once.
     Password { user: String },
+
+    /// Create a new client key. The private key is printed once.
+    AddClientKey {
+        /// Organization name.
+        org: String,
+        /// Client name.
+        client: String,
+        /// Key name. Defaults to the fingerprint of the key.
+        #[arg(long = "key-name", value_name = "NAME")]
+        key_name: Option<String>,
+        /// Expiration date (`infinity` or an ISO-8601 timestamp).
+        #[arg(
+            long = "expiration-date",
+            value_name = "DATE",
+            default_value = "infinity"
+        )]
+        expiration_date: String,
+        /// Import an existing PEM public key instead of generating a keypair.
+        #[arg(long = "public-key-path", value_name = "PATH")]
+        public_key_path: Option<PathBuf>,
+    },
+    /// Create a new user key. The private key is printed once.
+    AddUserKey {
+        /// Username.
+        user: String,
+        /// Key name. Defaults to the fingerprint of the key.
+        #[arg(long = "key-name", value_name = "NAME")]
+        key_name: Option<String>,
+        /// Expiration date (`infinity` or an ISO-8601 timestamp).
+        #[arg(
+            long = "expiration-date",
+            value_name = "DATE",
+            default_value = "infinity"
+        )]
+        expiration_date: String,
+        /// Import an existing PEM public key instead of generating a keypair.
+        #[arg(long = "public-key-path", value_name = "PATH")]
+        public_key_path: Option<PathBuf>,
+    },
+    /// List keys for a client.
+    ListClientKeys {
+        /// Organization name.
+        org: String,
+        /// Client name.
+        client: String,
+        /// Include expiration dates and public keys.
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// List keys for a user.
+    ListUserKeys {
+        /// Username.
+        user: String,
+        /// Include expiration dates and public keys.
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    /// Delete a client key.
+    DeleteClientKey {
+        /// Organization name.
+        org: String,
+        /// Client name.
+        client: String,
+        /// Key name.
+        key: String,
+    },
+    /// Delete a user key.
+    DeleteUserKey {
+        /// Username.
+        user: String,
+        /// Key name.
+        key: String,
+    },
+
+    /// Print a secret. This is the only command that reveals secret values.
+    ShowSecret {
+        /// Credential group, for example `object_store` or `bookshelf`.
+        group: String,
+        /// Credential name, for example `secret`.
+        name: String,
+    },
+    /// Set or replace a secret.
+    SetSecret {
+        /// Credential group, for example `object_store` or `bookshelf`.
+        group: String,
+        /// Credential name, for example `secret`.
+        name: String,
+        /// Secret value. Prefer a shell without history expansion; the value
+        /// is not echoed by the command.
+        value: String,
+    },
+    /// Remove a secret.
+    RemoveSecret {
+        /// Credential group, for example `object_store` or `bookshelf`.
+        group: String,
+        /// Credential name, for example `secret`.
+        name: String,
+    },
+
+    /// Control maintenance mode.
+    Maintenance {
+        /// `on`, `off`, or `status`.
+        action: MaintenanceAction,
+    },
+
+    /// Load configuration and run preflight checks.
+    CheckConfig,
+    /// Show the status of high-availability services.
+    HaStatus,
+    /// Open `sqlite3` (or `psql`) against the configured database.
+    Psql {
+        /// Arguments passed through to `sqlite3` or `psql`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 
     /// Report the search reindex status.
     Reindex {

@@ -9,18 +9,23 @@ pub fn status(context: &Context) -> Result<(), CtlError> {
     context.prepare_data_dir()?;
 
     println!("data_dir: {}", context.data_dir.display());
-    println!("database: {}", context.database_path.display());
+    println!("database_driver: {}", driver_name(&context.config));
+    match &context.database_path {
+        Some(path) => println!("database: {}", path.display()),
+        None => println!("database: postgresql (configured)"),
+    }
 
-    let (readable, superuser_present) = if context.database_path.is_file() {
-        match context.open_store() {
+    let (readable, superuser_present) = match &context.database_path {
+        Some(path) if path.is_file() => match context.open_store() {
             Ok(store) => {
                 let present = store.find_user(context.superuser_name())?.is_some();
-                (true, present)
+                ("true", present)
             }
-            Err(_) => (false, false),
-        }
-    } else {
-        (false, false)
+            Err(_) => ("false", false),
+        },
+        Some(_) => ("false", false),
+        // Status never connects to PostgreSQL; report the driver instead.
+        None => ("unknown", false),
     };
 
     println!("database_readable: {readable}");
@@ -34,6 +39,13 @@ pub fn status(context: &Context) -> Result<(), CtlError> {
         }
     );
     Ok(())
+}
+
+fn driver_name(config: &microwave_config::Config) -> &'static str {
+    match config.database.driver {
+        microwave_config::DatabaseDriver::Sqlite => "sqlite",
+        microwave_config::DatabaseDriver::Postgres => "postgresql",
+    }
 }
 
 pub fn user_create(
@@ -196,22 +208,80 @@ pub fn reindex(org: Option<&str>) -> Result<(), CtlError> {
 
 pub fn migrate_from_legacy(context: &Context, input: &Path) -> Result<(), CtlError> {
     context.prepare_data_dir()?;
-    microwave_migrate::import_database(&context.database_path, input)?;
+    let database_path = context.sqlite_path()?;
+    microwave_migrate::import_database(database_path, input)?;
     println!(
         "Imported migration snapshot from {} into {}",
         input.display(),
-        context.database_path.display()
+        database_path.display()
     );
     Ok(())
 }
 
-fn find_user(store: &SqliteStore, username: &str) -> Result<User, CtlError> {
+/// Grant platform administrator privileges by setting `users.admin`.
+///
+/// The unified schema does not have a global `server-admins` group: the CLI
+/// and HTTP surfaces already treat `users.admin` as the server-admin flag, so
+/// these commands change that column rather than maintaining a parallel group.
+pub fn grant_server_admin_permissions(context: &Context, username: &str) -> Result<(), CtlError> {
+    let store = context.open_store()?;
+    let user = find_user(&store, username)?;
+    if user.admin {
+        println!("User {username} is already a server-admin.");
+        return Ok(());
+    }
+
+    store.update_user(username, None, None, Some(true))?;
+    println!(
+        "User {username} was added to server-admins. This user can now list, read, create, and delete users (even for organizations they are not members of)."
+    );
+    Ok(())
+}
+
+/// Remove platform administrator privileges by clearing `users.admin`.
+///
+/// The configured superuser cannot be demoted; doing so would leave the
+/// deployment without an operator that can manage other administrators.
+pub fn remove_server_admin_permissions(context: &Context, username: &str) -> Result<(), CtlError> {
+    if username.eq_ignore_ascii_case(context.superuser_name()) {
+        return Err(CtlError::message(format!(
+            "You cannot remove the base superuser {} from server-admins.",
+            context.superuser_name()
+        )));
+    }
+
+    let store = context.open_store()?;
+    let user = find_user(&store, username)?;
+    if !user.admin {
+        return Err(CtlError::message(format!(
+            "User {username} is not a member of server-admins so it cannot be removed."
+        )));
+    }
+
+    store.update_user(username, None, None, Some(false))?;
+    println!(
+        "User {username} was removed from the server-admins group. This user can no longer list, read, create, and delete users except where they have default organization permissions."
+    );
+    Ok(())
+}
+
+pub fn list_server_admins(context: &Context) -> Result<(), CtlError> {
+    let store = context.open_store()?;
+    for user in store.list_users()? {
+        if user.admin {
+            println!("{}", user.username);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn find_user(store: &SqliteStore, username: &str) -> Result<User, CtlError> {
     store
         .find_user(username)?
         .ok_or_else(|| StoreError::NotFound(format!("user {username}")).into())
 }
 
-fn find_org(store: &SqliteStore, name: &str) -> Result<Org, CtlError> {
+pub(crate) fn find_org(store: &SqliteStore, name: &str) -> Result<Org, CtlError> {
     store
         .find_org(name)?
         .ok_or_else(|| StoreError::NotFound(format!("organization {name}")).into())
