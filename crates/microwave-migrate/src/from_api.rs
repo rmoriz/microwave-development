@@ -141,10 +141,12 @@ impl Crawler {
         // Fail before the first request when the key is unusable.
         microwave_crypto::parse_private_key_pem(&private_key)?;
 
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(std::time::Duration::from_secs(15))
-            .timeout(std::time::Duration::from_secs(120))
-            .build();
+        let agent = ureq::Agent::config_builder()
+            .timeout_connect(Some(std::time::Duration::from_secs(15)))
+            .timeout_global(Some(std::time::Duration::from_secs(120)))
+            .http_status_as_error(false)
+            .build()
+            .new_agent();
 
         Ok(Self {
             agent,
@@ -1276,12 +1278,12 @@ impl Crawler {
         let mut request = self
             .agent
             .get(url)
-            .set("Accept", "application/json")
-            .set("X-Ops-Sign", "algorithm=sha256;version=1.3;")
-            .set("X-Ops-Userid", &self.client_name)
-            .set("X-Ops-Timestamp", &signed.timestamp)
-            .set("X-Ops-Content-Hash", &signed.content_hash)
-            .set("X-Ops-Server-API-Version", &self.api_version);
+            .header("Accept", "application/json")
+            .header("X-Ops-Sign", "algorithm=sha256;version=1.3;")
+            .header("X-Ops-Userid", &self.client_name)
+            .header("X-Ops-Timestamp", &signed.timestamp)
+            .header("X-Ops-Content-Hash", &signed.content_hash)
+            .header("X-Ops-Server-API-Version", &self.api_version);
 
         let encoded = STANDARD.encode(&signed.signature);
         for (index, chunk) in encoded.as_bytes().chunks(60).enumerate() {
@@ -1290,28 +1292,25 @@ impl Crawler {
                     url: url.to_string(),
                     message: error.to_string(),
                 })?;
-            request = request.set(&format!("X-Ops-Authorization-{}", index + 1), chunk);
+            request = request.header(format!("X-Ops-Authorization-{}", index + 1).as_str(), chunk);
         }
 
         match request.call() {
-            Ok(response) => {
-                let status = response.status();
+            Ok(mut response) => {
+                let status = response.status().as_u16();
                 let body =
                     response
-                        .into_string()
+                        .body_mut()
+                        .read_to_string()
                         .map_err(|error| MigrateError::InvalidApiResponse {
                             url: url.to_string(),
                             message: error.to_string(),
                         })?;
                 Ok((status, body))
             }
-            Err(ureq::Error::Status(status, response)) => {
-                let body = response.into_string().unwrap_or_default();
-                Ok((status, body))
-            }
-            Err(ureq::Error::Transport(transport)) => Err(MigrateError::Transport {
+            Err(error) => Err(MigrateError::Transport {
                 url: url.to_string(),
-                message: transport.to_string(),
+                message: error.to_string(),
             }),
         }
     }

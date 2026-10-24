@@ -84,10 +84,12 @@ impl S3ObjectStore {
             ));
         }
 
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(10))
-            .timeout(Duration::from_secs(60))
-            .build();
+        let agent = ureq::Agent::config_builder()
+            .timeout_connect(Some(Duration::from_secs(10)))
+            .timeout_global(Some(Duration::from_secs(60)))
+            .http_status_as_error(false)
+            .build()
+            .new_agent();
         Ok(Self { config, agent })
     }
 
@@ -241,24 +243,41 @@ impl S3ObjectStore {
         method: &str,
         target: &Target,
         body: &[u8],
-    ) -> Result<ureq::Response, ObjectStoreError> {
+    ) -> Result<http::Response<ureq::Body>, ObjectStoreError> {
         let headers = self.request_headers(method, target, body, Utc::now());
-        let mut request = self.agent.request(method, &target.url);
-        for (name, value) in &headers {
-            request = request.set(name, value);
+        let response = match method {
+            "GET" => with_headers(self.agent.get(&target.url), &headers).call(),
+            "HEAD" => with_headers(self.agent.head(&target.url), &headers).call(),
+            "DELETE" => with_headers(self.agent.delete(&target.url), &headers).call(),
+            "PUT" => with_headers(self.agent.put(&target.url), &headers).send(body),
+            "POST" => with_headers(self.agent.post(&target.url), &headers).send(body),
+            _ => {
+                return Err(ObjectStoreError::InvalidConfig(format!(
+                    "unsupported HTTP method {method}"
+                )))
+            }
         }
-        let result = if method == "PUT" || method == "POST" {
-            request.send_bytes(body)
-        } else {
-            request.call()
-        };
+        .map_err(|error| ObjectStoreError::Http(error.to_string()))?;
 
-        result.map_err(|error| match error {
-            ureq::Error::Status(404, _) => ObjectStoreError::NotFound,
-            ureq::Error::Status(status, _) => ObjectStoreError::HttpStatus(status),
-            ureq::Error::Transport(transport) => ObjectStoreError::Http(transport.to_string()),
-        })
+        let status = response.status().as_u16();
+        if status == 404 {
+            return Err(ObjectStoreError::NotFound);
+        }
+        if !(200..300).contains(&status) {
+            return Err(ObjectStoreError::HttpStatus(status));
+        }
+        Ok(response)
     }
+}
+
+fn with_headers<B>(
+    mut request: ureq::RequestBuilder<B>,
+    headers: &[(String, String)],
+) -> ureq::RequestBuilder<B> {
+    for (name, value) in headers {
+        request = request.header(name.as_str(), value.as_str());
+    }
+    request
 }
 
 impl ObjectStore for S3ObjectStore {
@@ -278,14 +297,11 @@ impl ObjectStore for S3ObjectStore {
 
     fn get(&self, organization_id: &str, checksum: &str) -> Result<Vec<u8>, ObjectStoreError> {
         let target = self.target(&object_key(organization_id, checksum));
-        let response = self.execute("GET", &target, &[])?;
-        let mut data = Vec::new();
-        use std::io::Read;
+        let mut response = self.execute("GET", &target, &[])?;
         response
-            .into_reader()
-            .read_to_end(&mut data)
-            .map_err(ObjectStoreError::Io)?;
-        Ok(data)
+            .body_mut()
+            .read_to_vec()
+            .map_err(|error| ObjectStoreError::Http(error.to_string()))
     }
 
     fn exists(&self, organization_id: &str, checksum: &str) -> bool {
