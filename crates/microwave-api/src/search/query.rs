@@ -209,10 +209,19 @@ fn field_name_matches(pattern: &str, name: &str) -> bool {
 }
 
 fn value_matches(pattern: &str, candidate: &str, bare: bool) -> bool {
-    if pattern.contains('*') || pattern.contains('?') {
+    if bare {
+        // Upstream evaluates bare terms against the whitespace-tokenized
+        // `content` field. Match whole tokens only, so `bar` does not match
+        // the `foo-bar` token (Chef's `foo* AND NOT bar` case).
+        candidate.split_whitespace().any(|token| {
+            if pattern.contains('*') || pattern.contains('?') {
+                glob_match(pattern, token)
+            } else {
+                pattern.eq_ignore_ascii_case(token)
+            }
+        })
+    } else if pattern.contains('*') || pattern.contains('?') {
         glob_match(pattern, candidate)
-    } else if bare {
-        candidate.to_lowercase().contains(&pattern.to_lowercase())
     } else {
         pattern.eq_ignore_ascii_case(candidate)
     }
@@ -702,13 +711,34 @@ mod tests {
             ("+name:web1", true),
             ("-name:web1", false),
             ("*:ubuntu", true),
-            ("apache", true),
+            ("hello", true),
+            ("apache", false),
         ];
 
         for (query, expected) in cases {
             let parsed = Query::parse(query).unwrap();
             assert_eq!(parsed.matches(&document), expected, "query {query}");
         }
+    }
+
+    #[test]
+    fn bare_terms_match_whitespace_tokens_not_substrings() {
+        let foo = fields(&[("id", "foo"), ("name", "data_bag_item_x_foo")]);
+        let foo_bar = fields(&[("id", "foo-bar"), ("name", "data_bag_item_x_foo-bar")]);
+
+        let query = Query::parse("id:foo* AND NOT bar").unwrap();
+        assert!(query.matches(&foo));
+        assert!(
+            query.matches(&foo_bar),
+            "bare `bar` must not match the foo-bar token"
+        );
+
+        let query = Query::parse("bar").unwrap();
+        assert!(!query.matches(&foo_bar));
+        assert!(Query::parse("foo-bar").unwrap().matches(&foo_bar));
+
+        let query = Query::parse("world").unwrap();
+        assert!(query.matches(&fields(&[("description", "hello world")])));
     }
 
     #[test]

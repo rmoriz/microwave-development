@@ -200,6 +200,10 @@ data_dir = "$data_dir"
 [database]
 driver = "sqlite"
 url = "sqlite://$database"
+
+[license]
+node_license = 25
+upgrade_url = "https://www.chef.io/pricing"
 EOF
 
   echo

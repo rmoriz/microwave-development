@@ -287,17 +287,25 @@ async fn delete_client(
 
 async fn get_principal(
     State(state): State<AppState>,
-    Extension(auth): Extension<AuthContext>,
     Extension(api_version): Extension<ApiVersion>,
-    Path((_organization, name)): Path<(String, String)>,
+    Path((organization_name, name)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
-    let org = organization(&auth)?;
+    let org = state
+        .store
+        .find_org(&organization_name)
+        .map_err(ApiError::from)?
+        .ok_or_else(|| {
+            ApiError::not_found_object("org", format!("Cannot find org {organization_name}"))
+        })?;
     let principals = state
         .store
         .find_principals(Some(&org.id), &name)
         .map_err(ApiError::from)?;
     if principals.is_empty() {
-        return Err(ApiError::not_found(format!("principal {name}")));
+        return Err(ApiError::not_found_object(
+            "principal",
+            format!("Cannot find principal {name}"),
+        ));
     }
 
     let values = principals
@@ -490,6 +498,16 @@ fn principal_json(state: &AppState, principal: &Principal) -> Result<Value, ApiE
         .find_principal_keys(principal)
         .map_err(ApiError::from)?;
     let public_key = keys.first().map(|key| key.public_key.as_str());
+    let org_member = match principal.actor_type {
+        ActorType::Client => true,
+        ActorType::User => match principal.org_id.as_deref() {
+            Some(org_id) => state
+                .store
+                .is_user_in_org(org_id, &principal.actor_id)
+                .map_err(ApiError::from)?,
+            None => false,
+        },
+    };
     let mut value = json!({
         "name": principal.name,
         "type": match principal.actor_type {
@@ -497,7 +515,7 @@ fn principal_json(state: &AppState, principal: &Principal) -> Result<Value, ApiE
             ActorType::Client => "client",
         },
         "authz_id": principal.authz_id,
-        "org_member": true
+        "org_member": org_member
     });
     if let Some(public_key) = public_key {
         value["public_key"] = json!(public_key);

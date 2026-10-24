@@ -7,7 +7,7 @@ mod opensearch;
 mod query;
 
 use crate::helpers::{base_url, container_authz, organization, require_permission};
-use crate::{ApiError, AppState, AuthContext};
+use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -81,6 +81,7 @@ async fn list_indexes(
 async fn search(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    Extension(api_version): Extension<ApiVersion>,
     Path((_organization, index)): Path<(String, String)>,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<Value>, ApiError> {
@@ -88,7 +89,13 @@ async fn search(
     let hits = execute_search(&state, &auth, org, &index, &params).await?;
 
     let entries = hydrate(&state, org, &index, &hits.ids)?;
-    let rows: Vec<Value> = entries.into_iter().map(|entry| entry.output).collect();
+    let rows: Vec<Value> = entries
+        .into_iter()
+        .map(|mut entry| {
+            strip_client_public_key(&index, api_version.0, &mut entry.output);
+            entry.output
+        })
+        .collect();
 
     Ok(Json(json!({
         "total": hits.total,
@@ -100,6 +107,7 @@ async fn search(
 async fn partial_search(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    Extension(api_version): Extension<ApiVersion>,
     Path((_organization, index)): Path<(String, String)>,
     Query(params): Query<SearchParams>,
     headers: HeaderMap,
@@ -113,7 +121,11 @@ async fn partial_search(
     let base = base_url(&headers, &state);
     let rows: Vec<Value> = entries
         .into_iter()
-        .map(|entry| {
+        .map(|mut entry| {
+            strip_client_public_key(&index, api_version.0, &mut entry.output);
+            for source in &mut entry.partial_sources {
+                strip_client_public_key(&index, api_version.0, source);
+            }
             let mut data = Map::new();
             for (name, path) in &paths {
                 let value = entry
@@ -136,6 +148,16 @@ async fn partial_search(
         "start": hits.start,
         "rows": rows
     })))
+}
+
+/// Upstream builds client rows with `assemble_client_ejson/2`, which includes
+/// the public key only for API v0. Key management moved to `/keys` in v1.
+fn strip_client_public_key(index: &str, api_version: u8, value: &mut Value) {
+    if index == "client" && api_version >= 1 {
+        if let Some(object) = value.as_object_mut() {
+            object.remove("public_key");
+        }
+    }
 }
 
 /// Result of a backend search, including the echoed page offset.
