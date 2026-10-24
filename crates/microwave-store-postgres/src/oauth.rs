@@ -401,19 +401,14 @@ impl OAuthRepository for PostgresStore {
         token: &str,
     ) -> Result<Option<String>, StoreError> {
         let mut transaction = self.pool().begin().await.map_err(db)?;
+        // Single statement so concurrent consumers cannot both observe the
+        // value before either deletes it.
         let username: Option<String> =
-            sqlx::query_scalar("SELECT value FROM kvpair WHERE key = $1")
+            sqlx::query_scalar("DELETE FROM kvpair WHERE key = $1 RETURNING value")
                 .bind(password_reset_key(token))
                 .fetch_optional(&mut *transaction)
                 .await
                 .map_err(db)?;
-        if username.is_some() {
-            sqlx::query("DELETE FROM kvpair WHERE key = $1")
-                .bind(password_reset_key(token))
-                .execute(&mut *transaction)
-                .await
-                .map_err(db)?;
-        }
         transaction.commit().await.map_err(db)?;
         Ok(username)
     }

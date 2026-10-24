@@ -260,6 +260,16 @@ CREATE TABLE IF NOT EXISTS sandboxes (
     PRIMARY KEY (org_id, sandbox_id)
 );
 
+-- Backfill sandbox rows for databases created before the explicit table
+-- existed. In-flight uploads were previously inferred from
+-- `sandboxed_checksums`, so make them visible again without overwriting any
+-- row that already exists.
+INSERT INTO sandboxes (org_id, sandbox_id, created_at)
+SELECT org_id, sandbox_id, MIN(created_at)
+FROM sandboxed_checksums
+GROUP BY org_id, sandbox_id
+ON CONFLICT DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS cookbooks (
     id BIGSERIAL PRIMARY KEY,
     org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,

@@ -27,8 +27,9 @@ fn test_url() -> Option<String> {
         .filter(|url| !url.trim().is_empty())
 }
 
-/// Returns `None` (after printing a skip message) when no test database was
-/// configured.
+/// Returns `None` (after printing a skip message) only when no test database
+/// was configured. A configured database that cannot be reached or migrated is
+/// a hard failure: silently skipping would hide broken migrations.
 async fn test_store() -> Option<PostgresStore> {
     let Some(url) = test_url() else {
         eprintln!(
@@ -37,16 +38,11 @@ async fn test_store() -> Option<PostgresStore> {
         );
         return None;
     };
-    match PostgresStore::connect(&url).await {
-        Ok(store) => Some(store),
-        Err(error) => {
-            eprintln!(
-                "SKIP: PostgreSQL at MICROWAVE_TEST_POSTGRES_URL is not reachable ({error}); \
-                 start a disposable PostgreSQL with scripts/run-postgres-tests.sh"
-            );
-            None
-        }
-    }
+    Some(
+        PostgresStore::connect(&url)
+            .await
+            .expect("connect to configured PostgreSQL"),
+    )
 }
 
 fn suffix() -> String {
@@ -148,7 +144,13 @@ async fn creates_orgs_users_clients_and_keys() {
             .as_ref(),
         Some(&user)
     );
-    assert_eq!(store.list_users().await.expect("list users").len(), 1);
+    // Other integration tests run against the same database in parallel, so
+    // only assert that this user is listed rather than a global count.
+    assert!(store
+        .list_users()
+        .await
+        .expect("list users")
+        .contains(&user));
 
     // Emails are unique case-insensitively.
     let duplicate = store
@@ -1308,6 +1310,33 @@ async fn manages_oauth_applications_tokens_sessions_and_resets() {
         None
     );
 
+    // Two concurrent consumers must not both use the same reset token.
+    let concurrent = store
+        .create_password_reset_token("bob")
+        .await
+        .expect("create concurrent reset token");
+    let (left, right) = tokio::join!(
+        store.consume_password_reset_token(&concurrent),
+        store.consume_password_reset_token(&concurrent)
+    );
+    let results = [
+        left.expect("first concurrent consume"),
+        right.expect("second concurrent consume"),
+    ];
+    assert_eq!(
+        results.iter().filter(|value| value.is_some()).count(),
+        1,
+        "exactly one consumer must win: {results:?}"
+    );
+    assert!(results.contains(&Some("bob".into())));
+    assert_eq!(
+        store
+            .find_password_reset_token(&concurrent)
+            .await
+            .expect("concurrent reset token consumed"),
+        None
+    );
+
     let reset = store
         .create_password_reset_token("alice")
         .await
@@ -1506,6 +1535,51 @@ async fn keeps_empty_sandboxes_and_supports_later_uploads() {
         .sandbox_exists(&fixture.org_id, &sandbox_id)
         .await
         .expect("empty sandbox consumed"));
+}
+
+#[tokio::test]
+async fn backfills_legacy_sandboxes_from_uploaded_checksums() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let fixture = fixture(&store).await;
+    let sandbox_id = format!("legacy-{}", suffix());
+    let earlier = "2020-01-01T00:00:00Z";
+    let later = "2020-02-02T00:00:00Z";
+
+    for (checksum, created_at) in [("legacy-a", earlier), ("legacy-b", later)] {
+        sqlx::query(
+            "INSERT INTO sandboxed_checksums (org_id, sandbox_id, checksum, created_at)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(&fixture.org_id)
+        .bind(&sandbox_id)
+        .bind(checksum)
+        .bind(created_at)
+        .execute(store.pool())
+        .await
+        .expect("insert legacy sandbox checksum");
+    }
+
+    // This is the pre-backfill state: uploads exist but the sandbox row does
+    // not, because the row was only ever inferred from checksums.
+    assert!(!store
+        .sandbox_exists(&fixture.org_id, &sandbox_id)
+        .await
+        .expect("legacy sandbox hidden before migration"));
+
+    store.migrate().await.expect("rerun migration backfill");
+    assert!(store
+        .sandbox_exists(&fixture.org_id, &sandbox_id)
+        .await
+        .expect("legacy sandbox visible after migration"));
+    assert_eq!(
+        store
+            .sandbox_created_at(&fixture.org_id, &sandbox_id)
+            .await
+            .expect("legacy sandbox timestamp"),
+        Some(earlier.to_string())
+    );
 }
 
 #[tokio::test]
