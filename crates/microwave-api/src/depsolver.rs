@@ -1,6 +1,7 @@
 use crate::cookbooks::render_manifest;
 use crate::helpers::{container_authz, organization, require_permission};
 use crate::{ApiError, ApiVersion, AppState, AuthContext};
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::post;
@@ -22,8 +23,9 @@ async fn solve(
     Extension(auth): Extension<AuthContext>,
     Extension(ApiVersion(api_version)): Extension<ApiVersion>,
     Path((_organization, environment_name)): Path<(String, String)>,
-    Json(body): Json<Value>,
+    body: Result<Json<Value>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let body = json_body(body)?;
     let org = organization(&auth)?;
     let container = container_authz(&state, org, "cookbooks").await?;
     require_permission(&state, &auth, &container, Permission::Read).await?;
@@ -71,6 +73,22 @@ async fn solve(
             Ok((StatusCode::OK, Json(Value::Object(result))))
         }
         Err(error) => Ok(solve_error(error)),
+    }
+}
+
+/// Translate axum's plain-text `Json` rejections into the Chef API's JSON
+/// error shape, which clients (and Pedant) parse.
+fn json_body(body: Result<Json<Value>, JsonRejection>) -> Result<Value, ApiError> {
+    match body {
+        Ok(Json(value)) => Ok(value),
+        Err(rejection) => match rejection {
+            JsonRejection::JsonSyntaxError(_)
+            | JsonRejection::JsonDataError(_)
+            | JsonRejection::MissingJsonContentType(_) => {
+                Err(ApiError::bad_request("invalid JSON"))
+            }
+            rejection => Err(ApiError::bad_request(rejection.body_text())),
+        },
     }
 }
 
