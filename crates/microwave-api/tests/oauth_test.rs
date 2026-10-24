@@ -56,15 +56,20 @@ fn fixture() -> Fixture {
     .unwrap();
     store.add_user_to_org(&org.id, &alice.id).unwrap();
 
+    let mut config = microwave_config::Config::default();
+    config.object_store.secret = Some("test".into());
+    let object_store: Arc<dyn microwave_objectstore::ObjectStore + Send + Sync> =
+        Arc::new(microwave_objectstore::LocalObjectStore::new(
+            std::env::temp_dir().join("mw-oauth-test"),
+            "test",
+            "http://0.0.0.0:8000",
+        ));
+
     Fixture {
         state: AppState {
             store,
-            config: Arc::new(microwave_config::Config::default()),
-            object_store: Arc::new(microwave_objectstore::LocalObjectStore::new(
-                std::env::temp_dir().join("mw-oauth-test"),
-                "test",
-                "http://0.0.0.0:8000",
-            )),
+            config: Arc::new(config),
+            object_store,
         },
         admin_id: admin.id,
     }

@@ -1,4 +1,11 @@
 //! Content-addressed object storage for cookbook files.
+//!
+//! Two backends implement [`ObjectStore`]:
+//!
+//! * [`LocalObjectStore`] stores blobs on the local filesystem and serves them
+//!   through the in-process `/bookshelf` routes using HMAC-signed tokens.
+//! * [`S3ObjectStore`] talks to any S3-compatible service (AWS S3, Garage,
+//!   MinIO) using SigV4 request signing and presigned URLs.
 
 use hmac::{Hmac, Mac};
 use md5::{Digest, Md5};
@@ -7,7 +14,14 @@ use std::path::{Path, PathBuf};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 
+mod s3;
+
+pub use s3::{S3Config, S3ObjectStore};
+
 type HmacSha256 = Hmac<Sha256>;
+
+/// Default lifetime for presigned S3 URLs, matching the upstream bookshelf default.
+pub const DEFAULT_PRESIGN_EXPIRY_SECONDS: u64 = 900;
 
 #[derive(Debug, Error)]
 pub enum ObjectStoreError {
@@ -17,8 +31,54 @@ pub enum ObjectStoreError {
     ChecksumMismatch,
     #[error("invalid token")]
     InvalidToken,
+    #[error("object not found")]
+    NotFound,
+    #[error("invalid object store configuration: {0}")]
+    InvalidConfig(String),
+    #[error("object store request failed: {0}")]
+    Http(String),
+    #[error("object store returned status {0}")]
+    HttpStatus(u16),
 }
 
+/// Content-addressed blob store keyed by `(organization_id, checksum)`.
+///
+/// Implementations must be safe to share across request handlers.
+pub trait ObjectStore: Send + Sync {
+    /// Store `data` under the key for `checksum`, verifying the MD5 first.
+    fn put(
+        &self,
+        organization_id: &str,
+        checksum: &str,
+        data: &[u8],
+    ) -> Result<(), ObjectStoreError>;
+
+    /// Read the blob for `checksum`.
+    fn get(&self, organization_id: &str, checksum: &str) -> Result<Vec<u8>, ObjectStoreError>;
+
+    /// Return whether a blob exists. Backend errors are reported as `false`.
+    fn exists(&self, organization_id: &str, checksum: &str) -> bool;
+
+    /// Delete the blob, returning whether it existed.
+    fn delete(&self, organization_id: &str, checksum: &str) -> Result<bool, ObjectStoreError>;
+
+    /// Build a URL a client can use to `method` the blob directly.
+    fn presigned_url(&self, method: &str, organization_id: &str, checksum: &str) -> String;
+}
+
+/// Key layout shared by both backends: `organization-{org}/checksum-{checksum}`.
+pub fn object_key(organization_id: &str, checksum: &str) -> String {
+    format!("organization-{organization_id}/checksum-{checksum}")
+}
+
+/// Filesystem path for the local backend.
+pub fn object_path(root: &Path, organization_id: &str, checksum: &str) -> PathBuf {
+    let key = object_key(organization_id, checksum);
+    key.split('/')
+        .fold(root.to_path_buf(), |path, segment| path.join(segment))
+}
+
+/// Local filesystem backend used by the default single-binary deployment.
 #[derive(Debug, Clone)]
 pub struct LocalObjectStore {
     root: PathBuf,
@@ -35,7 +95,36 @@ impl LocalObjectStore {
         }
     }
 
-    pub fn put(
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn token(&self, method: &str, organization_id: &str, checksum: &str) -> String {
+        bookshelf_token(
+            std::str::from_utf8(&self.secret).expect("secret was built from a string"),
+            method,
+            organization_id,
+            checksum,
+        )
+    }
+
+    pub fn verify(&self, method: &str, organization_id: &str, checksum: &str, token: &str) -> bool {
+        bookshelf_token_matches(
+            std::str::from_utf8(&self.secret).expect("secret was built from a string"),
+            method,
+            organization_id,
+            checksum,
+            token,
+        )
+    }
+
+    fn path(&self, organization_id: &str, checksum: &str) -> PathBuf {
+        object_path(&self.root, organization_id, checksum)
+    }
+}
+
+impl ObjectStore for LocalObjectStore {
+    fn put(
         &self,
         organization_id: &str,
         checksum: &str,
@@ -55,15 +144,19 @@ impl LocalObjectStore {
         Ok(())
     }
 
-    pub fn get(&self, organization_id: &str, checksum: &str) -> Result<Vec<u8>, ObjectStoreError> {
-        Ok(std::fs::read(self.path(organization_id, checksum))?)
+    fn get(&self, organization_id: &str, checksum: &str) -> Result<Vec<u8>, ObjectStoreError> {
+        let path = self.path(organization_id, checksum);
+        if !path.is_file() {
+            return Err(ObjectStoreError::NotFound);
+        }
+        Ok(std::fs::read(path)?)
     }
 
-    pub fn exists(&self, organization_id: &str, checksum: &str) -> bool {
+    fn exists(&self, organization_id: &str, checksum: &str) -> bool {
         self.path(organization_id, checksum).is_file()
     }
 
-    pub fn delete(&self, organization_id: &str, checksum: &str) -> Result<bool, ObjectStoreError> {
+    fn delete(&self, organization_id: &str, checksum: &str) -> Result<bool, ObjectStoreError> {
         let path = self.path(organization_id, checksum);
         if path.is_file() {
             std::fs::remove_file(path)?;
@@ -73,30 +166,43 @@ impl LocalObjectStore {
         }
     }
 
-    pub fn presigned_url(&self, method: &str, organization_id: &str, checksum: &str) -> String {
+    fn presigned_url(&self, method: &str, organization_id: &str, checksum: &str) -> String {
         let token = self.token(method, organization_id, checksum);
         format!(
             "{}/bookshelf/organizations/{organization_id}/checksums/{checksum}?token={token}",
             self.base_url
         )
     }
+}
 
-    pub fn token(&self, method: &str, organization_id: &str, checksum: &str) -> String {
-        let mut mac = HmacSha256::new_from_slice(&self.secret).expect("HMAC accepts any key");
-        mac.update(format!("{method}:{organization_id}:{checksum}").as_bytes());
-        hex::encode(mac.finalize().into_bytes())
-    }
+/// HMAC token used by the local `/bookshelf` routes.
+pub fn bookshelf_token(
+    secret: &str,
+    method: &str,
+    organization_id: &str,
+    checksum: &str,
+) -> String {
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key");
+    mac.update(format!("{method}:{organization_id}:{checksum}").as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
 
-    pub fn verify(&self, method: &str, organization_id: &str, checksum: &str, token: &str) -> bool {
-        let expected = self.token(method, organization_id, checksum);
-        expected.as_bytes().ct_eq(token.as_bytes()).into()
+/// Constant-time verification of a local `/bookshelf` token.
+///
+/// An empty secret always fails so a missing configuration cannot become an
+/// authentication bypass.
+pub fn bookshelf_token_matches(
+    secret: &str,
+    method: &str,
+    organization_id: &str,
+    checksum: &str,
+    token: &str,
+) -> bool {
+    if secret.is_empty() {
+        return false;
     }
-
-    fn path(&self, organization_id: &str, checksum: &str) -> PathBuf {
-        self.root
-            .join(format!("organization-{organization_id}"))
-            .join(format!("checksum-{checksum}"))
-    }
+    let expected = bookshelf_token(secret, method, organization_id, checksum);
+    expected.as_bytes().ct_eq(token.as_bytes()).into()
 }
 
 pub fn md5_hex(data: &[u8]) -> String {
@@ -109,7 +215,37 @@ pub fn md5_base64(data: &[u8]) -> String {
     STANDARD.encode(Md5::digest(data))
 }
 
-pub fn object_path(root: &Path, organization_id: &str, checksum: &str) -> PathBuf {
-    root.join(format!("organization-{organization_id}"))
-        .join(format!("checksum-{checksum}"))
+/// Base64-encode the raw MD5 digest represented by a hex checksum.
+///
+/// S3's `content-md5` header is the base64 form of the digest bytes, not of
+/// the hex string. Returns `None` when the checksum is not valid hex.
+pub fn checksum_md5_base64(checksum: &str) -> Option<String> {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    let digest = hex::decode(checksum).ok()?;
+    Some(STANDARD.encode(digest))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keys_use_the_upstream_layout() {
+        assert_eq!(
+            object_key("acme", "abc123"),
+            "organization-acme/checksum-abc123"
+        );
+        assert_eq!(
+            object_path(Path::new("/data"), "acme", "abc123"),
+            PathBuf::from("/data/organization-acme/checksum-abc123")
+        );
+    }
+
+    #[test]
+    fn empty_secret_never_authenticates() {
+        assert!(!bookshelf_token_matches(
+            "", "GET", "acme", "abc", "anything"
+        ));
+    }
 }

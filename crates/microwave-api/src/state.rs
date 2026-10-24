@@ -1,5 +1,5 @@
 use microwave_config::Config;
-use microwave_objectstore::LocalObjectStore;
+use microwave_objectstore::ObjectStore;
 use microwave_store::{Org, Principal, SqliteStore};
 use std::sync::Arc;
 
@@ -7,7 +7,7 @@ use std::sync::Arc;
 pub struct AppState {
     pub store: Arc<SqliteStore>,
     pub config: Arc<Config>,
-    pub object_store: Arc<LocalObjectStore>,
+    pub object_store: Arc<dyn ObjectStore + Send + Sync>,
 }
 
 #[derive(Debug, Clone, Copy)]

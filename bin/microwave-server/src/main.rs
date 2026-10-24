@@ -2,8 +2,8 @@ mod bootstrap;
 
 use clap::{Parser, Subcommand};
 use microwave_api::{router, AppState};
-use microwave_config::Config;
-use microwave_objectstore::LocalObjectStore;
+use microwave_config::{Config, ObjectStoreBackend};
+use microwave_objectstore::{LocalObjectStore, ObjectStore, S3Config, S3ObjectStore};
 use microwave_store::SqliteStore;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -59,13 +59,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let database_path = database_path(&config);
             let store = Arc::new(SqliteStore::open(Path::new(&database_path))?);
             bootstrap::ensure_superuser(&store, &config)?;
-            let secret = bootstrap::ensure_object_store_secret(&config)?;
-            let object_store = Arc::new(LocalObjectStore::new(
-                Path::new(&config.paths.data_dir).join("bookshelf"),
-                &secret,
-                format!("http://{}", config.server.bind),
-            ));
-            config.object_store.secret = Some(secret);
+            let secret = match config.object_store.backend {
+                ObjectStoreBackend::Local => {
+                    let secret = bootstrap::ensure_object_store_secret(&config)?;
+                    config.object_store.secret = Some(secret.clone());
+                    secret
+                }
+                // S3/Garage clients use presigned URLs directly, so there is
+                // no local bookshelf token secret to bootstrap.
+                _ => config.object_store.secret.clone().unwrap_or_default(),
+            };
+            let object_store = build_object_store(&config, &secret)?;
 
             if check {
                 eprintln!(
@@ -93,4 +97,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn database_path(config: &Config) -> String {
     let url = config.resolved_database_url();
     url.strip_prefix("sqlite://").unwrap_or(&url).to_string()
+}
+
+fn build_object_store(
+    config: &Config,
+    secret: &str,
+) -> Result<Arc<dyn ObjectStore + Send + Sync>, Box<dyn std::error::Error>> {
+    match config.object_store.backend {
+        ObjectStoreBackend::Local => Ok(Arc::new(LocalObjectStore::new(
+            Path::new(&config.paths.data_dir).join("bookshelf"),
+            secret,
+            format!("http://{}", config.server.bind),
+        ))),
+        ObjectStoreBackend::S3 | ObjectStoreBackend::Garage => {
+            let endpoint = config
+                .object_store
+                .endpoint
+                .clone()
+                .ok_or("object_store.endpoint is required for the s3/garage backend")?;
+            let bucket = config
+                .object_store
+                .bucket
+                .clone()
+                .ok_or("object_store.bucket is required for the s3/garage backend")?;
+            let access_key = config
+                .object_store
+                .access_key
+                .clone()
+                .ok_or("object_store.access_key is required for the s3/garage backend")?;
+            let secret_key = config
+                .object_store
+                .secret_key
+                .clone()
+                .ok_or("object_store.secret_key is required for the s3/garage backend")?;
+            let mut s3_config = S3Config::new(
+                endpoint,
+                bucket,
+                config.object_store.region.clone(),
+                access_key,
+                secret_key,
+            );
+            s3_config.path_style = config.object_store.path_style;
+            Ok(Arc::new(S3ObjectStore::new(s3_config)?))
+        }
+    }
 }

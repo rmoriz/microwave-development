@@ -5,7 +5,7 @@ use base64::Engine;
 use microwave_api::{router, AppState};
 use microwave_config::Config;
 use microwave_crypto::{sign_request, CanonicalRequest, SignVersion};
-use microwave_objectstore::LocalObjectStore;
+use microwave_objectstore::{LocalObjectStore, ObjectStore};
 use microwave_store::{ActorType, SqliteStore};
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -21,14 +21,17 @@ fn state_with_pivotal() -> AppState {
     store
         .add_actor_key(&user.id, ActorType::User, "default", PUBLIC_KEY)
         .unwrap();
+    let mut config = Config::default();
+    config.object_store.secret = Some("test".into());
+    let object_store: Arc<dyn ObjectStore + Send + Sync> = Arc::new(LocalObjectStore::new(
+        std::env::temp_dir().join("mw-auth-test"),
+        "test",
+        "http://0.0.0.0:8000",
+    ));
     AppState {
         store,
-        config: Arc::new(Config::default()),
-        object_store: Arc::new(LocalObjectStore::new(
-            std::env::temp_dir().join("mw-auth-test"),
-            "test",
-            "http://0.0.0.0:8000",
-        )),
+        config: Arc::new(config),
+        object_store,
     }
 }
 
