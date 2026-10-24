@@ -21,15 +21,16 @@ fn state_with_pivotal() -> AppState {
     store
         .add_actor_key(&user.id, ActorType::User, "default", PUBLIC_KEY)
         .unwrap();
-    AppState {
+    AppState::new(
         store,
-        config: Arc::new(Config::default()),
-        object_store: Arc::new(LocalObjectStore::new(
+        Arc::new(Config::default()),
+        Arc::new(LocalObjectStore::new(
             std::env::temp_dir().join("mw-auth-test"),
             "test",
             "http://0.0.0.0:8000",
         )),
-    }
+    )
+    .unwrap()
 }
 
 fn signed_headers(

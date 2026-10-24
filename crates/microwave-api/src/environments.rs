@@ -59,7 +59,7 @@ async fn create_environment(
     require_permission(&state, &auth, &container, Permission::Create)?;
 
     let name = normalize_environment(&mut body)?;
-    state
+    let environment = state
         .store
         .create_environment(
             &org.id,
@@ -68,6 +68,13 @@ async fn create_environment(
             &auth.principal.authz_id,
         )
         .map_err(ApiError::from)?;
+    crate::search::index::index_object(
+        &state,
+        org,
+        crate::search::IndexKind::Environment,
+        &environment,
+    )
+    .await;
 
     let base = base_url(&headers, &state);
     Ok((
@@ -124,6 +131,13 @@ async fn update_environment(
             &serde_json::to_string(&body).map_err(|_| ApiError::internal())?,
         )
         .map_err(ApiError::from)?;
+    crate::search::index::index_object(
+        &state,
+        org,
+        crate::search::IndexKind::Environment,
+        &updated,
+    )
+    .await;
     let value =
         serde_json::from_str(&updated.serialized_object).map_err(|_| ApiError::internal())?;
     Ok(Json(value))
@@ -146,6 +160,7 @@ async fn delete_environment(
         .store
         .delete_environment(&org.id, &name)
         .map_err(ApiError::from)?;
+    crate::search::index::delete_document(&state, &org.id, &environment.id).await;
     Ok(Json(json!({})))
 }
 

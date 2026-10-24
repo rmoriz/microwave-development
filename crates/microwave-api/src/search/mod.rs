@@ -1,6 +1,9 @@
-//! Search API and the first in-memory index implementation.
+//! Search API, query parsing and pluggable search backends.
 
+mod backend;
 mod expand;
+pub(crate) mod index;
+mod opensearch;
 mod query;
 
 use crate::helpers::{base_url, container_authz, organization, require_permission};
@@ -10,11 +13,19 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::routing::get;
 use axum::{Extension, Json, Router};
-use microwave_store::{Org, Permission, StoredDataBagItem, StoredNode, StoredObject};
+use microwave_store::{Org, Permission};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 
-use query::{Fields, Query as SearchQuery};
+use backend::SearchRequest as BackendSearchRequest;
+use query::Query as SearchQuery;
+
+pub use backend::{
+    build_search_backend, EmbeddedSearch, IndexKind, SearchBackend, SearchDocument, SearchError,
+    SearchHits, SearchRequest,
+};
+pub use opensearch::{OpenSearchBackend, SearchProvider};
 
 const BUILTIN_INDEXES: [&str; 4] = ["client", "environment", "node", "role"];
 
@@ -32,13 +43,6 @@ struct SearchParams {
     q: Option<String>,
     start: Option<String>,
     rows: Option<String>,
-}
-
-struct SearchEntry {
-    url: String,
-    output: Value,
-    fields: Fields,
-    partial_sources: Vec<Value>,
 }
 
 async fn list_indexes(
@@ -81,26 +85,14 @@ async fn search(
     Query(params): Query<SearchParams>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let query = parse_query(params.q.as_deref())?;
-    let start = parse_non_negative("start", params.start.as_deref(), 0)?;
-    let rows = parse_non_negative("rows", params.rows.as_deref(), 1000)?;
+    let hits = execute_search(&state, &auth, org, &index, &params).await?;
 
-    let entries = load_entries(&state, &auth, org, &index)?;
-    let matched: Vec<SearchEntry> = entries
-        .into_iter()
-        .filter(|entry| query.matches(&entry.fields))
-        .collect();
-    let total = matched.len();
-    let rows: Vec<Value> = matched
-        .into_iter()
-        .skip(start)
-        .take(rows)
-        .map(|entry| entry.output)
-        .collect();
+    let entries = hydrate(&state, org, &index, &hits.ids)?;
+    let rows: Vec<Value> = entries.into_iter().map(|entry| entry.output).collect();
 
     Ok(Json(json!({
-        "total": total,
-        "start": start,
+        "total": hits.total,
+        "start": hits.start,
         "rows": rows
     })))
 }
@@ -115,21 +107,12 @@ async fn partial_search(
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
     let paths = parse_partial_paths(body.map_err(json_rejection)?)?;
-    let query = parse_query(params.q.as_deref())?;
-    let start = parse_non_negative("start", params.start.as_deref(), 0)?;
-    let rows = parse_non_negative("rows", params.rows.as_deref(), 1000)?;
+    let hits = execute_search(&state, &auth, org, &index, &params).await?;
 
-    let entries = load_entries(&state, &auth, org, &index)?;
+    let entries = hydrate(&state, org, &index, &hits.ids)?;
     let base = base_url(&headers, &state);
-    let matched: Vec<SearchEntry> = entries
+    let rows: Vec<Value> = entries
         .into_iter()
-        .filter(|entry| query.matches(&entry.fields))
-        .collect();
-    let total = matched.len();
-    let rows: Vec<Value> = matched
-        .into_iter()
-        .skip(start)
-        .take(rows)
         .map(|entry| {
             let mut data = Map::new();
             for (name, path) in &paths {
@@ -149,172 +132,95 @@ async fn partial_search(
         .collect();
 
     Ok(Json(json!({
-        "total": total,
-        "start": start,
+        "total": hits.total,
+        "start": hits.start,
         "rows": rows
     })))
 }
 
-fn load_entries(
+/// Result of a backend search, including the echoed page offset.
+struct ExecutedSearch {
+    total: usize,
+    start: usize,
+    ids: Vec<String>,
+}
+
+async fn execute_search(
     state: &AppState,
     auth: &AuthContext,
     org: &Org,
     index: &str,
-) -> Result<Vec<SearchEntry>, ApiError> {
-    let container_name = match index {
-        "node" => "nodes",
-        "role" => "roles",
-        "environment" => "environments",
-        "client" => "clients",
-        _ => "data",
+    params: &SearchParams,
+) -> Result<ExecutedSearch, ApiError> {
+    let kind = IndexKind::from_index(index);
+    authorize_index(state, auth, org, &kind)?;
+    let query = parse_query(params.q.as_deref())?;
+    let start = parse_non_negative("start", params.start.as_deref(), 0)?;
+    let rows = parse_non_negative("rows", params.rows.as_deref(), 1000)?;
+
+    let request = BackendSearchRequest {
+        org_id: org.id.clone(),
+        kind,
+        query,
+        start,
+        rows,
+    };
+    let hits = state
+        .search
+        .search(&request)
+        .await
+        .map_err(ApiError::from)?;
+
+    Ok(ExecutedSearch {
+        total: hits.total,
+        start,
+        ids: hits.ids,
+    })
+}
+
+fn authorize_index(
+    state: &AppState,
+    auth: &AuthContext,
+    org: &Org,
+    kind: &IndexKind,
+) -> Result<(), ApiError> {
+    let container_name = match kind {
+        IndexKind::Node => "nodes",
+        IndexKind::Role => "roles",
+        IndexKind::Environment => "environments",
+        IndexKind::Client => "clients",
+        IndexKind::DataBag(_) => "data",
     };
     let container = container_authz(state, org, container_name)?;
     require_permission(state, auth, &container, Permission::Read)?;
 
-    match index {
-        "node" => node_entries(state, org),
-        "role" => object_entries(
-            state.store.list_roles(&org.id).map_err(ApiError::from)?,
-            "/roles",
-            true,
-        ),
-        "environment" => object_entries(
-            state
-                .store
-                .list_environments(&org.id)
-                .map_err(ApiError::from)?,
-            "/environments",
-            false,
-        ),
-        "client" => client_entries(state, org),
-        data_bag => data_bag_entries(state, org, data_bag),
+    if let IndexKind::DataBag(name) = kind {
+        if state
+            .store
+            .find_data_bag(&org.id, name)
+            .map_err(ApiError::from)?
+            .is_none()
+        {
+            return Err(index::unknown_index(name));
+        }
     }
+
+    Ok(())
 }
 
-fn node_entries(state: &AppState, org: &Org) -> Result<Vec<SearchEntry>, ApiError> {
-    state
-        .store
-        .list_nodes(&org.id)
-        .map_err(ApiError::from)?
-        .into_iter()
-        .map(node_entry)
-        .collect()
-}
-
-fn node_entry(node: StoredNode) -> Result<SearchEntry, ApiError> {
-    let raw: Value =
-        serde_json::from_str(&node.serialized_object).map_err(|_| ApiError::internal())?;
-    let merged = expand::merged_node(&raw);
-    let mut fields = expand::flatten(&merged);
-    expand::add_run_list_expansions(&raw, &mut fields);
-
-    Ok(SearchEntry {
-        url: format!("/nodes/{}", node.name),
-        output: raw.clone(),
-        fields,
-        partial_sources: vec![merged, raw],
-    })
-}
-
-fn object_entries(
-    objects: Vec<StoredObject>,
-    path: &str,
-    expand_run_list: bool,
-) -> Result<Vec<SearchEntry>, ApiError> {
-    objects
-        .into_iter()
-        .map(|object| {
-            let raw: Value = serde_json::from_str(&object.serialized_object)
-                .map_err(|_| ApiError::internal())?;
-            let mut fields = expand::flatten(&raw);
-            if expand_run_list {
-                expand::add_run_list_expansions(&raw, &mut fields);
-            }
-            Ok(SearchEntry {
-                url: format!("{path}/{}", object.name),
-                output: raw.clone(),
-                fields,
-                partial_sources: vec![raw],
-            })
-        })
-        .collect()
-}
-
-fn client_entries(state: &AppState, org: &Org) -> Result<Vec<SearchEntry>, ApiError> {
-    state
-        .store
-        .list_clients(&org.id)
-        .map_err(ApiError::from)?
-        .into_iter()
-        .map(|client| {
-            let value = json!({
-                "name": client.name,
-                "validator": client.validator,
-                "admin": client.admin,
-                "json_class": "Chef::ApiClient",
-                "chef_type": "client"
-            });
-            let fields = expand::flatten(&value);
-            Ok(SearchEntry {
-                url: format!("/clients/{}", client.name),
-                output: value.clone(),
-                fields,
-                partial_sources: vec![value],
-            })
-        })
-        .collect()
-}
-
-fn data_bag_entries(
+fn hydrate(
     state: &AppState,
     org: &Org,
-    data_bag: &str,
-) -> Result<Vec<SearchEntry>, ApiError> {
-    state
-        .store
-        .find_data_bag(&org.id, data_bag)
-        .map_err(ApiError::from)?
-        .ok_or_else(|| unknown_index(data_bag))?;
-
-    state
-        .store
-        .list_data_bag_items(&org.id, data_bag)
-        .map_err(ApiError::from)?
-        .into_iter()
-        .map(|item| data_bag_item_entry(item, data_bag))
-        .collect()
-}
-
-fn data_bag_item_entry(item: StoredDataBagItem, data_bag: &str) -> Result<SearchEntry, ApiError> {
-    let raw: Value =
-        serde_json::from_str(&item.serialized_object).map_err(|_| ApiError::internal())?;
-    let wrapper = json!({
-        "name": format!("data_bag_item_{}_{}", data_bag, item.item_name),
-        "json_class": "Chef::DataBagItem",
-        "chef_type": "data_bag_item",
-        "data_bag": data_bag,
-        "raw_data": raw
-    });
-
-    let mut fields = expand::flatten(&raw);
-    for (name, value) in [
-        (
-            "name",
-            format!("data_bag_item_{}_{}", data_bag, item.item_name),
-        ),
-        ("json_class", "Chef::DataBagItem".to_string()),
-        ("chef_type", "data_bag_item".to_string()),
-        ("data_bag", data_bag.to_string()),
-    ] {
-        fields.entry(name.to_string()).or_default().push(value);
-    }
-
-    Ok(SearchEntry {
-        url: format!("/data/{data_bag}/{}", item.item_name),
-        output: wrapper.clone(),
-        fields,
-        partial_sources: vec![raw, wrapper],
-    })
+    index: &str,
+    ids: &[String],
+) -> Result<Vec<index::SearchEntry>, ApiError> {
+    let kind = IndexKind::from_index(index);
+    let mut entries = index::load_entries(&state.store, &org.id, &kind)?;
+    let mut by_id: HashMap<String, index::SearchEntry> = entries
+        .drain(..)
+        .map(|entry| (entry.id.clone(), entry))
+        .collect();
+    Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
 }
 
 fn parse_query(raw: Option<&str>) -> Result<SearchQuery, ApiError> {
@@ -367,10 +273,4 @@ fn parse_partial_paths(body: Json<Value>) -> Result<Vec<(String, Vec<String>)>, 
 
 fn json_rejection(rejection: JsonRejection) -> ApiError {
     ApiError::bad_request(rejection.body_text())
-}
-
-fn unknown_index(index: &str) -> ApiError {
-    ApiError::not_found(format!(
-        "I don't know how to search for {index} data objects."
-    ))
 }

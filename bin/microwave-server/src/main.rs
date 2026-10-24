@@ -76,11 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let bind = config.server.bind.clone();
-            let state = AppState {
-                store,
-                config: Arc::new(config),
-                object_store,
-            };
+            let state = AppState::new(store, Arc::new(config), object_store)?;
             let listener = tokio::net::TcpListener::bind(&bind).await?;
             tracing::info!(%bind, "microwave-server listening");
             axum::serve(listener, router(state)).await?;

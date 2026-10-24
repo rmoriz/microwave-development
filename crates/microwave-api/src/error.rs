@@ -87,6 +87,18 @@ impl IntoResponse for ApiError {
     }
 }
 
+impl From<crate::search::SearchError> for ApiError {
+    fn from(error: crate::search::SearchError) -> Self {
+        match error {
+            crate::search::SearchError::BadRequest => Self::bad_request("invalid query"),
+            other => {
+                tracing::error!(error = %other, "search backend error");
+                Self::internal()
+            }
+        }
+    }
+}
+
 impl From<StoreError> for ApiError {
     fn from(error: StoreError) -> Self {
         match error {

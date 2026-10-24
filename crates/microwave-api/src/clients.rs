@@ -103,6 +103,8 @@ async fn create_client(
             .map_err(ApiError::from)?;
     }
 
+    crate::search::index::index_client(&state, org, &client).await;
+
     Ok((StatusCode::CREATED, Json(response)))
 }
 
@@ -128,10 +130,16 @@ async fn delete_client(
     Path((_organization, client_name)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
+    let client = state
+        .store
+        .find_client(&org.id, &client_name)
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::not_found(format!("client {client_name}")))?;
     state
         .store
         .delete_client(&org.id, &client_name)
         .map_err(ApiError::from)?;
+    crate::search::index::delete_document(&state, &org.id, &client.id).await;
     Ok(Json(json!({})))
 }
 

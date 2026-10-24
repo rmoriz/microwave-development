@@ -65,6 +65,18 @@ impl Query {
         Ok(query)
     }
 
+    /// Renders the parsed query in the upstream Chef/Lucene form used by the
+    /// OpenSearch and Elasticsearch backends.
+    ///
+    /// Chef indexes each document as a single whitespace-tokenized `content`
+    /// field holding `key__=__value` pairs, so `field:value` becomes
+    /// `content:field__=__value` (see `chef_lucene.peg` upstream). Rendering
+    /// from the parsed AST, rather than forwarding the raw query string,
+    /// keeps the two backends semantically aligned and avoids query injection.
+    pub fn to_upstream_query(&self) -> String {
+        render_upstream(self)
+    }
+
     /// Evaluates the query against a flattened document.
     pub fn matches(&self, fields: &Fields) -> bool {
         match self {
@@ -93,6 +105,93 @@ impl Query {
             Query::Not(query) => !query.matches(fields),
         }
     }
+}
+
+/// Field holding the flattened `key__=__value` document in Chef's OpenSearch
+/// mapping (see `opensearch-index-init.json` upstream).
+const CONTENT_FIELD: &str = "content";
+const PAIR_SEPARATOR: &str = "__=__";
+/// Upper bound used by the upstream grammar for open-ended ranges.
+const RANGE_MAX: &str = "\\ufff0";
+
+fn render_upstream(query: &Query) -> String {
+    match query {
+        Query::MatchAll => "*:*".to_string(),
+        Query::Term { field, pattern } => match field {
+            Some(field) if field == "*" => escape_value(pattern),
+            Some(field) => format!(
+                "{CONTENT_FIELD}:{}{PAIR_SEPARATOR}{}",
+                escape_field(field),
+                escape_value(pattern)
+            ),
+            None => escape_value(pattern),
+        },
+        Query::Exists { field } => {
+            format!("{CONTENT_FIELD}:{}{PAIR_SEPARATOR}*", escape_field(field))
+        }
+        Query::Range {
+            field,
+            start,
+            end,
+            inclusive,
+        } => {
+            let field = escape_field(field);
+            let (open, close) = if *inclusive { ("[", "]") } else { ("{", "}") };
+            let start = start
+                .as_deref()
+                .map(escape_value)
+                .unwrap_or_else(|| "*".to_string());
+            let end = end
+                .as_deref()
+                .map(escape_value)
+                .unwrap_or_else(|| RANGE_MAX.to_string());
+            format!(
+                "{CONTENT_FIELD}:{open}{field}{PAIR_SEPARATOR}{start} TO {field}{PAIR_SEPARATOR}{end}{close}"
+            )
+        }
+        Query::And(left, right) => {
+            format!("({} AND {})", render_upstream(left), render_upstream(right))
+        }
+        Query::Or(left, right) => {
+            format!("({} OR {})", render_upstream(left), render_upstream(right))
+        }
+        Query::Not(query) => format!("NOT ({})", render_upstream(query)),
+    }
+}
+
+fn escape_field(field: &str) -> String {
+    escape_with_wildcards(field, false)
+}
+
+/// Escapes a value while preserving `*`/`?` wildcards, matching Lucene's
+/// `query_string` syntax.
+fn escape_value(value: &str) -> String {
+    let escaped = escape_with_wildcards(value, true);
+    if escaped.chars().any(char::is_whitespace) {
+        // Bare terms containing whitespace only make sense as phrases.
+        format!("\"{}\"", escape_with_wildcards(value, false))
+    } else {
+        escaped
+    }
+}
+
+fn escape_with_wildcards(value: &str, wildcards: bool) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\\' | '+' | '-' | '=' | '&' | '|' | '>' | '<' | '!' | '(' | ')' | '{' | '}' | '['
+            | ']' | '^' | '"' | '~' | ':' | '/' => {
+                escaped.push('\\');
+                escaped.push(character);
+            }
+            '*' | '?' if !wildcards => {
+                escaped.push('\\');
+                escaped.push(character);
+            }
+            other => escaped.push(other),
+        }
+    }
+    escaped
 }
 
 fn match_values(fields: &Fields, field_pattern: &str, predicate: impl Fn(&str) -> bool) -> bool {
@@ -609,6 +708,49 @@ mod tests {
         for (query, expected) in cases {
             let parsed = Query::parse(query).unwrap();
             assert_eq!(parsed.matches(&document), expected, "query {query}");
+        }
+    }
+
+    #[test]
+    fn renders_upstream_content_queries() {
+        let cases = [
+            ("*:*", "*:*"),
+            ("name:web1", "content:name__=__web1"),
+            ("name:web*", "content:name__=__web*"),
+            (
+                "description:\"hello world\"",
+                "content:description__=__\"hello world\"",
+            ),
+            ("platform:*", "content:platform__=__*"),
+            ("cpu:[5 TO 9]", "content:[cpu__=__5 TO cpu__=__9]"),
+            ("cpu:{8 TO 9}", "content:{cpu__=__8 TO cpu__=__9}"),
+            (
+                "release:[* TO 9]",
+                "content:[release__=__* TO release__=__9]",
+            ),
+            (
+                "release:[1 TO *]",
+                "content:[release__=__1 TO release__=__\\ufff0]",
+            ),
+            ("apache", "apache"),
+            (
+                "name:web1 AND platform:ubuntu",
+                "(content:name__=__web1 AND content:platform__=__ubuntu)",
+            ),
+            (
+                "name:web1 OR name:web2",
+                "(content:name__=__web1 OR content:name__=__web2)",
+            ),
+            ("NOT name:web1", "NOT (content:name__=__web1)"),
+        ];
+
+        for (input, expected) in cases {
+            let query = Query::parse(input).unwrap();
+            assert_eq!(
+                query.to_upstream_query(),
+                expected,
+                "query {input} rendered incorrectly"
+            );
         }
     }
 

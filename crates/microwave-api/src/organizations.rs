@@ -55,6 +55,22 @@ async fn create_org(
     )
     .map_err(ApiError::from)?;
 
+    // The default environment is created with the organization and must be
+    // indexed explicitly.
+    for environment in state
+        .store
+        .list_environments(&org.id)
+        .map_err(ApiError::from)?
+    {
+        crate::search::index::index_object(
+            &state,
+            &org,
+            crate::search::IndexKind::Environment,
+            &environment,
+        )
+        .await;
+    }
+
     let base = base_url(&headers, &state);
     Ok((
         StatusCode::CREATED,
@@ -91,7 +107,9 @@ async fn delete_org(
         .find_org(&organization)
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("organization {organization}")))?;
-    state.store.delete_org(&org.id).map_err(ApiError::from)?;
+    let org_id = org.id.clone();
+    state.store.delete_org(&org_id).map_err(ApiError::from)?;
+    crate::search::index::delete_organization(&state, &org_id).await;
     Ok(Json(json!({})))
 }
 

@@ -57,15 +57,16 @@ fn fixture() -> Fixture {
     store.add_user_to_org(&org.id, &alice.id).unwrap();
 
     Fixture {
-        state: AppState {
+        state: AppState::new(
             store,
-            config: Arc::new(microwave_config::Config::default()),
-            object_store: Arc::new(microwave_objectstore::LocalObjectStore::new(
+            Arc::new(microwave_config::Config::default()),
+            Arc::new(microwave_objectstore::LocalObjectStore::new(
                 std::env::temp_dir().join("mw-oauth-test"),
                 "test",
                 "http://0.0.0.0:8000",
             )),
-        },
+        )
+        .unwrap(),
         admin_id: admin.id,
     }
 }

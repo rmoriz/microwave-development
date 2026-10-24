@@ -53,7 +53,7 @@ async fn create_node(
     require_permission(&state, &auth, &nodes_container, Permission::Create)?;
 
     let normalized = normalize_node(&mut body)?;
-    state
+    let node = state
         .store
         .create_node(
             &org.id,
@@ -67,6 +67,7 @@ async fn create_node(
             },
         )
         .map_err(ApiError::from)?;
+    crate::search::index::index_node(&state, org, &node).await;
 
     let base = base_url(&headers, &state);
     Ok((
@@ -125,6 +126,7 @@ async fn update_node(
             normalized.policy_group.as_deref(),
         )
         .map_err(ApiError::from)?;
+    crate::search::index::index_node(&state, org, &node).await;
     let value = serde_json::from_str(&node.serialized_object).map_err(|_| ApiError::internal())?;
     Ok(Json(value))
 }
@@ -145,6 +147,7 @@ async fn delete_node(
         .store
         .delete_node(&org.id, &name)
         .map_err(ApiError::from)?;
+    crate::search::index::delete_document(&state, &org.id, &node.id).await;
     Ok(Json(json!({})))
 }
 
