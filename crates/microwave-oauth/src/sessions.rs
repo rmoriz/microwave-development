@@ -1,8 +1,8 @@
 use crate::error::OAuthError;
 use crate::state::OAuthState;
 use crate::util::{
-    cookie_header, current_user, delete_cookie_header, escape_html, page, parse_params, redirect,
-    session_token, wants_json,
+    cookie_header, csrf_token, current_user, delete_cookie_header, escape_html, page,
+    page_with_token, parse_params, redirect, session_token, wants_json,
 };
 use axum::extract::{Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -47,6 +47,12 @@ pub async fn signin(
         .into_response());
     }
 
+    // Upstream `SessionsController#new` redirects an already signed-in user to
+    // the authorized-applications page.
+    if current_user(&state, &headers)?.is_some() {
+        return Ok(redirect("/id/oauth/authorized_applications"));
+    }
+
     let return_to = query
         .get("return_to")
         .map(|value| {
@@ -56,20 +62,22 @@ pub async fn signin(
             )
         })
         .unwrap_or_default();
+    let csrf = csrf_token();
     let body = format!(
         "<h1>Sign In</h1>\
          <p>Please sign in with your Chef account.</p>\
-         <form method=\"post\" action=\"/id/sessions\">\
+         <form method=\"post\" action=\"/id/auth/chef/callback\">\
+         <input type=\"hidden\" name=\"authenticity_token\" value=\"{csrf}\">\
          {return_to}\
          <label for=\"username\">Username or email</label>\
          <input id=\"username\" name=\"username\" autofocus required>\
          <label for=\"password\">Password</label>\
          <input id=\"password\" name=\"password\" type=\"password\" required>\
-         <button type=\"submit\">Sign In</button>\
+         <button type=\"submit\" name=\"commit\" value=\"Sign In\">Sign In</button>\
          </form>\
          <p><a href=\"/id/password-reset\">Forgot your password?</a></p>"
     );
-    let mut response = page("Sign In", &body).into_response();
+    let mut response = page_with_token("Sign In", &body, &csrf).into_response();
     if session_token(&headers).is_none() {
         let pre_session = uuid::Uuid::new_v4().simple().to_string();
         set_cookie(&mut response, &cookie_header(&pre_session))?;

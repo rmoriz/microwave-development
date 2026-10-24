@@ -5,7 +5,7 @@ use axum::http::{header, HeaderValue, Request, StatusCode};
 use axum::Router;
 use microwave_api::AppState;
 use microwave_crypto::hash_password;
-use microwave_store::{ActorType, SqliteStore};
+use microwave_store::{ActorType, SqliteStore, UserPatch};
 use serde_json::Value;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -101,6 +101,67 @@ async fn body_json(response: axum::response::Response) -> Value {
         .await
         .unwrap();
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+}
+
+async fn body_text(response: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Extract the value of the `csrf-token` meta tag using the same shape Pedant
+/// scrapes: `<meta name="csrf-token" content="..." />`.
+fn csrf_token_from(html: &str) -> String {
+    let marker = "<meta name=\"csrf-token\" content=\"";
+    let start = html.find(marker).expect("csrf meta tag") + marker.len();
+    let rest = &html[start..];
+    let end = rest.find('"').expect("csrf token terminator");
+    rest[..end].to_string()
+}
+
+/// GET /id/signin exactly like Pedant: scrape the pre-session cookie and the
+/// CSRF token from the page.
+async fn signin_page(app: &Router) -> (String, String, String) {
+    let response = request(
+        app,
+        "GET",
+        "/id/signin",
+        "",
+        "",
+        &[("accept", "text/html".to_string())],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookie = cookie_from(&response);
+    let html = body_text(response).await;
+    let token = csrf_token_from(&html);
+    assert!(!token.is_empty());
+    (cookie, token, html)
+}
+
+/// Complete Pedant's sign-in helper: GET the form, then POST the credentials
+/// and CSRF token to the callback route. Returns the authenticated cookie.
+async fn pedant_signin(app: &Router, username: &str, password: &str) -> String {
+    let (pre_session, token, _) = signin_page(app).await;
+    let body = format!(
+        "username={username}&password={password}&authenticity_token={token}&commit=Sign+In"
+    );
+    let response = request(
+        app,
+        "POST",
+        "/id/auth/chef/callback",
+        &body,
+        "application/x-www-form-urlencoded",
+        &[(header::COOKIE.as_str(), pre_session)],
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::FOUND,
+        "sign-in should redirect"
+    );
+    cookie_from(&response)
 }
 
 fn cookie_from(response: &axum::response::Response) -> String {
@@ -657,4 +718,240 @@ async fn home_and_signin_pages_are_served_without_chef_signatures() {
             assert!(response.headers().contains_key(header::SET_COOKIE));
         }
     }
+}
+
+#[tokio::test]
+async fn signin_page_exposes_the_pedant_csrf_meta_tag_and_callback_form() {
+    let fixture = fixture();
+    let app = app(&fixture);
+    let (cookie, token, html) = signin_page(&app).await;
+
+    assert!(cookie.starts_with("_oc_id_session="));
+    assert!(
+        html.contains(&format!("<meta name=\"csrf-token\" content=\"{token}\" />")),
+        "meta tag must be self-closing for Pedant's regex: {html}"
+    );
+    assert!(html.contains("action=\"/id/auth/chef/callback\""));
+    assert!(html.contains(&format!("name=\"authenticity_token\" value=\"{token}\"")));
+}
+
+#[tokio::test]
+async fn pedant_signin_rejects_a_bad_password_with_the_failure_redirect() {
+    let fixture = fixture();
+    let app = app(&fixture);
+    let (pre_session, token, _) = signin_page(&app).await;
+    let body = format!("username=alice&password=wrong&authenticity_token={token}&commit=Sign+In");
+    let response = request(
+        &app,
+        "POST",
+        "/id/auth/chef/callback",
+        &body,
+        "application/x-www-form-urlencoded",
+        &[(header::COOKIE.as_str(), pre_session)],
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(
+        response.headers().get(header::LOCATION).unwrap(),
+        "/id/auth/failure?message=invalid_credentials&strategy=chef"
+    );
+}
+
+#[tokio::test]
+async fn pedant_signin_profile_show_update_password_and_key_reset_flow() {
+    let fixture = fixture();
+    fixture
+        .state
+        .store
+        .update_user_patch(
+            "alice",
+            &UserPatch {
+                first_name: Some(Some("Alice".into())),
+                middle_name: Some(Some("Q".into())),
+                last_name: Some(Some("Liddell".into())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let app = app(&fixture);
+
+    let (pre_session, token, _) = signin_page(&app).await;
+    let body =
+        format!("username=alice&password={PASSWORD}&authenticity_token={token}&commit=Sign+In");
+    let response = request(
+        &app,
+        "POST",
+        "/id/auth/chef/callback",
+        &body,
+        "application/x-www-form-urlencoded",
+        &[(header::COOKIE.as_str(), pre_session)],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(
+        response.headers().get(header::LOCATION).unwrap(),
+        "/id/oauth/authorized_applications"
+    );
+    let cookie = cookie_from(&response);
+
+    // GET /id/profile: Pedant matches value-before-id inputs and the signed-in
+    // banner.
+    let response = request(
+        &app,
+        "GET",
+        "/id/profile",
+        "",
+        "",
+        &[
+            ("accept", "text/html".to_string()),
+            (header::COOKIE.as_str(), cookie.clone()),
+        ],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_text(response).await;
+    assert!(html.contains("Signed in as: alice"));
+    assert!(html.contains("value=\"Alice\" id=\"user_first_name\""));
+    assert!(html.contains("value=\"Q\" id=\"user_middle_name\""));
+    assert!(html.contains("value=\"Liddell\" id=\"user_last_name\""));
+    assert!(html.contains("value=\"alice@example.com\" id=\"user_email\""));
+
+    // POST /id/profile with _method=PUT: names update, email is left alone.
+    let body = "_method=PUT&authenticity_token=token\
+                &user%5Bfirst_name%5D=ALICE-FIRST\
+                &user%5Bmiddle_name%5D=ALICE-MIDDLE\
+                &user%5Blast_name%5D=ALICE-LAST\
+                &commit=Save+Changes";
+    let response = request(
+        &app,
+        "POST",
+        "/id/profile",
+        body,
+        "application/x-www-form-urlencoded",
+        &[
+            ("accept", "text/html".to_string()),
+            (header::COOKIE.as_str(), cookie.clone()),
+        ],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(
+        response.headers().get(header::LOCATION).unwrap(),
+        "/id/profile"
+    );
+    let user = fixture.state.store.find_user("alice").unwrap().unwrap();
+    assert_eq!(user.first_name.as_deref(), Some("ALICE-FIRST"));
+    assert_eq!(user.middle_name.as_deref(), Some("ALICE-MIDDLE"));
+    assert_eq!(user.last_name.as_deref(), Some("ALICE-LAST"));
+    assert_eq!(user.email.as_deref(), Some("alice@example.com"));
+    // Upstream's oc-id profile update round-trips the key with a second
+    // trailing newline; Pedant asserts that exact shape.
+    let key_after_update = fixture
+        .state
+        .store
+        .find_actor_key(&user.id, ActorType::User, "default")
+        .unwrap()
+        .unwrap();
+    assert!(key_after_update.public_key.ends_with("\n\n"));
+    assert_eq!(
+        key_after_update.public_key.trim_end(),
+        support::PUBLIC_KEY.trim_end()
+    );
+
+    // POST /id/profile/password with _method=PUT.
+    let body = format!(
+        "_method=PUT&current_password={PASSWORD}&new_password=barfoo\
+         &password_confirmation=barfoo&authenticity_token=token"
+    );
+    let response = request(
+        &app,
+        "POST",
+        "/id/profile/password",
+        &body,
+        "application/x-www-form-urlencoded",
+        &[
+            ("accept", "text/html".to_string()),
+            (header::COOKIE.as_str(), cookie.clone()),
+        ],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(
+        response.headers().get(header::LOCATION).unwrap(),
+        "/id/profile"
+    );
+    let (status, _) = sign_in(&app, "alice", "barfoo").await;
+    assert_eq!(status, StatusCode::OK);
+
+    // POST /id/profile/regen_key returns a fresh PEM attachment.
+    let response = request(
+        &app,
+        "POST",
+        "/id/profile/regen_key",
+        "authenticity_token=token&commit=Get+a+New+Key",
+        "application/x-www-form-urlencoded",
+        &[
+            ("accept", "text/html".to_string()),
+            (header::COOKIE.as_str(), cookie.clone()),
+        ],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let private_key = body_text(response).await;
+    assert!(private_key.contains("BEGIN PRIVATE KEY"));
+    let stored_key = fixture
+        .state
+        .store
+        .find_actor_key(&user.id, ActorType::User, "default")
+        .unwrap()
+        .unwrap();
+    assert_ne!(stored_key.public_key, support::PUBLIC_KEY);
+}
+
+#[tokio::test]
+async fn signout_clears_the_identity_session() {
+    let fixture = fixture();
+    let app = app(&fixture);
+    let cookie = pedant_signin(&app, "alice", PASSWORD).await;
+
+    let response = request(
+        &app,
+        "DELETE",
+        "/id/signout",
+        "",
+        "",
+        &[(header::COOKIE.as_str(), cookie.clone())],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(
+        response.headers().get(header::LOCATION).unwrap(),
+        "/id/signin"
+    );
+    assert!(response
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("Max-Age=0"));
+
+    let response = request(
+        &app,
+        "GET",
+        "/id/profile",
+        "",
+        "",
+        &[
+            ("accept", "text/html".to_string()),
+            (header::COOKIE.as_str(), cookie),
+        ],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(
+        response.headers().get(header::LOCATION).unwrap(),
+        "/id/signin"
+    );
 }
