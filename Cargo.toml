@@ -38,7 +38,7 @@ bcrypt = "0.19"
 hex = "0.4"
 hmac = "0.12"
 md-5 = "0.10"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "tls-rustls-ring", "macros", "json", "chrono", "uuid"] }
 uuid = { version = "1", features = ["v4"] }
 axum = "0.8"
