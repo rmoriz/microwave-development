@@ -80,7 +80,7 @@ The first `oc-chef-pedant` run is recorded in [`docs/pedant-report.md`](docs/ped
 
 The harness is `scripts/run-pedant.sh`. Users, organizations, clients, and nodes now pass with zero failures in this tag set. The only failure is the known plain-HTTP `headers` artifact; the 8 pending examples are pedant's own skips.
 
-Extended suites (post-merge): **3,111 passed / 162 failed / 14 pending**. All extended tags except `keys` (86), `acls` (70), `search` (3), and `depsolver` (3) are green.
+Extended suites (post-merge, including the PostgreSQL runtime): **3,111 passed / 162 failed / 14 pending**. All extended tags except `keys` (86), `acls` (70), `search` (3), and `depsolver` (3) are green.
 
 See `docs/superpowers/specs/2026-10-24-microwave-server-design.md` and `TODO.md` for the full target and remaining work.
 

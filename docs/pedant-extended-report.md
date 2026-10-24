@@ -8,7 +8,7 @@
 `scripts/pedant-solr-stub.rb` (new)
 **Branch:** `subagent/pedant-more`
 
-> **Current run (2026-10-24, post-merge; captured before the PostgreSQL runtime merge, post-merge rerun in progress):** **3,111 passed / 162 failed / 14 pending out of 3,287 examples**. All suites except `keys`, `acls`, `search`, and `depsolver` are green. The counts below are the historical pre-fix baseline.
+> **Current run (2026-10-25, after the PostgreSQL runtime merge):** **3,111 passed / 162 failed / 14 pending out of 3,287 examples**. All suites except `keys`, `acls`, `search`, and `depsolver` are green. The counts below are the historical pre-fix baseline.
 >
 > | Tag | Examples | Passed | Failed | Pending |
 > | --- | ---: | ---: | ---: | ---: |
