@@ -1,6 +1,6 @@
-use crate::cookbooks::add_download_urls;
+use crate::cookbooks::{add_download_urls, manifest_for_api_version};
 use crate::helpers::{container_authz, organization, require_permission};
-use crate::{ApiError, AppState, AuthContext};
+use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::post;
@@ -20,6 +20,7 @@ pub fn routes() -> Router<AppState> {
 async fn solve(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    Extension(ApiVersion(api_version)): Extension<ApiVersion>,
     Path((_organization, environment_name)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
@@ -60,8 +61,14 @@ async fn solve(
             for package in solution.packages {
                 let key = (package.name.clone(), package.version.to_string());
                 let stored = stored_versions.get(&key).ok_or_else(ApiError::internal)?;
-                let mut manifest: Value =
+                let stored_manifest: Value =
                     serde_json::from_str(&stored.manifest).map_err(|_| ApiError::internal())?;
+                let mut manifest = manifest_for_api_version(
+                    &stored_manifest,
+                    api_version,
+                    &package.name,
+                    &package.version.to_string(),
+                );
                 strip_minimal_metadata(&mut manifest);
                 add_download_urls(&mut manifest, &state, &org.id);
                 result.insert(package.name, manifest);

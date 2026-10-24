@@ -1,5 +1,5 @@
 use crate::helpers::{base_url, container_authz, organization, require_permission};
-use crate::{ApiError, AppState, AuthContext};
+use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
@@ -73,6 +73,7 @@ async fn get_cookbook(
 async fn get_cookbook_version(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    Extension(ApiVersion(api_version)): Extension<ApiVersion>,
     Path((_organization, name, version)): Path<(String, String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
@@ -83,8 +84,9 @@ async fn get_cookbook_version(
         .ok_or_else(|| ApiError::not_found(format!("cookbook {name} {version}")))?;
     require_permission(&state, &auth, &cookbook.authz_id, Permission::Read)?;
 
-    let mut manifest: Value =
+    let stored: Value =
         serde_json::from_str(&cookbook.manifest).map_err(|_| ApiError::internal())?;
+    let mut manifest = manifest_for_api_version(&stored, api_version, &name, &version);
     add_download_urls(&mut manifest, &state, &org.id);
     Ok(Json(manifest))
 }
@@ -210,7 +212,7 @@ fn cookbook_entry(
 
 fn manifest_checksums(manifest: &Value) -> Vec<String> {
     let mut checksums = Vec::new();
-    for segment in SEGMENTS {
+    for segment in std::iter::once("all_files").chain(SEGMENTS) {
         if let Some(files) = manifest.get(segment).and_then(Value::as_array) {
             for file in files {
                 if let Some(checksum) = file.get("checksum").and_then(Value::as_str) {
@@ -219,18 +221,145 @@ fn manifest_checksums(manifest: &Value) -> Vec<String> {
             }
         }
     }
+    checksums.sort();
+    checksums.dedup();
     checksums
 }
 
-pub(crate) fn add_download_urls(manifest: &mut Value, state: &AppState, org_id: &str) {
-    for segment in SEGMENTS {
-        if let Some(files) = manifest.get_mut(segment).and_then(Value::as_array_mut) {
-            for file in files {
-                if let Some(checksum) = file.get("checksum").and_then(Value::as_str) {
-                    let url = state.object_store.presigned_url("GET", org_id, checksum);
-                    file["url"] = json!(url);
+/// Convert a stored manifest to the shape requested by the API version.
+///
+/// API versions 0 and 1 expose the legacy segment arrays, while version 2
+/// exposes a single `all_files` list. Stored manifests may be in either shape
+/// because both v0 and v2 uploads are accepted.
+pub(crate) fn manifest_for_api_version(
+    manifest: &Value,
+    api_version: u8,
+    name: &str,
+    version: &str,
+) -> Value {
+    let mut manifest = manifest.clone();
+    if api_version >= 2 {
+        to_v2_manifest(&mut manifest, name, version);
+    } else {
+        to_v0_manifest(&mut manifest);
+    }
+    manifest
+}
+
+fn to_v2_manifest(manifest: &mut Value, name: &str, version: &str) {
+    if manifest.get("all_files").is_none() {
+        let mut all_files = Vec::new();
+        for segment in SEGMENTS {
+            if let Some(files) = manifest.get(segment).and_then(Value::as_array) {
+                for file in files {
+                    let mut entry = file.clone();
+                    let file_name = entry
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                        .or_else(|| {
+                            entry.get("path").and_then(Value::as_str).map(|path| {
+                                path.strip_prefix(&format!("{segment}/"))
+                                    .unwrap_or(path)
+                                    .to_string()
+                            })
+                        })
+                        .unwrap_or_default();
+                    entry["name"] = json!(format!("{segment}/{file_name}"));
+                    all_files.push(entry);
                 }
             }
+        }
+        if let Some(object) = manifest.as_object_mut() {
+            for segment in SEGMENTS {
+                object.remove(segment);
+            }
+        }
+        manifest["all_files"] = Value::Array(all_files);
+    }
+
+    manifest["cookbook_name"] = json!(name);
+    manifest["name"] = json!(format!("{name}-{version}"));
+    manifest["version"] = json!(version);
+    manifest["chef_type"] = json!("cookbook_version");
+    manifest["json_class"] = json!("Chef::CookbookVersion");
+}
+
+fn to_v0_manifest(manifest: &mut Value) {
+    let Some(all_files) = manifest.get("all_files").and_then(Value::as_array).cloned() else {
+        return;
+    };
+
+    let mut segments: Vec<(&str, Vec<Value>)> = SEGMENTS
+        .iter()
+        .map(|segment| (*segment, Vec::new()))
+        .collect();
+    for file in all_files {
+        let file_name = file
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let Some((segment, name)) = legacy_segment(&file_name) else {
+            continue;
+        };
+        let mut entry = file;
+        entry["name"] = json!(name);
+        if entry.get("path").is_none() {
+            let path = file_name
+                .strip_prefix(&format!("{segment}/"))
+                .unwrap_or(file_name.as_str());
+            entry["path"] = json!(path);
+        }
+        if let Some((_, files)) = segments
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == segment)
+        {
+            files.push(entry);
+        }
+    }
+
+    if let Some(object) = manifest.as_object_mut() {
+        object.remove("all_files");
+        for (segment, files) in segments {
+            object.insert(segment.to_string(), Value::Array(files));
+        }
+    }
+}
+
+/// Map a v2 `all_files` entry name to its v0 segment and file name. Names
+/// without a leading segment (for example `metadata.rb`) belong to
+/// `root_files`. Files under an unknown segment are dropped, matching upstream.
+fn legacy_segment(name: &str) -> Option<(&'static str, String)> {
+    let mut parts = name.split('/');
+    let first = parts.next()?;
+    if let Some(segment) = SEGMENTS.iter().find(|segment| **segment == first) {
+        let file_name = parts.last().unwrap_or(first);
+        Some((segment, file_name.to_string()))
+    } else if !name.contains('/') {
+        Some(("root_files", name.to_string()))
+    } else {
+        None
+    }
+}
+
+pub(crate) fn add_download_urls(manifest: &mut Value, state: &AppState, org_id: &str) {
+    if let Some(files) = manifest.get_mut("all_files").and_then(Value::as_array_mut) {
+        add_urls(files, state, org_id);
+        return;
+    }
+    for segment in SEGMENTS {
+        if let Some(files) = manifest.get_mut(segment).and_then(Value::as_array_mut) {
+            add_urls(files, state, org_id);
+        }
+    }
+}
+
+fn add_urls(files: &mut [Value], state: &AppState, org_id: &str) {
+    for file in files {
+        if let Some(checksum) = file.get("checksum").and_then(Value::as_str) {
+            let url = state.object_store.presigned_url("GET", org_id, checksum);
+            file["url"] = json!(url);
         }
     }
 }
