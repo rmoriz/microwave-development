@@ -1020,6 +1020,7 @@ dependencies = [
  "microwave-authz",
  "microwave-config",
  "microwave-crypto",
+ "microwave-depsolver",
  "microwave-oauth",
  "microwave-objectstore",
  "microwave-store",
@@ -1092,6 +1093,10 @@ dependencies = [
  "microwave-store",
  "tempfile",
 ]
+
+[[package]]
+name = "microwave-depsolver"
+version = "0.1.0"
 
 [[package]]
 name = "microwave-migrate"

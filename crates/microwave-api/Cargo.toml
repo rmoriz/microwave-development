@@ -13,6 +13,7 @@ chrono.workspace = true
 microwave-authz = { path = "../microwave-authz" }
 microwave-config = { path = "../microwave-config" }
 microwave-crypto = { path = "../microwave-crypto" }
+microwave-depsolver = { path = "../microwave-depsolver" }
 microwave-objectstore = { path = "../microwave-objectstore" }
 microwave-oauth = { path = "../microwave-oauth" }
 microwave-store = { path = "../microwave-store" }

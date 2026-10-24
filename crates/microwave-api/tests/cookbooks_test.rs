@@ -141,7 +141,7 @@ async fn uploads_and_reads_a_cookbook_version() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let solved = support::response_json(response).await;
-    assert_eq!(solved["cookbook_versions"]["apache"]["name"], "apache");
+    assert_eq!(solved["apache"]["name"], "apache");
 
     let response = app
         .oneshot(support::signed_request(
