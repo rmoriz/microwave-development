@@ -5,12 +5,28 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
-use microwave_objectstore::md5_hex;
+use microwave_objectstore::{bookshelf_token_matches, md5_hex};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 struct TokenQuery {
     token: String,
+}
+
+fn authorized(
+    state: &AppState,
+    method: &str,
+    organization: &str,
+    checksum: &str,
+    token: &str,
+) -> bool {
+    let secret = state
+        .config
+        .object_store
+        .secret
+        .as_deref()
+        .unwrap_or_default();
+    bookshelf_token_matches(secret, method, organization, checksum, token)
 }
 
 pub fn routes() -> Router<AppState> {
@@ -27,10 +43,7 @@ async fn download(
     Path((organization, checksum)): Path<(String, String)>,
     Query(query): Query<TokenQuery>,
 ) -> Result<Response, ApiError> {
-    if !state
-        .object_store
-        .verify("GET", &organization, &checksum, &query.token)
-    {
+    if !authorized(&state, "GET", &organization, &checksum, &query.token) {
         return Err(ApiError::unauthorized());
     }
     let data = state
@@ -45,10 +58,7 @@ async fn head(
     Path((organization, checksum)): Path<(String, String)>,
     Query(query): Query<TokenQuery>,
 ) -> Result<StatusCode, ApiError> {
-    if !state
-        .object_store
-        .verify("GET", &organization, &checksum, &query.token)
-    {
+    if !authorized(&state, "GET", &organization, &checksum, &query.token) {
         return Err(ApiError::unauthorized());
     }
     if state.object_store.exists(&organization, &checksum) {
@@ -64,10 +74,7 @@ async fn upload(
     Query(query): Query<TokenQuery>,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {
-    if !state
-        .object_store
-        .verify("PUT", &organization, &checksum, &query.token)
-    {
+    if !authorized(&state, "PUT", &organization, &checksum, &query.token) {
         return Err(ApiError::unauthorized());
     }
     if md5_hex(&body) != checksum {
@@ -85,10 +92,7 @@ async fn delete_object(
     Path((organization, checksum)): Path<(String, String)>,
     Query(query): Query<TokenQuery>,
 ) -> Result<StatusCode, ApiError> {
-    if !state
-        .object_store
-        .verify("DELETE", &organization, &checksum, &query.token)
-    {
+    if !authorized(&state, "DELETE", &organization, &checksum, &query.token) {
         return Err(ApiError::unauthorized());
     }
     state

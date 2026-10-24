@@ -54,6 +54,9 @@ impl Config {
     /// - `MW_DATABASE__DRIVER`, `MW_DATABASE__URL`
     /// - `MW_SEARCH__BACKEND`, `MW_SEARCH__URL`
     /// - `MW_OBJECT_STORE__BACKEND`, `MW_OBJECT_STORE__BUCKET`, `MW_OBJECT_STORE__ENDPOINT`
+    /// - `MW_OBJECT_STORE__REGION`, `MW_OBJECT_STORE__ACCESS_KEY`,
+    ///   `MW_OBJECT_STORE__SECRET_KEY`, `MW_OBJECT_STORE__PATH_STYLE`
+    /// - `MW_OBJECT_STORE__SECRET` (local bookshelf token secret)
     /// - `MW_AUTH__SKEW_SECONDS`, `MW_AUTH__SUPERUSER_NAME`
     pub fn apply_env(&mut self) -> Result<(), ConfigError> {
         if let Ok(value) = std::env::var("MW_SERVER__BIND") {
@@ -115,6 +118,18 @@ impl Config {
         if let Ok(value) = std::env::var("MW_OBJECT_STORE__ENDPOINT") {
             self.object_store.endpoint = Some(value);
         }
+        if let Ok(value) = std::env::var("MW_OBJECT_STORE__REGION") {
+            self.object_store.region = value;
+        }
+        if let Ok(value) = std::env::var("MW_OBJECT_STORE__ACCESS_KEY") {
+            self.object_store.access_key = Some(value);
+        }
+        if let Ok(value) = std::env::var("MW_OBJECT_STORE__SECRET_KEY") {
+            self.object_store.secret_key = Some(value);
+        }
+        if let Ok(value) = std::env::var("MW_OBJECT_STORE__PATH_STYLE") {
+            self.object_store.path_style = parse_bool("MW_OBJECT_STORE__PATH_STYLE", &value)?;
+        }
         if let Ok(value) = std::env::var("MW_OBJECT_STORE__SECRET") {
             self.object_store.secret = Some(value);
         }
@@ -148,6 +163,17 @@ where
         key: key.into(),
         value,
     })
+}
+
+fn parse_bool(key: &str, value: &str) -> Result<bool, ConfigError> {
+    match value.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" => Ok(true),
+        "false" | "0" | "no" => Ok(false),
+        _ => Err(ConfigError::InvalidValue {
+            key: key.into(),
+            value: value.to_string(),
+        }),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -235,7 +261,12 @@ pub struct ObjectStoreConfig {
     pub backend: ObjectStoreBackend,
     pub bucket: Option<String>,
     pub endpoint: Option<String>,
+    /// Shared secret for local `/bookshelf` HMAC tokens.
     pub secret: Option<String>,
+    pub region: String,
+    pub access_key: Option<String>,
+    pub secret_key: Option<String>,
+    pub path_style: bool,
 }
 
 impl Default for ObjectStoreConfig {
@@ -245,6 +276,10 @@ impl Default for ObjectStoreConfig {
             bucket: None,
             endpoint: None,
             secret: None,
+            region: "us-east-1".into(),
+            access_key: None,
+            secret_key: None,
+            path_style: true,
         }
     }
 }
