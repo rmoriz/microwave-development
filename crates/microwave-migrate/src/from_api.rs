@@ -1298,14 +1298,12 @@ impl Crawler {
         match request.call() {
             Ok(mut response) => {
                 let status = response.status().as_u16();
-                let body =
-                    response
-                        .body_mut()
-                        .read_to_string()
-                        .map_err(|error| MigrateError::InvalidApiResponse {
-                            url: url.to_string(),
-                            message: error.to_string(),
-                        })?;
+                let body = response.body_mut().read_to_string().map_err(|error| {
+                    MigrateError::InvalidApiResponse {
+                        url: url.to_string(),
+                        message: error.to_string(),
+                    }
+                })?;
                 Ok((status, body))
             }
             Err(error) => Err(MigrateError::Transport {
