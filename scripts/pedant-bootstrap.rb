@@ -217,6 +217,13 @@ config = <<~RUBY
 
   log_file #{File.join(ARTIFACTS, "http-traffic.log").inspect}
 
+  # Microwave indexes synchronously; there is no external Solr to commit.
+  # run-pedant.sh starts a tiny 200-OK stub for Pedant's unconditional
+  # force_solr_commit calls; without it those calls POST to an empty host.
+  search_server #{ENV["PEDANT_SEARCH_SERVER"].inspect}
+  direct_solr_query_sleep_time 0
+  maximum_search_time 10
+
   requestors({
     clients: {
       admin: {

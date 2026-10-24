@@ -497,4 +497,8 @@ Artifacts: `/private/var/folders/yv/wmw_npmn7y5c2lwxjywt_f800000gn/T/opencode/pe
 
 ### Remaining coverage
 
-These five tags are green. The harness should next be extended to keys, ACLs, data bags, cookbooks, sandboxes, search, policies, OAuth, license, depsolver, and the remaining versioned behaviors.
+These five tags are green. The harness now also supports the extended suites:
+`scripts/run-pedant.sh extended` covers keys, ACLs, data bags, cookbooks,
+sandboxes, search, policies, OAuth, license, depsolver, and the versioned
+behaviors. Baseline counts, root causes, and the prioritized gap list are in
+[`docs/pedant-extended-report.md`](pedant-extended-report.md).
