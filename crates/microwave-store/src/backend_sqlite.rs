@@ -1260,6 +1260,15 @@ impl SecretsRepository for SqliteStore {
         self.set_secret(group, name, value)
     }
 
+    async fn set_secret_if_absent(
+        &self,
+        group: &str,
+        name: &str,
+        value: &str,
+    ) -> Result<String, StoreError> {
+        SqliteStore::set_secret_if_absent(self, group, name, value)
+    }
+
     async fn remove_secret(&self, group: &str, name: &str) -> Result<(), StoreError> {
         self.remove_secret(group, name)
     }

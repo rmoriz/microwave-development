@@ -1,10 +1,9 @@
 //! Backend-neutral metadata store contract.
 //!
-//! `AppState` currently holds a concrete [`SqliteStore`](crate::SqliteStore).
-//! To run the same API handlers against PostgreSQL, the state must depend on
-//! this trait instead of a concrete backend. The contract is split into one
-//! repository trait per domain so that the eventual `AppState<S: MetadataStore>`
-//! change stays mechanical:
+//! `AppState` holds `Arc<dyn MetadataStore>`, so the same API handlers, OAuth
+//! surface, embedded search, authorization policy, and bootstrap run against
+//! SQLite or PostgreSQL. The contract is split into one repository trait per
+//! domain:
 //!
 //! * [`IdentityRepository`] — orgs, users, clients, actor keys, principals.
 //! * [`AuthzRepository`] — authz entities, groups, containers, ACLs and the
@@ -21,7 +20,8 @@
 //! * [`SecretsRepository`] — operator-managed secrets stored in the KV table.
 //!
 //! [`MetadataStore`] is a blanket supertrait, so a backend only implements the
-//! repository traits and `AppState` can be bounded by `S: MetadataStore`.
+//! repository traits. Code that is generic over one domain accepts
+//! `S: SomeRepository + ?Sized` so it also works with `&dyn MetadataStore`.
 //!
 //! The legacy migration helpers are still intentionally **not** part of this
 //! contract; see the `microwave-store-postgres` README for the migration
@@ -794,14 +794,23 @@ pub trait KvRepository: Send + Sync {
 pub trait SecretsRepository: Send + Sync {
     async fn get_secret(&self, group: &str, name: &str) -> Result<Option<String>, StoreError>;
     async fn set_secret(&self, group: &str, name: &str, value: &str) -> Result<(), StoreError>;
+
+    /// Insert a secret only when it does not exist and return the value that is
+    /// stored afterwards. This is the HA-safe bootstrap primitive.
+    async fn set_secret_if_absent(
+        &self,
+        group: &str,
+        name: &str,
+        value: &str,
+    ) -> Result<String, StoreError>;
+
     async fn remove_secret(&self, group: &str, name: &str) -> Result<(), StoreError>;
 }
 
 /// The complete metadata store contract.
 ///
-/// `AppState` should eventually hold `Arc<S>` where `S: MetadataStore`. The
-/// legacy `MigrationRepository` helpers are the only remaining domain outside
-/// this contract.
+/// The server holds `Arc<dyn MetadataStore>`. The legacy `MigrationRepository`
+/// helpers are the only remaining domain outside this contract.
 pub trait MetadataStore:
     IdentityRepository
     + AuthzRepository

@@ -6,7 +6,9 @@
 //! backend. Callers must treat values as sensitive: only the explicit
 //! `show-secret` command prints them.
 
+use crate::identity::now;
 use crate::sqlite::{SqliteStore, StoreError};
+use rusqlite::OptionalExtension;
 
 /// Group used for the local object-store HMAC secret.
 pub const OBJECT_STORE_SECRET_GROUP: &str = "object_store";
@@ -38,6 +40,36 @@ impl SqliteStore {
             return Err(StoreError::Invalid("secret value must not be empty".into()));
         }
         self.set_kv(&secret_kv_key(group, name), value)
+    }
+
+    /// Insert a secret only when it does not exist yet.
+    ///
+    /// Returns the value that is stored after the call: `value` when this call
+    /// inserted it, or the existing value when another writer won the race.
+    /// This makes first-start bootstrap safe across multiple HA replicas.
+    pub fn set_secret_if_absent(
+        &self,
+        group: &str,
+        name: &str,
+        value: &str,
+    ) -> Result<String, StoreError> {
+        validate_component("secret group", group)?;
+        validate_component("secret name", name)?;
+        if value.is_empty() {
+            return Err(StoreError::Invalid("secret value must not be empty".into()));
+        }
+        let key = secret_kv_key(group, name);
+        let connection = self.connection();
+        connection.execute(
+            "INSERT OR IGNORE INTO kvpair (key, value, updated_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![key, value, now()],
+        )?;
+        Ok(connection
+            .query_row("SELECT value FROM kvpair WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()?
+            .unwrap_or_else(|| value.to_string()))
     }
 
     /// Remove a secret. Removing a missing secret is reported as `NotFound` so

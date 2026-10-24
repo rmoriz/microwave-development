@@ -1432,6 +1432,35 @@ async fn stores_kv_and_secrets() {
         store.set_secret(group, &name, "").await,
         Err(StoreError::Invalid(_))
     ));
+
+    // HA-safe bootstrap insert: concurrent writers must agree on one value.
+    let absent = format!("bootstrap-{}", suffix());
+    let (left, right) = tokio::join!(
+        store.set_secret_if_absent(group, &absent, "left"),
+        store.set_secret_if_absent(group, &absent, "right"),
+    );
+    let left = left.expect("left bootstrap insert");
+    let right = right.expect("right bootstrap insert");
+    assert_eq!(left, right, "both callers must observe the winning value");
+    assert_eq!(
+        store
+            .get_secret(group, &absent)
+            .await
+            .expect("bootstrap secret"),
+        Some(left.clone())
+    );
+    assert_eq!(
+        store
+            .set_secret_if_absent(group, &absent, "other")
+            .await
+            .expect("repeat bootstrap insert"),
+        left
+    );
+    assert!(matches!(
+        store.set_secret_if_absent("bad group", &absent, "x").await,
+        Err(StoreError::Invalid(_))
+    ));
+    store.remove_secret(group, &absent).await.expect("cleanup");
 }
 
 #[tokio::test]
