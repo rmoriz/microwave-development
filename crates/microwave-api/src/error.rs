@@ -83,6 +83,7 @@ impl ApiError {
         Self {
             status: StatusCode::UNPROCESSABLE_ENTITY,
             message: message.into(),
+            not_found_kind: None,
         }
     }
 
