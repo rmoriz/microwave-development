@@ -14,7 +14,7 @@ The repository contains a working vertical slice:
 - **Operations CLI** — `microwave-ctl` with a `chef-server-ctl` compatibility binary: user/org administration, org membership, password reset, status, local backup/restore, `migrate-from-legacy` snapshot import, and a clear not-implemented response for reindex.
 - **Migration** — `microwave-migrate` exports a versioned JSON snapshot of the local store (users with password hashes, organizations, clients, keys, authz ACLs, nodes, roles, environments, data bags, checksums, cookbooks, policies, and OAuth applications) and imports it with original ids, authz ids, timestamps, and keys intact. The live legacy API crawler (`from-api`) is deferred and reports a clear not-implemented error.
 - **OAuth/identity** — `/id` sign-in/sessions, OAuth application management, authorization-code and refresh-token flows, `/id/v1/me`, `/id/v1/me/organizations`, `/id/v1/status`, profile/password/key regeneration, and password-reset tokens.
-- **Object storage** — local content-addressed store with signed upload/download URLs.
+- **External backends** — S3/Garage object storage with SigV4 signing and presigned URLs, and OpenSearch/Elasticsearch search with bulk indexing and query translation. The local object store and embedded search remain the defaults.
 - **Server** — `microwave-server serve` bootstraps a `pivotal` superuser and listens on the configured address.
 
 Testing and formatting are green:
@@ -33,7 +33,7 @@ cargo run -p microwave-server -- serve
 
 The first run creates `./data/pivotal.pem` (superuser private key), `./data/pivotal.password`, and `./data/objectstore.secret`. Use `MW_PATHS__DATA_DIR` to choose another data directory.
 
-The workspace currently has 154 passing tests.
+The full workspace suite is green.
 
 ## Not Yet Implemented
 
