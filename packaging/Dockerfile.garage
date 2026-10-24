@@ -10,7 +10,7 @@
 # exists so `docker compose -f docker-compose.yml -f docker-compose.ha.yml up`
 # works on a single host.
 
-FROM dxflrs/garage:v1.0.1 AS garage
+FROM dxflrs/garage:v2.5.0 AS garage
 
 FROM debian:bookworm-slim
 

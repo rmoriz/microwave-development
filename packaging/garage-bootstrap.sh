@@ -26,8 +26,9 @@ done
 
 node_id="$(/garage -c /etc/garage.toml node id -q | cut -d@ -f1)"
 
-# Assign the single node to a zone and apply layout version 1. Garage v1.0
-# takes the capacity in bytes and accepts suffixes, so `1G` is one gibibyte.
+# Assign the single node to a zone and apply layout version 1. Garage v1+
+# (including the current v2.5.x line) takes the capacity in bytes and accepts
+# suffixes, so `1G` is one gibibyte.
 # Both commands fail harmlessly when the layout is already configured.
 /garage -c /etc/garage.toml layout assign -z dc1 -c "${MW_GARAGE_CAPACITY:-1G}" "$node_id" || true
 /garage -c /etc/garage.toml layout apply --version 1 || true

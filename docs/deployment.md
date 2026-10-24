@@ -237,7 +237,9 @@ the mounted configuration, also change the container port mapping and
 `MW_HTTP_PORT` so the healthcheck still targets the right port.
 
 [`docker-compose.ha.yml`](../docker-compose.ha.yml) is an override that adds
-Garage (S3) and OpenSearch:
+Garage (S3) and OpenSearch. The checked-in images are
+`dxflrs/garage:v2.5.0` and `opensearchproject/opensearch:2.19.7`; both were
+validated end-to-end with the Compose profile:
 
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --build
