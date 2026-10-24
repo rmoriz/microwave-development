@@ -492,6 +492,7 @@ pub trait SandboxRepository: Send + Sync {
 /// Cookbook versions and their checksums.
 #[async_trait]
 pub trait CookbookRepository: Send + Sync {
+    #[allow(clippy::too_many_arguments)]
     async fn create_cookbook_version(
         &self,
         org_id: &str,
@@ -499,6 +500,7 @@ pub trait CookbookRepository: Send + Sync {
         version: &str,
         manifest: &str,
         checksums: &[String],
+        frozen: bool,
         creator_authz_id: &str,
     ) -> Result<StoredCookbookVersion, StoreError>;
 
@@ -531,7 +533,7 @@ pub trait CookbookRepository: Send + Sync {
         org_id: &str,
         name: &str,
         version: &str,
-    ) -> Result<(), StoreError>;
+    ) -> Result<(StoredCookbookVersion, Vec<String>), StoreError>;
 }
 
 /// Policyfiles, revisions, groups and group/revision associations.

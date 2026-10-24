@@ -744,17 +744,16 @@ impl CookbookRepository for SqliteStore {
         version: &str,
         manifest: &str,
         checksums: &[String],
+        frozen: bool,
         creator_authz_id: &str,
     ) -> Result<StoredCookbookVersion, StoreError> {
-        // The inherent method's signature has a `frozen` flag that is not part
-        // of the existing trait method; new versions default to unfrozen.
         self.create_cookbook_version(
             org_id,
             name,
             version,
             manifest,
             checksums,
-            false,
+            frozen,
             creator_authz_id,
         )
     }
@@ -801,11 +800,8 @@ impl CookbookRepository for SqliteStore {
         org_id: &str,
         name: &str,
         version: &str,
-    ) -> Result<(), StoreError> {
-        // The inherent method also returns the deleted document and the
-        // checksums to purge; the existing trait method only reports success.
-        self.delete_cookbook_version(org_id, name, version)?;
-        Ok(())
+    ) -> Result<(StoredCookbookVersion, Vec<String>), StoreError> {
+        self.delete_cookbook_version(org_id, name, version)
     }
 }
 

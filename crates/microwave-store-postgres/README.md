@@ -16,12 +16,18 @@ unchanged.
 | Authz graph and ACLs | `AuthzRepository` | entities, containers, groups, membership, nested groups, cycle detection, ACL read/replace, recursive permission checks, ACL target lookup |
 | Nodes, roles, environments, data bags/items | `ObjectRepository` | full CRUD, environment/policy indexes, container-inherited ACLs |
 | Sandboxes and checksums | `SandboxRepository` | create sandbox, upload-needed checks, checksum commit, lookup |
-| Cookbooks | `CookbookRepository` | create/find/list/delete versions with checksum links |
+| Cookbooks | `CookbookRepository` | create (including `frozen`)/find/list/update/delete versions with checksum links and purge lists |
 | Policyfiles | `PolicyRepository` | policies, revisions, policy groups and group/revision associations |
 
 PostgreSQL tables that are migrated but do **not** yet have repository methods:
 `oauth_applications`, `oauth_access_grants`, `oauth_access_tokens`, `kvpair`,
 `telemetry`, `org_user_invites`, `cookbook_artifacts*`.
+
+`PostgresStore` currently implements only the six legacy repository traits.
+The `MetadataStore` contract additionally requires `ArtifactRepository`,
+`MembershipRepository`, `OAuthRepository`, `KvRepository` and
+`SecretsRepository`, so `PostgresStore` does **not** satisfy `MetadataStore`
+until those are implemented.
 
 ## Schema choices
 
@@ -76,27 +82,24 @@ against one database.
 
 The trait already lives in `microwave-store` (`src/backend.rs`), not in this
 backend crate, so the API can depend on the contract rather than on PostgreSQL.
-`MetadataStore` is a blanket supertrait over the six repository traits.
+`MetadataStore` is a blanket supertrait over all repository traits.
 
 To finish the integration:
 
-1. **Implement the repository traits for `SqliteStore`.** The methods are
-   currently inherent and synchronous; add `async_trait` forwarding impls.
-   Keep the inherent methods for existing callers during the transition.
-2. **Add the remaining repository traits.** `OAuthRepository`
-   (`create_application`, token/grant CRUD, revocation), `KvRepository`
-   (`get/set/delete`), `MembershipRepository` (invites, org-user association
-   listing), `MigrationRepository` (export/import helpers) and a read-side
-   `SearchDocumentSource` for the Tantivy indexer. The PostgreSQL schema for
-   OAuth and KV already exists.
-3. **Change `AppState`.** Replace `pub store: Arc<SqliteStore>` with
+1. **Implement the remaining repository traits for `PostgresStore`.**
+   `ArtifactRepository`, `MembershipRepository`, `OAuthRepository`,
+   `KvRepository` and `SecretsRepository` are defined in the contract and
+   implemented for `SqliteStore`, but not yet for PostgreSQL. The PostgreSQL
+   schema for OAuth, KV and invitations already exists; cookbook artifacts have
+   tables but no methods yet.
+2. **Change `AppState`.** Replace `pub store: Arc<SqliteStore>` with
    `pub store: Arc<dyn MetadataStore>` (all methods are object-safe through
    `async_trait`). `AuthContext` and handlers then operate on the trait.
-4. **Abstract search construction.** `microwave-api::state::build_search_backend`
+3. **Abstract search construction.** `microwave-api::state::build_search_backend`
    currently accepts `Arc<SqliteStore>`; switch it to the read-side trait above.
-5. **Select the backend in configuration.** Add `metadata.backend =
+4. **Select the backend in configuration.** Add `metadata.backend =
    "sqlite" | "postgres"` plus a `database_url` to `microwave-config`, and
    construct the appropriate store at startup. Default remains SQLite.
-6. **Operational follow-ups.** Connection retry/backoff, per-query timeouts,
+5. **Operational follow-ups.** Connection retry/backoff, per-query timeouts,
    advisory locks for cluster-wide cleanup jobs, and backup/restore support for
    PostgreSQL (the current backup path is SQLite `VACUUM INTO`).

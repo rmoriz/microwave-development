@@ -659,6 +659,7 @@ async fn stores_cookbook_versions_with_checksums() {
             "1.2.3",
             r#"{"recipes":[{"name":"default.rb","checksum":"0000000000000000000000000000002a","path":"recipes/default.rb","specificity":"default"}]}"#,
             &checksums,
+            true,
             &fixture.creator_authz_id,
         )
         .await
@@ -666,6 +667,7 @@ async fn stores_cookbook_versions_with_checksums() {
     assert!(is_32_hex(&version.id));
     assert_eq!(version.version, "1.2.3");
     assert_eq!(version.checksums, checksums);
+    assert!(version.frozen);
     assert!(is_32_hex(&version.authz_id));
 
     assert_eq!(
@@ -692,15 +694,20 @@ async fn stores_cookbook_versions_with_checksums() {
             "1.2.3",
             "{}",
             &checksums,
+            false,
             &fixture.creator_authz_id,
         )
         .await;
     assert!(matches!(duplicate, Err(StoreError::Conflict(_))));
 
-    store
+    let (deleted, purged) = store
         .delete_cookbook_version(&fixture.org_id, "apache", "1.2.3")
         .await
         .expect("delete cookbook version");
+    assert_eq!(deleted.id, version.id);
+    assert!(deleted.frozen);
+    assert_eq!(deleted.checksums, checksums);
+    assert_eq!(purged, checksums);
     assert!(store
         .find_cookbook_version(&fixture.org_id, "apache", "1.2.3")
         .await

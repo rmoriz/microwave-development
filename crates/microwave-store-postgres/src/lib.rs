@@ -1,12 +1,19 @@
 //! PostgreSQL metadata store for Microwave Server.
 //!
 //! This crate is the first slice of the HA metadata backend described in the
-//! design document. It implements the backend-neutral repository traits from
-//! `microwave-store` against the unified PostgreSQL schema in
+//! design document. It implements six of the backend-neutral repository traits
+//! from `microwave-store` (`IdentityRepository`, `AuthzRepository`,
+//! `ObjectRepository`, `SandboxRepository`, `CookbookRepository` and
+//! `PolicyRepository`) against the unified PostgreSQL schema in
 //! `migrations/0001_initial.sql`.
 //!
+//! `PostgresStore` does not yet satisfy `MetadataStore`: the contract also
+//! requires `ArtifactRepository`, `MembershipRepository`, `OAuthRepository`,
+//! `KvRepository` and `SecretsRepository`, which currently exist only for the
+//! SQLite backend.
+//!
 //! ```no_run
-//! use microwave_store::{IdentityRepository, MetadataStore};
+//! use microwave_store::IdentityRepository;
 //! use microwave_store_postgres::PostgresStore;
 //!
 //! # async fn example() -> Result<(), microwave_store::StoreError> {
