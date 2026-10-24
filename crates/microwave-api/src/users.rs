@@ -138,6 +138,13 @@ async fn create_user(
         )
         .map_err(ApiError::from)?;
 
+    // The account service gives the creating superuser every permission on a
+    // new user's actor ACL (the user itself is added by the store).
+    state
+        .store
+        .grant_actor_all(&user.authz_id, &auth.principal.authz_id)
+        .map_err(ApiError::from)?;
+
     if optional_bool(body, "recovery_authentication_enabled")?.unwrap_or(false) {
         state
             .store

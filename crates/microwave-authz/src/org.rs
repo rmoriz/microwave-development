@@ -58,6 +58,15 @@ fn apply_default_policy(
         groups.push(store.create_group_for_org(&org.id, name)?);
     }
 
+    // Upstream creates a global `<org>_read_access_group` and makes the org's
+    // admins and users groups members of it. It is rendered as
+    // `::<org>_read_access_group` in ACL responses.
+    let read_access_group =
+        store.ensure_global_group(&format!("{}_read_access_group", org.name))?;
+    // Keep the global server-admins group available even on servers where the
+    // superuser was created by an older bootstrap path.
+    store.ensure_global_group("server-admins")?;
+
     store.associate_user_org(&org.id, creator_user_id)?;
 
     let admins = group(&groups, "admins")?;
@@ -67,6 +76,8 @@ fn apply_default_policy(
 
     store.add_group_member(&admins.authz_id, creator_authz_id)?;
     store.add_group_member(&users.authz_id, creator_authz_id)?;
+    store.add_group_child(&read_access_group.authz_id, &admins.authz_id)?;
+    store.add_group_child(&read_access_group.authz_id, &users.authz_id)?;
     store.add_group_child(&public_key_read_access.authz_id, &users.authz_id)?;
     store.add_group_child(&public_key_read_access.authz_id, &clients.authz_id)?;
 
@@ -95,14 +106,30 @@ fn apply_default_policy(
             Some(creator_authz_id),
             None,
         )?;
+    }
+    grant(
+        store,
+        &read_access_group.authz_id,
+        &Permission::ALL,
+        Some(creator_authz_id),
+        None,
+    )?;
+    for name in ["admins", "clients", "users"] {
         grant(
             store,
-            &group.authz_id,
+            &group(&groups, name)?.authz_id,
             &Permission::ALL,
             None,
             Some(&admins.authz_id),
         )?;
     }
+    grant(
+        store,
+        &public_key_read_access.authz_id,
+        &[Permission::Read, Permission::Update],
+        None,
+        Some(&admins.authz_id),
+    )?;
     grant(
         store,
         &org.authz_id,

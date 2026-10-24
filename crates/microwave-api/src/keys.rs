@@ -114,7 +114,7 @@ async fn list_client_keys(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let target = client_target(&state, &auth, &headers, &client_name)?;
-    authorize(&state, &auth, &target, Permission::Read)?;
+    authorize_public_read(&state, &auth)?;
     list_keys(&state, &target)
 }
 
@@ -137,7 +137,7 @@ async fn get_client_key(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let target = client_target(&state, &auth, &headers, &client_name)?;
-    authorize(&state, &auth, &target, Permission::Read)?;
+    authorize_public_read(&state, &auth)?;
     get_key(&state, &target, &key_name)
 }
 
@@ -171,7 +171,7 @@ async fn list_org_user_keys(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let target = org_user_target(&state, &auth, &headers, &username)?;
-    authorize(&state, &auth, &target, Permission::Read)?;
+    authorize_public_read(&state, &auth)?;
     list_keys(&state, &target)
 }
 
@@ -182,7 +182,7 @@ async fn get_org_user_key(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let target = org_user_target(&state, &auth, &headers, &username)?;
-    authorize(&state, &auth, &target, Permission::Read)?;
+    authorize_public_read(&state, &auth)?;
     get_key(&state, &target, &key_name)
 }
 
@@ -274,10 +274,33 @@ fn authorize(
         match target.actor_type {
             ActorType::User => return Ok(()),
             ActorType::Client if !target.validator => return Ok(()),
-            ActorType::Client => {}
+            ActorType::Client => return Err(ApiError::forbidden()),
         }
     }
     require_permission(state, auth, &target.authz_id, permission)
+}
+
+/// Reads of org-scoped actor keys are governed by membership in the org's
+/// `public_key_read_access` group, not by the target actor's ACL.
+fn authorize_public_read(state: &AppState, auth: &AuthContext) -> Result<(), ApiError> {
+    if is_superuser(auth) {
+        return Ok(());
+    }
+    let org = organization(auth)?;
+    let group = state
+        .store
+        .find_group(&org.id, "public_key_read_access")
+        .map_err(ApiError::from)?
+        .ok_or_else(ApiError::forbidden)?;
+    if state
+        .store
+        .user_in_group(&group.authz_id, &auth.principal.authz_id)
+        .map_err(ApiError::from)?
+    {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden())
+    }
 }
 
 fn list_keys(state: &AppState, target: &KeyTarget) -> Result<Json<Value>, ApiError> {
