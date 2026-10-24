@@ -11,7 +11,8 @@ pub const MIN_CHEF_VERSION: u32 = 10;
 
 /// Upstream `oc_chef_wm`'s `max_request_size` default. Request bodies larger
 /// than this are rejected with `413` before any JSON parsing happens.
-pub const MAX_REQUEST_BODY: usize = 2_000_000;
+pub const MAX_REQUEST_SIZE: usize = 2_000_000;
+pub const MAX_REQUEST_BODY: usize = MAX_REQUEST_SIZE;
 
 pub async fn authenticate(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
@@ -87,9 +88,9 @@ async fn authenticate_signed(
     next: axum::middleware::Next,
 ) -> Result<Response, ApiError> {
     let (parts, body) = request.into_parts();
-    let body_bytes = axum::body::to_bytes(body, 16 * 1024 * 1024)
+    let body_bytes = axum::body::to_bytes(body, MAX_REQUEST_SIZE)
         .await
-        .map_err(|_| ApiError::bad_request("request body is too large"))?;
+        .map_err(|_| ApiError::payload_too_large("JSON must be no more than 2000000 bytes."))?;
     if matches!(parts.method.as_str(), "POST" | "PUT") && body_bytes.len() > MAX_REQUEST_BODY {
         return Err(ApiError::payload_too_large(format!(
             "JSON must be no more than {MAX_REQUEST_BODY} bytes."

@@ -11,7 +11,7 @@ mod policies;
 mod sandboxes;
 mod sqlite;
 
-pub use authz::{Acl, AclEntry, Container, Group, Permission};
+pub use authz::{Acl, AclEntry, Container, Group, GroupMembers, Permission};
 pub use cookbooks::{parse_version, StoredCookbookVersion};
 pub use identity::{ActorKey, ActorType, Client, Org, Principal, User};
 pub use membership::Invitation;

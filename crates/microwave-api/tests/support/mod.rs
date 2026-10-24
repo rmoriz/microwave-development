@@ -54,7 +54,7 @@ pub fn signed_request(
     version: SignVersion,
     user_id: &str,
 ) -> Request<Body> {
-    signed_request_with_api_version(method, path, body, version, user_id, "2")
+    signed_request_with_key_and_api_version(method, path, body, version, user_id, PRIVATE_KEY, "2")
 }
 
 pub fn signed_request_with_api_version(
@@ -63,6 +63,37 @@ pub fn signed_request_with_api_version(
     body: &[u8],
     version: SignVersion,
     user_id: &str,
+    api_version: &str,
+) -> Request<Body> {
+    signed_request_with_key_and_api_version(
+        method,
+        path,
+        body,
+        version,
+        user_id,
+        PRIVATE_KEY,
+        api_version,
+    )
+}
+
+pub fn signed_request_with_key(
+    method: &str,
+    path: &str,
+    body: &[u8],
+    version: SignVersion,
+    user_id: &str,
+    private_key: &str,
+) -> Request<Body> {
+    signed_request_with_key_and_api_version(method, path, body, version, user_id, private_key, "2")
+}
+
+fn signed_request_with_key_and_api_version(
+    method: &str,
+    path: &str,
+    body: &[u8],
+    version: SignVersion,
+    user_id: &str,
+    private_key: &str,
     api_version: &str,
 ) -> Request<Body> {
     let canonical_path = path.split('?').next().unwrap_or(path);
@@ -75,7 +106,7 @@ pub fn signed_request_with_api_version(
         api_version: Some(api_version),
         version,
     };
-    let signed = sign_request(PRIVATE_KEY, &request).unwrap();
+    let signed = sign_request(private_key, &request).unwrap();
     let sign = match version {
         SignVersion::V1_0 => "algorithm=sha1;version=1.0;",
         SignVersion::V1_1 => "algorithm=sha1;version=1.1;",

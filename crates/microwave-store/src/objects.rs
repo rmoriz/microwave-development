@@ -521,6 +521,18 @@ pub(crate) fn create_object_authz(
     container_name: &str,
     creator_authz_id: &str,
 ) -> Result<String, StoreError> {
+    let authz_id = create_acl_object(tx, org_id, container_name)?;
+    grant_actor_all(tx, &authz_id, creator_authz_id)?;
+    Ok(authz_id)
+}
+
+/// Create an authz object that inherits the ACL of `container_name` without
+/// granting any additional actor.
+pub(crate) fn create_acl_object(
+    tx: &Transaction<'_>,
+    org_id: &str,
+    container_name: &str,
+) -> Result<String, StoreError> {
     let container_authz_id: String = tx
         .query_row(
             "SELECT authz_id FROM containers WHERE org_id = ?1 AND name = ?2",
@@ -548,16 +560,24 @@ pub(crate) fn create_object_authz(
          WHERE target_authz_id = ?2",
         params![authz_id, container_authz_id],
     )?;
+
+    Ok(authz_id)
+}
+
+pub(crate) fn grant_actor_all(
+    tx: &Transaction<'_>,
+    target_authz_id: &str,
+    actor_authz_id: &str,
+) -> Result<(), StoreError> {
     for permission in Permission::ALL {
         tx.execute(
             "INSERT OR IGNORE INTO authz_acl_actor
              (target_authz_id, permission, actor_authz_id)
              VALUES (?1, ?2, ?3)",
-            params![authz_id, permission.as_str(), creator_authz_id],
+            params![target_authz_id, permission.as_str(), actor_authz_id],
         )?;
     }
-
-    Ok(authz_id)
+    Ok(())
 }
 
 fn node_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredNode> {

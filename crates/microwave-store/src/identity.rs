@@ -109,6 +109,21 @@ impl SqliteStore {
         })
     }
 
+    pub fn update_org(&self, name: &str, full_name: &str) -> Result<Org, StoreError> {
+        let now = now();
+        let connection = self.connection();
+        let changed = connection.execute(
+            "UPDATE orgs SET full_name = ?2, updated_at = ?3 WHERE name = ?1",
+            params![name, full_name, now],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NotFound(format!("organization {name}")));
+        }
+        drop(connection);
+        self.find_org(name)?
+            .ok_or_else(|| StoreError::NotFound(format!("organization {name}")))
+    }
+
     pub fn find_org(&self, name: &str) -> Result<Option<Org>, StoreError> {
         let connection = self.connection();
         Ok(connection
@@ -315,6 +330,86 @@ impl SqliteStore {
         })
     }
 
+    /// Create a client and give it the same ACL template as the org's
+    /// `clients` container.
+    ///
+    /// When `creator_authz_id` is provided that actor receives every
+    /// permission on the new client. When it is omitted the new client itself
+    /// receives those permissions instead, which mirrors how a validator
+    /// creates a client with superuser privileges.
+    pub fn create_client_with_acl(
+        &self,
+        org_id: &str,
+        name: &str,
+        validator: bool,
+        admin: bool,
+        creator_authz_id: Option<&str>,
+    ) -> Result<Client, StoreError> {
+        let id = new_id();
+        let now = now();
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+
+        let authz_id = crate::objects::create_acl_object(&transaction, org_id, "clients")?;
+        transaction
+            .execute(
+                "INSERT INTO clients
+                 (id, org_id, authz_id, name, validator, admin, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+                params![
+                    id,
+                    org_id,
+                    authz_id,
+                    name,
+                    validator as i64,
+                    admin as i64,
+                    now
+                ],
+            )
+            .map_err(|error| conflict(error, format!("client {name} already exists")))?;
+        let granted = creator_authz_id.unwrap_or(&authz_id);
+        crate::objects::grant_actor_all(&transaction, &authz_id, granted)?;
+        transaction.commit()?;
+
+        Ok(Client {
+            id,
+            org_id: org_id.into(),
+            authz_id,
+            name: name.into(),
+            validator,
+            admin,
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    pub fn update_client(
+        &self,
+        org_id: &str,
+        name: &str,
+        new_name: &str,
+        validator: Option<bool>,
+    ) -> Result<Client, StoreError> {
+        let now = now();
+        let connection = self.connection();
+        let changed = connection
+            .execute(
+                "UPDATE clients
+                 SET name = ?3,
+                     validator = COALESCE(?4, validator),
+                     updated_at = ?5
+                 WHERE org_id = ?1 AND name = ?2",
+                params![org_id, name, new_name, validator.map(|v| v as i64), now],
+            )
+            .map_err(|error| conflict(error, format!("client {new_name} already exists")))?;
+        if changed == 0 {
+            return Err(StoreError::NotFound(format!("client {name}")));
+        }
+        drop(connection);
+        self.find_client(org_id, new_name)?
+            .ok_or_else(|| StoreError::NotFound(format!("client {new_name}")))
+    }
+
     pub fn find_client(&self, org_id: &str, name: &str) -> Result<Option<Client>, StoreError> {
         let connection = self.connection();
         Ok(connection
@@ -397,6 +492,30 @@ impl SqliteStore {
     ) -> Result<(), StoreError> {
         self.create_actor_key(actor_id, actor_type, key_name, public_key, "infinity")
             .map(|_| ())
+    }
+
+    /// Replace the actor's default key, creating it if it does not exist yet.
+    pub fn update_or_create_default_key(
+        &self,
+        actor_id: &str,
+        actor_type: ActorType,
+        public_key: &str,
+    ) -> Result<ActorKey, StoreError> {
+        if self
+            .find_actor_key(actor_id, actor_type, "default")?
+            .is_some()
+        {
+            self.update_actor_key(
+                actor_id,
+                actor_type,
+                "default",
+                None,
+                Some(public_key),
+                None,
+            )
+        } else {
+            self.create_actor_key(actor_id, actor_type, "default", public_key, "infinity")
+        }
     }
 
     /// Create a key for an actor. `expires_at` is either `"infinity"` or an

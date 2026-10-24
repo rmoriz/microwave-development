@@ -60,6 +60,7 @@ fn selects_the_opensearch_backend_from_toml() {
 
 #[test]
 fn search_backend_and_url_can_be_overridden_from_env() {
+    let _guard = ENV_LOCK.lock().unwrap();
     std::env::set_var("MW_SEARCH__BACKEND", "elasticsearch");
     std::env::set_var("MW_SEARCH__URL", "http://127.0.0.1:9201");
     let mut c = Config::default();

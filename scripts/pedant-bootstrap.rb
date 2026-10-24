@@ -4,11 +4,9 @@
 # Seed a fresh Microwave Server instance with the actors that oc-chef-pedant
 # expects, then write a pedant_config.rb pointing at that instance.
 #
-# This intentionally uses only the public HTTP API (plus a narrowly scoped
-# SQLite group-membership seed because the server does not yet expose the
-# /organizations/:org/groups API).  It does not depend on the server's
-# organization-creation response carrying a validator private key, which is
-# itself one of the compatibility gaps this harness measures.
+# This intentionally uses only the public HTTP API. The organization creation
+# response carries the validator client name and private key; group membership
+# is managed through the /organizations/:org/groups API.
 
 require "fileutils"
 require "json"
@@ -22,7 +20,6 @@ SUPERUSER_NAME = ENV.fetch("PEDANT_SUPERUSER_NAME", "pivotal")
 SUPERUSER_KEY_PATH = ENV.fetch("PEDANT_SUPERUSER_KEY")
 ORG = ENV.fetch("PEDANT_ORG", "pedant_testorg")
 ARTIFACTS = ENV.fetch("PEDANT_ARTIFACTS")
-DATABASE = ENV.fetch("PEDANT_DATABASE")
 API_VERSION = ENV.fetch("PEDANT_API_VERSION", "1")
 
 ADMIN_USER = ENV.fetch("PEDANT_ADMIN_USER", "pedant_admin_user")
@@ -87,8 +84,7 @@ end
 FileUtils.mkdir_p(ARTIFACTS)
 
 # 1. Organization.  A fresh instance has no orgs, so this normally creates it.
-#    Do not rely on the response's validator material: that is a compatibility
-#    gap reported by the harness.
+#    The response includes the generated validator client material.
 code, org_body = expect!(
   "POST", "/organizations",
   { "name" => ORG, "full_name" => ORG, "org_type" => "Business" },
@@ -100,9 +96,9 @@ else
   puts "bootstrap: created organization #{ORG} (clientname=#{org_body["clientname"].inspect})"
 end
 
-# 2. Validator and pedant requestor clients.  The server's organization
-#    creation does not return a validator key, so create it explicitly as the
-#    platform superuser.
+# 2. Validator and pedant requestor clients.  Prefer the validator created by
+#    organization creation; fall back to explicitly creating it for older
+#    servers.
 def create_client(name, validator: false)
   code, body = expect!(
     "POST", "/organizations/#{ORG}/clients",
@@ -149,7 +145,8 @@ def create_user(username)
 end
 
 keys = {}
-keys[:validator] = create_client(VALIDATOR, validator: true)
+validator_private_key = org_body["private_key"] || org_body.dig("chef_key", "private_key")
+keys[:validator] = validator_private_key || create_client(VALIDATOR, validator: true)
 keys[:admin_client] = create_client(ADMIN_CLIENT)
 keys[:non_admin_client] = create_client(NON_ADMIN_CLIENT)
 # The "bad" client is deliberately not created on the server: pedant uses it
@@ -158,43 +155,28 @@ keys[:admin_user] = create_user(ADMIN_USER)
 keys[:non_admin_user] = create_user(NON_ADMIN_USER)
 keys[:bad_user] = create_user(BAD_USER)
 
-# 4. Associate the two requestor users with the org.  The "bad" user must stay
-#    outside the org.  The server only lets the platform superuser do this.
-[ADMIN_USER, NON_ADMIN_USER].each do |username|
+# 4. Association is left to pedant's requestor setup (make_owner/make_user),
+#    which knows whether each configured user should be associated.
+# 5. Populate the default groups through the public groups API.
+def update_group(group_name, users:, clients:, groups: [])
   expect!(
-    "POST", "/organizations/#{ORG}/users",
-    { "username" => username },
-    allowed: [201, 409]
+    "PUT", "/organizations/#{ORG}/groups/#{group_name}",
+    {
+      "groupname" => group_name,
+      "actors" => {
+        "users" => users,
+        "clients" => clients,
+        "groups" => groups,
+      },
+    },
+    allowed: [200]
   )
 end
 
-# 5. Put the org admin into admins/users, the normal user into users, and the
-#    two requestor clients into clients.  There is no public /groups endpoint
-#    in the current server, so seed the same rows the authz API would write.
-#    This is a harness workaround; it is documented in docs/pedant-report.md.
-def seed_group(group_name, username: nil, client_name: nil)
-  subject = if username
-              "SELECT authz_id FROM users WHERE username = '#{username}'"
-            else
-              "SELECT c.authz_id FROM clients c JOIN orgs o ON o.id = c.org_id " \
-                "WHERE o.name = '#{ORG}' AND c.name = '#{client_name}'"
-            end
-  sql = <<~SQL
-    INSERT OR IGNORE INTO authz_group_actors (group_authz_id, actor_authz_id)
-    SELECT g.authz_id, (#{subject})
-    FROM groups g JOIN orgs o ON o.id = g.org_id
-    WHERE o.name = '#{ORG}' AND g.name = '#{group_name}';
-  SQL
-  system("sqlite3", DATABASE, sql, exception: true)
-end
-
-seed_group("admins", username: ADMIN_USER)
-seed_group("users", username: ADMIN_USER)
-seed_group("billing-admins", username: ADMIN_USER)
-seed_group("users", username: NON_ADMIN_USER)
-seed_group("clients", client_name: ADMIN_CLIENT)
-seed_group("clients", client_name: NON_ADMIN_CLIENT)
-seed_group("clients", client_name: VALIDATOR)
+update_group("admins", users: [SUPERUSER_NAME, ADMIN_USER], clients: [])
+update_group("billing-admins", users: [ADMIN_USER], clients: [])
+update_group("users", users: [SUPERUSER_NAME, ADMIN_USER, NON_ADMIN_USER], clients: [])
+update_group("clients", users: [], clients: [ADMIN_CLIENT, NON_ADMIN_CLIENT, VALIDATOR])
 # 6. Write private keys where pedant expects them.
 key_paths = {}
 keys.each do |name, pem|
@@ -220,7 +202,7 @@ config = <<~RUBY
   validate_org_creation false
   delete_org false
 
-  server_api_version #{API_VERSION.inspect}
+  server_api_version #{API_VERSION.to_i}
   include_internal false
   old_runlists_and_search true
 
@@ -249,13 +231,14 @@ config = <<~RUBY
       admin: {
         name: #{ADMIN_USER.inspect},
         create_me: false,
-        associate: false,
+        associate: true,
+        admin: true,
         key_file: #{key_paths[:admin_user].inspect},
       },
       non_admin: {
         name: #{NON_ADMIN_USER.inspect},
         create_me: false,
-        associate: false,
+        associate: true,
         key_file: #{key_paths[:non_admin_user].inspect},
       },
       bad: {
