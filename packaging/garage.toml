@@ -1,0 +1,32 @@
+# Garage configuration for the docker-compose.ha.yml profile.
+#
+# Single-node, single-copy layout for local evaluation. Production Garage
+# deployments need multiple nodes, a replication factor > 1, and a proper
+# reverse proxy in front of the S3 API. See https://garagehq.deuxfleurs.fr/.
+#
+# The rpc_secret below is a fixed placeholder committed on purpose so the
+# compose profile is reproducible. Replace it (and the S3 credentials in
+# docker-compose.ha.yml) for anything beyond a throwaway environment.
+
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "sqlite"
+
+replication_factor = 1
+
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
+rpc_secret = "4e5a1cbb55ae7d0898a65b1baef64d187b8b1fac2332914b1fee24387c2871a0"
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "[::]:3900"
+root_domain = ".s3.garage.localhost"
+
+[s3_web]
+bind_addr = "[::]:3902"
+root_domain = ".web.garage.localhost"
+
+[admin]
+api_bind_addr = "[::]:3903"
+admin_token = "7ecb52d3c0aa227f8e106244d1fba695"

@@ -1,0 +1,122 @@
+# Microwave Server — shared-backend override.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --build
+#
+# This override keeps the metadata store on the local SQLite volume (the only
+# implemented metadata backend; PostgreSQL is not available yet) and moves the
+# other two backends out of the server process:
+#
+#   * cookbook blobs -> Garage (S3-compatible)
+#   * search         -> OpenSearch
+#
+# It is an evaluation topology for a single server instance. It is *not* a
+# multi-replica HA deployment: SQLite still allows exactly one writer, so a
+# second replica must not mount the same database volume. See
+# docs/deployment.md for the supported topologies and the blockers for true
+# active/active.
+#
+# `object_store.endpoint` is used both for server-side S3 calls and for the
+# presigned URLs handed to chef-client, so it must resolve from both sides.
+# Garage publishes 3900 on the host and the server reaches it through
+# host.docker.internal; remote chef-clients need a real DNS name instead.
+
+name: microwave
+
+services:
+  microwave:
+    environment:
+      MW_SEARCH__BACKEND: opensearch
+      MW_SEARCH__URL: http://opensearch:9200
+      MW_OBJECT_STORE__BACKEND: garage
+      MW_OBJECT_STORE__ENDPOINT: ${MW_S3_ENDPOINT:-http://host.docker.internal:3900}
+      MW_OBJECT_STORE__BUCKET: ${MW_S3_BUCKET:-chef-cookbooks}
+      MW_OBJECT_STORE__REGION: ${MW_S3_REGION:-garage}
+      MW_OBJECT_STORE__ACCESS_KEY: ${MW_S3_ACCESS_KEY:-GK60459373BB628A8B007A69FB}
+      MW_OBJECT_STORE__SECRET_KEY: ${MW_S3_SECRET_KEY:-72ab6d386bc67fe916f63773bf5b5d1498eb252f3829e774dc11c673f16e96e6}
+      MW_OBJECT_STORE__PATH_STYLE: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+      garage:
+        condition: service_healthy
+
+  garage:
+    build:
+      context: .
+      dockerfile: packaging/Dockerfile.garage
+    image: ${MW_GARAGE_IMAGE:-microwave-garage:local}
+    restart: unless-stopped
+    # The bootstrap runs inside the Garage container so the CLI talks to the
+    # local node over 127.0.0.1 (the address in packaging/garage.toml) and
+    # shares its metadata directory. packaging/Dockerfile.garage wraps the
+    # official binary in a base that has /bin/sh. A production Garage cluster
+    # should be provisioned out of band instead.
+    environment:
+      MW_S3_BUCKET: ${MW_S3_BUCKET:-chef-cookbooks}
+      MW_S3_ACCESS_KEY: ${MW_S3_ACCESS_KEY:-GK60459373BB628A8B007A69FB}
+      MW_S3_SECRET_KEY: ${MW_S3_SECRET_KEY:-72ab6d386bc67fe916f63773bf5b5d1498eb252f3829e774dc11c673f16e96e6}
+    volumes:
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+      - ./packaging/garage.toml:/etc/garage.toml:ro
+      - ./packaging/garage-bootstrap.sh:/usr/local/bin/garage-bootstrap.sh:ro
+    ports:
+      - "${MW_S3_PORT:-3900}:3900"
+    healthcheck:
+      test: ["CMD-SHELL", "/garage -c /etc/garage.toml status >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  opensearch:
+    image: opensearchproject/opensearch:2.17.1
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' >/dev/null || exit 1",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 24
+      start_period: 20s
+
+  # PostgreSQL metadata is a design target, not an implemented backend. The
+  # server only ships a SQLite metadata store, and `database.driver = "postgres"`
+  # is not usable today (see README.md, "Not Yet Implemented"). The service
+  # below is intentionally not wired to `microwave`; enable it only after the
+  # PostgreSQL store lands.
+  #
+  # postgres:
+  #   image: postgres:16-alpine
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_DB: microwave
+  #     POSTGRES_USER: microwave
+  #     POSTGRES_PASSWORD: change-me
+  #   volumes:
+  #     - postgres-data:/var/lib/postgresql/data
+
+volumes:
+  garage-meta:
+  garage-data:
+  opensearch-data:
+  # postgres-data:

@@ -1,0 +1,22 @@
+# Garage with a shell, for the docker-compose.ha.yml evaluation profile.
+#
+# The official dxflrs/garage image contains only the statically linked
+# /garage binary (no /bin/sh), so the one-shot bootstrap that assigns the
+# layout, creates the bucket, and imports the S3 key cannot run there. This
+# wrapper copies the same binary into a minimal Debian base and starts the
+# bootstrap script, which starts the server itself and then configures it.
+#
+# Production Garage clusters should be provisioned out of band; this wrapper
+# exists so `docker compose -f docker-compose.yml -f docker-compose.ha.yml up`
+# works on a single host.
+
+FROM dxflrs/garage:v1.0.1 AS garage
+
+FROM debian:bookworm-slim
+
+COPY --from=garage /garage /garage
+COPY packaging/garage-bootstrap.sh /usr/local/bin/garage-bootstrap.sh
+
+RUN chmod 0755 /usr/local/bin/garage-bootstrap.sh
+
+ENTRYPOINT ["/bin/sh", "/usr/local/bin/garage-bootstrap.sh"]
