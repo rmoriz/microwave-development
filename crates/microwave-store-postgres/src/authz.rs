@@ -416,18 +416,38 @@ impl AuthzRepository for PostgresStore {
         .fetch_all(self.pool())
         .await
         .map_err(db)?;
-        let groups: Vec<String> = sqlx::query_scalar(
-            "SELECT g.name
+        let groups: Vec<String> = sqlx::query(
+            "SELECT g.name, g.org_id, o.name
              FROM authz_group_groups relation
              JOIN groups g ON g.authz_id = relation.child_group_authz_id
-             WHERE relation.parent_group_authz_id = $1 AND g.org_id = $2
-             ORDER BY g.name",
+             JOIN orgs o ON o.id = g.org_id
+             WHERE relation.parent_group_authz_id = $1
+             UNION ALL
+             SELECT gg.name, NULL, NULL
+             FROM authz_group_groups relation
+             JOIN global_groups gg ON gg.authz_id = relation.child_group_authz_id
+             WHERE relation.parent_group_authz_id = $1",
         )
         .bind(group_authz_id)
-        .bind(org_id)
         .fetch_all(self.pool())
         .await
+        .map_err(db)?
+        .into_iter()
+        .map(|row| {
+            let name: String = row.try_get(0)?;
+            let group_org_id: Option<String> = row.try_get(1)?;
+            let org_name: Option<String> = row.try_get(2)?;
+            Ok(render_group_name(
+                Some(org_id),
+                &name,
+                group_org_id.as_deref(),
+                org_name.as_deref(),
+            ))
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()
         .map_err(db)?;
+        let mut groups = groups;
+        groups.sort();
         Ok(GroupMembers {
             users,
             clients,
@@ -448,18 +468,15 @@ impl AuthzRepository for PostgresStore {
         let clients = clients.unwrap_or(&current.clients);
         let groups = groups.unwrap_or(&current.groups);
 
+        let mut transaction = self.pool().begin().await.map_err(db)?;
         let mut child_group_ids = Vec::with_capacity(groups.len());
         for name in groups {
-            let child: Option<String> =
-                sqlx::query_scalar("SELECT authz_id FROM groups WHERE org_id = $1 AND name = $2")
-                    .bind(org_id)
-                    .bind(name)
-                    .fetch_optional(self.pool())
-                    .await
-                    .map_err(db)?;
-            let child = child.ok_or_else(|| {
-                StoreError::Invalid(format!("group {name} does not exist in this organization"))
-            })?;
+            let child = find_scoped_group(&mut transaction, Some(org_id), name)
+                .await?
+                .ok_or_else(|| {
+                    StoreError::Invalid(format!("group {name} does not exist in this organization"))
+                })?;
+            let child = child.authz_id;
             if child == group_authz_id {
                 return Err(StoreError::Invalid("a group cannot contain itself".into()));
             }
@@ -477,7 +494,7 @@ impl AuthzRepository for PostgresStore {
             )
             .bind(&child)
             .bind(group_authz_id)
-            .fetch_one(self.pool())
+            .fetch_one(&mut *transaction)
             .await
             .map_err(db)?;
             if creates_cycle {
@@ -491,7 +508,7 @@ impl AuthzRepository for PostgresStore {
             let id: Option<String> =
                 sqlx::query_scalar("SELECT authz_id FROM users WHERE username = $1")
                     .bind(name)
-                    .fetch_optional(self.pool())
+                    .fetch_optional(&mut *transaction)
                     .await
                     .map_err(db)?;
             actor_ids.push(
@@ -503,7 +520,7 @@ impl AuthzRepository for PostgresStore {
                 sqlx::query_scalar("SELECT authz_id FROM clients WHERE org_id = $1 AND name = $2")
                     .bind(org_id)
                     .bind(name)
-                    .fetch_optional(self.pool())
+                    .fetch_optional(&mut *transaction)
                     .await
                     .map_err(db)?;
             actor_ids.push(
@@ -511,7 +528,6 @@ impl AuthzRepository for PostgresStore {
             );
         }
 
-        let mut transaction = self.pool().begin().await.map_err(db)?;
         sqlx::query("DELETE FROM authz_group_actors WHERE group_authz_id = $1")
             .bind(group_authz_id)
             .execute(&mut *transaction)
@@ -697,6 +713,12 @@ impl AuthzRepository for PostgresStore {
                 "ACL target {target_authz_id}"
             )));
         }
+        let context_org_id: Option<String> =
+            sqlx::query_scalar("SELECT org_id FROM authz_entities WHERE authz_id = $1")
+                .bind(target_authz_id)
+                .fetch_one(self.pool())
+                .await
+                .map_err(db)?;
 
         let mut entries = Vec::with_capacity(Permission::ALL.len());
         for permission in Permission::ALL {
@@ -724,18 +746,39 @@ impl AuthzRepository for PostgresStore {
             .fetch_all(self.pool())
             .await
             .map_err(db)?;
-            let groups: Vec<String> = sqlx::query_scalar(
-                "SELECT g.name
+            let groups: Vec<String> = sqlx::query(
+                "SELECT g.name, g.org_id, o.name
                  FROM authz_acl_group ace
                  JOIN groups g ON g.authz_id = ace.group_authz_id
+                 JOIN orgs o ON o.id = g.org_id
                  WHERE ace.target_authz_id = $1 AND ace.permission = $2
-                 ORDER BY g.name",
+                 UNION ALL
+                 SELECT gg.name, NULL, NULL
+                 FROM authz_acl_group ace
+                 JOIN global_groups gg ON gg.authz_id = ace.group_authz_id
+                 WHERE ace.target_authz_id = $1 AND ace.permission = $2",
             )
             .bind(target_authz_id)
             .bind(permission.as_str())
             .fetch_all(self.pool())
             .await
+            .map_err(db)?
+            .into_iter()
+            .map(|row| {
+                let name: String = row.try_get(0)?;
+                let group_org_id: Option<String> = row.try_get(1)?;
+                let org_name: Option<String> = row.try_get(2)?;
+                Ok(render_group_name(
+                    context_org_id.as_deref(),
+                    &name,
+                    group_org_id.as_deref(),
+                    org_name.as_deref(),
+                ))
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()
             .map_err(db)?;
+            let mut groups = groups;
+            groups.sort();
             entries.push(AclEntry {
                 permission,
                 users,
@@ -770,19 +813,12 @@ impl AuthzRepository for PostgresStore {
 
         let mut group_ids = Vec::with_capacity(groups.len());
         for name in groups {
-            let Some(org_id) = org_id.as_deref() else {
-                return Err(StoreError::Invalid(format!("group {name} does not exist")));
-            };
-            let group_id: Option<String> =
-                sqlx::query_scalar("SELECT authz_id FROM groups WHERE org_id = $1 AND name = $2")
-                    .bind(org_id)
-                    .bind(name)
-                    .fetch_optional(&mut *transaction)
-                    .await
-                    .map_err(db)?;
-            group_ids.push(group_id.ok_or_else(|| {
-                StoreError::Invalid(format!("group {name} does not exist in this organization"))
-            })?);
+            let group = find_scoped_group(&mut transaction, org_id.as_deref(), name)
+                .await?
+                .ok_or_else(|| {
+                    StoreError::Invalid(format!("group {name} does not exist in this organization"))
+                })?;
+            group_ids.push(group.authz_id);
         }
 
         sqlx::query("DELETE FROM authz_acl_actor WHERE target_authz_id = $1 AND permission = $2")
@@ -1085,6 +1121,7 @@ impl AuthzRepository for PostgresStore {
 
     async fn associate_user_org(&self, org_id: &str, user_id: &str) -> Result<(), StoreError> {
         let timestamp = now();
+        let mut transaction = self.pool().begin().await.map_err(db)?;
         sqlx::query(
             "INSERT INTO org_user_associations
              (org_id, user_id, last_updated_by, created_at, updated_at)
@@ -1094,9 +1131,16 @@ impl AuthzRepository for PostgresStore {
         .bind(org_id)
         .bind(user_id)
         .bind(&timestamp)
-        .execute(self.pool())
+        .execute(&mut *transaction)
         .await
         .map_err(db)?;
+        let user_authz_id: String = sqlx::query_scalar("SELECT authz_id FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(db)?;
+        add_org_read_access_ace(&mut transaction, org_id, &user_authz_id).await?;
+        transaction.commit().await.map_err(db)?;
         Ok(())
     }
 
@@ -1206,4 +1250,92 @@ async fn find_group_in_org(
     })
     .transpose()
     .map_err(db)
+}
+
+/// Render a group name relative to `context_org_id`, using the same syntax as
+/// the SQLite backend: local groups are unqualified, other organizations are
+/// `org::name`, and global groups are `::name`.
+fn render_group_name(
+    context_org_id: Option<&str>,
+    name: &str,
+    group_org_id: Option<&str>,
+    org_name: Option<&str>,
+) -> String {
+    match (group_org_id, org_name) {
+        (None, _) => format!("::{name}"),
+        (Some(group_org_id), Some(org_name)) => {
+            if context_org_id == Some(group_org_id) {
+                name.to_string()
+            } else {
+                format!("{org_name}::{name}")
+            }
+        }
+        (Some(_), None) => name.to_string(),
+    }
+}
+
+/// Grant the organization's read-access global group read on `actor_authz_id`.
+/// A missing read-access group (older databases or bootstrap order) is a no-op,
+/// matching `SqliteStore::associate_user_org`.
+pub(crate) async fn add_org_read_access_ace(
+    transaction: &mut Transaction<'_, Postgres>,
+    org_id: &str,
+    actor_authz_id: &str,
+) -> Result<(), StoreError> {
+    let Some(group_authz_id) = org_read_access_group_authz_id(transaction, org_id).await? else {
+        return Ok(());
+    };
+    sqlx::query(
+        "INSERT INTO authz_acl_group (target_authz_id, permission, group_authz_id)
+         VALUES ($1, 'read', $2)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(actor_authz_id)
+    .bind(&group_authz_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(db)?;
+    Ok(())
+}
+
+/// Remove only the organization read-access ACE for `actor_authz_id`, leaving
+/// every unrelated ACL entry intact.
+pub(crate) async fn remove_org_read_access_ace(
+    transaction: &mut Transaction<'_, Postgres>,
+    org_id: &str,
+    actor_authz_id: &str,
+) -> Result<(), StoreError> {
+    let Some(group_authz_id) = org_read_access_group_authz_id(transaction, org_id).await? else {
+        return Ok(());
+    };
+    sqlx::query(
+        "DELETE FROM authz_acl_group
+         WHERE target_authz_id = $1 AND permission = 'read' AND group_authz_id = $2",
+    )
+    .bind(actor_authz_id)
+    .bind(&group_authz_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(db)?;
+    Ok(())
+}
+
+async fn org_read_access_group_authz_id(
+    transaction: &mut Transaction<'_, Postgres>,
+    org_id: &str,
+) -> Result<Option<String>, StoreError> {
+    let org_name: Option<String> = sqlx::query_scalar("SELECT name FROM orgs WHERE id = $1")
+        .bind(org_id)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(db)?;
+    let Some(org_name) = org_name else {
+        return Ok(None);
+    };
+    let group_name = format!("{org_name}_read_access_group");
+    sqlx::query_scalar("SELECT authz_id FROM global_groups WHERE name = $1")
+        .bind(group_name)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(db)
 }

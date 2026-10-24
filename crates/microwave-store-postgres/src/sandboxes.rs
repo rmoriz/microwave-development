@@ -13,6 +13,19 @@ impl SandboxRepository for PostgresStore {
         let sandbox_id = new_id();
         let timestamp = now();
         let mut transaction = self.pool().begin().await.map_err(db)?;
+        // The sandbox row exists independently of its uploads so an empty
+        // sandbox is still visible, matching SQLite.
+        sqlx::query(
+            "INSERT INTO sandboxes (org_id, sandbox_id, created_at)
+             VALUES ($1, $2, $3)",
+        )
+        .bind(org_id)
+        .bind(&sandbox_id)
+        .bind(&timestamp)
+        .execute(&mut *transaction)
+        .await
+        .map_err(db)?;
+
         let mut checks = Vec::with_capacity(checksums.len());
         for checksum in checksums {
             let exists: bool = sqlx::query_scalar(
@@ -63,9 +76,7 @@ impl SandboxRepository for PostgresStore {
 
     async fn sandbox_exists(&self, org_id: &str, sandbox_id: &str) -> Result<bool, StoreError> {
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(
-                 SELECT 1 FROM sandboxed_checksums WHERE org_id = $1 AND sandbox_id = $2
-             )",
+            "SELECT EXISTS(SELECT 1 FROM sandboxes WHERE org_id = $1 AND sandbox_id = $2)",
         )
         .bind(org_id)
         .bind(sandbox_id)
@@ -81,9 +92,7 @@ impl SandboxRepository for PostgresStore {
         sandbox_id: &str,
     ) -> Result<Option<String>, StoreError> {
         let created_at: Option<String> = sqlx::query_scalar(
-            "SELECT created_at FROM sandboxed_checksums
-             WHERE org_id = $1 AND sandbox_id = $2
-             ORDER BY created_at LIMIT 1",
+            "SELECT created_at FROM sandboxes WHERE org_id = $1 AND sandbox_id = $2",
         )
         .bind(org_id)
         .bind(sandbox_id)
@@ -109,6 +118,12 @@ impl SandboxRepository for PostgresStore {
         .await
         .map_err(db)?;
         sqlx::query("DELETE FROM sandboxed_checksums WHERE org_id = $1 AND sandbox_id = $2")
+            .bind(org_id)
+            .bind(sandbox_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db)?;
+        sqlx::query("DELETE FROM sandboxes WHERE org_id = $1 AND sandbox_id = $2")
             .bind(org_id)
             .bind(sandbox_id)
             .execute(&mut *transaction)

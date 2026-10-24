@@ -57,7 +57,7 @@ impl CookbookRepository for PostgresStore {
              (id, cookbook_id, org_id, name, major, minor, patch, frozen,
               meta_attributes, meta_deps, meta_long_desc, metadata, serialized_object,
               last_updated_by, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, '{}', NULL, $9, $9, $10, $11, $11)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, '{}', NULL, NULL, $9, $10, $11, $11)",
         )
         .bind(&version_id)
         .bind(cookbook_id)
@@ -391,7 +391,7 @@ impl PostgresStore {
     }
 }
 
-async fn cleanup_unreferenced_checksums(
+pub(crate) async fn cleanup_unreferenced_checksums(
     transaction: &mut Transaction<'_, Postgres>,
     org_id: &str,
     candidates: Vec<String>,

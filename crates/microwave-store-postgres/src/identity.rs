@@ -16,7 +16,7 @@ fn actor_type_str(actor_type: ActorType) -> &'static str {
     }
 }
 
-fn user_from_row(row: &PgRow) -> Result<User, sqlx::Error> {
+pub(crate) fn user_from_row(row: &PgRow) -> Result<User, sqlx::Error> {
     Ok(User {
         id: row.try_get(0)?,
         authz_id: row.try_get(1)?,
