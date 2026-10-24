@@ -159,7 +159,7 @@ pub fn org_user_remove(context: &Context, org_name: &str, username: &str) -> Res
     let org = find_org(&store, org_name)?;
     let user = find_user(&store, username)?;
 
-    store.remove_user_from_org(&org.id, &user.id, &user.authz_id)?;
+    store.remove_user_from_org(&org.id, &user.id, &user.username)?;
     println!("Removed user {username} from organization {org_name}");
     Ok(())
 }

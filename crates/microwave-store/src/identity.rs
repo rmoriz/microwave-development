@@ -603,41 +603,6 @@ impl SqliteStore {
         Ok(users)
     }
 
-    pub fn list_org_users(&self, org_id: &str) -> Result<Vec<User>, StoreError> {
-        let connection = self.connection();
-        let mut statement = connection.prepare(
-            "SELECT users.id, users.authz_id, users.username, users.email,
-                    users.password_hash, users.password_salt, users.hash_type,
-                    users.admin, users.recovery_authentication_enabled,
-                    users.created_at, users.updated_at
-             FROM users
-             JOIN org_user_associations ON org_user_associations.user_id = users.id
-             WHERE org_user_associations.org_id = ?1
-             ORDER BY users.username",
-        )?;
-        let rows = statement.query_map([org_id], |row| {
-            Ok(User {
-                id: row.get(0)?,
-                authz_id: row.get(1)?,
-                username: row.get(2)?,
-                email: row.get(3)?,
-                password_hash: row.get(4)?,
-                password_salt: row.get(5)?,
-                hash_type: row.get(6)?,
-                admin: row.get::<_, i64>(7)? != 0,
-                recovery_authentication_enabled: row.get::<_, i64>(8)? != 0,
-                created_at: row.get(9)?,
-                updated_at: row.get(10)?,
-            })
-        })?;
-
-        let mut users = Vec::new();
-        for row in rows {
-            users.push(row?);
-        }
-        Ok(users)
-    }
-
     pub fn update_user(
         &self,
         username: &str,

@@ -4,6 +4,8 @@ use microwave_store::SqliteStore;
 fn org_membership_can_be_listed_and_removed() {
     let store = SqliteStore::open_in_memory().unwrap();
     let org = store.create_org("acme", "Acme Corp").unwrap();
+    store.create_group_for_org(&org.id, "users").unwrap();
+    store.create_group_for_org(&org.id, "admins").unwrap();
     let user = store
         .create_user(
             "alice",
@@ -21,11 +23,11 @@ fn org_membership_can_be_listed_and_removed() {
     assert_eq!(members[0].username, "alice");
 
     store
-        .remove_user_from_org(&org.id, &user.id, &user.authz_id)
+        .remove_user_from_org(&org.id, &user.id, &user.username)
         .unwrap();
     assert!(store.list_org_users(&org.id).unwrap().is_empty());
     assert!(store
-        .remove_user_from_org(&org.id, &user.id, &user.authz_id)
+        .remove_user_from_org(&org.id, &user.id, &user.username)
         .is_err());
 }
 
@@ -34,6 +36,7 @@ fn removing_an_org_member_also_removes_org_group_membership() {
     let store = SqliteStore::open_in_memory().unwrap();
     let org = store.create_org("acme", "Acme Corp").unwrap();
     let group = store.create_group_for_org(&org.id, "users").unwrap();
+    store.create_group_for_org(&org.id, "admins").unwrap();
     let user = store
         .create_user(
             "alice",
@@ -50,7 +53,7 @@ fn removing_an_org_member_also_removes_org_group_membership() {
         .unwrap();
 
     store
-        .remove_user_from_org(&org.id, &user.id, &user.authz_id)
+        .remove_user_from_org(&org.id, &user.id, &user.username)
         .unwrap();
 
     // The users group no longer grants the actor anything in this org.
