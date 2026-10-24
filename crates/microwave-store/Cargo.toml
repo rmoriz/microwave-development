@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 chrono.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

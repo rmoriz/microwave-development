@@ -8,6 +8,8 @@ use thiserror::Error;
 pub enum StoreError {
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("postgres error: {0}")]
+    Postgres(String),
     #[error("conflict: {0}")]
     Conflict(String),
     #[error("not found: {0}")]

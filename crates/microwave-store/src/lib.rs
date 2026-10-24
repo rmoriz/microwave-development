@@ -1,6 +1,7 @@
 //! SQLite-backed metadata store for Microwave Server.
 
 mod authz;
+mod backend;
 mod cookbooks;
 mod identity;
 mod kv;
@@ -15,6 +16,10 @@ mod secrets;
 mod sqlite;
 
 pub use authz::{Acl, AclEntry, Container, Group, GroupMembers, Permission};
+pub use backend::{
+    AuthzRepository, CookbookRepository, IdentityRepository, MetadataStore, ObjectRepository,
+    PolicyRepository, SandboxRepository,
+};
 pub use cookbooks::{parse_version, StoredCookbookVersion};
 pub use identity::{ActorKey, ActorType, Client, Org, Principal, User, UserPatch, UserProfile};
 pub use maintenance::MAINTENANCE_KV_KEY;
