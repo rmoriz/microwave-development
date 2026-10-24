@@ -286,5 +286,28 @@ fn with_version_header(
             .headers_mut()
             .insert("x-ops-server-api-version", value);
     }
+    normalize_allow_header(&mut response);
     response
+}
+
+/// Axum appends `HEAD` to `GET` routes and joins methods with commas. Erchef
+/// lists only the methods declared by the webmachine resource, separated by
+/// `", "`, so align the `Allow` header used by 405 responses.
+pub(crate) fn normalize_allow_header(response: &mut Response) {
+    let Some(value) = response.headers().get(axum::http::header::ALLOW) else {
+        return;
+    };
+    let Ok(value) = value.to_str() else {
+        return;
+    };
+    let methods: Vec<&str> = value
+        .split(',')
+        .map(str::trim)
+        .filter(|method| !method.is_empty() && !method.eq_ignore_ascii_case("HEAD"))
+        .collect();
+    if let Ok(value) = HeaderValue::from_str(&methods.join(", ")) {
+        response
+            .headers_mut()
+            .insert(axum::http::header::ALLOW, value);
+    }
 }

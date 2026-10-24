@@ -5,7 +5,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
 use microwave_store::Permission;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -27,6 +27,36 @@ pub fn routes() -> Router<AppState> {
         )
 }
 
+fn valid_name_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().all(|character| {
+            character.is_alphanumeric() || matches!(character, '_' | '-' | ':' | '.')
+        })
+}
+
+fn data_bag_not_found(bag: &str) -> ApiError {
+    ApiError::not_found(format!("Cannot load data bag {bag}"))
+}
+
+fn item_not_found(bag: &str, item: &str) -> ApiError {
+    ApiError::not_found(format!(
+        "Cannot load data bag item {item} for data bag {bag}"
+    ))
+}
+
+fn item_not_found_from_delete(bag: &str, item: &str) -> ApiError {
+    ApiError::not_found(format!("Cannot load data bag {bag} item {item}"))
+}
+
+/// Erchef force-adds `chef_type` and `data_bag` to POST/PUT responses while
+/// storing the item body as posted.
+fn item_response(bag: &str, item: &Value) -> Value {
+    let mut map = item.as_object().cloned().unwrap_or_default();
+    map.insert("chef_type".into(), json!("data_bag_item"));
+    map.insert("data_bag".into(), json!(bag));
+    Value::Object(map)
+}
+
 async fn list_data_bags(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
@@ -37,7 +67,7 @@ async fn list_data_bags(
     require_permission(&state, &auth, &container, Permission::Read)?;
 
     let base = base_url(&headers, &state);
-    let mut bags = serde_json::Map::new();
+    let mut bags = Map::new();
     for bag in state
         .store
         .list_data_bags(&org.id)
@@ -64,14 +94,14 @@ async fn create_data_bag(
     let container = container_authz(&state, org, "data")?;
     require_permission(&state, &auth, &container, Permission::Create)?;
 
-    let name = body
-        .get("name")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ApiError::bad_request("data bag name is required"))?;
+    let name = match body.get("name") {
+        None => return Err(ApiError::bad_request("Field 'name' missing")),
+        Some(Value::String(name)) if valid_name_token(name) => name.clone(),
+        Some(_) => return Err(ApiError::bad_request("Field 'name' invalid")),
+    };
     state
         .store
-        .create_data_bag(&org.id, name, &auth.principal.authz_id)
+        .create_data_bag(&org.id, &name, &auth.principal.authz_id)
         .map_err(ApiError::from)?;
 
     let base = base_url(&headers, &state);
@@ -94,11 +124,11 @@ async fn get_data_bag(
         .store
         .find_data_bag(&org.id, &bag_name)
         .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("data bag {bag_name}")))?;
+        .ok_or_else(|| data_bag_not_found(&bag_name))?;
     require_permission(&state, &auth, &bag.authz_id, Permission::Read)?;
 
     let base = base_url(&headers, &state);
-    let mut items = serde_json::Map::new();
+    let mut items = Map::new();
     for item in state
         .store
         .list_data_bag_items(&org.id, &bag_name)
@@ -125,7 +155,7 @@ async fn delete_data_bag(
         .store
         .find_data_bag(&org.id, &bag_name)
         .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("data bag {bag_name}")))?;
+        .ok_or_else(|| data_bag_not_found(&bag_name))?;
     require_permission(&state, &auth, &bag.authz_id, Permission::Delete)?;
     let items = state
         .store
@@ -138,14 +168,17 @@ async fn delete_data_bag(
     for item in items {
         crate::search::index::delete_document(&state, &org.id, &item.id).await;
     }
-    Ok(Json(json!({})))
+    Ok(Json(json!({
+        "name": bag_name,
+        "json_class": "Chef::DataBag",
+        "chef_type": "data_bag"
+    })))
 }
 
 async fn create_data_bag_item(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, bag_name)): Path<(String, String)>,
-    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let org = organization(&auth)?;
@@ -153,32 +186,41 @@ async fn create_data_bag_item(
         .store
         .find_data_bag(&org.id, &bag_name)
         .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("data bag {bag_name}")))?;
+        .ok_or_else(|| {
+            ApiError::not_found(format!(
+                "No data bag '{bag_name}' could be found. Please create this data bag before adding items to it."
+            ))
+        })?;
     require_permission(&state, &auth, &bag.authz_id, Permission::Create)?;
 
-    let item_name = body
-        .get("id")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ApiError::bad_request("data bag item id is required"))?;
+    let item_name = match body.get("id") {
+        None => return Err(ApiError::bad_request("Field 'id' missing")),
+        Some(Value::String(id)) if valid_name_token(id) => id.clone(),
+        Some(_) => return Err(ApiError::bad_request("Field 'id' invalid")),
+    };
+    if state
+        .store
+        .find_data_bag_item(&org.id, &bag_name, &item_name)
+        .map_err(ApiError::from)?
+        .is_some()
+    {
+        return Err(ApiError::conflict(format!(
+            "Data Bag Item '{item_name}' already exists in Data Bag '{bag_name}'."
+        )));
+    }
+
     let item = state
         .store
         .create_data_bag_item(
             &org.id,
             &bag_name,
-            item_name,
+            &item_name,
             &serde_json::to_string(&body).map_err(|_| ApiError::internal())?,
         )
         .map_err(ApiError::from)?;
     crate::search::index::index_data_bag_item(&state, org, &item).await;
 
-    let base = base_url(&headers, &state);
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "uri": format!("{base}/organizations/{}/data/{bag_name}/{item_name}", org.name)
-        })),
-    ))
+    Ok((StatusCode::CREATED, Json(item_response(&bag_name, &body))))
 }
 
 async fn get_data_bag_item(
@@ -191,14 +233,14 @@ async fn get_data_bag_item(
         .store
         .find_data_bag(&org.id, &bag_name)
         .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("data bag {bag_name}")))?;
+        .ok_or_else(|| item_not_found(&bag_name, &item_name))?;
     require_permission(&state, &auth, &bag.authz_id, Permission::Read)?;
 
     let item = state
         .store
         .find_data_bag_item(&org.id, &bag_name, &item_name)
         .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("data bag item {bag_name}/{item_name}")))?;
+        .ok_or_else(|| item_not_found(&bag_name, &item_name))?;
     let value = serde_json::from_str(&item.serialized_object).map_err(|_| ApiError::internal())?;
     Ok(Json(value))
 }
@@ -207,51 +249,56 @@ async fn update_data_bag_item(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, bag_name, item_name)): Path<(String, String, String)>,
-    Json(mut body): Json<Value>,
+    Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
     let bag = state
         .store
         .find_data_bag(&org.id, &bag_name)
         .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("data bag {bag_name}")))?;
+        .ok_or_else(|| item_not_found(&bag_name, &item_name))?;
 
-    let existing = state
+    if state
         .store
         .find_data_bag_item(&org.id, &bag_name, &item_name)
-        .map_err(ApiError::from)?;
-    let permission = if existing.is_some() {
-        Permission::Update
-    } else {
-        Permission::Create
-    };
-    require_permission(&state, &auth, &bag.authz_id, permission)?;
+        .map_err(ApiError::from)?
+        .is_none()
+    {
+        return Err(item_not_found(&bag_name, &item_name));
+    }
+    require_permission(&state, &auth, &bag.authz_id, Permission::Update)?;
 
-    if let Some(id) = body.get("id").and_then(Value::as_str) {
-        if id != item_name {
+    let mut body = match body {
+        Value::Object(map) => Value::Object(map),
+        _ => {
             return Err(ApiError::bad_request(
-                "data bag item id does not match request path",
-            ));
+                "Incorrect JSON type for request body",
+            ))
         }
-    } else {
-        body["id"] = json!(item_name);
+    };
+    match body.get("id") {
+        None => body["id"] = json!(item_name),
+        Some(Value::String(id)) if id == &item_name => {}
+        Some(_) => {
+            return Err(ApiError::bad_request("DataBagItem name mismatch."));
+        }
+    }
+    let id = body
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if !valid_name_token(&id) {
+        return Err(ApiError::bad_request("Field 'id' invalid"));
     }
 
     let serialized = serde_json::to_string(&body).map_err(|_| ApiError::internal())?;
-    let item = if existing.is_some() {
-        state
-            .store
-            .update_data_bag_item(&org.id, &bag_name, &item_name, &serialized)
-            .map_err(ApiError::from)?
-    } else {
-        state
-            .store
-            .create_data_bag_item(&org.id, &bag_name, &item_name, &serialized)
-            .map_err(ApiError::from)?
-    };
+    let item = state
+        .store
+        .update_data_bag_item(&org.id, &bag_name, &item_name, &serialized)
+        .map_err(ApiError::from)?;
     crate::search::index::index_data_bag_item(&state, org, &item).await;
-    let value = serde_json::from_str(&item.serialized_object).map_err(|_| ApiError::internal())?;
-    Ok(Json(value))
+    Ok(Json(item_response(&bag_name, &body)))
 }
 
 async fn delete_data_bag_item(
@@ -264,18 +311,25 @@ async fn delete_data_bag_item(
         .store
         .find_data_bag(&org.id, &bag_name)
         .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("data bag {bag_name}")))?;
+        .ok_or_else(|| item_not_found_from_delete(&bag_name, &item_name))?;
     require_permission(&state, &auth, &bag.authz_id, Permission::Delete)?;
     let item = state
         .store
         .find_data_bag_item(&org.id, &bag_name, &item_name)
-        .map_err(ApiError::from)?;
+        .map_err(ApiError::from)?
+        .ok_or_else(|| item_not_found_from_delete(&bag_name, &item_name))?;
+    let raw_data: Value =
+        serde_json::from_str(&item.serialized_object).map_err(|_| ApiError::internal())?;
     state
         .store
         .delete_data_bag_item(&org.id, &bag_name, &item_name)
         .map_err(ApiError::from)?;
-    if let Some(item) = item {
-        crate::search::index::delete_document(&state, &org.id, &item.id).await;
-    }
-    Ok(Json(json!({})))
+    crate::search::index::delete_document(&state, &org.id, &item.id).await;
+    Ok(Json(json!({
+        "name": format!("data_bag_item_{bag_name}_{item_name}"),
+        "json_class": "Chef::DataBagItem",
+        "chef_type": "data_bag_item",
+        "data_bag": bag_name,
+        "raw_data": raw_data
+    })))
 }

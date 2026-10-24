@@ -25,14 +25,12 @@ impl SqliteStore {
                 params![org_id, checksum],
                 |row| row.get(0),
             )?;
-            if exists == 0 {
-                tx.execute(
-                    "INSERT OR IGNORE INTO sandboxed_checksums
-                     (org_id, sandbox_id, checksum, created_at)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![org_id, sandbox_id, checksum, timestamp],
-                )?;
-            }
+            tx.execute(
+                "INSERT OR IGNORE INTO sandboxed_checksums
+                 (org_id, sandbox_id, checksum, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![org_id, sandbox_id, checksum, timestamp],
+            )?;
             checks.push(SandboxCheck {
                 checksum: checksum.clone(),
                 needs_upload: exists == 0,
@@ -70,6 +68,22 @@ impl SqliteStore {
             |row| row.get(0),
         )?;
         Ok(exists != 0)
+    }
+
+    pub fn sandbox_created_at(
+        &self,
+        org_id: &str,
+        sandbox_id: &str,
+    ) -> Result<Option<String>, StoreError> {
+        let connection = self.connection();
+        Ok(connection
+            .query_row(
+                "SELECT created_at FROM sandboxed_checksums
+                 WHERE org_id = ?1 AND sandbox_id = ?2 ORDER BY rowid LIMIT 1",
+                params![org_id, sandbox_id],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     pub fn commit_sandbox(&self, org_id: &str, sandbox_id: &str) -> Result<(), StoreError> {

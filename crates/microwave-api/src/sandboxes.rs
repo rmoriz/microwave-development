@@ -50,7 +50,6 @@ async fn commit_sandbox(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, sandbox_id)): Path<(String, String)>,
-    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
@@ -67,21 +66,32 @@ async fn commit_sandbox(
         .sandbox_exists(&org.id, &sandbox_id)
         .map_err(ApiError::from)?
     {
-        return Err(ApiError::not_found(format!("sandbox {sandbox_id}")));
+        return Err(ApiError::not_found(format!(
+            "No such sandbox '{sandbox_id}'."
+        )));
     }
 
+    let created_at = state
+        .store
+        .sandbox_created_at(&org.id, &sandbox_id)
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::not_found(format!("No such sandbox '{sandbox_id}'.")))?;
     let checksums = state
         .store
         .sandbox_checksums(&org.id, &sandbox_id)
         .map_err(ApiError::from)?;
-    let missing: Vec<String> = checksums
-        .into_iter()
+    let missing: Vec<&String> = checksums
+        .iter()
         .filter(|checksum| !state.object_store.exists(&org.id, checksum))
         .collect();
     if !missing.is_empty() {
         return Err(ApiError::service_unavailable(format!(
-            "the following checksums have not been uploaded: {}",
-            missing.join(", ")
+            "Cannot update sandbox {sandbox_id}: the following checksums have not been uploaded: {}",
+            missing
+                .iter()
+                .map(|checksum| checksum.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         )));
     }
 
@@ -89,9 +99,19 @@ async fn commit_sandbox(
         .store
         .commit_sandbox(&org.id, &sandbox_id)
         .map_err(ApiError::from)?;
-    let base = base_url(&headers, &state);
     Ok(Json(json!({
-        "uri": format!("{base}/organizations/{}/sandboxes/{sandbox_id}", org.name),
-        "sandbox_id": sandbox_id
+        "guid": sandbox_id,
+        "name": sandbox_id,
+        "checksums": checksums,
+        "create_time": upstream_timestamp(&created_at),
+        "is_completed": true,
     })))
+}
+
+/// Erchef timestamps use an explicit `+00:00` offset; `Utc::now()` yields `Z`.
+fn upstream_timestamp(value: &str) -> String {
+    match value.strip_suffix('Z') {
+        Some(stripped) => format!("{stripped}+00:00"),
+        None => value.to_string(),
+    }
 }
