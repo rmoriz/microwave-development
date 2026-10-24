@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
@@ -56,6 +56,48 @@ impl SqliteStore {
         self.connection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Write a consistent snapshot of this database to `destination`.
+    ///
+    /// SQLite's `VACUUM INTO` includes committed WAL contents, so the copy is
+    /// safe to take while the store is open. The destination must not exist.
+    pub fn backup_to(&self, destination: &Path) -> Result<(), StoreError> {
+        let destination = destination
+            .to_str()
+            .ok_or_else(|| StoreError::Invalid("backup path is not valid UTF-8".into()))?;
+        let connection = self.connection();
+        connection.execute("VACUUM INTO ?1", [destination])?;
+        Ok(())
+    }
+
+    /// Check that `path` is an intact Microwave SQLite database without
+    /// modifying it.
+    pub fn verify_database(path: &Path) -> Result<(), StoreError> {
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+
+        let integrity: String =
+            connection.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        if integrity != "ok" {
+            return Err(StoreError::Invalid(format!(
+                "database integrity check failed: {integrity}"
+            )));
+        }
+
+        let has_users: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'users'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_users == 0 {
+            return Err(StoreError::Invalid(
+                "file is not a Microwave database".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub fn table_names(&self) -> Result<Vec<String>, StoreError> {

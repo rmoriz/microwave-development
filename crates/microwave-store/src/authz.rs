@@ -190,6 +190,35 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Remove a user's organization association and all of their group
+    /// memberships inside that organization.
+    pub fn remove_user_from_org(
+        &self,
+        org_id: &str,
+        user_id: &str,
+        actor_authz_id: &str,
+    ) -> Result<(), StoreError> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        let removed = transaction.execute(
+            "DELETE FROM org_user_associations WHERE org_id = ?1 AND user_id = ?2",
+            params![org_id, user_id],
+        )?;
+        if removed == 0 {
+            return Err(StoreError::NotFound(
+                "user is not a member of the organization".into(),
+            ));
+        }
+        transaction.execute(
+            "DELETE FROM authz_group_actors
+             WHERE actor_authz_id = ?2
+               AND group_authz_id IN (SELECT authz_id FROM groups WHERE org_id = ?1)",
+            params![org_id, actor_authz_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn delete_org(&self, org_id: &str) -> Result<(), StoreError> {
         let connection = self.connection();
         connection.execute("DELETE FROM orgs WHERE id = ?1", params![org_id])?;

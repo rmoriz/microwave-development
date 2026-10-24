@@ -1,0 +1,71 @@
+//! Operational CLI for Microwave Server.
+//!
+//! The crate is shared by the `microwave-ctl` binary and the
+//! `chef-server-ctl` compatibility alias, so both expose exactly the same
+//! command surface.
+
+mod backup;
+mod cli;
+mod commands;
+mod context;
+mod error;
+
+pub use cli::{Cli, Command};
+pub use error::CtlError;
+
+use clap::{CommandFactory, FromArgMatches};
+
+/// Run the CLI using process arguments.
+pub fn run() -> Result<(), CtlError> {
+    let program = std::env::args_os()
+        .next()
+        .and_then(|path| {
+            std::path::Path::new(&path)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "microwave-ctl".into());
+
+    let matches = Cli::command().bin_name(program).get_matches();
+    let cli =
+        Cli::from_arg_matches(&matches).map_err(|error| CtlError::Message(error.to_string()))?;
+    dispatch(cli)
+}
+
+/// Execute an already-parsed command. Useful for tests and embedders.
+pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
+    if matches!(&cli.command, Command::Version) {
+        println!("microwave-ctl {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    let context = context::Context::load(cli.config.as_deref())?;
+
+    match cli.command {
+        Command::Version => unreachable!("version was handled above"),
+        Command::Status => commands::status(&context),
+        Command::UserCreate {
+            name,
+            email,
+            password,
+            admin,
+        } => commands::user_create(&context, &name, email.as_deref(), password, admin),
+        Command::UserList => commands::user_list(&context),
+        Command::UserShow { name } => commands::user_show(&context, &name),
+        Command::UserDelete { name } => commands::user_delete(&context, &name),
+        Command::OrgCreate {
+            name,
+            full_name,
+            creator,
+        } => commands::org_create(&context, &name, full_name.as_deref(), creator.as_deref()),
+        Command::OrgList => commands::org_list(&context),
+        Command::OrgShow { name } => commands::org_show(&context, &name),
+        Command::OrgDelete { name } => commands::org_delete(&context, &name),
+        Command::OrgUserAdd { org, user } => commands::org_user_add(&context, &org, &user),
+        Command::OrgUserRemove { org, user } => commands::org_user_remove(&context, &org, &user),
+        Command::Password { user } => commands::password(&context, &user),
+        Command::Reindex { org } => commands::reindex(org.as_deref()),
+        Command::Backup { path } => backup::backup(&context, &path),
+        Command::Restore { path } => backup::restore(&context, &path),
+    }
+}
