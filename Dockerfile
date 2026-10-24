@@ -18,7 +18,7 @@
 
 ARG RUST_VERSION=1
 
-FROM rust:${RUST_VERSION}-bookworm AS builder
+FROM rust:${RUST_VERSION}-trixie AS builder
 
 WORKDIR /src
 
@@ -44,7 +44,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && install -D -m 0755 target/release/chef-server-ctl /out/chef-server-ctl \
     && install -D -m 0755 target/release/microwave-migrate /out/microwave-migrate
 
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 
 ARG UID=10001
 ARG GID=10001

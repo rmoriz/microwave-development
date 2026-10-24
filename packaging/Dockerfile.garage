@@ -12,7 +12,7 @@
 
 FROM dxflrs/garage:v2.5.0 AS garage
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 COPY --from=garage /garage /garage
 COPY packaging/garage-bootstrap.sh /usr/local/bin/garage-bootstrap.sh
