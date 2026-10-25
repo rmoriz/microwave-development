@@ -20,7 +20,7 @@ use microwave_store::{
     ClientRow, ContainerRow, CookbookRow, CookbookVersionChecksumRow, CookbookVersionRow,
     DataBagItemRow, GlobalGroupRow, GroupMembers, GroupRow, IdentityRepository, NamedObjectRow,
     NodeRow, OrgRow, OrgUserAssociationRow, OrgUserInviteRow, Permission, StoreError,
-    StoreSnapshot, User, UserRow,
+    StoreSnapshot, User, UserPatch, UserRow,
 };
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -572,6 +572,7 @@ struct MergedUserAdmin {
     authz_id: String,
     username: String,
     admin: bool,
+    previous_admin: bool,
     remove_target_default_key: bool,
 }
 
@@ -581,6 +582,7 @@ struct MergedUserAdmin {
 fn merged_admin_states(
     snapshot: &StoreSnapshot,
     matched: &[User],
+    merged_ids: &HashSet<String>,
     options: &KnifeBackupApplyOptions,
 ) -> Vec<MergedUserAdmin> {
     matched
@@ -604,7 +606,10 @@ fn merged_admin_states(
                 authz_id: existing.authz_id.clone(),
                 username: existing.username.clone(),
                 admin: source.map(|user| user.admin).unwrap_or(existing.admin),
-                remove_target_default_key: options.replace_user_credentials && !has_source_default,
+                previous_admin: existing.admin,
+                remove_target_default_key: options.replace_user_credentials
+                    && merged_ids.contains(&existing.id)
+                    && !has_source_default,
             }
         })
         .collect()
@@ -645,7 +650,12 @@ fn reconcile_users(
         }
     }
     if id_replacements.is_empty() && authz_replacements.is_empty() {
-        let admins = merged_admin_states(&plan.snapshot, &matched_users, options);
+        let admins = if options.merge_users {
+            let no_key_removal = HashSet::new();
+            merged_admin_states(&plan.snapshot, &matched_users, &no_key_removal, options)
+        } else {
+            Vec::new()
+        };
         return Ok((plan.clone(), admins));
     }
 
@@ -702,10 +712,17 @@ fn reconcile_users(
             .iter()
             .any(|key| key.actor_type == "user" && key.actor_id == existing.id)
         {
-            summary.warnings.push(format!(
-                "merged user {:?} has no imported key material; existing target keys were kept",
-                existing.username
-            ));
+            if options.replace_user_credentials {
+                summary.warnings.push(format!(
+                    "merged user {:?} has no imported key material; the target default key will be removed",
+                    existing.username
+                ));
+            } else {
+                summary.warnings.push(format!(
+                    "merged user {:?} has no imported key material; existing target keys were kept",
+                    existing.username
+                ));
+            }
         }
     }
     for association in &mut snapshot.org_user_associations {
@@ -732,7 +749,11 @@ fn reconcile_users(
     }
     summary.warnings.sort();
     summary.warnings.dedup();
-    let merged_admins = merged_admin_states(&snapshot, &matched_users, options);
+    let merged_admins = if options.merge_users {
+        merged_admin_states(&snapshot, &matched_users, &merged_ids, options)
+    } else {
+        Vec::new()
+    };
 
     Ok((
         KnifeBackupPlan {
@@ -781,6 +802,7 @@ struct CapturedAclState {
 struct ServerAdminMembershipState {
     group_authz_id: Option<String>,
     memberships: Vec<(String, bool)>,
+    admins: Vec<(String, bool)>,
 }
 
 async fn capture_server_admin_memberships<S: AuthzRepository + ?Sized>(
@@ -791,6 +813,7 @@ async fn capture_server_admin_memberships<S: AuthzRepository + ?Sized>(
         return Ok(ServerAdminMembershipState {
             group_authz_id: None,
             memberships: Vec::new(),
+            admins: Vec::new(),
         });
     }
     let group = store.find_global_group("server-admins").await?;
@@ -808,6 +831,10 @@ async fn capture_server_admin_memberships<S: AuthzRepository + ?Sized>(
                     current_users.contains(&user.username),
                 )
             })
+            .collect(),
+        admins: merged_users
+            .iter()
+            .map(|user| (user.username.clone(), user.previous_admin))
             .collect(),
     })
 }
@@ -859,11 +886,11 @@ async fn remove_replaced_default_keys<S: IdentityRepository + ?Sized>(
     Ok(())
 }
 
-async fn restore_server_admin_memberships<S: AuthzRepository + ?Sized>(
+async fn restore_server_admin_memberships<S: AuthzRepository + IdentityRepository + ?Sized>(
     store: &S,
     state: &ServerAdminMembershipState,
 ) -> Result<(), MigrateError> {
-    if state.memberships.is_empty() {
+    if state.memberships.is_empty() && state.admins.is_empty() {
         return Ok(());
     }
     let group_authz_id = match &state.group_authz_id {
@@ -873,15 +900,25 @@ async fn restore_server_admin_memberships<S: AuthzRepository + ?Sized>(
             .await?
             .map(|group| group.authz_id),
     };
-    let Some(group_authz_id) = group_authz_id else {
-        return Ok(());
-    };
-    for (authz_id, was_member) in &state.memberships {
-        if *was_member {
-            store.add_group_member(&group_authz_id, authz_id).await?;
-        } else {
-            store.remove_group_member(&group_authz_id, authz_id).await?;
+    if let Some(group_authz_id) = group_authz_id {
+        for (authz_id, was_member) in &state.memberships {
+            if *was_member {
+                store.add_group_member(&group_authz_id, authz_id).await?;
+            } else {
+                store.remove_group_member(&group_authz_id, authz_id).await?;
+            }
         }
+    }
+    for (username, admin) in &state.admins {
+        store
+            .update_user_patch(
+                username,
+                &UserPatch {
+                    admin: Some(*admin),
+                    ..Default::default()
+                },
+            )
+            .await?;
     }
     Ok(())
 }
@@ -990,7 +1027,7 @@ fn restore_after_failure<S: AuthzRepository + ?Sized>(
     }
 }
 
-fn restore_admin_after_failure<S: AuthzRepository + ?Sized>(
+fn restore_admin_after_failure<S: AuthzRepository + IdentityRepository + ?Sized>(
     runtime: &tokio::runtime::Runtime,
     store: &S,
     state: &ServerAdminMembershipState,

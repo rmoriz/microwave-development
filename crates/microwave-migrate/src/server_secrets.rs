@@ -656,6 +656,11 @@ fn add_root_file(
             )))
         }
         Ok(metadata) if metadata.is_file() => {
+            if sources.len() >= MAX_SECRET_ENTRIES {
+                return Err(MigrateError::ServerSecrets(format!(
+                    "server secrets contain more than {MAX_SECRET_ENTRIES} entries"
+                )));
+            }
             check_secret_size(&path, metadata.len(), *total)?;
             let data = std::fs::read(&path).map_err(|source| MigrateError::Read {
                 path: path.clone(),
@@ -726,6 +731,11 @@ fn scan_ca_directory(
             return Err(MigrateError::ServerSecrets(format!(
                 "CA source {} is not a regular file",
                 path.display()
+            )));
+        }
+        if sources.len() >= MAX_SECRET_ENTRIES {
+            return Err(MigrateError::ServerSecrets(format!(
+                "server secrets contain more than {MAX_SECRET_ENTRIES} entries"
             )));
         }
         check_secret_size(&path, metadata.len(), *total)?;

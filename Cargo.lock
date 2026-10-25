@@ -1617,6 +1617,7 @@ dependencies = [
  "microwave-objectstore",
  "microwave-store",
  "microwave-store-postgres",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",

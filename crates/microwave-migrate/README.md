@@ -78,7 +78,7 @@ microwave-migrate import-knife-backup \
   --replace-acls \
   --yes
 
-# Parse and count without touching the database, object store, or secrets
+# Parse, validate, and count without writing metadata, blobs, or secrets
 microwave-migrate import-knife-backup \
   --input /var/backups/chef-knife \
   --data-dir ./new-data \
@@ -411,7 +411,10 @@ web-UI keypair or parse/merge the private-chef secret document at runtime.
   backup; inferred/target-only groups are left alone. It captures and restores
   previous ACL/group state when the import fails, but is not one cross-target
   transaction (a crash during the operation can still require operator
-  recovery).
+  recovery). Merged-user `server-admins` reconciliation and default-key
+  removal also run after the metadata transaction; a failure restores the
+  captured membership/admin state, but a partial key removal is completed by
+  re-running the same command.
 - The `metadata.rb` parser is not a Ruby interpreter. It does not evaluate
   arbitrary Ruby, conditionals, string interpolation, `eval`, or custom
   helper methods. Prefer a `metadata.json` when the source provides one.

@@ -1699,3 +1699,209 @@ fn replace_acls_restores_target_state_after_postgres_failure() {
         .unwrap();
     assert!(members.users.contains(&bob_name));
 }
+
+#[test]
+fn default_reimport_does_not_reconcile_server_admins() {
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "default-admin");
+    let data = tempfile::tempdir().unwrap();
+    let bookshelf = data.path().join("bookshelf");
+    import_knife_backup_to(data.path(), &backup, &bookshelf, Compression::None).unwrap();
+
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let alice = store.find_user("alice-default-admin").unwrap().unwrap();
+    let group = store
+        .find_global_group("server-admins")
+        .unwrap()
+        .expect("server-admins");
+    store
+        .add_group_member(&group.authz_id, &alice.authz_id)
+        .unwrap();
+    drop(store);
+
+    let plan = prepare_knife_backup(&backup).unwrap();
+    apply_knife_backup_plan_sqlite(data.path(), &plan, &bookshelf, Compression::None).unwrap();
+
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let members = store.list_group_members("", &group.authz_id).unwrap().users;
+    assert!(
+        members.contains(&alice.username),
+        "an additive re-import must not remove a target-only server-admins grant"
+    );
+}
+
+#[test]
+fn replace_credentials_does_not_remove_default_keys_of_exact_users() {
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "exact-key");
+    let data = tempfile::tempdir().unwrap();
+    let bookshelf = data.path().join("bookshelf");
+    import_knife_backup_to(data.path(), &backup, &bookshelf, Compression::None).unwrap();
+
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let alice = store.find_user("alice-exact-key").unwrap().unwrap();
+    store
+        .update_actor_key(
+            &alice.id,
+            ActorType::User,
+            "default",
+            None,
+            Some("TARGET-ALICE-KEY"),
+            None,
+        )
+        .unwrap();
+    drop(store);
+
+    // Removing the backup's inline public key makes alice a same-id user with
+    // no source default while pivotal is still merged with replacement.
+    let user_path = backup.join("users/alice.json");
+    let mut value: Value =
+        serde_json::from_str(&std::fs::read_to_string(&user_path).unwrap()).unwrap();
+    value.as_object_mut().unwrap().remove("public_key");
+    write_json(&user_path, &value);
+
+    let plan = prepare_knife_backup(&backup).unwrap();
+    apply_knife_backup_plan_sqlite_with_options(
+        data.path(),
+        &plan,
+        &bookshelf,
+        Compression::None,
+        &KnifeBackupApplyOptions {
+            merge_users: true,
+            replace_acls: false,
+            replace_user_credentials: true,
+        },
+    )
+    .unwrap();
+
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let alice = store.find_user("alice-exact-key").unwrap().unwrap();
+    let key = store
+        .find_actor_key(&alice.id, ActorType::User, "default")
+        .unwrap()
+        .expect("exact user default key");
+    assert_eq!(
+        key.public_key, "TARGET-ALICE-KEY",
+        "replacement applies only to actually merged users"
+    );
+}
+
+#[test]
+fn imports_a_nested_cookbook_readme() {
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "nested-readme");
+    let cookbook = backup.join("organizations/acme-nested-readme/cookbooks/app-1.2.3");
+    write_text(
+        &cookbook.join("docs/README.md"),
+        "Nested long description\n",
+    );
+    write_text(
+        &cookbook.join("metadata.rb"),
+        "name 'app'\nversion '1.2.3'\nlong_description IO.read(File.join(File.dirname(__FILE__), 'docs/README.md'))\n",
+    );
+    let data = tempfile::tempdir().unwrap();
+    let bookshelf = data.path().join("bookshelf");
+    import_knife_backup_to(data.path(), &backup, &bookshelf, Compression::None).unwrap();
+
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let org = store.find_org("acme-nested-readme").unwrap().unwrap();
+    let manifest = read_cookbook_manifest(&store, &org.id);
+    assert_eq!(
+        manifest["metadata"]["long_description"],
+        "Nested long description\n"
+    );
+}
+
+#[test]
+fn warns_when_key_dumps_are_empty() {
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "empty-keys");
+    write_json(&backup.join("key_dump.json"), &json!([]));
+    write_json(&backup.join("key_table_dump.json"), &json!([]));
+    let plan = prepare_knife_backup(&backup).unwrap();
+    assert!(plan
+        .summary
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("key_dump.json is empty")));
+    assert!(plan
+        .summary
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("key_table_dump.json is empty")));
+}
+
+#[test]
+fn admin_reconciliation_failure_restores_admin_flag_and_membership() {
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "admin-rollback");
+    let key_dump_path = backup.join("key_dump.json");
+    let mut key_dump: Value =
+        serde_json::from_str(&std::fs::read_to_string(&key_dump_path).unwrap()).unwrap();
+    key_dump[0]["admin"] = json!(false);
+    write_json(&key_dump_path, &key_dump);
+
+    let data = tempfile::tempdir().unwrap();
+    let bookshelf = data.path().join("bookshelf");
+    import_knife_backup_to(data.path(), &backup, &bookshelf, Compression::None).unwrap();
+
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let pivotal = store.find_user("pivotal-admin-rollback").unwrap().unwrap();
+    store
+        .update_user_patch(
+            &pivotal.username,
+            &microwave_store::UserPatch {
+                admin: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let group = store
+        .find_global_group("server-admins")
+        .unwrap()
+        .expect("server-admins");
+    store
+        .add_group_member(&group.authz_id, &pivotal.authz_id)
+        .unwrap();
+    drop(store);
+
+    let connection = rusqlite::Connection::open(database(data.path())).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_server_admin_delete
+             BEFORE DELETE ON authz_group_actors
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected server-admins failure');
+             END;",
+        )
+        .unwrap();
+    drop(connection);
+
+    let plan = prepare_knife_backup(&backup).unwrap();
+    let error = apply_knife_backup_plan_sqlite_with_options(
+        data.path(),
+        &plan,
+        &bookshelf,
+        Compression::None,
+        &KnifeBackupApplyOptions {
+            merge_users: true,
+            replace_acls: false,
+            replace_user_credentials: true,
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("injected"), "{error}");
+
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let pivotal = store.find_user("pivotal-admin-rollback").unwrap().unwrap();
+    assert!(
+        pivotal.admin,
+        "failed reconciliation must restore the admin flag"
+    );
+    let members = store.list_group_members("", &group.authz_id).unwrap().users;
+    assert!(
+        members.contains(&pivotal.username),
+        "failed reconciliation must restore server-admins membership"
+    );
+}

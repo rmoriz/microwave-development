@@ -413,7 +413,7 @@ fn import_knife_backup_command(
                 );
                 return Ok(());
             }
-            print_knife_confirmation_scope(replace_acls, replace_user_credentials);
+            print_knife_confirmation_scope(merge_users, replace_acls, replace_user_credentials);
             confirm_import(yes)?;
             apply_knife_backup_plan_sqlite_with_options(
                 &data_dir,
@@ -457,7 +457,7 @@ fn import_knife_backup_command(
                         .into(),
                 ));
             };
-            print_knife_confirmation_scope(replace_acls, replace_user_credentials);
+            print_knife_confirmation_scope(merge_users, replace_acls, replace_user_credentials);
             confirm_import(yes)?;
             apply_knife_backup_plan_postgres_with_options(
                 &database_url,
@@ -507,7 +507,16 @@ fn print_server_secrets_summary(plan: Option<&ServerSecretsPlan>) {
     }
 }
 
-fn print_knife_confirmation_scope(replace_acls: bool, replace_user_credentials: bool) {
+fn print_knife_confirmation_scope(
+    merge_users: bool,
+    replace_acls: bool,
+    replace_user_credentials: bool,
+) {
+    if merge_users {
+        println!(
+            "Confirmation scope: --merge-users will preserve target credentials and reconcile server-admins membership for merged users."
+        );
+    }
     if replace_acls {
         println!(
             "Confirmation scope: --replace-acls will replace ACLs and group membership for backup targets."

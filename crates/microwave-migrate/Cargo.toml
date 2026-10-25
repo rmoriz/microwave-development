@@ -28,4 +28,5 @@ url.workspace = true
 [dev-dependencies]
 axum.workspace = true
 microwave-authz = { path = "../microwave-authz" }
+rusqlite.workspace = true
 tempfile.workspace = true
