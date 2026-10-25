@@ -107,6 +107,22 @@ async fn solve_with_api_version(
     (status, support::response_json(response).await)
 }
 
+async fn solve_with_raw_body(app: &Router, raw_body: &[u8]) -> (StatusCode, Value) {
+    let response = app
+        .clone()
+        .oneshot(support::signed_request(
+            "POST",
+            "/organizations/acme/environments/_default/cookbook_versions",
+            raw_body,
+            SignVersion::V1_3,
+            "pivotal",
+        ))
+        .await
+        .unwrap();
+    let status = response.status();
+    (status, support::response_json(response).await)
+}
+
 /// Upload "hello" through a sandbox and return its checksum.
 async fn upload_hello(app: &Router) -> String {
     let checksum = "5d41402abc4b2a76b9719d911017c592";
@@ -388,4 +404,28 @@ async fn returns_404_for_missing_environment() {
         body,
         json!({ "error": ["environment 'does-not-exist' not found"] })
     );
+}
+
+#[tokio::test]
+async fn rejects_empty_request_body_as_invalid_json() {
+    let app = setup().await;
+    let (status, body) = solve_with_raw_body(&app, b"").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, json!({ "error": ["invalid JSON"] }));
+}
+
+#[tokio::test]
+async fn rejects_non_json_request_body_as_invalid_json() {
+    let app = setup().await;
+    let (status, body) = solve_with_raw_body(&app, b"this_is_not_json").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, json!({ "error": ["invalid JSON"] }));
+}
+
+#[tokio::test]
+async fn rejects_malformed_json_request_body_as_invalid_json() {
+    let app = setup().await;
+    let (status, body) = solve_with_raw_body(&app, br#"{"run_list": "#).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, json!({ "error": ["invalid JSON"] }));
 }
