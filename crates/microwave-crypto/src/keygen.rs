@@ -37,7 +37,9 @@ pub struct KeygenStatus {
     pub capacity: usize,
     /// Background worker threads that started successfully.
     pub workers: usize,
-    /// True when every requested worker started and no generation failed.
+    /// True after a successful background generation; false after a worker
+    /// start failure, a background generation failure, or a warm-up failure.
+    /// A later successful background generation clears the flag again.
     pub worker_healthy: bool,
     /// Cumulative background generation failures since start. This counter
     /// does not reset; `worker_healthy` reflects the latest generation

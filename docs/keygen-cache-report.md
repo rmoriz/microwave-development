@@ -29,8 +29,8 @@ Branch: `keygen-cache`
 
 1. `OAuthState` now carries the shared `Arc<KeygenCache>`. It exposes the same
    `try_take()` + `tokio::task::spawn_blocking(take)` helper, and
-   `providers profile::regen_key` uses it. `ProvidesOAuthState for AppState`
-   passes the cache through.
+   `profile::regen_key` uses it. `ProvidesOAuthState for AppState` passes the
+   cache through.
 2. `KeygenConfig` validates `size <= 1024`, `workers <= 8`, `workers <= size`,
    and rejects `size == 0 && warm_up`. Validation runs for TOML, environment
    overrides, and `microwave-ctl check-config`. `KeygenCache::new` defensively
@@ -44,11 +44,19 @@ Branch: `keygen-cache`
    the latest generation outcome. `/_status` publishes `warm_up_failures`.
 5. Cache takes use `notify_one`; shutdown still uses `notify_all` because every
    worker must exit.
-6. `support::disable_keygen` is used by the OAuth fixture and PostgreSQL test
+6. `support::disable_keygen` is used by the auth, OAuth, and PostgreSQL test
    fixtures. Cache-specific tests opt back in explicitly.
 7. Added cache tests for concurrent takers and oversized-capacity clamping,
    plus API tests for the blocking-pool fallback, cache-backed organization and
    client key creation, and OAuth key regeneration.
+
+### Follow-up
+
+- The `auth_test` fixture was still using `Config::default()` and has now been
+  routed through `support::disable_keygen` as well. This removes the ~11s
+  worker-join delay from that test in debug builds.
+- `KeygenStatus::worker_healthy` documentation now matches the reset-on-success
+  behavior described above.
 
 ### Verification
 
