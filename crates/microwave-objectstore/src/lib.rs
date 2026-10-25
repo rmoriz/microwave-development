@@ -12,7 +12,7 @@ use md5::{Digest, Md5};
 use sha2::Sha256;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 
@@ -22,8 +22,12 @@ pub use s3::{S3Config, S3ObjectStore};
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// Prefix for local-storage health probe files.
+const HEALTH_PROBE_PREFIX: &str = ".microwave-health-";
 /// Monotonic suffix that keeps concurrent health probes from sharing a path.
 static HEALTH_PROBE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+/// Probe files older than this are leftovers from a crashed process.
+const HEALTH_PROBE_SWEEP_AGE: Duration = Duration::from_secs(3_600);
 
 /// Default lifetime for presigned S3 URLs, matching the upstream bookshelf default.
 pub const DEFAULT_PRESIGN_EXPIRY_SECONDS: u64 = 900;
@@ -193,15 +197,41 @@ impl ObjectStore for LocalObjectStore {
         // verify both read and write access. Each call uses a unique probe path
         // so concurrent health checks cannot delete each other's file.
         std::fs::create_dir_all(&self.root)?;
-        std::fs::read_dir(&self.root)?;
+        let entries = std::fs::read_dir(&self.root)?;
+
+        // Best-effort cleanup of probe files left behind by a crash. Only
+        // files older than an hour are removed, so an in-flight probe from
+        // another process is never touched.
+        let now = SystemTime::now();
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if !name.to_string_lossy().starts_with(HEALTH_PROBE_PREFIX) {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if !metadata.is_file() {
+                continue;
+            }
+            let Ok(modified) = metadata.modified() else {
+                continue;
+            };
+            let Ok(age) = now.duration_since(modified) else {
+                continue;
+            };
+            if age >= HEALTH_PROBE_SWEEP_AGE {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
 
         let nonce = HEALTH_PROBE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let timestamp = SystemTime::now()
+        let timestamp = now
             .duration_since(UNIX_EPOCH)
             .map(|elapsed| elapsed.as_nanos())
             .unwrap_or_default();
         let probe = self.root.join(format!(
-            ".microwave-health-{}-{nonce}-{timestamp}",
+            "{HEALTH_PROBE_PREFIX}{}-{nonce}-{timestamp}",
             std::process::id()
         ));
         {
@@ -336,5 +366,30 @@ mod tests {
             handle.join().unwrap();
         }
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn health_check_sweeps_only_old_orphan_probe_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("bookshelf");
+        let store = LocalObjectStore::new(&root, "secret", "http://localhost");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let stale = root.join(format!("{HEALTH_PROBE_PREFIX}stale"));
+        let fresh = root.join(format!("{HEALTH_PROBE_PREFIX}fresh"));
+        std::fs::write(&stale, b"stale").unwrap();
+        std::fs::write(&fresh, b"fresh").unwrap();
+        let stale_file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&stale)
+            .unwrap();
+        let old = SystemTime::now() - Duration::from_secs(7_200);
+        stale_file
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+
+        store.health_check().unwrap();
+        assert!(!stale.exists(), "stale probe file was not swept");
+        assert!(fresh.exists(), "a recent probe file must not be removed");
     }
 }

@@ -1013,17 +1013,23 @@ adds the probe status and detail. A failing dependency sets the top-level
 returns HTTP 200, so a reverse proxy or orchestrator can inspect the payload.
 
 Each probe is bounded to 1.5 seconds. SQLite's health query runs on Tokio's
-blocking pool using an owned connection handle, so a held store lock cannot pin
-an async worker past that bound; PostgreSQL uses an async `SELECT 1` against
-the pool. OpenSearch and Elasticsearch call `/_cluster/health` and treat
-`"status":"red"` as unhealthy (`yellow` is valid for a single node). Local
-object storage verifies read/write access with a unique probe file per call; S3
+blocking pool using an owned connection handle and a non-blocking `try_lock`;
+if another operation holds the metadata connection, the probe reports `busy`
+immediately instead of queuing a blocking task, so repeated refreshes cannot
+accumulate waiting workers. PostgreSQL uses an async `SELECT 1` against the
+pool. OpenSearch and Elasticsearch call `/_cluster/health`; a red cluster or an
+unparseable 200 response is unhealthy (`yellow` is valid for a single node).
+Local object storage verifies read/write access with a unique probe file per
+call and sweeps probe files older than one hour that were left by a crash; S3
 and Garage perform a signed, bounded `HEAD` request on the bucket.
 
-The completed snapshot is cached for one second. Concurrent requests share a
-single in-flight probe, and an expired snapshot is served immediately while one
-background refresh runs (stale-while-refresh), so an unauthenticated health
-check burst cannot multiply database, search, or object-store probes.
+The completed snapshot is cached for one second. Concurrent cold requests share
+a single in-flight probe. An expired snapshot is served immediately while
+exactly one background refresh task runs (stale-while-refresh); additional
+stale requests reuse the same snapshot without spawning more tasks. A snapshot
+is never served stale beyond five seconds: after that a request waits for a
+real probe instead of reporting arbitrarily old health data. These guarantees
+are process-local; each replica probes its own dependencies.
 
 The S3/Garage credentials must allow `s3:HeadBucket` (and therefore
 `s3:ListBucket`) on the configured bucket; object read/write permissions alone

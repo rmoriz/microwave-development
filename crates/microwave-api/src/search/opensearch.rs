@@ -414,7 +414,9 @@ impl super::backend::SearchBackend for OpenSearchBackend {
         // A red cluster still answers with HTTP 200 by default. Yellow is
         // expected on a single-node cluster while replicas are unassigned, but
         // red means primary shards are unavailable and search is degraded.
-        let health: Value = response.json().await.unwrap_or(Value::Null);
+        let health: Value = response.json().await.map_err(|error| {
+            SearchError::Response(format!("invalid cluster health response: {error}"))
+        })?;
         if health.get("status").and_then(Value::as_str) == Some("red") {
             return Err(SearchError::Response("cluster health is red".to_string()));
         }
@@ -1195,7 +1197,7 @@ mod tests {
         assert_eq!(hits.ids, vec!["one".to_string()]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn health_check_uses_cluster_health_and_reports_backend_failures() {
         let server = mock(200, json!({ "status": "green" })).await;
         let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &server.base_url).unwrap();
@@ -1225,6 +1227,40 @@ mod tests {
         match backend.health_check().await {
             Err(SearchError::Backend { status: 503, url }) => {
                 assert_eq!(url, format!("{}/_cluster/health", server.base_url));
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+    }
+
+    async fn raw_health_server(status: u16, body: &'static str) -> String {
+        use axum::http::StatusCode;
+        use axum::Router;
+
+        let app = Router::new().fallback(move || async move {
+            (
+                StatusCode::from_u16(status).unwrap(),
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{address}")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn health_check_rejects_a_malformed_cluster_health_body() {
+        let base_url = raw_health_server(200, "not json").await;
+        let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, base_url).unwrap();
+        match backend.health_check().await {
+            Err(SearchError::Response(message)) => {
+                assert!(
+                    message.contains("invalid cluster health response"),
+                    "unexpected detail: {message}"
+                );
             }
             other => panic!("unexpected result: {other:?}"),
         }

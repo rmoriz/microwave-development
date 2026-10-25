@@ -117,7 +117,7 @@ async fn status_bounds_a_hanging_search_probe() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn status_bounds_a_held_sqlite_connection_lock() {
+async fn status_reports_busy_without_waiting_for_a_held_sqlite_lock() {
     let state = support::state_with_pivotal();
     let sqlite = state.sqlite.clone().expect("sqlite handle");
     let app = support::app(state);
@@ -137,20 +137,59 @@ async fn status_bounds_a_held_sqlite_connection_lock() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "fail");
     assert_eq!(body["upstreams"]["chef_sql"], "fail");
-    assert_eq!(
-        body["upstream_details"]["chef_sql"]["detail"],
-        "probe timed out"
+    assert!(
+        body["upstream_details"]["chef_sql"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("busy"),
+        "unexpected detail: {}",
+        body["upstream_details"]["chef_sql"]["detail"]
     );
     assert!(
-        elapsed >= Duration::from_secs(1),
-        "the held lock should have reached the probe timeout: {elapsed:?}"
-    );
-    assert!(
-        elapsed < Duration::from_millis(2_500),
-        "a held SQLite lock stalled /_status: {elapsed:?}"
+        elapsed < Duration::from_secs(1),
+        "a held SQLite lock delayed /_status: {elapsed:?}"
     );
 
     holder.join().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_stale_requests_spawn_only_one_refresh() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut state = support::state_with_pivotal();
+    state.search = Arc::new(CountingSearch {
+        calls: Arc::clone(&calls),
+        delay: Duration::from_millis(300),
+    });
+    let app = support::app(state);
+
+    let (_, prime) = status_body(&app).await;
+    assert_eq!(prime["status"], "pong");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+
+    let mut tasks = Vec::new();
+    for _ in 0..32 {
+        let app = app.clone();
+        tasks.push(tokio::spawn(async move { status_body(&app).await }));
+    }
+    for task in tasks {
+        let (status, body) = task.await.unwrap();
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "pong", "stale requests keep the snapshot");
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while calls.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "a stale burst must create exactly one background refresh"
+    );
 }
 
 #[tokio::test]

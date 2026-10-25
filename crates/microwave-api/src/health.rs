@@ -10,6 +10,7 @@ use crate::search::{SearchBackend, SearchError};
 use microwave_objectstore::ObjectStore;
 use microwave_store::MetadataStore;
 use serde_json::{json, Map, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -17,6 +18,8 @@ use std::time::{Duration, Instant};
 const DEFAULT_TTL: Duration = Duration::from_secs(1);
 /// Maximum time any single dependency may spend answering a probe.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1_500);
+/// Never serve a cached snapshot older than this, even while refreshing.
+const MAX_STALE_AGE: Duration = Duration::from_secs(5);
 /// Keep diagnostics short and single-line.
 const MAX_DETAIL_LEN: usize = 240;
 
@@ -77,6 +80,16 @@ struct HealthCacheInner {
     ttl: Duration,
     cached: Mutex<Option<(Instant, Arc<DependencySnapshot>)>>,
     refresh: tokio::sync::Mutex<()>,
+    refreshing: AtomicBool,
+}
+
+/// Resets the in-flight flag even if the background refresh panics.
+struct RefreshGuard(Arc<HealthCacheInner>);
+
+impl Drop for RefreshGuard {
+    fn drop(&mut self) {
+        self.0.refreshing.store(false, Ordering::Release);
+    }
 }
 
 impl Default for HealthCache {
@@ -96,6 +109,7 @@ impl HealthCache {
                 ttl,
                 cached: Mutex::new(None),
                 refresh: tokio::sync::Mutex::new(()),
+                refreshing: AtomicBool::new(false),
             }),
         }
     }
@@ -111,6 +125,7 @@ impl HealthCache {
         })
     }
 
+    #[cfg(test)]
     fn latest(&self) -> Option<Arc<DependencySnapshot>> {
         self.inner
             .cached
@@ -118,6 +133,20 @@ impl HealthCache {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_ref()
             .map(|(_, snapshot)| snapshot.clone())
+    }
+
+    /// Return the previous snapshot only while it is younger than the absolute
+    /// staleness ceiling. Beyond this a request waits for a real probe instead
+    /// of serving arbitrarily old health data.
+    fn stale_within(&self, max_age: Duration) -> Option<Arc<DependencySnapshot>> {
+        let guard = self
+            .inner
+            .cached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.as_ref().and_then(|(taken_at, snapshot)| {
+            (taken_at.elapsed() <= max_age).then(|| snapshot.clone())
+        })
     }
 
     fn store(&self, snapshot: Arc<DependencySnapshot>) {
@@ -140,21 +169,29 @@ impl HealthCache {
         }
 
         // Serve the previous result immediately and refresh it in the
-        // background. The refresh mutex makes every spawned refresher (and any
-        // cold-cache waiter) a single-flight group.
-        if let Some(stale) = self.latest() {
-            let cache = self.clone();
-            let store = Arc::clone(store);
-            let search = Arc::clone(search);
-            let object_store = Arc::clone(object_store);
-            tokio::spawn(async move {
-                let _refresh = cache.inner.refresh.lock().await;
-                if cache.fresh().is_some() {
-                    return;
-                }
-                let snapshot = Arc::new(collect(&store, &search, &object_store).await);
-                cache.store(snapshot);
-            });
+        // background. The `refreshing` compare-and-swap ensures only one
+        // request creates a refresh task; every other stale request keeps the
+        // stale snapshot. The mutex remains the inner single-flight guard for
+        // cold waiters.
+        if let Some(stale) = self.stale_within(MAX_STALE_AGE) {
+            if !self.inner.refreshing.swap(true, Ordering::AcqRel) {
+                let cache = self.clone();
+                let store = Arc::clone(store);
+                let search = Arc::clone(search);
+                let object_store = Arc::clone(object_store);
+                // Build the guard before spawning so an aborted-but-never-polled
+                // task still clears the in-flight flag when its future drops.
+                let inflight = RefreshGuard(Arc::clone(&self.inner));
+                tokio::spawn(async move {
+                    let _inflight = inflight;
+                    let _refresh = cache.inner.refresh.lock().await;
+                    if cache.fresh().is_some() {
+                        return;
+                    }
+                    let snapshot = Arc::new(collect(&store, &search, &object_store).await);
+                    cache.store(snapshot);
+                });
+            }
             return stale;
         }
 
@@ -285,10 +322,10 @@ fn redact_credentials(input: &str) -> String {
 mod tests {
     use super::{
         redact_credentials, truncate_detail, DependencyProbe, DependencySnapshot, HealthCache,
-        MAX_DETAIL_LEN,
+        MAX_DETAIL_LEN, MAX_STALE_AGE,
     };
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     fn snapshot() -> Arc<DependencySnapshot> {
         Arc::new(DependencySnapshot {
@@ -315,6 +352,29 @@ mod tests {
             cache.latest().is_some(),
             "the stale snapshot stays available for stale-while-refresh"
         );
+    }
+
+    #[test]
+    fn stale_snapshot_has_an_absolute_max_age() {
+        let cache = HealthCache::with_ttl(Duration::from_millis(1));
+        {
+            let mut guard = cache
+                .inner
+                .cached
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = Some((
+                Instant::now() - MAX_STALE_AGE - Duration::from_secs(1),
+                snapshot(),
+            ));
+        }
+
+        assert!(cache.fresh().is_none());
+        assert!(
+            cache.stale_within(MAX_STALE_AGE).is_none(),
+            "a snapshot older than the ceiling must not be served stale"
+        );
+        assert!(cache.latest().is_some());
     }
 
     #[test]
