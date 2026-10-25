@@ -20,8 +20,15 @@ microwave-migrate export \
   --database-url postgres://microwave:secret@db/microwave \
   --output migration.json
 
-# Write a self-contained archive: snapshot.json + local bookshelf/ blobs
+# Write a self-contained archive: snapshot.json + local bookshelf/ blobs.
+# Database secrets and on-disk private keys are both excluded by default.
 microwave-migrate export --data-dir ./data --archive migration.tar.gz
+
+# Complete self-migration: include DB secret rows and private key files.
+# The result is credential material; protect and transfer it accordingly.
+microwave-migrate export --data-dir ./data --archive migration.tar.gz \
+  --include-secrets --include-private-keys \
+  --config /etc/microwave/microwave.toml
 
 # PostgreSQL metadata + a local bookshelf tree
 microwave-migrate export \
@@ -32,8 +39,13 @@ microwave-migrate export \
 # Create or merge into ./new-data/microwave.db
 microwave-migrate import --data-dir ./new-data --input migration.json --yes
 
-# Restore snapshot + bookshelf/ from an archive
+# Restore snapshot + bookshelf/ from an archive. Existing key files abort
+# unless --force is given; --secrets-dir puts all private files elsewhere.
 microwave-migrate import --data-dir ./new-data --archive migration.tar.gz --yes
+microwave-migrate import --data-dir ./new-data --archive migration.tar.gz \
+  --secrets-dir /safe/staging/private --yes
+microwave-migrate import --data-dir ./new-data --archive migration.tar.gz \
+  --config /etc/microwave/microwave.toml --force --yes
 
 # PostgreSQL archive import, restoring the local bookshelf tree too
 microwave-migrate import \
@@ -195,20 +207,45 @@ JSON text held by the local store, so object bodies survive byte-for-byte.
 
 ### Secrets and what remains intentionally absent
 
-- **Default exports are safe.** `kvpair` (including `secret:*`, browser
-  sessions, password-reset tokens, and the maintenance flag), OAuth access
-  grants/tokens, and OAuth application secrets are omitted or blank unless
-  `--include-secrets` is passed. Use that flag only when the snapshot or
-  archive will be stored and transferred as a credential.
-- **Secret content is never printed.** The CLI reports only `Secrets:
-  included` / `Secrets: excluded`; it never echoes a key or token. Snapshot
-  and archive files are written with mode `0600`.
+Two independent opt-ins control sensitive data:
+
+| Flag | What it adds | Default |
+|---|---|---|
+| `--include-secrets` | `kvpair` (operator secrets, sessions, reset tokens, maintenance flag), OAuth access grants/tokens, and OAuth application secrets in `snapshot.json` | omitted/blank |
+| `--include-private-keys` | On-disk key/certificate material under `secrets/` | omitted |
+
+For a truly complete self-migration, pass **both** flags. `--include-secrets`
+alone still leaves `pivotal.pem`, TLS keys, and the other files on disk behind;
+`--include-private-keys` alone copies those files but leaves database-backed
+secrets redacted.
+
+`--include-private-keys` uses an explicit manifest, never a glob. It reads only
+files that exist from these lists:
+
+- `<data-dir>/pivotal.pem`
+- `<data-dir>/pivotal.password`
+- `<data-dir>/objectstore.secret`
+- `<data-dir>/private-chef-secrets.json` or `private_chef_secrets.json`
+- WebUI/oc-id keys, when present: `webui_priv.pem`, `webui_pub.pem`,
+  `oc_id_priv.pem`, `oc_id_pub.pem`, `ocid_priv.pem`, `ocid_pub.pem`,
+  `oc-id.pem`, `oc_id.pem`
+- the configured `server.tls.cert_path` and `server.tls.key_path` from
+  `--config` / `MW_CONFIG` / `./microwave.toml`. `cert_path` may be a PEM
+  bundle containing the chain.
+
+Unrecognized files, glob matches, and public data are never included.
+Symlinked data-dir candidates abort the export rather than being followed;
+explicitly configured TLS paths may be managed symlinks (for example Let's
+Encrypt `live/current`) and are read through.
+
+**Never printed.** The CLI reports only `Secrets: included/excluded` and
+`Private keys: included/excluded`; it never echoes key contents, passwords, or
+tokens. Snapshot and archive files are mode `0600`; extracted private files are
+mode `0600` and newly created parent directories mode `0700`.
+
 - **Plaintext passwords.** Only `password_hash`, `password_salt`, and
   `hash_type` are exported. Legacy hash types are preserved; the login path can
   upgrade them later.
-- **Private keys.** The store only holds public keys, and the exporter reads
-  only database rows. Adjacent PEM files such as `<data_dir>/pivotal.pem` are
-  never read or archived.
 - **Search indexes.** They are derived data; rebuild them after migration.
 - **Remote object stores.** Archives copy a local `bookshelf/` directory only.
   For S3, Garage, or MinIO, replicate the bucket with your object-store
@@ -219,36 +256,66 @@ so even a safe export is sensitive.
 
 ## Archive format
 
-`--archive PATH.tar.gz` writes a gzip-compressed tar with exactly two members:
+`--archive PATH.tar.gz` writes a gzip-compressed tar with these members:
 
 ```text
 snapshot.json
 bookshelf/
   organization-<org_id>/
     checksum-<md5>
+secrets/                     # only with --include-private-keys
+  manifest.json
+  files/
+    0001-pivotal.pem
+    0002-site.crt
 ```
 
-The snapshot is byte-identical to the JSON export for the same source and
-secret mode. `bookshelf/` is the local object-store root (`<data_dir>/bookshelf`
-for SQLite). For PostgreSQL, point `--bookshelf-dir` at the local tree; the
+The snapshot is byte-identical to the JSON export for the same secret mode.
+`bookshelf/` is the local object-store root (`<data_dir>/bookshelf` for
+SQLite). For PostgreSQL, point `--bookshelf-dir` at the local tree; the
 metadata comes from `--database-url`.
+
+`secrets/manifest.json` is a JSON document mapping each `secrets/files/...`
+member to its `kind` (`data-dir`, `tls-certificate`, `tls-private-key`), source
+`original_path`, data-dir `relative_path`, `suggested_name`, and source `mode`.
+The manifest is metadata only; it never contains file contents.
 
 Archive import extracts and validates into a private staging directory before
 touching live data:
 
-- only `snapshot.json` and `bookshelf/` entries are allowed;
+- only `snapshot.json`, `bookshelf/`, and `secrets/` entries are allowed;
 - absolute paths, `..`, empty names, backslash-separated names, symlinks, hard
   links, devices, FIFOs, and duplicate entries are rejected;
+- every private payload must be listed exactly once in the manifest; an
+  unreferenced `secrets/files/` member or a missing manifest is rejected;
 - the snapshot is parsed and its envelope validated before the database
   transaction starts;
+- private destinations and overwrite conflicts are checked before the database
+  import, so a refused import leaves metadata untouched;
 - the database import runs in one transaction, then the staged `bookshelf/`
-  replaces the target tree. A failed extraction, invalid snapshot, or failed
-  database import leaves the live bookshelf untouched.
+  replaces the target tree, then private files are written.
+
+Restore destinations:
+
+- **Without `--secrets-dir`:** data-dir files return to the target data
+  directory using their original `relative_path`; TLS material returns to the
+  target `server.tls.cert_path` / `server.tls.key_path` from `--config`. If the
+  archive has TLS material but the target config has no matching path, the
+  import fails before touching the database.
+- **With `--secrets-dir DIR`:** every private file is written under `DIR` using
+  its `suggested_name` (for example `DIR/pivotal.pem`, `DIR/site.key`). Existing
+  files are still protected by the overwrite check.
+- Existing key files are never replaced without `--force`. Overwriting a key
+  can invalidate clients that still trust the old key; use `--force` only when
+  intentionally rotating or replacing the installation.
 
 The database and bookshelf are separate stores, so the bookshelf swap happens
 after the database transaction commits. A crash between them leaves the new
 metadata with the old blobs; re-run the import from the same archive to finish.
-Keep the archive until the restored server has been verified.
+Private files are written after that, so a storage failure can similarly leave
+metadata restored with some private files not yet written; the archive remains
+safe to re-run with `--force` where necessary. Keep the archive until the
+restored server has been verified.
 
 Import remains confirmation-gated. In scripts pass `--yes`; without it a
 non-interactive stdin is refused before any change. A non-local object store

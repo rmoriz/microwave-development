@@ -276,11 +276,17 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 > **Backend status:** export and import support both SQLite and PostgreSQL
 > through the shared versioned JSON snapshot, including `kvpair`, OAuth
 > grants/tokens, explicit/empty sandboxes, and telemetry. Default exports are
-> secret-safe; `--include-secrets` adds secret values. `--archive PATH.tar.gz`
-> carries the snapshot plus local `bookshelf/` blobs with an allowlist,
-> traversal/symlink/special-file rejection, and confirmation-gated restore.
-> Remote S3/Garage objects are outside the archive; replicate the bucket.
-> Use `microwave-ctl backup` for a full database-file/dump copy.
+> secret-safe; `--include-secrets` adds database-backed secret values, and the
+> independent `--include-private-keys` adds on-disk `pivotal.pem`,
+> `pivotal.password`, `objectstore.secret`, private-chef secrets, WebUI/oc-id
+> files, and configured TLS cert/key material under `secrets/` with a manifest.
+> `--archive PATH.tar.gz` carries the snapshot plus local `bookshelf/` blobs
+> with an allowlist, traversal/symlink/absolute-path/special-file rejection,
+> mode-0600 extraction, overwrite refusal unless `--force`, `--secrets-dir`
+> support, and confirmation-gated restore. Use both secret flags for a truly
+> complete self-migration. Remote S3/Garage objects are outside the archive;
+> replicate the bucket. `microwave-ctl backup` remains a database-file/dump
+> plus bookshelf copy without private keys.
 - [x] Implement **Snapshot importer (`microwave-migrate import`)** for both backends:
   - [x] Import users (including legacy password hashes and salts), organizations, associations, invites, and server-admins.
   - [x] Import clients and multi-key records (`actor_keys`).

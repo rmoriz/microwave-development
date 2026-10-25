@@ -244,6 +244,242 @@ fn export_include_secrets_controls_kvpair_content() {
     assert!(full_text.contains("\"secrets_included\": true"));
 }
 
+fn write_private_fixture(path: &Path, contents: &[u8]) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(path, contents).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+fn archive_entries(path: &Path) -> Vec<(String, Vec<u8>, u32)> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).unwrap();
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    let mut entries = Vec::new();
+    for entry in archive.entries().unwrap() {
+        let mut entry = entry.unwrap();
+        let name = entry.path().unwrap().to_string_lossy().into_owned();
+        let mode = entry.header().mode().unwrap();
+        let mut data = Vec::new();
+        entry.read_to_end(&mut data).unwrap();
+        entries.push((name, data, mode));
+    }
+    entries
+}
+
+#[test]
+fn archive_private_keys_require_the_flag_and_force_on_import() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(source.path())).unwrap();
+    store.create_org("private-cli", "Private CLI").unwrap();
+    drop(store);
+    write_private_fixture(&source.path().join("pivotal.pem"), b"CLI-KEY-MARKER");
+    write_private_fixture(
+        &source.path().join("private-chef-secrets.json"),
+        b"CLI-CHEF-SECRET-MARKER",
+    );
+    write_private_fixture(&source.path().join("notes.txt"), b"NOT-A-KEY");
+
+    let safe = source.path().join("safe.tar.gz");
+    let exported = run(&[
+        "export",
+        "--data-dir",
+        source.path().to_str().unwrap(),
+        "--archive",
+        safe.to_str().unwrap(),
+    ]);
+    assert!(exported.status.success(), "{}", stderr(&exported));
+    assert!(stdout(&exported).contains("Private keys: excluded"));
+    let entries = archive_entries(&safe);
+    assert!(!entries
+        .iter()
+        .any(|(name, _, _)| name.starts_with("secrets/")));
+    let safe_bytes = entries
+        .iter()
+        .flat_map(|(_, data, _)| data.iter().copied())
+        .collect::<Vec<_>>();
+    let safe_payload = String::from_utf8_lossy(&safe_bytes);
+    assert!(!safe_payload.contains("CLI-KEY-MARKER"));
+
+    let full = source.path().join("full.tar.gz");
+    let exported = run(&[
+        "export",
+        "--data-dir",
+        source.path().to_str().unwrap(),
+        "--archive",
+        full.to_str().unwrap(),
+        "--include-private-keys",
+    ]);
+    assert!(exported.status.success(), "{}", stderr(&exported));
+    assert!(stdout(&exported).contains("Private keys: included"));
+    let entries = archive_entries(&full);
+    let key_entry = entries
+        .iter()
+        .find(|(name, _, _)| name.starts_with("secrets/files/") && name.ends_with("pivotal.pem"))
+        .expect("pivotal.pem is in the private archive");
+    assert_eq!(key_entry.1, b"CLI-KEY-MARKER");
+    assert_eq!(key_entry.2, 0o600);
+    assert!(entries
+        .iter()
+        .any(|(name, _, _)| name == "secrets/manifest.json"));
+    assert!(!entries
+        .iter()
+        .any(|(name, _, _)| name.ends_with("notes.txt")));
+
+    let target = tempfile::tempdir().unwrap();
+    let imported = run(&[
+        "import",
+        "--data-dir",
+        target.path().to_str().unwrap(),
+        "--archive",
+        full.to_str().unwrap(),
+        "--yes",
+    ]);
+    assert!(imported.status.success(), "{}", stderr(&imported));
+    assert_eq!(
+        std::fs::read(target.path().join("pivotal.pem")).unwrap(),
+        b"CLI-KEY-MARKER"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(target.path().join("pivotal.pem"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    let refused = run(&[
+        "import",
+        "--data-dir",
+        target.path().to_str().unwrap(),
+        "--archive",
+        full.to_str().unwrap(),
+        "--yes",
+    ]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("--force"));
+    assert_eq!(
+        std::fs::read(target.path().join("pivotal.pem")).unwrap(),
+        b"CLI-KEY-MARKER"
+    );
+
+    let forced = run(&[
+        "import",
+        "--data-dir",
+        target.path().to_str().unwrap(),
+        "--archive",
+        full.to_str().unwrap(),
+        "--yes",
+        "--force",
+    ]);
+    assert!(forced.status.success(), "{}", stderr(&forced));
+
+    let secrets_target = tempfile::tempdir().unwrap();
+    let separate_data = tempfile::tempdir().unwrap();
+    let imported = run(&[
+        "import",
+        "--data-dir",
+        separate_data.path().to_str().unwrap(),
+        "--archive",
+        full.to_str().unwrap(),
+        "--secrets-dir",
+        secrets_target.path().to_str().unwrap(),
+        "--yes",
+    ]);
+    assert!(imported.status.success(), "{}", stderr(&imported));
+    assert_eq!(
+        std::fs::read(secrets_target.path().join("pivotal.pem")).unwrap(),
+        b"CLI-KEY-MARKER"
+    );
+    assert!(!separate_data.path().join("pivotal.pem").exists());
+}
+
+#[test]
+fn archive_private_keys_use_configured_tls_paths() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(source.path())).unwrap();
+    store
+        .create_org("private-tls-cli", "Private TLS CLI")
+        .unwrap();
+    drop(store);
+    write_private_fixture(&source.path().join("pivotal.pem"), b"CLI-PIVOTAL-MARKER");
+    let source_tls = tempfile::tempdir().unwrap();
+    let source_cert = source_tls.path().join("certs/site.crt");
+    let source_key = source_tls.path().join("certs/site.key");
+    write_private_fixture(&source_cert, b"CLI-CERT-MARKER");
+    write_private_fixture(&source_key, b"CLI-TLS-KEY-MARKER");
+    let source_config = source.path().join("source.toml");
+    std::fs::write(
+        &source_config,
+        format!(
+            "[server.tls]\ncert_path = {:?}\nkey_path = {:?}\n",
+            source_cert.display().to_string(),
+            source_key.display().to_string()
+        ),
+    )
+    .unwrap();
+
+    let archive = source.path().join("tls.tar.gz");
+    let exported = run(&[
+        "export",
+        "--data-dir",
+        source.path().to_str().unwrap(),
+        "--archive",
+        archive.to_str().unwrap(),
+        "--include-private-keys",
+        "--config",
+        source_config.to_str().unwrap(),
+    ]);
+    assert!(exported.status.success(), "{}", stderr(&exported));
+    let entries = archive_entries(&archive);
+    for expected in ["site.crt", "site.key", "pivotal.pem"] {
+        assert!(entries.iter().any(|(name, _, _)| {
+            name.starts_with("secrets/files/") && name.ends_with(expected)
+        }));
+    }
+
+    let target_data = tempfile::tempdir().unwrap();
+    let target_tls = tempfile::tempdir().unwrap();
+    let target_cert = target_tls.path().join("restored/site.crt");
+    let target_key = target_tls.path().join("restored/site.key");
+    let target_config = source.path().join("target.toml");
+    std::fs::write(
+        &target_config,
+        format!(
+            "[server.tls]\ncert_path = {:?}\nkey_path = {:?}\n",
+            target_cert.display().to_string(),
+            target_key.display().to_string()
+        ),
+    )
+    .unwrap();
+    let imported = run(&[
+        "import",
+        "--data-dir",
+        target_data.path().to_str().unwrap(),
+        "--archive",
+        archive.to_str().unwrap(),
+        "--config",
+        target_config.to_str().unwrap(),
+        "--yes",
+    ]);
+    assert!(imported.status.success(), "{}", stderr(&imported));
+    assert_eq!(std::fs::read(target_cert).unwrap(), b"CLI-CERT-MARKER");
+    assert_eq!(std::fs::read(target_key).unwrap(), b"CLI-TLS-KEY-MARKER");
+    assert_eq!(
+        std::fs::read(target_data.path().join("pivotal.pem")).unwrap(),
+        b"CLI-PIVOTAL-MARKER"
+    );
+}
+
 #[test]
 fn import_with_compression_none_stores_plain_serialized_objects() {
     let source = tempfile::tempdir().unwrap();
@@ -397,8 +633,21 @@ fn import_help_lists_compression_options() {
     let message = stdout(&output);
     assert!(message.contains("--compression"));
     assert!(message.contains("--config"));
+    assert!(message.contains("--secrets-dir"));
+    assert!(message.contains("--force"));
     assert!(message.contains("zlib"));
     assert!(message.contains("none"));
+}
+
+#[test]
+fn export_help_lists_private_key_options() {
+    let output = run(&["export", "--help"]);
+    assert!(output.status.success());
+    let message = stdout(&output);
+    assert!(message.contains("--include-secrets"));
+    assert!(message.contains("--include-private-keys"));
+    assert!(message.contains("--archive"));
+    assert!(message.contains("--bookshelf-dir"));
 }
 
 #[test]

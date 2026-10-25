@@ -17,9 +17,12 @@
 //!
 //! Default exports omit secret values (`kvpair`, OAuth grants/tokens, and OAuth
 //! application secrets); pass `--include-secrets` to include them. Archives
-//! add a local `bookshelf/` tree to the snapshot. The live crawler signs every
-//! request with `microwave_crypto::sign_request` and writes the same snapshot
-//! envelope as a local export.
+//! add a local `bookshelf/` tree to the snapshot. Pass
+//! `--include-private-keys` with `--archive` to add an explicit manifest of
+//! on-disk private key and TLS certificate files under `secrets/`; the two
+//! flags are independent. The live crawler signs every request with
+//! `microwave_crypto::sign_request` and writes the same snapshot envelope as
+//! a local export.
 
 use chrono::{SecondsFormat, Utc};
 pub use microwave_store::Compression;
@@ -36,9 +39,12 @@ mod from_api;
 
 pub use archive::{
     export_archive, export_archive_postgres, export_archive_postgres_with_options,
-    export_archive_with_options, import_archive, import_archive_postgres,
-    import_archive_postgres_with_compression, import_archive_with_compression,
-    ARCHIVE_BOOKSHELF_PREFIX, ARCHIVE_SNAPSHOT_ENTRY,
+    export_archive_postgres_with_private_keys, export_archive_with_options,
+    export_archive_with_private_keys, import_archive, import_archive_postgres,
+    import_archive_postgres_with_compression, import_archive_postgres_with_private_keys,
+    import_archive_with_compression, import_archive_with_private_keys, PrivateKeyExportOptions,
+    PrivateKeyImportOptions, ARCHIVE_BOOKSHELF_PREFIX, ARCHIVE_SECRETS_FILES_PREFIX,
+    ARCHIVE_SECRETS_MANIFEST, ARCHIVE_SECRETS_PREFIX, ARCHIVE_SNAPSHOT_ENTRY,
 };
 pub use from_api::{crawl_from_api, from_api_with_options, read_private_key, FromApiOptions};
 

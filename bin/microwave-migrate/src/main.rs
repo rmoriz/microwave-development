@@ -1,11 +1,12 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use microwave_config::{Config, StorageCompression};
 use microwave_migrate::{
-    export_archive_postgres_with_options, export_archive_with_options,
+    export_archive_postgres_with_private_keys, export_archive_with_private_keys,
     export_postgres_with_options, export_with_options, from_api_with_options,
-    import_archive_postgres_with_compression, import_archive_with_compression,
+    import_archive_postgres_with_private_keys, import_archive_with_private_keys,
     import_postgres_with_compression, import_with_compression, redacted_postgres_url,
-    validate_postgres_url, Compression, FromApiOptions, MigrateError, DATABASE_FILE,
+    validate_postgres_url, Compression, FromApiOptions, MigrateError, PrivateKeyExportOptions,
+    PrivateKeyImportOptions, DATABASE_FILE,
 };
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -58,6 +59,17 @@ enum Command {
         /// OAuth grants/tokens, and OAuth application secrets.
         #[arg(long)]
         include_secrets: bool,
+        /// Include explicit private key and certificate files under secrets/.
+        ///
+        /// This reads <data-dir>/pivotal.pem, pivotal.password,
+        /// objectstore.secret, private-chef-secrets.json, WebUI/oc-id key
+        /// files, and the configured TLS cert/key paths. Off by default.
+        #[arg(long, requires = "archive")]
+        include_private_keys: bool,
+        /// Configuration file used to find TLS certificate/key paths for
+        /// --include-private-keys (and for import compression defaults).
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
     },
     /// Import a snapshot or archive into a local store, creating it when needed.
     Import {
@@ -91,6 +103,14 @@ enum Command {
         /// import. Not used for SQLite, which uses <data-dir>/bookshelf.
         #[arg(long, value_name = "DIR", requires = "archive")]
         bookshelf_dir: Option<PathBuf>,
+        /// Restore private key/certificate files under this directory instead
+        /// of the configured data-dir/TLS paths.
+        #[arg(long, value_name = "DIR", requires = "archive")]
+        secrets_dir: Option<PathBuf>,
+        /// Replace existing private key/certificate files. Can invalidate
+        /// existing clients that use the old keys.
+        #[arg(long, requires = "archive")]
+        force: bool,
         /// Compression for imported `serialized_object` values.
         ///
         /// Without this flag the default comes from --config,
@@ -134,6 +154,8 @@ fn main() -> ExitCode {
             archive,
             bookshelf_dir,
             include_secrets,
+            include_private_keys,
+            config,
         } => export_command(
             data_dir,
             database_url,
@@ -141,6 +163,8 @@ fn main() -> ExitCode {
             archive.as_deref(),
             bookshelf_dir.as_deref(),
             include_secrets,
+            include_private_keys,
+            config.as_deref(),
         ),
         Command::Import {
             data_dir,
@@ -149,6 +173,8 @@ fn main() -> ExitCode {
             input,
             archive,
             bookshelf_dir,
+            secrets_dir,
+            force,
             compression,
             config,
         } => import_command(
@@ -158,6 +184,8 @@ fn main() -> ExitCode {
             input.as_deref(),
             archive.as_deref(),
             bookshelf_dir.as_deref(),
+            secrets_dir.as_deref(),
+            force,
             compression,
             config.as_deref(),
         ),
@@ -186,6 +214,7 @@ fn main() -> ExitCode {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn export_command(
     data_dir: Option<PathBuf>,
     database_url: Option<String>,
@@ -193,6 +222,8 @@ fn export_command(
     archive: Option<&Path>,
     bookshelf_dir: Option<&Path>,
     include_secrets: bool,
+    include_private_keys: bool,
+    config_path: Option<&Path>,
 ) -> Result<(), MigrateError> {
     match (output, archive) {
         (Some(output), None) => {
@@ -215,6 +246,11 @@ fn export_command(
             Ok(())
         }
         (None, Some(archive)) => {
+            let private_options = if include_private_keys {
+                Some(private_export_options(data_dir.as_deref(), config_path)?)
+            } else {
+                None
+            };
             match (data_dir, database_url) {
                 (Some(data_dir), None) => {
                     if bookshelf_dir.is_some() {
@@ -224,7 +260,12 @@ fn export_command(
                                 .into(),
                         ));
                     }
-                    export_archive_with_options(&data_dir, archive, include_secrets)?;
+                    export_archive_with_private_keys(
+                        &data_dir,
+                        archive,
+                        include_secrets,
+                        private_options.as_ref(),
+                    )?;
                 }
                 (None, Some(database_url)) => {
                     let bookshelf_dir = bookshelf_dir.ok_or_else(|| {
@@ -234,11 +275,12 @@ fn export_command(
                                 .into(),
                         )
                     })?;
-                    export_archive_postgres_with_options(
+                    export_archive_postgres_with_private_keys(
                         &database_url,
                         bookshelf_dir,
                         archive,
                         include_secrets,
+                        private_options.as_ref(),
                     )?;
                     println!("Archive bookshelf source: {}", bookshelf_dir.display());
                 }
@@ -246,11 +288,42 @@ fn export_command(
             }
             println!("Exported archive to {}", archive.display());
             print_secret_mode(include_secrets);
+            print_private_key_mode(include_private_keys);
             Ok(())
         }
         _ => Err(MigrateError::Config(
             "exactly one of --output and --archive is required".into(),
         )),
+    }
+}
+
+fn private_export_options(
+    data_dir: Option<&Path>,
+    config_path: Option<&Path>,
+) -> Result<PrivateKeyExportOptions, MigrateError> {
+    let config =
+        Config::load(config_path).map_err(|error| MigrateError::Config(error.to_string()))?;
+    let data_dir = data_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(&config.paths.data_dir));
+    Ok(PrivateKeyExportOptions {
+        data_dir: Some(data_dir),
+        tls_cert_path: config.server.tls.cert_path.as_ref().map(PathBuf::from),
+        tls_key_path: config.server.tls.key_path.as_ref().map(PathBuf::from),
+    })
+}
+
+fn print_private_key_mode(include_private_keys: bool) {
+    if include_private_keys {
+        println!(
+            "Private keys: included under secrets/ with secrets/manifest.json; treat this archive \
+             as a credential"
+        );
+    } else {
+        println!(
+            "Private keys: excluded (pass --include-private-keys to add pivotal, object-store, \
+             WebUI/oc-id, and configured TLS files)"
+        );
     }
 }
 
@@ -276,15 +349,18 @@ fn import_command(
     input: Option<&Path>,
     archive: Option<&Path>,
     bookshelf_dir: Option<&Path>,
+    secrets_dir: Option<&Path>,
+    force: bool,
     compression: Option<CompressionArg>,
     config: Option<&Path>,
 ) -> Result<(), MigrateError> {
     let compression = resolve_compression(compression, config)?;
     match (input, archive) {
         (Some(input), None) => {
-            if bookshelf_dir.is_some() {
+            if bookshelf_dir.is_some() || secrets_dir.is_some() || force {
                 return Err(MigrateError::Config(
-                    "--bookshelf-dir is only valid with --archive".into(),
+                    "--bookshelf-dir, --secrets-dir, and --force are only valid with --archive"
+                        .into(),
                 ));
             }
             match (data_dir, database_url) {
@@ -314,15 +390,18 @@ fn import_command(
                         "--bookshelf-dir is only valid when importing a PostgreSQL archive".into(),
                     ));
                 }
+                let private_options =
+                    private_import_options(Some(&data_dir), secrets_dir, force, config)?;
                 let target = data_dir.join(DATABASE_FILE);
                 println!("Import target: sqlite:{}", target.display());
                 println!(
                     "Archive bookshelf target: {}",
                     data_dir.join("bookshelf").display()
                 );
+                print_private_import_mode(secrets_dir);
                 println!("Import compression: {}", compression.as_str());
                 confirm_import(yes)?;
-                import_archive_with_compression(&data_dir, archive, compression)
+                import_archive_with_private_keys(&data_dir, archive, compression, &private_options)
                     .map(|()| println!("Imported archive from {}", archive.display()))
             }
             (None, Some(database_url)) => {
@@ -334,15 +413,18 @@ fn import_command(
                             .into(),
                     )
                 })?;
+                let private_options = private_import_options(None, secrets_dir, force, config)?;
                 println!("Import target: {}", redacted_postgres_url(&database_url));
                 println!("Archive bookshelf target: {}", bookshelf_dir.display());
+                print_private_import_mode(secrets_dir);
                 println!("Import compression: {}", compression.as_str());
                 confirm_import(yes)?;
-                import_archive_postgres_with_compression(
+                import_archive_postgres_with_private_keys(
                     &database_url,
                     bookshelf_dir,
                     archive,
                     compression,
+                    &private_options,
                 )
                 .map(|()| println!("Imported archive from {}", archive.display()))
             }
@@ -351,6 +433,36 @@ fn import_command(
         _ => Err(MigrateError::Config(
             "exactly one of --input and --archive is required".into(),
         )),
+    }
+}
+
+fn private_import_options(
+    data_dir: Option<&Path>,
+    secrets_dir: Option<&Path>,
+    force: bool,
+    config_path: Option<&Path>,
+) -> Result<PrivateKeyImportOptions, MigrateError> {
+    let config =
+        Config::load(config_path).map_err(|error| MigrateError::Config(error.to_string()))?;
+    let data_dir = data_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(&config.paths.data_dir));
+    Ok(PrivateKeyImportOptions {
+        force,
+        secrets_dir: secrets_dir.map(Path::to_path_buf),
+        data_dir: Some(data_dir),
+        tls_cert_path: config.server.tls.cert_path.as_ref().map(PathBuf::from),
+        tls_key_path: config.server.tls.key_path.as_ref().map(PathBuf::from),
+    })
+}
+
+fn print_private_import_mode(secrets_dir: Option<&Path>) {
+    match secrets_dir {
+        Some(dir) => println!("Private keys: restore under {}", dir.display()),
+        None => println!(
+            "Private keys: restore to data-dir-relative and configured TLS paths (existing files \
+             require --force)"
+        ),
     }
 }
 

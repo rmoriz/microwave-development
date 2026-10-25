@@ -1634,12 +1634,14 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
+ "flate2",
  "microwave-config",
  "microwave-migrate",
  "microwave-store",
  "microwave-store-postgres",
  "rusqlite",
  "sqlx",
+ "tar",
  "tempfile",
  "tokio",
 ]

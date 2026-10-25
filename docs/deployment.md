@@ -881,6 +881,26 @@ microwave-migrate export --data-dir /var/lib/microwave \
 microwave-migrate import --data-dir /var/lib/microwave-new \
   --archive /var/backups/microwave-migration.tar.gz --yes
 
+# Complete self-migration: database secrets plus on-disk private keys/TLS.
+# --include-secrets and --include-private-keys are independent; use both for
+# a truly complete copy. The archive is credential material.
+microwave-migrate export --data-dir /var/lib/microwave \
+  --archive /var/backups/microwave-full.tar.gz \
+  --include-secrets --include-private-keys \
+  --config /etc/microwave/microwave.toml
+microwave-migrate import --data-dir /var/lib/microwave-new \
+  --archive /var/backups/microwave-full.tar.gz \
+  --config /etc/microwave/microwave.toml --yes
+
+# Restore private files to a staging directory instead, or replace existing
+# keys deliberately (overwriting can invalidate existing clients):
+microwave-migrate import --data-dir /var/lib/microwave-new \
+  --archive /var/backups/microwave-full.tar.gz \
+  --secrets-dir /var/lib/microwave-new/restored-keys --yes
+microwave-migrate import --data-dir /var/lib/microwave-new \
+  --archive /var/backups/microwave-full.tar.gz \
+  --config /etc/microwave/microwave.toml --force --yes
+
 # Store imported serialized objects as plain JSON instead of the default MWZ1
 # envelope (or point --config at the target server's microwave.toml):
 microwave-migrate import --data-dir /var/lib/microwave-new \
@@ -929,12 +949,38 @@ is stored and transferred as a credential, and remember that the CLI prints
 only whether secrets were included, never their values. Old snapshots without
 the new collections or the `secrets_included` field still import unchanged.
 
-Archives (`--archive PATH.tar.gz`) add the local `bookshelf/` tree to the
-snapshot. They are written atomically with mode `0600`. Import validates tar
-entries before extraction (only `snapshot.json` and `bookshelf/`, no absolute
-paths, `..`, symlinks, hard links, or special files), stages them privately,
-imports the database in one transaction, and only then swaps the bookshelf into
-place. Import remains confirmation-gated; pass `--yes` non-interactively.
+**Private-key default.** `--include-private-keys` is a separate opt-in for
+on-disk material under `secrets/`. It reads only an explicit manifest:
+
+- `<data_dir>/pivotal.pem`, `pivotal.password`, `objectstore.secret`
+- `<data_dir>/private-chef-secrets.json` or `private_chef_secrets.json`
+- WebUI/oc-id files when present: `webui_{priv,pub}.pem`,
+  `oc_id_{priv,pub}.pem`, `ocid_{priv,pub}.pem`, `oc-id.pem`, `oc_id.pem`
+- configured `server.tls.cert_path` and `server.tls.key_path` (the certificate
+  path may contain the full chain)
+
+No glob is used, symlinked data-dir candidates abort the export, explicitly
+configured TLS paths may be managed symlinks and are read through, and no file
+is read unless the flag is set. The CLI prints only `Private keys:
+included/excluded`.
+For a complete migration pass both `--include-secrets` and
+`--include-private-keys`.
+
+Archives (`--archive PATH.tar.gz`) add the local `bookshelf/` tree and,
+optionally, `secrets/manifest.json` plus `secrets/files/...` to the snapshot.
+They are written atomically with mode `0600`. Import validates tar entries
+before extraction (only `snapshot.json`, `bookshelf/`, and `secrets/`, no
+absolute paths, `..`, symlinks, hard links, or special files), stages them
+privately, checks private-file destinations and overwrite conflicts, imports
+the database in one transaction, swaps the bookshelf into place, then writes
+private files as mode `0600` with newly created parent directories mode `0700`.
+Import remains confirmation-gated; pass `--yes` non-interactively.
+
+Private files restore to the target data directory and the target config's TLS
+paths by default. Pass `--secrets-dir DIR` to put every private file under one
+directory instead, or `--force` to replace an existing key file. Overwriting a
+key can invalidate clients that trust the old key, so use `--force` only for a
+deliberate replacement.
 
 For S3/Garage/MinIO there is no local bookshelf to archive. Replicate the
 bucket with your object-store tooling (`rclone`, `aws s3 sync`, Garage
@@ -948,11 +994,14 @@ on both backends: importing a `server-admins` or other global group with a
 different id into a database that already has that name fails rather than
 rewriting live ACL references.
 
-Still not included: private key files (`pivotal.pem`, `pivotal.password`,
-`objectstore.secret`), remote object-store objects, and the search index. The
-snapshot and archive still contain password hashes, public keys, ACLs, and user
-data, so even a safe export is sensitive. Use `microwave-ctl backup` when you
-need the full database file/dump plus bookshelf without secret redaction.
+Still not included unless explicitly requested: private key files are excluded
+by default and included with `--include-private-keys`; remote object-store
+objects and the search index are never archived. The snapshot and archive still
+contain password hashes, public keys, ACLs, and user data, so even a safe export
+is sensitive. `microwave-ctl backup` remains a database-file/dump plus bookshelf
+backup and does not include private key files; use the complete
+`microwave-migrate` archive when you need a self-contained credential-bearing
+copy.
 
 ## 10. Migration from a legacy server
 

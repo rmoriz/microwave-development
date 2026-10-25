@@ -1,9 +1,12 @@
 use microwave_authz::create_organization;
 use microwave_migrate::{
-    export, export_archive, export_with_options, import, import_archive, MigrateError,
+    export, export_archive, export_archive_with_private_keys, export_with_options, import,
+    import_archive, import_archive_with_private_keys, MigrateError, PrivateKeyExportOptions,
+    PrivateKeyImportOptions,
 };
-use microwave_store::{ActorType, NewNode, Permission, SqliteStore};
+use microwave_store::{ActorType, Compression, NewNode, Permission, SqliteStore};
 use serde_json::Value;
+use std::io::Read;
 use std::path::Path;
 
 const PUBLIC_KEY: &str = include_str!("../../microwave-crypto/tests/fixtures/test_key_pub.pem");
@@ -650,6 +653,298 @@ fn archive_round_trips_snapshot_and_bookshelf_blob() {
     assert_eq!(std::fs::read(restored_blob).unwrap(), b"cookbook-bytes");
 }
 
+fn write_private_fixture(path: &Path, contents: &[u8]) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(path, contents).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+fn archive_entries(path: &Path) -> Vec<(String, Vec<u8>, u32)> {
+    let file = std::fs::File::open(path).unwrap();
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    let mut entries = Vec::new();
+    for entry in archive.entries().unwrap() {
+        let mut entry = entry.unwrap();
+        let name = entry.path().unwrap().to_string_lossy().into_owned();
+        let mode = entry.header().mode().unwrap();
+        let mut data = Vec::new();
+        entry.read_to_end(&mut data).unwrap();
+        entries.push((name, data, mode));
+    }
+    entries
+}
+
+#[test]
+fn archive_excludes_private_files_by_default() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(source.path())).unwrap();
+    store
+        .create_org("private-default", "Private Default")
+        .unwrap();
+    drop(store);
+    write_private_fixture(&source.path().join("pivotal.pem"), b"PIVOTAL-MARKER");
+    write_private_fixture(
+        &source.path().join("private-chef-secrets.json"),
+        b"SECRETS-MARKER",
+    );
+    write_private_fixture(&source.path().join("webui_priv.pem"), b"WEBUI-MARKER");
+    write_private_fixture(&source.path().join("notes.txt"), b"NOT-A-KEY");
+
+    let archive = source.path().join("safe.tar.gz");
+    export_archive(source.path(), &archive).unwrap();
+    let entries = archive_entries(&archive);
+    assert!(!entries
+        .iter()
+        .any(|(name, _, _)| name.starts_with("secrets/")));
+    let payload = entries
+        .iter()
+        .flat_map(|(_, data, _)| data.iter().copied())
+        .collect::<Vec<_>>();
+    let payload = String::from_utf8_lossy(&payload);
+    for marker in [
+        "PIVOTAL-MARKER",
+        "SECRETS-MARKER",
+        "WEBUI-MARKER",
+        "NOT-A-KEY",
+    ] {
+        assert!(!payload.contains(marker), "archive leaked {marker}");
+    }
+}
+
+#[test]
+fn archive_private_keys_round_trip_to_data_dir_and_tls_paths() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(source.path())).unwrap();
+    store
+        .create_org("private-roundtrip", "Private Roundtrip")
+        .unwrap();
+    drop(store);
+    write_private_fixture(&source.path().join("pivotal.pem"), b"PIVOTAL-MARKER");
+    write_private_fixture(&source.path().join("pivotal.password"), b"PASSWORD-MARKER");
+    write_private_fixture(
+        &source.path().join("objectstore.secret"),
+        b"OBJECTSTORE-MARKER",
+    );
+    write_private_fixture(
+        &source.path().join("private-chef-secrets.json"),
+        b"CHEF-SECRETS-MARKER",
+    );
+    write_private_fixture(&source.path().join("oc_id_priv.pem"), b"OC-ID-MARKER");
+    write_private_fixture(&source.path().join("notes.txt"), b"NOT-A-KEY");
+    let tls_source = tempfile::tempdir().unwrap();
+    let cert_source = tls_source.path().join("tls/site.crt");
+    let key_source = tls_source.path().join("tls/site.key");
+    write_private_fixture(&cert_source, b"CERT-MARKER");
+    write_private_fixture(&key_source, b"TLS-KEY-MARKER");
+
+    let archive = source.path().join("private.tar.gz");
+    let export_options = PrivateKeyExportOptions {
+        data_dir: Some(source.path().to_path_buf()),
+        tls_cert_path: Some(cert_source.clone()),
+        tls_key_path: Some(key_source.clone()),
+    };
+    export_archive_with_private_keys(source.path(), &archive, false, Some(&export_options))
+        .unwrap();
+
+    let entries = archive_entries(&archive);
+    let manifest_entry = entries
+        .iter()
+        .find(|(name, _, _)| name == "secrets/manifest.json")
+        .expect("secrets manifest is present");
+    let manifest: Value = serde_json::from_slice(&manifest_entry.1).unwrap();
+    assert_eq!(manifest["format"], "microwave-migrate-private-files");
+    assert_eq!(manifest["version"], 1);
+    assert_eq!(manifest["entries"].as_array().unwrap().len(), 7);
+    for expected in [
+        "pivotal.pem",
+        "pivotal.password",
+        "objectstore.secret",
+        "private-chef-secrets.json",
+        "oc_id_priv.pem",
+        "site.crt",
+        "site.key",
+    ] {
+        assert!(
+            entries.iter().any(|(name, _, mode)| {
+                name.starts_with("secrets/files/") && name.ends_with(expected) && *mode == 0o600
+            }),
+            "missing private archive entry {expected}"
+        );
+    }
+    assert!(!entries
+        .iter()
+        .any(|(name, _, _)| name.ends_with("notes.txt")));
+    assert!(manifest["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["mode"] == 0o600));
+
+    let target = tempfile::tempdir().unwrap();
+    let target_tls = tempfile::tempdir().unwrap();
+    let target_cert = target_tls.path().join("restored/nested/site.crt");
+    let target_key = target_tls.path().join("restored/nested/site.key");
+    let import_options = PrivateKeyImportOptions {
+        force: false,
+        secrets_dir: None,
+        data_dir: Some(target.path().to_path_buf()),
+        tls_cert_path: Some(target_cert.clone()),
+        tls_key_path: Some(target_key.clone()),
+    };
+    import_archive_with_private_keys(
+        target.path(),
+        &archive,
+        Compression::default(),
+        &import_options,
+    )
+    .unwrap();
+
+    assert_eq!(
+        std::fs::read(target.path().join("pivotal.pem")).unwrap(),
+        b"PIVOTAL-MARKER"
+    );
+    assert_eq!(
+        std::fs::read(target.path().join("pivotal.password")).unwrap(),
+        b"PASSWORD-MARKER"
+    );
+    assert_eq!(
+        std::fs::read(target.path().join("objectstore.secret")).unwrap(),
+        b"OBJECTSTORE-MARKER"
+    );
+    assert_eq!(
+        std::fs::read(target.path().join("private-chef-secrets.json")).unwrap(),
+        b"CHEF-SECRETS-MARKER"
+    );
+    assert_eq!(
+        std::fs::read(target.path().join("oc_id_priv.pem")).unwrap(),
+        b"OC-ID-MARKER"
+    );
+    assert_eq!(std::fs::read(&target_cert).unwrap(), b"CERT-MARKER");
+    assert_eq!(std::fs::read(&target_key).unwrap(), b"TLS-KEY-MARKER");
+    assert!(!target.path().join("notes.txt").exists());
+
+    let missing_tls = tempfile::tempdir().unwrap();
+    let missing_tls_options = PrivateKeyImportOptions {
+        force: false,
+        secrets_dir: None,
+        data_dir: Some(missing_tls.path().to_path_buf()),
+        tls_cert_path: None,
+        tls_key_path: None,
+    };
+    let error = import_archive_with_private_keys(
+        missing_tls.path(),
+        &archive,
+        Compression::default(),
+        &missing_tls_options,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("server.tls.cert_path"));
+    assert!(!database(missing_tls.path()).exists());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for path in [
+            target.path().join("pivotal.pem"),
+            target.path().join("pivotal.password"),
+            target.path().join("objectstore.secret"),
+            target.path().join("private-chef-secrets.json"),
+            target.path().join("oc_id_priv.pem"),
+            target_cert,
+            target_key,
+        ] {
+            let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let parent_mode = std::fs::metadata(target_tls.path().join("restored/nested"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(parent_mode, 0o700);
+    }
+}
+
+#[test]
+fn archive_private_keys_refuse_overwrite_and_support_secrets_dir() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(source.path())).unwrap();
+    store.create_org("private-force", "Private Force").unwrap();
+    drop(store);
+    write_private_fixture(&source.path().join("pivotal.pem"), b"NEW-KEY");
+    let archive = source.path().join("private.tar.gz");
+    let export_options = PrivateKeyExportOptions {
+        data_dir: Some(source.path().to_path_buf()),
+        tls_cert_path: None,
+        tls_key_path: None,
+    };
+    export_archive_with_private_keys(source.path(), &archive, false, Some(&export_options))
+        .unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    write_private_fixture(&target.path().join("pivotal.pem"), b"OLD-KEY");
+    let import_options = PrivateKeyImportOptions {
+        force: false,
+        secrets_dir: None,
+        data_dir: Some(target.path().to_path_buf()),
+        tls_cert_path: None,
+        tls_key_path: None,
+    };
+    let error = import_archive_with_private_keys(
+        target.path(),
+        &archive,
+        Compression::default(),
+        &import_options,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("--force"));
+    assert_eq!(
+        std::fs::read(target.path().join("pivotal.pem")).unwrap(),
+        b"OLD-KEY"
+    );
+    assert!(!database(target.path()).exists());
+
+    let forced = PrivateKeyImportOptions {
+        force: true,
+        ..import_options
+    };
+    import_archive_with_private_keys(target.path(), &archive, Compression::default(), &forced)
+        .unwrap();
+    assert_eq!(
+        std::fs::read(target.path().join("pivotal.pem")).unwrap(),
+        b"NEW-KEY"
+    );
+
+    let secrets_dir = tempfile::tempdir().unwrap();
+    let separate_data = tempfile::tempdir().unwrap();
+    let import_options = PrivateKeyImportOptions {
+        force: false,
+        secrets_dir: Some(secrets_dir.path().to_path_buf()),
+        data_dir: Some(separate_data.path().to_path_buf()),
+        tls_cert_path: None,
+        tls_key_path: None,
+    };
+    import_archive_with_private_keys(
+        separate_data.path(),
+        &archive,
+        Compression::default(),
+        &import_options,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read(secrets_dir.path().join("pivotal.pem")).unwrap(),
+        b"NEW-KEY"
+    );
+    assert!(!separate_data.path().join("pivotal.pem").exists());
+}
+
 fn write_test_archive(path: &Path, entries: &[(&str, tar::EntryType, Option<&str>, &[u8])]) {
     let file = std::fs::File::create(path).unwrap();
     let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
@@ -720,6 +1015,77 @@ fn archive_import_rejects_path_traversal_and_symlinks_before_touching_data() {
     assert!(message.contains("symlink"), "unexpected error: {message}");
     assert!(!database(target.path()).exists());
     assert!(!target.path().join("bookshelf").join("link").exists());
+
+    let secret_symlink = dir.path().join("secret-symlink.tar.gz");
+    write_test_archive(
+        &secret_symlink,
+        &[
+            (
+                "snapshot.json",
+                tar::EntryType::Regular,
+                None,
+                valid_snapshot.as_bytes(),
+            ),
+            (
+                "secrets/files/link",
+                tar::EntryType::Symlink,
+                Some("/etc/passwd"),
+                b"",
+            ),
+        ],
+    );
+    let target = tempfile::tempdir().unwrap();
+    let error = import_archive(target.path(), &secret_symlink).unwrap_err();
+    assert!(error.to_string().contains("symlink"));
+    assert!(!database(target.path()).exists());
+    assert!(!target.path().join("secrets").exists());
+
+    let absolute = dir.path().join("absolute.tar.gz");
+    write_test_archive(
+        &absolute,
+        &[
+            (
+                "snapshot.json",
+                tar::EntryType::Regular,
+                None,
+                valid_snapshot.as_bytes(),
+            ),
+            (
+                "/etc/microwave-escape",
+                tar::EntryType::Regular,
+                None,
+                b"escape",
+            ),
+        ],
+    );
+    let target = tempfile::tempdir().unwrap();
+    let error = import_archive(target.path(), &absolute).unwrap_err();
+    assert!(error.to_string().contains("absolute paths"));
+    assert!(!database(target.path()).exists());
+
+    let secret_traversal = dir.path().join("secret-traversal.tar.gz");
+    write_test_archive(
+        &secret_traversal,
+        &[
+            (
+                "snapshot.json",
+                tar::EntryType::Regular,
+                None,
+                valid_snapshot.as_bytes(),
+            ),
+            (
+                "secrets/files/../../escape",
+                tar::EntryType::Regular,
+                None,
+                b"escape",
+            ),
+        ],
+    );
+    let target = tempfile::tempdir().unwrap();
+    let error = import_archive(target.path(), &secret_traversal).unwrap_err();
+    assert!(error.to_string().contains("absolute paths"));
+    assert!(!database(target.path()).exists());
+    assert!(!target.path().join("escape").exists());
 }
 
 #[cfg(unix)]
