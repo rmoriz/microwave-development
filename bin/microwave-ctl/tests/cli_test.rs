@@ -357,6 +357,15 @@ fn reindex_reports_relational_authority_for_the_embedded_backend() {
     assert!(stdout(&scoped).contains("organization: acme"));
     assert!(stdout(&scoped).contains("documents_acknowledged: 2"));
 
+    // `--purge` is accepted for the embedded backend, but there is no remote
+    // index to delete or refresh, so no purge is claimed.
+    let purged = run(dir.path(), &["reindex", "--org", "acme", "--purge"]);
+    assert_success(&purged);
+    let purged_text = stdout(&purged);
+    assert!(purged_text.contains("relational search is authoritative"));
+    assert!(!purged_text.contains("purged_organizations:"));
+    assert!(!purged_text.contains("--purge deleted"));
+
     let missing = run(dir.path(), &["reindex", "--org", "missing"]);
     assert!(!missing.status.success());
     assert!(stderr(&missing).contains("does not exist"));

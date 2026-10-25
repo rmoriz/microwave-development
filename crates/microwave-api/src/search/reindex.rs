@@ -9,12 +9,16 @@
 //! Scope and limits:
 //!
 //! - every organization is visited, or just the requested one;
+//! - documents are written in backend batches, so remote backends can use
+//!   `_bulk` for many documents at once;
 //! - nodes, roles, environments, clients, and every data bag item are indexed;
-//! - documents for deleted objects are **not** removed. Reindexing adds or
-//!   replaces documents by store id; it does not delete a remote index first,
-//!   because an interrupted delete-then-rebuild would make the installation
-//!   unsearchable. Purge stale documents by deleting the `chef` index while
-//!   the server is stopped, then run the reindex.
+//! - by default documents for deleted objects are **not** removed. Reindexing
+//!   adds or replaces documents by store id, because an interrupted
+//!   delete-then-rebuild would make the installation unsearchable. Passing
+//!   `purge` deletes each visited organization's existing remote documents
+//!   first, then rebuilds them;
+//! - the backend is refreshed once the run completes so writes and purges are
+//!   immediately visible to searches.
 
 use super::backend::{IndexKind, SearchBackend, SearchDocument, SearchError};
 use super::index;
@@ -30,6 +34,9 @@ pub struct ReindexReport {
     /// after a successful write; remote backends that reject bulk items do not
     /// contribute to this number because the reindex fails instead.
     pub acknowledged_documents: usize,
+    /// Organizations whose existing remote documents were deleted before
+    /// reindexing. Always zero unless purge was requested.
+    pub purged_organizations: usize,
     pub nodes: usize,
     pub roles: usize,
     pub environments: usize,
@@ -56,12 +63,17 @@ impl ReindexReport {
 /// The caller chooses the backend. Indexing through the embedded backend is
 /// harmless and reports the relational document counts, because the embedded
 /// backend acknowledges each relational document and reads the store directly.
-/// Remote backends are sent one document at a time through
-/// [`SearchBackend::index`]; only acknowledged documents are counted.
+/// Documents are handed to [`SearchBackend::index_many`]; only acknowledged
+/// documents are counted.
+///
+/// When `purge` is true, each visited organization's existing remote documents
+/// are deleted before the rebuild. This is destructive: an interrupted purge
+/// can leave an organization unsearchable until the command is run again.
 pub async fn reindex(
     backend: &dyn SearchBackend,
     store: &dyn MetadataStore,
     organization: Option<&str>,
+    purge: bool,
 ) -> Result<ReindexReport, SearchError> {
     let organizations = match organization {
         Some(name) => {
@@ -86,7 +98,10 @@ pub async fn reindex(
     };
 
     for org in organizations {
-        reindex_org(backend, store, &org, &mut report).await?;
+        reindex_org(backend, store, &org, purge, &mut report).await?;
+    }
+    if report.organizations > 0 {
+        backend.refresh().await?;
     }
     Ok(report)
 }
@@ -95,8 +110,14 @@ async fn reindex_org(
     backend: &dyn SearchBackend,
     store: &dyn MetadataStore,
     org: &Org,
+    purge: bool,
     report: &mut ReindexReport,
 ) -> Result<(), SearchError> {
+    if purge {
+        backend.delete_index(&org.id).await?;
+        report.purged_organizations += 1;
+    }
+
     for kind in [
         IndexKind::Node,
         IndexKind::Role,
@@ -145,11 +166,7 @@ async fn index_documents(
     backend: &dyn SearchBackend,
     documents: Vec<SearchDocument>,
 ) -> Result<usize, SearchError> {
-    let mut acknowledged = 0;
-    for document in documents {
-        acknowledged += backend.index(&document).await?.acknowledged;
-    }
-    Ok(acknowledged)
+    backend.index_many(&documents).await
 }
 
 fn api_error(error: ApiError) -> SearchError {
@@ -164,25 +181,31 @@ mod tests {
     };
     use async_trait::async_trait;
     use microwave_store::{NewNode, SqliteStore};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
+    #[derive(Default)]
     struct RecordingBackend {
         documents: Mutex<Vec<SearchDocument>>,
         acknowledged: usize,
+        index_calls: AtomicUsize,
+        index_many_calls: AtomicUsize,
+        deleted_orgs: Mutex<Vec<String>>,
+        refreshes: AtomicUsize,
     }
 
     impl RecordingBackend {
         fn new() -> Self {
             Self {
-                documents: Mutex::new(Vec::new()),
                 acknowledged: 1,
+                ..Self::default()
             }
         }
 
         fn acknowledging(acknowledged: usize) -> Self {
             Self {
-                documents: Mutex::new(Vec::new()),
                 acknowledged,
+                ..Self::default()
             }
         }
 
@@ -214,17 +237,30 @@ mod tests {
         }
 
         async fn index(&self, document: &SearchDocument) -> Result<IndexOutcome, SearchError> {
+            self.index_calls.fetch_add(1, Ordering::SeqCst);
             self.documents.lock().unwrap().push(document.clone());
             Ok(IndexOutcome {
                 acknowledged: self.acknowledged,
             })
         }
 
+        async fn index_many(&self, documents: &[SearchDocument]) -> Result<usize, SearchError> {
+            self.index_many_calls.fetch_add(1, Ordering::SeqCst);
+            self.documents.lock().unwrap().extend_from_slice(documents);
+            Ok(documents.len() * self.acknowledged)
+        }
+
+        async fn refresh(&self) -> Result<(), SearchError> {
+            self.refreshes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
         async fn delete(&self, _org_id: &str, _id: &str) -> Result<(), SearchError> {
             Ok(())
         }
 
-        async fn delete_index(&self, _org_id: &str) -> Result<(), SearchError> {
+        async fn delete_index(&self, org_id: &str) -> Result<(), SearchError> {
+            self.deleted_orgs.lock().unwrap().push(org_id.to_string());
             Ok(())
         }
     }
@@ -285,13 +321,16 @@ mod tests {
     async fn indexes_every_document_type_in_every_organization() {
         let store = populated_store();
         let backend = RecordingBackend::new();
-        let report = reindex(&backend, store.as_ref(), None).await.unwrap();
+        let report = reindex(&backend, store.as_ref(), None, false)
+            .await
+            .unwrap();
 
         assert_eq!(
             report,
             ReindexReport {
                 organizations: 1,
                 acknowledged_documents: 5,
+                purged_organizations: 0,
                 nodes: 1,
                 roles: 1,
                 environments: 1,
@@ -300,6 +339,10 @@ mod tests {
                 data_bag_items: 1,
             }
         );
+        assert_eq!(backend.index_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.index_many_calls.load(Ordering::SeqCst), 5);
+        assert_eq!(backend.refreshes.load(Ordering::SeqCst), 1);
+        assert!(backend.deleted_orgs.lock().unwrap().is_empty());
         assert_eq!(backend.ids_for(IndexKind::Node).len(), 1);
         assert_eq!(backend.ids_for(IndexKind::Role).len(), 1);
         assert_eq!(backend.ids_for(IndexKind::Environment).len(), 1);
@@ -319,7 +362,7 @@ mod tests {
             .unwrap();
         let backend = RecordingBackend::new();
 
-        let report = reindex(&backend, store.as_ref(), Some("other"))
+        let report = reindex(&backend, store.as_ref(), Some("other"), false)
             .await
             .unwrap();
         assert_eq!(report.organizations, 1);
@@ -337,7 +380,9 @@ mod tests {
     async fn counts_only_documents_the_backend_acknowledges() {
         let store = populated_store();
         let backend = RecordingBackend::acknowledging(0);
-        let report = reindex(&backend, store.as_ref(), None).await.unwrap();
+        let report = reindex(&backend, store.as_ref(), None, false)
+            .await
+            .unwrap();
 
         assert_eq!(backend.documents.lock().unwrap().len(), 5);
         assert_eq!(report.acknowledged_documents, 0);
@@ -352,7 +397,7 @@ mod tests {
     async fn reports_a_missing_organization() {
         let store = populated_store();
         let backend = RecordingBackend::new();
-        let error = reindex(&backend, store.as_ref(), Some("missing"))
+        let error = reindex(&backend, store.as_ref(), Some("missing"), false)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("does not exist"));
@@ -363,8 +408,59 @@ mod tests {
     async fn an_empty_store_is_a_successful_no_op() {
         let store = SqliteStore::open_in_memory().unwrap();
         let backend = RecordingBackend::new();
-        let report = reindex(&backend, &store, None).await.unwrap();
+        let report = reindex(&backend, &store, None, true).await.unwrap();
         assert_eq!(report.organizations, 0);
         assert_eq!(report.acknowledged_documents, 0);
+        assert_eq!(report.purged_organizations, 0);
+        assert_eq!(backend.refreshes.load(Ordering::SeqCst), 0);
+        assert!(backend.deleted_orgs.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn purge_deletes_the_selected_organization_before_reindexing() {
+        let store = populated_store();
+        let other = store.create_org("other", "Other").unwrap();
+        store
+            .create_client(&other.id, "other-client", false, false)
+            .unwrap();
+        let backend = RecordingBackend::new();
+
+        let report = reindex(&backend, store.as_ref(), Some("other"), true)
+            .await
+            .unwrap();
+
+        assert_eq!(report.purged_organizations, 1);
+        assert_eq!(report.organizations, 1);
+        assert_eq!(report.clients, 1);
+        assert_eq!(
+            *backend.deleted_orgs.lock().unwrap(),
+            vec![other.id.clone()]
+        );
+        assert!(backend
+            .documents
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|document| document.org_id == other.id));
+        assert_eq!(backend.refreshes.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn purge_visits_every_organization_and_deletes_its_documents() {
+        let store = populated_store();
+        let other = store.create_org("other", "Other").unwrap();
+        store
+            .create_client(&other.id, "other-client", false, false)
+            .unwrap();
+        let backend = RecordingBackend::new();
+
+        let report = reindex(&backend, store.as_ref(), None, true).await.unwrap();
+
+        assert_eq!(report.purged_organizations, 2);
+        let deleted = backend.deleted_orgs.lock().unwrap().clone();
+        assert_eq!(deleted.len(), 2);
+        let acme = store.find_org("acme").unwrap().unwrap();
+        assert!(deleted.contains(&acme.id));
+        assert!(deleted.contains(&other.id));
     }
 }

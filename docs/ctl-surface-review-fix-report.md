@@ -30,8 +30,10 @@ harness dependency, and the tar payload's exclusions as remaining gaps.
 - `reindex` counts only acknowledged documents and reports
   `acknowledged_documents` per run and per type. The CLI label is now
   `documents_acknowledged`; README, deployment docs, and TODO use the same
-  wording. The stale-document note is unchanged and still explicitly says a
-  full purge requires deleting the remote index.
+  wording. At the time of this report the stale-document note said a full purge
+  required deleting the remote index; a later change added batched `_bulk`
+  writes, `_refresh`, and the `reindex --purge` flag described in the current
+  README and deployment guide.
 
 Tests:
 

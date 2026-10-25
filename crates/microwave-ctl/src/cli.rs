@@ -235,6 +235,10 @@ pub enum Command {
         /// Organization to reindex. Omit for all organizations.
         #[arg(long, value_name = "ORG")]
         org: Option<String>,
+        /// Delete each organization's existing remote documents before
+        /// reindexing. Without this flag, documents are only added or replaced.
+        #[arg(long)]
+        purge: bool,
     },
 
     /// Run the vendored `oc-chef-pedant` suite through
@@ -324,7 +328,20 @@ mod tests {
         let cli = Cli::try_parse_from(["microwave-ctl", "reindex", "--org", "acme"]).unwrap();
         assert!(matches!(
             cli.command,
-            Command::Reindex { org: Some(ref org) } if org == "acme"
+            Command::Reindex {
+                org: Some(ref org),
+                purge: false
+            } if org == "acme"
+        ));
+
+        let cli =
+            Cli::try_parse_from(["microwave-ctl", "reindex", "--org", "acme", "--purge"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Reindex {
+                org: Some(ref org),
+                purge: true
+            } if org == "acme"
         ));
 
         let cli = Cli::try_parse_from(["microwave-ctl", "pedant", "users", "nodes"]).unwrap();

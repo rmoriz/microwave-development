@@ -131,6 +131,27 @@ pub trait SearchBackend: Send + Sync {
     /// transport-level request succeeded.
     async fn index(&self, document: &SearchDocument) -> Result<IndexOutcome, SearchError>;
 
+    /// Adds or replaces many documents, returning the number acknowledged.
+    ///
+    /// The default implementation preserves the single-document contract by
+    /// calling [`SearchBackend::index`] for each document. Remote backends
+    /// override it to batch writes. A backend must still return an error when
+    /// any document was not accepted.
+    async fn index_many(&self, documents: &[SearchDocument]) -> Result<usize, SearchError> {
+        let mut acknowledged = 0;
+        for document in documents {
+            acknowledged += self.index(document).await?.acknowledged;
+        }
+        Ok(acknowledged)
+    }
+
+    /// Makes recent index writes and deletes visible to searches.
+    ///
+    /// Backends without a separate index (the embedded backend) do nothing.
+    async fn refresh(&self) -> Result<(), SearchError> {
+        Ok(())
+    }
+
     /// Deletes a single document.
     async fn delete(&self, org_id: &str, id: &str) -> Result<(), SearchError>;
 
@@ -250,6 +271,7 @@ mod tests {
         let config = SearchConfig {
             backend: Configured::OpenSearch,
             url: Some("http://127.0.0.1:9200/".into()),
+            ..SearchConfig::default()
         };
         let backend = build_search_backend(&config, store()).unwrap();
         assert_eq!(backend.name(), "opensearch");
@@ -260,6 +282,7 @@ mod tests {
         let config = SearchConfig {
             backend: Configured::Elasticsearch,
             url: Some("http://127.0.0.1:9200".into()),
+            ..SearchConfig::default()
         };
         let backend = build_search_backend(&config, store()).unwrap();
         assert_eq!(backend.name(), "elasticsearch");
@@ -270,6 +293,7 @@ mod tests {
         let config = SearchConfig {
             backend: Configured::OpenSearch,
             url: None,
+            ..SearchConfig::default()
         };
         assert!(matches!(
             build_search_backend(&config, store()),

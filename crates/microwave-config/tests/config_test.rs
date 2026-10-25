@@ -16,6 +16,7 @@ fn defaults_are_safe_and_local() {
     assert_eq!(c.database.driver, DatabaseDriver::Sqlite);
     assert_eq!(c.storage.compression, StorageCompression::Zlib);
     assert_eq!(c.search.backend, SearchBackend::Embedded);
+    assert_eq!(c.search.timeout_ms, 30_000);
     assert_eq!(c.object_store.backend, ObjectStoreBackend::Local);
     assert_eq!(c.auth.skew_seconds, 900);
     assert_eq!(c.auth.superuser_name, "pivotal");
@@ -163,17 +164,25 @@ fn search_backend_and_url_can_be_overridden_from_env() {
     let _guard = ENV_LOCK.lock().unwrap();
     std::env::set_var("MW_SEARCH__BACKEND", "elasticsearch");
     std::env::set_var("MW_SEARCH__URL", "http://127.0.0.1:9201");
+    std::env::set_var("MW_SEARCH__TIMEOUT_MS", "5000");
     let mut c = Config::default();
     c.apply_env().unwrap();
     assert_eq!(c.search.backend, SearchBackend::Elasticsearch);
     assert_eq!(c.search.url.as_deref(), Some("http://127.0.0.1:9201"));
+    assert_eq!(c.search.timeout_ms, 5000);
 
     std::env::set_var("MW_SEARCH__BACKEND", "solr");
     let mut c = Config::default();
     assert!(c.apply_env().is_err());
 
+    std::env::set_var("MW_SEARCH__TIMEOUT_MS", "0");
+    std::env::remove_var("MW_SEARCH__BACKEND");
+    let mut c = Config::default();
+    assert!(c.apply_env().is_err());
+
     std::env::remove_var("MW_SEARCH__BACKEND");
     std::env::remove_var("MW_SEARCH__URL");
+    std::env::remove_var("MW_SEARCH__TIMEOUT_MS");
 }
 
 #[test]
