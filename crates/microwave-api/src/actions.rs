@@ -32,12 +32,13 @@
 //! configured timeout. When the queue is full the notification is dropped and
 //! logged; the API response is never blocked or turned into an error by the
 //! collector. Request bodies above 256 KiB are reported without `data` so the
-//! bounded queue also has a bounded memory footprint.
+//! bounded queue also has a bounded memory footprint. Dropping the application
+//! state closes the channel; the worker drains already-queued jobs before it
+//! exits, although abrupt process termination may truncate the drain.
 
-use crate::AppState;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, Method, StatusCode};
-use microwave_store::{ActorType, Org, Principal};
+use microwave_store::{ActorType, MetadataStore, Org, Principal};
 use serde_json::{json, Map, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -54,10 +55,9 @@ const QUEUE_CAPACITY: usize = 256;
 const MAX_ACTION_DATA_BYTES: usize = 256 * 1024;
 const REDACTED_PASSWORD: &str = "*******";
 
-#[derive(Debug, Clone)]
-struct ActionEnvelope {
-    payload: Value,
-    token: Option<String>,
+struct ActionJob {
+    meta: RequestMeta,
+    status: StatusCode,
 }
 
 /// Owns the optional background worker and its bounded queue.
@@ -65,13 +65,21 @@ pub(crate) struct ActionDispatcher {
     root_url: Option<String>,
     timeout: Duration,
     service_hostname: Option<String>,
+    /// Configured token, if any. When absent the worker resolves the
+    /// `data_collector.token` secret once, off the request path.
+    configured_token: Option<String>,
+    store: Arc<dyn MetadataStore>,
     client: reqwest::Client,
-    sender: Mutex<Option<mpsc::Sender<ActionEnvelope>>>,
+    sender: Mutex<Option<mpsc::Sender<ActionJob>>>,
     dropped: AtomicU64,
 }
 
 impl ActionDispatcher {
-    pub(crate) fn new(config: &microwave_config::Config, client: reqwest::Client) -> Arc<Self> {
+    pub(crate) fn new(
+        config: &microwave_config::Config,
+        client: reqwest::Client,
+        store: Arc<dyn MetadataStore>,
+    ) -> Arc<Self> {
         let root_url = config
             .data_collector
             .root_url
@@ -89,6 +97,14 @@ impl ActionDispatcher {
                 .map(str::trim)
                 .filter(|name| !name.is_empty())
                 .map(ToString::to_string),
+            configured_token: config
+                .data_collector
+                .token
+                .as_deref()
+                .map(str::trim)
+                .filter(|token| !token.is_empty())
+                .map(ToString::to_string),
+            store,
             client,
             sender: Mutex::new(None),
             dropped: AtomicU64::new(0),
@@ -99,17 +115,17 @@ impl ActionDispatcher {
         self.root_url.is_some()
     }
 
-    /// Queue a notification. Returns without waiting for the collector. The
-    /// only work on the request path is payload construction, the optional
-    /// secret lookup, and a non-blocking channel send.
-    pub(crate) async fn notify(&self, state: &AppState, meta: RequestMeta, status: StatusCode) {
-        if !self.is_enabled() || !status.is_success() {
+    /// Queue a notification. Returns without parsing the body, reading secrets,
+    /// or waiting for the collector. Payload construction happens in the
+    /// worker, so only request metadata capture and a non-blocking enqueue run
+    /// on the request path.
+    pub(crate) async fn notify(&self, meta: RequestMeta, status: StatusCode) {
+        if !self.is_enabled()
+            || !status.is_success()
+            || !is_candidate(meta.method.as_str(), &meta.path)
+        {
             return;
         }
-        let Some(payload) = build_payload(&meta, status, self.service_hostname.as_deref()) else {
-            return;
-        };
-        let token = crate::data_collector::configured_token(state).await;
 
         let mut guard = self.sender.lock().await;
         if guard.is_none() {
@@ -122,11 +138,14 @@ impl ActionDispatcher {
                 self.client.clone(),
                 root_url,
                 self.timeout,
+                self.store.clone(),
+                self.configured_token.clone(),
+                self.service_hostname.clone(),
             ));
             *guard = Some(sender);
         }
         let sender = guard.as_ref().expect("sender initialized above");
-        match sender.try_send(ActionEnvelope { payload, token }) {
+        match sender.try_send(ActionJob { meta, status }) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
                 let dropped = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
@@ -137,30 +156,47 @@ impl ActionDispatcher {
                 );
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
+                let dropped = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
                 // The worker stopped unexpectedly. Drop this notification and
                 // let the next mutation start a fresh worker.
                 *guard = None;
-                tracing::warn!("data collector action worker stopped; queue reset");
+                tracing::warn!(dropped, "data collector action worker stopped; queue reset");
             }
         }
     }
 }
 
 async fn run_worker(
-    mut receiver: mpsc::Receiver<ActionEnvelope>,
+    mut receiver: mpsc::Receiver<ActionJob>,
     client: reqwest::Client,
     root_url: String,
     timeout: Duration,
+    store: Arc<dyn MetadataStore>,
+    configured_token: Option<String>,
+    service_hostname: Option<String>,
 ) {
-    while let Some(envelope) = receiver.recv().await {
+    let mut token = configured_token;
+    let mut token_resolved = token.is_some();
+
+    while let Some(job) = receiver.recv().await {
+        let Some(payload) = build_payload(&job.meta, job.status, service_hostname.as_deref())
+        else {
+            continue;
+        };
+
+        if !token_resolved {
+            token = resolve_token(store.as_ref()).await;
+            token_resolved = true;
+        }
+
         let mut request = client
             .post(&root_url)
             .timeout(timeout)
             .header(reqwest::header::CONTENT_TYPE, "application/json");
-        if let Some(token) = envelope.token.as_deref() {
+        if let Some(token) = token.as_deref() {
             request = request.header("x-data-collector-token", token);
         }
-        match request.json(&envelope.payload).send().await {
+        match request.json(&payload).send().await {
             Ok(response) if response.status().is_success() => {}
             Ok(response) => {
                 tracing::warn!(
@@ -180,6 +216,18 @@ async fn run_worker(
             }
         }
     }
+}
+
+/// Resolve and cache the action token in the worker. Configuration wins;
+/// otherwise read the `data_collector.token` secret once.
+async fn resolve_token(store: &dyn MetadataStore) -> Option<String> {
+    store
+        .get_secret("data_collector", "token")
+        .await
+        .ok()
+        .flatten()
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
 }
 
 /// Request information captured before the handler consumes the body.
@@ -219,6 +267,48 @@ impl RequestMeta {
             },
             organization_name: org.map(|org| org.name.clone()),
         })
+    }
+}
+
+/// Cheap path/method prefilter used before capturing a request body. It must
+/// stay conservative: unsupported paths simply produce no notification.
+pub(crate) fn is_candidate(method: &str, path: &str) -> bool {
+    if !matches!(method, "POST" | "PUT" | "DELETE") {
+        return false;
+    }
+    let parts = path_parts(path);
+    // These are intentionally omitted by the payload builder; skip the body
+    // capture as well.
+    if parts.get(2) == Some(&"policies") && parts.get(4) == Some(&"revisions") {
+        return false;
+    }
+    if method == "DELETE" && parts.get(2) == Some(&"association_requests") {
+        return false;
+    }
+    if parts.contains(&"_acl") {
+        return true;
+    }
+    match parts.first().copied() {
+        Some("organizations") => match parts.get(2).copied() {
+            None => true,
+            Some(resource) => matches!(
+                resource,
+                "nodes"
+                    | "roles"
+                    | "environments"
+                    | "clients"
+                    | "groups"
+                    | "users"
+                    | "data"
+                    | "cookbooks"
+                    | "cookbook_artifacts"
+                    | "policies"
+                    | "policy_groups"
+                    | "association_requests"
+            ),
+        },
+        Some("users") => true,
+        _ => false,
     }
 }
 
@@ -277,6 +367,7 @@ fn build_payload(
         "service_hostname".into(),
         json!(configured_hostname
             .map(ToString::to_string)
+            .or_else(|| header(&meta.headers, "x-forwarded-host").map(strip_port))
             .or_else(|| header(&meta.headers, "host").map(strip_port))
             .unwrap_or_else(|| "localhost".to_string())),
     );
@@ -332,17 +423,35 @@ fn request_data(body: &[u8]) -> Option<Value> {
     serde_json::from_slice(body).ok()
 }
 
-fn scrub_data(mut data: Value) -> Value {
-    if let Some(object) = data.as_object_mut() {
-        // Upstream redacts top-level password values. Private keys are also
-        // credentials and must not be copied to an external collector.
-        for key in ["password", "private_key"] {
-            if object.contains_key(key) {
-                object.insert(key.into(), json!(REDACTED_PASSWORD));
-            }
-        }
+fn scrub_data(data: Value) -> Value {
+    match data {
+        Value::Object(object) => Value::Object(
+            object
+                .into_iter()
+                .map(|(key, value)| {
+                    if is_sensitive_key(&key) {
+                        (key, json!(REDACTED_PASSWORD))
+                    } else {
+                        (key, scrub_data(value))
+                    }
+                })
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(values.into_iter().map(scrub_data).collect()),
+        other => other,
     }
-    data
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    lower == "password"
+        || lower.ends_with("_password")
+        || lower == "private_key"
+        || lower == "secret"
+        || lower.ends_with("_secret")
+        || lower == "token"
+        || lower.ends_with("_token")
+        || lower == "credentials"
 }
 
 fn header(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -395,11 +504,21 @@ fn task_for(meta: &RequestMeta, status: StatusCode, data: Option<&Value>) -> Str
 
     match meta.method {
         Method::POST => "create".to_string(),
-        Method::PUT if status == StatusCode::CREATED => "create".to_string(),
+        // Upstream only treats cookbook `PUT` 201 responses as creates; other
+        // resources use `PUT` for updates even when they return 201.
+        Method::PUT if status == StatusCode::CREATED && is_cookbook_version_path(&parts) => {
+            "create".to_string()
+        }
         Method::PUT => "update".to_string(),
         Method::DELETE => "delete".to_string(),
         _ => "update".to_string(),
     }
+}
+
+fn is_cookbook_version_path(parts: &[&str]) -> bool {
+    parts.first() == Some(&"organizations")
+        && parts.get(2) == Some(&"cookbooks")
+        && parts.len() >= 5
 }
 
 fn entity_for(meta: &RequestMeta, data: Option<&Value>) -> Option<Entity> {
@@ -459,9 +578,7 @@ fn organization_entity(meta: &RequestMeta, data: Option<&Value>, parts: &[&str])
                 named(data, name, &["name"]).map(|name| Entity::simple("client", name))
             }
         }
-        "users" => {
-            named(data, name, &["username", "name"]).map(|name| Entity::simple("user", name))
-        }
+        "users" => username_from_data(data).map(|name| Entity::simple("user", name)),
         "groups" => {
             named(data, name, &["groupname", "name"]).map(|name| Entity::simple("group", name))
         }
@@ -486,6 +603,11 @@ fn organization_entity(meta: &RequestMeta, data: Option<&Value>, parts: &[&str])
             }
         }
         "policies" => {
+            // Revision writes are not reported by upstream; only the policy
+            // resource itself is.
+            if parts.get(4) == Some(&"revisions") {
+                return None;
+            }
             let policy = name
                 .map(ToString::to_string)
                 .or_else(|| body_name(data, &["name"]))?;
@@ -501,10 +623,16 @@ fn organization_entity(meta: &RequestMeta, data: Option<&Value>, parts: &[&str])
             }
         }
         "association_requests" => {
+            // A DELETE addresses the invitation UUID, not the invited user.
+            // Without a body we cannot resolve the username, so omit the
+            // notification rather than reporting the UUID as an entity name.
+            if meta.method == Method::DELETE && parts.len() >= 4 {
+                return None;
+            }
             let username = if let Some(path_name) = name {
                 path_name.to_string()
             } else {
-                body_name(data, &["username", "user", "name"])?
+                username_from_data(data)?
             };
             Some(Entity::simple("user", username))
         }
@@ -578,6 +706,25 @@ fn body_name(data: Option<&Value>, keys: &[&str]) -> Option<String> {
     })
 }
 
+/// Membership bodies accept `username`, `user` as a string, or `user` as an
+/// object with a `username` member. `name` remains a fallback for older
+/// clients.
+fn username_from_data(data: Option<&Value>) -> Option<String> {
+    let object = data?.as_object()?;
+    object
+        .get("username")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            object.get("user").and_then(|user| {
+                user.as_str()
+                    .or_else(|| user.get("username").and_then(Value::as_str))
+            })
+        })
+        .or_else(|| object.get("name").and_then(Value::as_str))
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
 fn path_parts(path: &str) -> Vec<&str> {
     path.trim_matches('/')
         .split('/')
@@ -605,6 +752,7 @@ fn parent_type(resource: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
 
     fn principal() -> Principal {
         Principal {
@@ -767,6 +915,141 @@ mod tests {
         assert_eq!(payload["entity_type"], "node");
         assert_eq!(payload["entity_name"], "web1");
         assert!(payload.get("data").is_none());
+    }
+
+    #[test]
+    fn membership_bodies_accept_user_strings_and_objects() {
+        for body in [
+            &br#"{"username":"alice"}"#[..],
+            &br#"{"user":"alice"}"#[..],
+            &br#"{"user":{"username":"alice"}}"#[..],
+        ] {
+            let meta = meta(Method::POST, "/organizations/acme/users", body);
+            let payload = build_payload(&meta, StatusCode::CREATED, None).unwrap();
+            assert_eq!(payload["task"], "associate");
+            assert_eq!(payload["entity_type"], "user");
+            assert_eq!(payload["entity_name"], "alice");
+        }
+    }
+
+    #[test]
+    fn invitation_deletes_are_omitted_instead_of_reporting_the_uuid() {
+        let meta = meta(
+            Method::DELETE,
+            "/organizations/acme/association_requests/11111111-1111-1111-1111-111111111111",
+            b"",
+        );
+        assert!(build_payload(&meta, StatusCode::OK, None).is_none());
+    }
+
+    #[test]
+    fn only_cookbook_put_201_is_a_create() {
+        let key = meta(
+            Method::PUT,
+            "/organizations/acme/clients/web1/keys/rotate",
+            br#"{"name":"rotate"}"#,
+        );
+        assert_eq!(
+            build_payload(&key, StatusCode::CREATED, None).unwrap()["task"],
+            "update"
+        );
+
+        let policy_group = meta(
+            Method::PUT,
+            "/organizations/acme/policy_groups/production/policies/base",
+            br#"{"revision_id":"abc"}"#,
+        );
+        assert_eq!(
+            build_payload(&policy_group, StatusCode::CREATED, None).unwrap()["task"],
+            "update"
+        );
+
+        let cookbook = meta(
+            Method::PUT,
+            "/organizations/acme/cookbooks/nginx/1.2.3",
+            b"{}",
+        );
+        assert_eq!(
+            build_payload(&cookbook, StatusCode::CREATED, None).unwrap()["task"],
+            "create"
+        );
+    }
+
+    #[test]
+    fn policy_revision_writes_are_not_reported() {
+        let create = meta(
+            Method::POST,
+            "/organizations/acme/policies/base/revisions",
+            br#"{"name":"base","revision_id":"abc"}"#,
+        );
+        assert!(build_payload(&create, StatusCode::CREATED, None).is_none());
+
+        let delete = meta(
+            Method::DELETE,
+            "/organizations/acme/policies/base/revisions/abc",
+            b"",
+        );
+        assert!(build_payload(&delete, StatusCode::OK, None).is_none());
+
+        let delete_policy = meta(Method::DELETE, "/organizations/acme/policies/base", b"");
+        assert_eq!(
+            build_payload(&delete_policy, StatusCode::OK, None).unwrap()["task"],
+            "delete"
+        );
+    }
+
+    #[test]
+    fn nested_secrets_are_redacted() {
+        let meta = meta(
+            Method::POST,
+            "/organizations/acme/nodes",
+            br#"{"name":"web1","nested":{"password":"p","token":"t","safe":"ok"},"list":[{"secret":"s"}]}"#,
+        );
+        let payload = build_payload(&meta, StatusCode::CREATED, None).unwrap();
+        assert_eq!(payload["data"]["nested"]["password"], REDACTED_PASSWORD);
+        assert_eq!(payload["data"]["nested"]["token"], REDACTED_PASSWORD);
+        assert_eq!(payload["data"]["nested"]["safe"], "ok");
+        assert_eq!(payload["data"]["list"][0]["secret"], REDACTED_PASSWORD);
+    }
+
+    #[test]
+    fn forwarded_host_is_used_for_service_hostname() {
+        let mut meta = meta(
+            Method::POST,
+            "/organizations/acme/nodes",
+            br#"{"name":"web1"}"#,
+        );
+        meta.headers.insert(
+            "host",
+            HeaderValue::from_static("internal.example.com:8000"),
+        );
+        meta.headers.insert(
+            "x-forwarded-host",
+            HeaderValue::from_static("chef.example.com"),
+        );
+        let payload = build_payload(&meta, StatusCode::CREATED, None).unwrap();
+        assert_eq!(payload["service_hostname"], "chef.example.com");
+    }
+
+    #[test]
+    fn prefilters_unsupported_paths_without_reading_the_body() {
+        assert!(is_candidate("POST", "/organizations/acme/nodes"));
+        assert!(is_candidate("PUT", "/users/alice/keys/default"));
+        assert!(is_candidate(
+            "PUT",
+            "/organizations/acme/nodes/web1/_acl/grant"
+        ));
+        assert!(!is_candidate("POST", "/organizations/acme/data-collector"));
+        assert!(!is_candidate("POST", "/organizations/acme/search"));
+        assert!(!is_candidate(
+            "POST",
+            "/organizations/acme/policies/base/revisions"
+        ));
+        assert!(!is_candidate(
+            "DELETE",
+            "/organizations/acme/association_requests/123"
+        ));
+        assert!(!is_candidate("GET", "/organizations/acme/nodes"));
     }
 
     #[test]

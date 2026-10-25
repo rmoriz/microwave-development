@@ -62,6 +62,12 @@ impl Config {
                 value: "0".into(),
             });
         }
+        self.compliance_proxy
+            .validate()
+            .map_err(|message| ConfigError::InvalidValue {
+                key: "compliance_proxy".into(),
+                value: message,
+            })?;
         Ok(())
     }
 
@@ -665,11 +671,12 @@ pub struct DataCollectorConfig {
     #[serde(alias = "timeout_ms")]
     pub timeout: u64,
     /// Send `oc_chef_action` mutation notifications for successful writes.
-    /// This is only active when `root_url` is set; it defaults to true so that
-    /// configuring a collector opts into the same behavior as upstream.
+    /// This is only active when `root_url` is set. It defaults to false so a
+    /// configuration that only enables client payload forwarding does not
+    /// unexpectedly start server-side writes to the collector.
     pub actions_enabled: bool,
     /// Hostname reported as `service_hostname` in action messages. When unset
-    /// the request `Host` (or `X-Forwarded-Host`) is used.
+    /// the request `X-Forwarded-Host` (or `Host`) is used.
     pub service_hostname: Option<String>,
 }
 
@@ -693,7 +700,7 @@ impl Default for DataCollectorConfig {
             root_url: None,
             token: None,
             timeout: 30_000,
-            actions_enabled: true,
+            actions_enabled: false,
             service_hostname: None,
         }
     }
@@ -733,6 +740,78 @@ impl ComplianceProxyConfig {
             .as_deref()
             .is_some_and(|url| !url.trim().is_empty())
     }
+
+    /// Validate the upstream URL and token header. Called by
+    /// [`Config::validate`] so a bad value fails at startup, not on the first
+    /// proxied request.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(url) = self
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+        {
+            let parsed = url::Url::parse(url)
+                .map_err(|error| format!("compliance_proxy.url is invalid: {error}"))?;
+            if !matches!(parsed.scheme(), "http" | "https") {
+                return Err(format!(
+                    "compliance_proxy.url must use http or https (got {})",
+                    parsed.scheme()
+                ));
+            }
+            if parsed.host_str().is_none() {
+                return Err("compliance_proxy.url must include a host".into());
+            }
+        }
+
+        if let Some(header) = self
+            .token_header
+            .as_deref()
+            .map(str::trim)
+            .filter(|header| !header.is_empty())
+        {
+            validate_token_header_name(header)?;
+        }
+        Ok(())
+    }
+}
+
+/// Header names that must never carry the compliance service token: either
+/// they change request framing/routing, or they are explicitly managed by the
+/// proxy. The list also covers hop-by-hop headers that must not be set by an
+/// application.
+const FORBIDDEN_TOKEN_HEADERS: &[&str] = &[
+    "host",
+    "content-type",
+    "content-length",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "accept",
+    "accept-encoding",
+    "user-agent",
+];
+
+fn validate_token_header_name(header: &str) -> Result<(), String> {
+    if !header
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(format!(
+            "compliance_proxy.token_header {header:?} is not a valid header name"
+        ));
+    }
+    if FORBIDDEN_TOKEN_HEADERS.contains(&header.to_ascii_lowercase().as_str()) {
+        return Err(format!(
+            "compliance_proxy.token_header must not be a framing, routing, or hop-by-hop header ({header:?})"
+        ));
+    }
+    Ok(())
 }
 
 impl Default for ComplianceProxyConfig {

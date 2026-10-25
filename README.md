@@ -155,7 +155,7 @@ supported as a `command:`/`docker run` override.
 - Service-management and reindex gaps. Remote search reindexing purges stale documents only when `--purge` is passed; the default remains additive. Service management is systemd-based (`systemctl`/`journalctl`) or an explicit foreground/container mode (`service start --foreground`); there is no built-in supervisor for Docker daemons, launchd, or detached processes. The pedant runner invokes the repository harness and therefore expects the checkout or a separately installed script.
 - OpenSearch 3.x evaluation and multi-node HA/performance validation.
 - Outbound telemetry export. The `telemetry` table (SQLite and PostgreSQL) and `telemetry.*` / `MW_TELEMETRY__*` configuration exist, but the sender is intentionally not implemented and defaults to disabled: Microwave never phones home. Operators can enable the flag for forward compatibility, but no background worker or external endpoint is contacted.
-- Optional data-collector mutation action notifications and the compliance profile proxy are implemented behind configuration (`data_collector.actions_enabled`, `compliance_proxy.url`). The pedant compliance-proxy tag is wired through the harness; there is no vendored data-collector pedant spec.
+- Opt-in data-collector mutation action notifications (`data_collector.actions_enabled = true`; disabled by default) and the compliance profile proxy (`compliance_proxy.url`) are implemented. The pedant compliance-proxy tag is wired through the harness; there is no vendored data-collector pedant spec.
 
 ### Pedant Compatibility
 

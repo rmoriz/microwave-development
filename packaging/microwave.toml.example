@@ -150,12 +150,12 @@ warm_up = false
 # accepted as an alias.
 timeout = 30000
 # Emit server-side mutation notifications (`oc_chef_action`) for successful
-# writes while the collector is configured. Notifications use a bounded
-# in-process queue and never delay the API response. Set this to false to keep
-# client payload forwarding without server action messages.
-actions_enabled = true
+# writes while the collector is configured. This is opt-in: root_url alone
+# only enables client payload forwarding. Notifications use a bounded
+# in-process queue and never delay the API response.
+actions_enabled = false
 # Hostname reported as `service_hostname` in action messages. When unset the
-# request Host (or X-Forwarded-Host) is used.
+# request X-Forwarded-Host (or Host) is used.
 # service_hostname = "chef.example.com"
 
 [compliance_proxy]

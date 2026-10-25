@@ -68,6 +68,9 @@ async fn start_mock(
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
+    // Ensure the listener has accepted at least one connection before the
+    // first assertion; this removes cold-start scheduling races.
+    let _ = tokio::net::TcpStream::connect(address).await;
     (format!("http://{address}"), captured)
 }
 
@@ -93,7 +96,7 @@ async fn wait_for(
     captured: &Arc<Mutex<Vec<CapturedRequest>>>,
     count: usize,
 ) -> Vec<CapturedRequest> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
         let requests = captured.lock().await.clone();
         if requests.len() >= count {
@@ -141,7 +144,7 @@ async fn disabled_proxy_returns_404_for_both_route_spellings() {
 #[tokio::test]
 async fn configured_proxy_rejects_non_get_before_authentication() {
     let (url, captured) = start_mock(200, "{}", Duration::ZERO).await;
-    let app = app_with_proxy(proxy_config(&url, None, 1_000)).await;
+    let app = app_with_proxy(proxy_config(&url, None, 10_000)).await;
 
     let response = app
         .oneshot(
@@ -158,7 +161,7 @@ async fn configured_proxy_rejects_non_get_before_authentication() {
 #[tokio::test]
 async fn organization_scoped_route_rewrites_and_sets_service_headers() {
     let (url, captured) = start_mock(200, r#"{"response":"ok"}"#, Duration::ZERO).await;
-    let app = app_with_proxy(proxy_config(&url, Some("service-token"), 1_000)).await;
+    let app = app_with_proxy(proxy_config(&url, Some("service-token"), 10_000)).await;
 
     let response = app
         .oneshot(signed_get("/organizations/acme/owners/foobar/compliance"))
@@ -201,7 +204,7 @@ async fn organization_scoped_route_rewrites_and_sets_service_headers() {
 #[tokio::test]
 async fn legacy_compliance_prefix_and_profiles_are_forwarded() {
     let (url, captured) = start_mock(200, r#"{"response":"ok"}"#, Duration::ZERO).await;
-    let app = app_with_proxy(proxy_config(&url, None, 1_000)).await;
+    let app = app_with_proxy(proxy_config(&url, None, 10_000)).await;
 
     let response = app
         .clone()
@@ -232,7 +235,7 @@ async fn legacy_compliance_prefix_and_profiles_are_forwarded() {
 #[tokio::test]
 async fn upstream_status_and_body_are_preserved() {
     let (url, _) = start_mock(404, r#"{"error":"profile missing"}"#, Duration::ZERO).await;
-    let app = app_with_proxy(proxy_config(&url, None, 1_000)).await;
+    let app = app_with_proxy(proxy_config(&url, None, 10_000)).await;
 
     let response = app
         .oneshot(signed_get(
@@ -245,6 +248,26 @@ async fn upstream_status_and_body_are_preserved() {
         body_bytes(response).await,
         br#"{"error":"profile missing"}"#.to_vec()
     );
+}
+
+#[tokio::test]
+async fn traversal_segments_are_rejected_without_forwarding() {
+    let (url, captured) = start_mock(200, "{}", Duration::ZERO).await;
+    let app = app_with_proxy(proxy_config(&url, Some("service-token"), 10_000)).await;
+
+    for path in [
+        "/organizations/acme/owners/%2E%2E/compliance",
+        "/organizations/acme/owners/%2e%2e/compliance",
+        "/organizations/acme/owners/foo%2F..%2Fbar/compliance",
+        "/organizations/acme/owners/foobar/compliance/%2E%2E/admin",
+        "/organizations/acme/owners/foobar/compliance/base%2F..%2F..%2Fadmin",
+        "/compliance/organizations/acme/owners/%2E%2E/compliance",
+        "/compliance/organizations/acme/owners/foobar/compliance/%2E%2E/admin",
+    ] {
+        let response = app.clone().oneshot(signed_get(path)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+    }
+    assert!(captured.lock().await.is_empty());
 }
 
 #[tokio::test]
@@ -264,7 +287,7 @@ async fn timeout_returns_gateway_timeout() {
 #[tokio::test]
 async fn custom_token_header_is_used_when_configured() {
     let (url, captured) = start_mock(200, "{}", Duration::ZERO).await;
-    let mut config = proxy_config(&url, Some("custom-token"), 1_000);
+    let mut config = proxy_config(&url, Some("custom-token"), 10_000);
     config.compliance_proxy.token_header = Some("x-automate-token".into());
     let app = app_with_proxy(config).await;
 
@@ -290,7 +313,7 @@ async fn custom_token_header_is_used_when_configured() {
 #[tokio::test]
 async fn compliance_token_falls_back_to_the_data_collector_secret() {
     let (url, captured) = start_mock(200, "{}", Duration::ZERO).await;
-    let state = support::state_with_config(proxy_config(&url, None, 1_000));
+    let state = support::state_with_config(proxy_config(&url, None, 10_000));
     support::add_org(&state, "acme").await;
     state
         .store

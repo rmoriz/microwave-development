@@ -44,7 +44,8 @@ impl AppState {
         let http_client = build_http_client(&config)?;
         let compliance_client = build_compliance_client(&config)?;
         let keygen = build_keygen_cache(&config);
-        let actions = crate::actions::ActionDispatcher::new(&config, http_client.clone());
+        let actions =
+            crate::actions::ActionDispatcher::new(&config, http_client.clone(), store.clone());
         Ok(Self {
             store,
             sqlite: None,
@@ -73,10 +74,12 @@ impl AppState {
         let http_client = build_http_client(&config)?;
         let compliance_client = build_compliance_client(&config)?;
         let keygen = build_keygen_cache(&config);
+        let actions =
+            crate::actions::ActionDispatcher::new(&config, http_client.clone(), store.clone());
         Ok(Self {
             store: store.clone(),
             sqlite: Some(store),
-            actions: crate::actions::ActionDispatcher::new(&config, http_client.clone()),
+            actions,
             config,
             object_store,
             search,

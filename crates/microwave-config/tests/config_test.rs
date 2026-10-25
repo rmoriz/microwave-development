@@ -25,7 +25,8 @@ fn defaults_are_safe_and_local() {
     assert!(!c.keygen.warm_up);
     assert!(!c.data_collector.is_configured());
     assert_eq!(c.data_collector.timeout, 30_000);
-    assert!(c.data_collector.actions_enabled);
+    assert!(!c.data_collector.actions_enabled);
+    assert!(!c.data_collector.actions_enabled());
     assert_eq!(c.data_collector.service_hostname, None);
     assert!(!c.compliance_proxy.is_configured());
     assert_eq!(c.compliance_proxy.timeout, 30_000);
@@ -635,4 +636,64 @@ fn rejects_zero_forwarding_timeouts() {
     "#
     )
     .is_err());
+}
+
+#[test]
+fn root_url_alone_does_not_enable_action_notifications() {
+    let c = Config::from_toml_str(
+        r#"
+        [data_collector]
+        root_url = "https://automate.example.com/data-collector/v0/"
+    "#,
+    )
+    .unwrap();
+    assert!(c.data_collector.is_configured());
+    assert!(!c.data_collector.actions_enabled());
+
+    let enabled = Config::from_toml_str(
+        r#"
+        [data_collector]
+        root_url = "https://automate.example.com/data-collector/v0/"
+        actions_enabled = true
+    "#,
+    )
+    .unwrap();
+    assert!(enabled.data_collector.actions_enabled());
+}
+
+#[test]
+fn rejects_invalid_compliance_proxy_urls_and_headers() {
+    for url in ["not a url", "ftp://automate.example.com", "https://"] {
+        let input = format!(
+            r#"
+            [compliance_proxy]
+            url = "{url}"
+            "#
+        );
+        assert!(
+            Config::from_toml_str(&input).is_err(),
+            "accepted invalid URL {url}"
+        );
+    }
+
+    for header in [
+        "Host",
+        "Content-Type",
+        "Content-Length",
+        "Connection",
+        "Transfer-Encoding",
+        "not a header",
+    ] {
+        let input = format!(
+            r#"
+            [compliance_proxy]
+            url = "https://automate.example.com"
+            token_header = "{header}"
+            "#
+        );
+        assert!(
+            Config::from_toml_str(&input).is_err(),
+            "accepted dangerous token header {header}"
+        );
+    }
 }

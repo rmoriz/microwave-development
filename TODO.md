@@ -246,7 +246,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 
 ### 5.2 Data Collector & Required Recipe (`microwave-api`)
 - [x] Implement `POST /organizations/:org/data-collector` endpoint (token & signature validation, bounded upstream `reqwest` forwarding, status/body preservation).
-- [x] Implement optional `oc_chef_action` mutation notifications for successful node/role/environment/data-bag/client/key/policy/membership/ACL/cookbook/organization writes, using a bounded in-process queue, configured timeout, and failure logging. Disabled when `data_collector.root_url` is unset or `actions_enabled = false`.
+- [x] Implement opt-in `oc_chef_action` mutation notifications for successful node/role/environment/data-bag/client/key/policy/membership/ACL/cookbook/organization writes, using a bounded in-process queue, configured timeout, and failure logging. Disabled by default and whenever `data_collector.root_url` is unset; enable with `actions_enabled = true`.
 - [x] Implement `required_recipe` support if enabled in config (`required_recipe_spec.rb`).
 - [x] Verify `required_recipe_spec.rb` under pedant (6 examples, 0 failures). Rust integration tests cover both enabled and disabled behavior; no vendored data-collector pedant spec exists.
 - [x] Implement compliance-profile proxy forwarding for both `/organizations/:org/owners/:owner/compliance[/profile]` and `/compliance/organizations/:org/owners/:owner/compliance[/profile]`, including configurable URL/token/header/timeout, status/body preservation, disabled 404 behavior, and `compliance_proxy_spec.rb` harness support.

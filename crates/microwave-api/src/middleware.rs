@@ -359,7 +359,9 @@ async fn authenticate_signed(
             )));
         }
     }
-    let action_meta = if state.actions.is_enabled() {
+    let action_meta = if state.actions.is_enabled()
+        && crate::actions::is_candidate(parts.method.as_str(), &path)
+    {
         crate::actions::RequestMeta::capture(
             &parts.method,
             &path,
@@ -383,7 +385,7 @@ async fn authenticate_signed(
 
     let response = next.run(request).await;
     if let Some(meta) = action_meta {
-        state.actions.notify(&state, meta, response.status()).await;
+        state.actions.notify(meta, response.status()).await;
     }
     Ok(response)
 }
@@ -557,14 +559,20 @@ fn has_signing_headers(headers: &HeaderMap) -> bool {
 
 fn organization_name_from_path(path: &str) -> Option<String> {
     let mut parts = path.trim_matches('/').split('/');
-    if parts.next() == Some("organizations") {
-        parts
-            .next()
-            .filter(|part| !part.is_empty())
-            .map(ToString::to_string)
-    } else {
-        None
+    let first = parts.next()?;
+    if first == "compliance" {
+        // The legacy chef-gate spelling is
+        // `/compliance/organizations/:org/...`.
+        if parts.next() != Some("organizations") {
+            return None;
+        }
+    } else if first != "organizations" {
+        return None;
     }
+    parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .map(ToString::to_string)
 }
 
 /// Upstream's principal endpoint has no authentication (`auth_info` returns
@@ -657,5 +665,38 @@ pub(crate) fn normalize_allow_header(response: &mut Response) {
         response
             .headers_mut()
             .insert(axum::http::header::ALLOW, value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_compliance_proxy_path, organization_name_from_path};
+
+    #[test]
+    fn extracts_the_organization_from_standard_and_legacy_compliance_paths() {
+        assert_eq!(
+            organization_name_from_path("/organizations/acme/nodes").as_deref(),
+            Some("acme")
+        );
+        assert_eq!(
+            organization_name_from_path("/compliance/organizations/acme/owners/foo/compliance")
+                .as_deref(),
+            Some("acme")
+        );
+        assert_eq!(organization_name_from_path("/users/alice"), None);
+        assert_eq!(organization_name_from_path("/compliance/owners/acme"), None);
+    }
+
+    #[test]
+    fn recognizes_both_compliance_proxy_spellings() {
+        assert!(is_compliance_proxy_path(
+            "/organizations/acme/owners/foo/compliance"
+        ));
+        assert!(is_compliance_proxy_path(
+            "/compliance/organizations/acme/owners/foo/compliance/profile"
+        ));
+        assert!(!is_compliance_proxy_path(
+            "/organizations/acme/owners/foo/nodes"
+        ));
     }
 }

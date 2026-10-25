@@ -97,11 +97,15 @@ async fn forward(
         return ApiError::not_found("not found").into_response();
     };
 
+    let upstream_url = match upstream_url(base, &owner, profile.as_deref(), uri.query()) {
+        Ok(url) => url,
+        Err(error) => return error.into_response(),
+    };
+
     if let Err(error) = authorize_org(&state, &auth, &organization).await {
         return error.into_response();
     }
 
-    let upstream_url = upstream_url(base, &owner, profile.as_deref(), uri.query());
     let timeout = Duration::from_millis(state.config.compliance_proxy.timeout.max(1));
     let mut request = state
         .compliance_client
@@ -255,6 +259,14 @@ fn token_header(state: &AppState) -> HeaderName {
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .unwrap_or(DEFAULT_TOKEN_HEADER);
+    if let Err(error) = state.config.compliance_proxy.validate() {
+        tracing::warn!(
+            %error,
+            header = configured,
+            "invalid compliance_proxy configuration; using the default token header"
+        );
+        return HeaderName::from_static(DEFAULT_TOKEN_HEADER);
+    }
     HeaderName::from_bytes(configured.as_bytes()).unwrap_or_else(|error| {
         tracing::warn!(
             %error,
@@ -265,41 +277,81 @@ fn token_header(state: &AppState) -> HeaderName {
     })
 }
 
-fn upstream_url(base: &str, owner: &str, profile: Option<&str>, query: Option<&str>) -> String {
-    let mut url = format!(
-        "{}/compliance/profiles/{}",
-        base.trim_end_matches('/'),
-        encode_segment(owner)
-    );
-    if let Some(profile) = profile.filter(|profile| !profile.is_empty()) {
-        let encoded = profile
-            .split('/')
-            .map(encode_segment)
-            .collect::<Vec<_>>()
-            .join("/");
-        url.push('/');
-        url.push_str(&encoded);
-    }
-    if let Some(query) = query.filter(|query| !query.is_empty()) {
-        url.push('?');
-        url.push_str(query);
-    }
-    url
-}
+fn upstream_url(
+    base: &str,
+    owner: &str,
+    profile: Option<&str>,
+    query: Option<&str>,
+) -> Result<String, ApiError> {
+    validate_segment(owner, "owner")?;
 
-/// Percent-encode a single path segment. Owners and profiles originate from
-/// the request path, so they must not be able to inject a different upstream
-/// path or query string.
-fn encode_segment(segment: &str) -> String {
-    let mut encoded = String::with_capacity(segment.len());
-    for byte in segment.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b':') {
-            encoded.push(byte as char);
-        } else {
-            encoded.push_str(&format!("%{byte:02X}"));
+    let mut parsed = reqwest::Url::parse(base).map_err(|error| {
+        tracing::warn!(%error, "invalid compliance_proxy.url");
+        ApiError::internal()
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        tracing::error!("compliance_proxy.url must be an http(s) URL with a host");
+        return Err(ApiError::internal());
+    }
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    let base_path = parsed.path().trim_end_matches('/').to_string();
+
+    let mut profile_segments = Vec::new();
+    if let Some(profile) = profile.filter(|profile| !profile.is_empty()) {
+        for segment in profile.split('/') {
+            validate_segment(segment, "profile")?;
+            profile_segments.push(segment);
         }
     }
-    encoded
+
+    {
+        let mut segments = parsed
+            .path_segments_mut()
+            .map_err(|_| ApiError::bad_request("invalid compliance proxy base URL"))?;
+        segments.pop_if_empty();
+        segments.push("compliance");
+        segments.push("profiles");
+        segments.push(owner);
+        for segment in &profile_segments {
+            segments.push(segment);
+        }
+    }
+    if let Some(query) = query.filter(|query| !query.is_empty()) {
+        parsed.set_query(Some(query));
+    }
+
+    // Defense in depth: even if a URL parser quirk slips through, never send
+    // a request outside the intended profile prefix.
+    let expected_prefix = format!("{base_path}/compliance/profiles/");
+    if !parsed.path().starts_with(&expected_prefix) {
+        tracing::warn!(
+            path = parsed.path(),
+            expected_prefix,
+            "compliance proxy URL escaped the profile prefix"
+        );
+        return Err(ApiError::bad_request("invalid compliance profile path"));
+    }
+
+    Ok(parsed.to_string())
+}
+
+/// Reject path segments that a URL parser could normalize into a different
+/// upstream path. Slashes and backslashes are rejected per-segment; profile
+/// values are split on `/` before this check.
+fn validate_segment(segment: &str, kind: &str) -> Result<(), ApiError> {
+    if segment.is_empty()
+        || segment == "."
+        || segment == ".."
+        || segment.contains('/')
+        || segment.contains('\\')
+        || segment.chars().any(char::is_control)
+    {
+        return Err(ApiError::bad_request(format!(
+            "invalid compliance {kind} segment"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -309,7 +361,7 @@ mod tests {
     #[test]
     fn rewrites_both_upstream_spellings_to_the_profile_path() {
         assert_eq!(
-            upstream_url("https://automate.example.com", "foobar", None, None),
+            upstream_url("https://automate.example.com", "foobar", None, None).unwrap(),
             "https://automate.example.com/compliance/profiles/foobar"
         );
         assert_eq!(
@@ -318,7 +370,8 @@ mod tests {
                 "foobar",
                 Some("testprofile"),
                 None
-            ),
+            )
+            .unwrap(),
             "https://automate.example.com/compliance/profiles/foobar/testprofile"
         );
         assert_eq!(
@@ -327,14 +380,66 @@ mod tests {
                 "foobar",
                 Some("base/linux"),
                 Some("refresh=true")
-            ),
+            )
+            .unwrap(),
             "https://automate.example.com/compliance/profiles/foobar/base/linux?refresh=true"
         );
     }
 
     #[test]
-    fn encodes_path_segments_instead_of_passing_them_through() {
-        assert_eq!(encode_segment("a/b?c"), "a%2Fb%3Fc");
-        assert_eq!(encode_segment("foo bar"), "foo%20bar");
+    fn preserves_a_base_path_and_percent_encodes_segments() {
+        assert_eq!(
+            upstream_url(
+                "https://automate.example.com/api",
+                "foo bar",
+                Some("base/linux"),
+                None
+            )
+            .unwrap(),
+            "https://automate.example.com/api/compliance/profiles/foo%20bar/base/linux"
+        );
+    }
+
+    #[test]
+    fn rejects_dot_segments_in_owner_and_profile() {
+        for owner in [".", "..", "foo/../bar", "foo\\..\\bar"] {
+            assert!(
+                upstream_url("https://automate.example.com", owner, None, None).is_err(),
+                "accepted owner {owner}"
+            );
+        }
+        for profile in ["..", "../admin", "base/../../admin", "base//linux"] {
+            assert!(
+                upstream_url(
+                    "https://automate.example.com",
+                    "foobar",
+                    Some(profile),
+                    None
+                )
+                .is_err(),
+                "accepted profile {profile}"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_the_intended_prefix_even_with_encoded_slashes() {
+        assert_eq!(
+            upstream_url("https://automate.example.com", "foo/bar", None, None)
+                .expect_err("slash in owner must be rejected")
+                .status,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            upstream_url(
+                "https://automate.example.com",
+                "foobar",
+                Some("a/../admin"),
+                None
+            )
+            .expect_err("traversal in profile must be rejected")
+            .status,
+            StatusCode::BAD_REQUEST
+        );
     }
 }

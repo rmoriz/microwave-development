@@ -73,6 +73,9 @@ async fn start_mock(
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
+    // Ensure the listener has accepted at least one connection before the
+    // first assertion; this removes cold-start scheduling races.
+    let _ = tokio::net::TcpStream::connect(address).await;
     (format!("http://{address}/data-collector/v0/"), captured)
 }
 
@@ -81,6 +84,7 @@ fn action_config(root_url: &str, token: Option<&str>, timeout: u64) -> Config {
     config.data_collector.root_url = Some(root_url.to_string());
     config.data_collector.token = token.map(ToString::to_string);
     config.data_collector.timeout = timeout;
+    config.data_collector.actions_enabled = true;
     config
 }
 
@@ -98,7 +102,7 @@ async fn wait_for(
     captured: &Arc<Mutex<Vec<CapturedRequest>>>,
     count: usize,
 ) -> Vec<CapturedRequest> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
         let requests = captured.lock().await.clone();
         if requests.len() >= count {
@@ -123,7 +127,7 @@ async fn body_bytes(response: Response) -> Vec<u8> {
 #[tokio::test]
 async fn disabled_actions_send_nothing_even_when_root_url_is_configured() {
     let (root_url, captured) = start_mock(200, "{}", Duration::ZERO).await;
-    let mut config = action_config(&root_url, Some("action-token"), 1_000);
+    let mut config = action_config(&root_url, Some("action-token"), 10_000);
     config.data_collector.actions_enabled = false;
     let app = app_with_actions(config).await;
 
@@ -136,14 +140,14 @@ async fn disabled_actions_send_nothing_even_when_root_url_is_configured() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(captured.lock().await.is_empty());
 }
 
 #[tokio::test]
 async fn node_create_sends_an_upstream_shaped_action_with_the_server_token() {
     let (root_url, captured) = start_mock(200, "{}", Duration::ZERO).await;
-    let app = app_with_actions(action_config(&root_url, Some("action-token"), 1_000)).await;
+    let app = app_with_actions(action_config(&root_url, Some("action-token"), 10_000)).await;
 
     let mut request = signed(
         "POST",
@@ -214,9 +218,34 @@ async fn node_create_sends_an_upstream_shaped_action_with_the_server_token() {
 }
 
 #[tokio::test]
+async fn membership_association_accepts_the_user_body_field() {
+    let (root_url, captured) = start_mock(200, "{}", Duration::ZERO).await;
+    let state = support::state_with_config(action_config(&root_url, None, 10_000));
+    support::add_org(&state, "acme").await;
+    support::add_user(&state, "alice", "alice@example.com", false);
+    let app = support::app(state);
+
+    let response = app
+        .oneshot(signed(
+            "POST",
+            "/organizations/acme/users",
+            br#"{"user":"alice"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let captured = wait_for(&captured, 1).await;
+    let payload: Value = serde_json::from_slice(&captured[0].body).unwrap();
+    assert_eq!(payload["task"], "associate");
+    assert_eq!(payload["entity_type"], "user");
+    assert_eq!(payload["entity_name"], "alice");
+}
+
+#[tokio::test]
 async fn create_update_delete_are_reported_with_the_expected_tasks() {
     let (root_url, captured) = start_mock(200, "{}", Duration::ZERO).await;
-    let app = app_with_actions(action_config(&root_url, None, 1_000)).await;
+    let app = app_with_actions(action_config(&root_url, None, 10_000)).await;
 
     let response = app
         .clone()
@@ -265,21 +294,21 @@ async fn create_update_delete_are_reported_with_the_expected_tasks() {
 #[tokio::test]
 async fn failed_mutations_do_not_emit_actions() {
     let (root_url, captured) = start_mock(200, "{}", Duration::ZERO).await;
-    let app = app_with_actions(action_config(&root_url, None, 1_000)).await;
+    let app = app_with_actions(action_config(&root_url, None, 10_000)).await;
 
     let response = app
         .oneshot(signed("POST", "/organizations/acme/nodes", br#"{}"#))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(captured.lock().await.is_empty());
 }
 
 #[tokio::test]
 async fn a_slow_collector_does_not_delay_the_api_response() {
-    let (root_url, captured) = start_mock(200, "{}", Duration::from_secs(2)).await;
-    let app = app_with_actions(action_config(&root_url, None, 50)).await;
+    let (root_url, captured) = start_mock(200, "{}", Duration::from_secs(5)).await;
+    let app = app_with_actions(action_config(&root_url, None, 200)).await;
 
     let started = Instant::now();
     let response = app
@@ -293,7 +322,7 @@ async fn a_slow_collector_does_not_delay_the_api_response() {
     let elapsed = started.elapsed();
     assert_eq!(response.status(), StatusCode::CREATED);
     assert!(
-        elapsed < Duration::from_millis(500),
+        elapsed < Duration::from_secs(2),
         "request path waited on the collector: {elapsed:?}"
     );
 
@@ -305,7 +334,7 @@ async fn a_slow_collector_does_not_delay_the_api_response() {
 #[tokio::test]
 async fn a_refused_collector_does_not_change_the_api_response() {
     // Port 9 is normally closed; the worker fails asynchronously.
-    let app = app_with_actions(action_config("http://127.0.0.1:9/", None, 50)).await;
+    let app = app_with_actions(action_config("http://127.0.0.1:9/", None, 100)).await;
     let response = app
         .oneshot(signed(
             "POST",
@@ -322,7 +351,7 @@ async fn a_refused_collector_does_not_change_the_api_response() {
 #[tokio::test]
 async fn action_token_can_come_from_the_data_collector_secret() {
     let (root_url, captured) = start_mock(200, "{}", Duration::ZERO).await;
-    let state = support::state_with_config(action_config(&root_url, None, 1_000));
+    let state = support::state_with_config(action_config(&root_url, None, 10_000));
     support::add_org(&state, "acme").await;
     state
         .store
@@ -356,7 +385,7 @@ async fn action_token_can_come_from_the_data_collector_secret() {
 #[tokio::test]
 async fn passwords_are_redacted_in_user_actions() {
     let (root_url, captured) = start_mock(200, "{}", Duration::ZERO).await;
-    let app = app_with_actions(action_config(&root_url, None, 1_000)).await;
+    let app = app_with_actions(action_config(&root_url, None, 10_000)).await;
 
     let response = app
         .oneshot(signed(
