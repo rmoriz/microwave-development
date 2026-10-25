@@ -759,12 +759,12 @@ fn maintenance_mode_can_be_turned_on_and_off() {
     let status = run(dir.path(), &["maintenance", "status"]);
     assert_success(&status);
     assert!(stdout(&status).contains("maintenance: off"));
-    assert!(stdout(&status).contains("not implemented"));
+    assert!(!stdout(&status).contains("not implemented"));
 
     let on = run(dir.path(), &["maintenance", "on"]);
     assert_success(&on);
     assert!(stdout(&on).contains("enabled"));
-    assert!(stdout(&on).contains("not implemented"));
+    assert!(!stdout(&on).contains("not implemented"));
 
     let status = run(dir.path(), &["maintenance", "status"]);
     assert_success(&status);

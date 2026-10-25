@@ -8,7 +8,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 >
 > **Verified:** `cargo test --workspace`, clippy with `-D warnings`, and `cargo fmt --check` are green. PostgreSQL integration: 16 store tests plus 2 HTTP runtime tests pass against PostgreSQL 18, and the server can be started with `MW_DATABASE__DRIVER=postgres`. The Debian trixie container image builds and both binaries start. Core pedant: 651 passed / 1 failed / 8 pending; the single failure is the known plain-HTTP `header_spec.rb` artifact. Extended pedant (final, after PostgreSQL runtime): 3,280 passed / 0 failed / 7 pending; all eleven extended tags pass. A strict stock `chef-client` converge now passes with both compatibility shims disabled (`MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0`), including validator registration.
 >
-> **Still open:** keeping the extended pedant suite green in CI; HTTP 503 enforcement for maintenance mode; the remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup); TLS listener, metrics/`_stats`, keygen cache, transparent compression, and the dual-backend test matrix; OpenSearch 3.x evaluation; HA/performance validation; and Data Collector/`required_recipe` plus telemetry export.
+> **Still open:** keeping the extended pedant suite green in CI; the remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup); TLS listener, keygen cache, transparent compression, and the dual-backend test matrix; OpenSearch 3.x evaluation; HA/performance validation; and Data Collector/`required_recipe` plus telemetry export.
 
 ---
 
@@ -20,7 +20,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [ ] Implement configuration schema (`Config`) supporting TOML config file, environment variable overrides, and basic `/etc/opscode/chef-server.rb` key-value extraction for drop-in compatibility.
 - [ ] Implement secrets management (`private-chef-secrets.json` reader/writer + environment variable fallback `CHEF_SECRETS_DATA`) for `pivotal` superuser key, `webui_pub`/`webui_priv`, `bookshelf` access/secret keys, `oc_id` secret_key_base, and `data_collector` token.
 - [ ] Implement automatic bootstrap initialization on first start: generate `pivotal` RSA keypair, `webui` RSA keypair, bookshelf HMAC credentials, and seed the `pivotal` superuser in the database.
-- [ ] Add structured logging (`tracing` + `tracing-subscriber`) and Prometheus/JSON metrics registry.
+- [x] Add structured logging (`tracing` + `tracing-subscriber`) and Prometheus/JSON metrics registry.
 
 ### 1.2 Cryptography, Request Signing & Passwords (`microwave-crypto`)
 - [x] Implement `X-Ops-Content-Hash` calculation and verification:
@@ -84,12 +84,12 @@ This document tracks the end-to-end engineering checklist for reimplementing the
   - [ ] Attach `X-Ops-Server-API-Version` JSON header to all responses.
 - [ ] Implement `X-Ops-API-Info` header support when configured (`include_x_ops_api_info`).
 - [ ] Implement multi-host `X-Forwarded-Host`, `X-Forwarded-For`, `X-Forwarded-Server` handling (`chef_wm_util:base_uri` parity).
-- [ ] Implement maintenance mode middleware (`503 Service Unavailable` when active, bypassing `/_status`).
+- [x] Implement maintenance mode middleware (`503 Service Unavailable` when active, bypassing `/_status` and `/_stats`).
 - [ ] Verify against `oc-chef-pedant/spec/api/header_spec.rb` and `server_api_version_spec.rb`.
 
 ### 2.2 System & Authentication Endpoints
 - [ ] `GET /_status` — health check for DB, search, object store, keygen cache, indexing mode.
-- [ ] `GET /_stats` — Prometheus text and JSON (`application/json`) metrics endpoints (`chef_wm_prometheus_json_format` parity).
+- [x] `GET /_stats` — Prometheus text and JSON (`application/json`) metrics endpoints (`chef_wm_prometheus_json_format` parity).
 - [ ] `GET /server_api_version` — return `{"min_api_version": 0, "max_api_version": 2}`.
 - [ ] `GET /license` — return `{"limit_exceeded": bool, "node_license": int, "node_count": int, "upgrade_url": str}`.
 - [ ] `POST /authenticate_user` — superuser-only endpoint verifying username/password (with transparent hash upgrade) and returning `linked` user payload; reject superuser target with `403`.

@@ -1,8 +1,8 @@
 //! Maintenance-mode state stored in the unified `kvpair` table.
 //!
-//! This module only persists the operator intent. HTTP enforcement of
-//! maintenance mode is not wired into the request middleware yet, so running
-//! servers do not return `503 Service Unavailable` while the flag is set.
+//! This module persists the operator intent. The HTTP middleware reads the
+//! flag on every request and returns `503 Service Unavailable` for normal API
+//! traffic while it is set; `/_status` and `/_stats` stay reachable.
 
 use crate::sqlite::{SqliteStore, StoreError};
 

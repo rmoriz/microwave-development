@@ -99,9 +99,6 @@ pub fn maintenance(context: &Context, action: crate::MaintenanceAction) -> Resul
             );
         }
     }
-    println!(
-        "note: HTTP maintenance enforcement is not implemented yet; running servers do not return 503 while maintenance mode is on."
-    );
     Ok(())
 }
 

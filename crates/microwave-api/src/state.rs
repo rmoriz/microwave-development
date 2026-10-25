@@ -1,3 +1,4 @@
+use crate::metrics::Metrics;
 use crate::search::{build_search_backend, SearchBackend, SearchError};
 use microwave_config::Config;
 use microwave_objectstore::ObjectStore;
@@ -15,6 +16,8 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub object_store: Arc<dyn ObjectStore + Send + Sync>,
     pub search: Arc<dyn SearchBackend>,
+    /// Process-local request metrics served by `GET /_stats`.
+    pub metrics: Arc<Metrics>,
 }
 
 impl AppState {
@@ -32,6 +35,7 @@ impl AppState {
             config,
             object_store,
             search,
+            metrics: Arc::new(Metrics::new()),
         })
     }
 
@@ -52,6 +56,7 @@ impl AppState {
             config,
             object_store,
             search,
+            metrics: Arc::new(Metrics::new()),
         })
     }
 
