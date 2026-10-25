@@ -173,7 +173,7 @@ The first `oc-chef-pedant` run is recorded in [`docs/pedant-report.md`](docs/ped
 
 The harness is `scripts/run-pedant.sh`. Users, organizations, clients, and nodes now pass with zero failures in this tag set. The only failure is the known plain-HTTP `headers` artifact; the 8 pending examples are pedant's own skips.
 
-Extended suites (final, including the PostgreSQL runtime, operations, TLS, keygen cache, compression, CLI surface, TLS reload, and dual-backend matrix): **3,280 passed / 0 failed / 7 pending**. All twelve extended tags are green; the historical 3,280 count covers the original eleven, and `compliance_proxy` adds 4 passing examples.
+Extended suites (final, full `all` run): **3,284 passed / 0 failed / 7 pending**. All twelve extended tags are green; core plus extended reports only the known plain-HTTP `headers` artifact.
 
 See `docs/superpowers/specs/2026-10-24-microwave-server-design.md` and `TODO.md` for the full target and remaining work.
 

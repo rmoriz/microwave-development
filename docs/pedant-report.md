@@ -5,7 +5,7 @@
 **Pedant:** vendored `chef-server/oc-chef-pedant` (gemspec version `2.2.0`)
 **Harness:** `scripts/run-pedant.sh` + `scripts/pedant-bootstrap.rb`
 
-> **Current status (2026-10-25, after the compatibility and PostgreSQL-runtime merges):** the five core tags are **651 passed / 1 failed / 8 pending**. The only failure is the known plain-HTTP `header_spec.rb` artifact (`https` -> `http` `sub!` returns `nil`); users, organizations, clients, and nodes pass with zero failures. The 254/398 baseline below is retained as the original pre-fix snapshot.
+> **Current status (2026-10-25, full `all` run after all feature merges):** the five core tags are **651 passed / 1 failed / 8 pending**; the complete Core+Extended run reports only the known plain-HTTP `headers` artifact, and every other tag is green. The only failure is the known plain-HTTP `header_spec.rb` artifact (`https` -> `http` `sub!` returns `nil`); users, organizations, clients, and nodes pass with zero failures. The 254/398 baseline below is retained as the original pre-fix snapshot.
 
 ## Result in one sentence
 

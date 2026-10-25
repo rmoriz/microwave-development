@@ -8,7 +8,7 @@
 `scripts/pedant-solr-stub.rb` (new)
 **Branch:** `subagent/pedant-more`
 
-> **Final run (2026-10-25, after the PostgreSQL runtime, operations, TLS, keygen-cache, compression, operational CLI, TLS reload, and dual-backend matrix merges):** **3,280 passed / 0 failed / 7 pending out of 3,287 examples. All eleven original extended tags pass.** Re-runs after each operational block produced the identical result. A later `compliance_proxy` run adds 4 examples / 0 failures, bringing the extended tag set to twelve. The counts below are the historical pre-fix baseline.
+> **Final run (2026-10-25, full `all` run after all feature merges):** **3,284 passed / 0 failed / 7 pending out of 3,291 extended examples. All twelve extended tags pass.** Core plus extended (`all`) reports only the known plain-HTTP `headers` artifact; every other tag is green. The counts below are the historical pre-fix baseline.
 >
 > | Tag | Examples | Passed | Failed | Pending |
 > | --- | ---: | ---: | ---: | ---: |
@@ -23,7 +23,8 @@
 > | `license` | 9 | 9 | 0 | 0 |
 > | `depsolver` | 20 | 20 | 0 | 0 |
 > | `versioned_behaviors` | 65 | 64 | 0 | 1 |
-> | **Total** | **3,287** | **3,280** | **0** | **7** |
+> | `compliance_proxy` | 4 | 4 | 0 | 0 |
+> | **Total** | **3,291** | **3,284** | **0** | **7** |
 >
 > The suites were first captured on `41abe62`. `main` then gained the ctl,
 > object-store-secret, and full-depsolver changes; the branch was rebased onto
