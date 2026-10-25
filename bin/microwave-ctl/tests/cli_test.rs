@@ -1838,9 +1838,28 @@ fn check_config_rejects_invalid_data_collector_settings() {
         .output()
         .unwrap();
     assert!(!output.status.success());
+    // `timeout = 0` is rejected while loading the config, before check-config
+    // can aggregate the invalid root_url.
     let text = stderr(&output);
-    assert!(text.contains("data_collector.root_url"));
     assert!(text.contains("data_collector.timeout"));
+}
+
+#[test]
+fn check_config_rejects_invalid_data_collector_root_url() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("microwave.toml");
+    std::fs::write(
+        &config,
+        "[data_collector]\nroot_url = \"ftp://automate.example.com/ingest\"\ntimeout = 30000\n",
+    )
+    .unwrap();
+
+    let output = ctl(dir.path())
+        .args(["--config", config.to_str().unwrap(), "check-config"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("data_collector.root_url"));
 }
 
 #[test]
