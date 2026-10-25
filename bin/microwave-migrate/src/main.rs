@@ -146,6 +146,12 @@ enum Command {
         /// Without this flag imports are additive and revoked grants survive.
         #[arg(long)]
         replace_acls: bool,
+        /// Replace credentials/admin/profile/default key for merged users.
+        ///
+        /// By default --merge-users keeps non-empty target credentials, admin
+        /// state, profile fields, and an existing target default key.
+        #[arg(long)]
+        replace_user_credentials: bool,
         /// Skip the interactive confirmation. Required when stdin is not a
         /// terminal.
         #[arg(long)]
@@ -222,6 +228,7 @@ fn main() -> ExitCode {
             force,
             merge_users,
             replace_acls,
+            replace_user_credentials,
             yes,
             dry_run,
             compression,
@@ -239,6 +246,7 @@ fn main() -> ExitCode {
             force,
             merge_users,
             replace_acls,
+            replace_user_credentials,
             yes,
             dry_run,
             compression,
@@ -327,6 +335,7 @@ fn import_knife_backup_command(
     force: bool,
     merge_users: bool,
     replace_acls: bool,
+    replace_user_credentials: bool,
     yes: bool,
     dry_run: bool,
     compression: Option<CompressionArg>,
@@ -394,7 +403,7 @@ fn import_knife_backup_command(
             print_knife_summary(&plan);
             print_server_secrets_summary(secrets_plan.as_ref());
             if dry_run {
-                println!("Dry run: no database, object-store, or server-secret changes were made");
+                println!("Dry run: no changes were made; nothing was written");
                 return Ok(());
             }
             confirm_import(yes)?;
@@ -406,6 +415,7 @@ fn import_knife_backup_command(
                 &KnifeBackupApplyOptions {
                     merge_users,
                     replace_acls,
+                    replace_user_credentials,
                 },
             )?;
             apply_secrets_if_present(secrets_plan.as_ref())?;
@@ -428,7 +438,7 @@ fn import_knife_backup_command(
             print_knife_summary(&plan);
             print_server_secrets_summary(secrets_plan.as_ref());
             if dry_run {
-                println!("Dry run: no database, object-store, or server-secret changes were made");
+                println!("Dry run: no changes were made; nothing was written");
                 return Ok(());
             }
             let Some(bookshelf) = bookshelf_dir else {
@@ -446,6 +456,7 @@ fn import_knife_backup_command(
                 &KnifeBackupApplyOptions {
                     merge_users,
                     replace_acls,
+                    replace_user_credentials,
                 },
             )?;
             apply_secrets_if_present(secrets_plan.as_ref())?;
@@ -545,7 +556,7 @@ fn confirm_import(yes: bool) -> Result<(), MigrateError> {
     }
     if !std::io::stdin().is_terminal() {
         return Err(MigrateError::Confirmation(
-            "import merges into live metadata and stdin is not a terminal; re-run with --yes after verifying the target"
+            "import writes or merges into the target store/data directory and stdin is not a terminal; re-run with --yes after verifying the target"
                 .into(),
         ));
     }

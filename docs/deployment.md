@@ -978,11 +978,14 @@ microwave-migrate import-knife-backup \
 Private files are written `0600`, public certificates/keys `0644`, and newly
 created parent directories `0700`. CA-tree `.key` files and PEM private keys
 are private; `nginx/ca/<fqdn>.crt`/`.key` map to the TLS certificate/key
-targets. Existing targets are refused unless `--force` is supplied.
-`.tar`/`.tar.gz` archives are allowlisted and reject absolute paths, `..`,
-symlinks, hardlinks, devices, and FIFOs; a single legacy top-level directory
-wrapper is accepted. Expanded size is bounded. No file contents are printed.
-Without a secrets source the importer reads and writes no private files.
+targets, while additional `nginx/ca` pairs are preserved as CA material.
+Private detection is extension/PEM-marker based, not DER inference. Existing
+targets are refused unless `--force` is supplied. `.tar`/`.tar.gz` archives are
+allowlisted and reject absolute paths, `..`, symlinks, hardlinks, devices, and
+FIFOs; a single legacy top-level directory wrapper is accepted. File, archive,
+and expanded-total size limits are enforced while reading. No file contents
+are printed. Without a secrets source the importer reads and writes no private
+files.
 
 Secret files are staged before any target is replaced and rolled back as a set
 on an ordinary commit error. A process crash during commit can still leave a
@@ -1016,10 +1019,15 @@ not removed.
 
 A bootstrapped target normally already has a `pivotal` user with a different
 id. The importer fails with a clear error by default; pass `--merge-users` to
-reuse the existing id/authz id and update that user. ACL and group-membership
-import is additive by default; pass `--replace-acls` to replace ACLs and group
-membership for targets present in the backup, which is required to remove
-revoked grants. Neither flag makes the whole metadata/secret operation atomic.
+reuse the existing id/authz id. Merged users keep non-empty target
+credentials, admin/recovery state, profile fields, and an existing default key
+unless `--replace-user-credentials` is also passed; a warning reports merged
+users with no backup key material. ACL and group-membership import is
+additive by default; pass `--replace-acls` to replace ACLs and membership for
+targets/groups present in the backup, which is required to remove revoked
+grants. Groups inferred by the importer, such as global `users`, are not
+cleared; a failed import restores the previous ACL/group state. Neither flag
+makes the whole metadata/secret operation atomic.
 
 ### Importing a snapshot
 

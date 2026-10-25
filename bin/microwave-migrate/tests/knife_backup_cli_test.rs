@@ -87,6 +87,7 @@ fn help_lists_the_knife_backup_options() {
     assert!(message.contains("--force"));
     assert!(message.contains("--merge-users"));
     assert!(message.contains("--replace-acls"));
+    assert!(message.contains("--replace-user-credentials"));
     assert!(message.contains("--yes"));
 }
 
@@ -106,6 +107,7 @@ fn dry_run_parses_without_creating_the_target_store() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(stdout(&output).contains("Backup contents:"));
     assert!(stdout(&output).contains("Dry run"));
+    assert!(stdout(&output).contains("nothing was written"));
     assert!(!database(&target).exists());
     assert!(!target.join("bookshelf").exists());
 }
@@ -291,6 +293,7 @@ fn merge_users_flag_reuses_a_bootstrapped_target_user() {
         target.to_str().unwrap(),
         "--merge-users",
         "--replace-acls",
+        "--replace-user-credentials",
         "--yes",
     ]);
     assert!(imported.status.success(), "{}", stderr(&imported));

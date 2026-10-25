@@ -244,6 +244,42 @@ fn nginx_ca_certificate_and_key_map_to_tls_targets() {
 }
 
 #[test]
+fn multiple_nginx_ca_pairs_keep_non_selected_pairs_as_ca_material() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("secrets");
+    write(&source.join("nginx/ca/a.example.crt"), b"a cert\n");
+    write(&source.join("nginx/ca/a.example.key"), b"a key\n");
+    write(&source.join("nginx/ca/b.example.crt"), b"b cert\n");
+    write(&source.join("nginx/ca/b.example.key"), b"b key\n");
+    let target = root.path().join("data");
+    let plan = prepare_server_secrets(&make_options(&source, &target)).unwrap();
+    assert_eq!(plan.writes.len(), 4);
+    apply_server_secrets(&plan).unwrap();
+
+    for (relative, contents) in [
+        ("nginx/ca/a.example.crt", b"a cert\n".as_slice()),
+        ("nginx/ca/a.example.key", b"a key\n"),
+        ("nginx/ca/b.example.crt", b"b cert\n"),
+        ("nginx/ca/b.example.key", b"b key\n"),
+    ] {
+        assert_eq!(
+            std::fs::read(target.join(relative)).unwrap(),
+            contents,
+            "{relative}"
+        );
+    }
+    #[cfg(unix)]
+    {
+        for relative in ["nginx/ca/a.example.key", "nginx/ca/b.example.key"] {
+            assert_eq!(mode(&target.join(relative)), 0o600, "{relative}");
+        }
+        for relative in ["nginx/ca/a.example.crt", "nginx/ca/b.example.crt"] {
+            assert_eq!(mode(&target.join(relative)), 0o644, "{relative}");
+        }
+    }
+}
+
+#[test]
 fn accepts_the_underscore_private_chef_secrets_name() {
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("secrets");

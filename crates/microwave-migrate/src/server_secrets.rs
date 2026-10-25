@@ -153,20 +153,12 @@ pub fn prepare_server_secrets(
     }
 
     let mut sources = BTreeMap::new();
+    let mut total = 0u64;
     if let Some(directory) = &options.source_dir {
-        read_directory(directory, &mut sources)?;
+        read_directory(directory, &mut sources, &mut total)?;
     }
     if let Some(archive) = &options.source_archive {
-        read_archive(archive, &mut sources)?;
-    }
-    let total: u64 = sources
-        .values()
-        .map(|source| u64::try_from(source.data.len()).unwrap_or(u64::MAX))
-        .sum();
-    if total > MAX_SECRET_TOTAL_BYTES {
-        return Err(MigrateError::ServerSecrets(format!(
-            "server secrets exceed the {MAX_SECRET_TOTAL_BYTES}-byte total limit"
-        )));
+        read_archive(archive, &mut sources, &mut total)?;
     }
 
     let mut target_sources: BTreeMap<PathBuf, String> = BTreeMap::new();
@@ -198,7 +190,7 @@ pub fn prepare_server_secrets(
         ));
     }
 
-    add_tls_plan(
+    let selected_cert = add_tls_plan(
         &sources,
         SecretKind::TlsCert,
         &TLS_CERT_CANDIDATES,
@@ -207,7 +199,7 @@ pub fn prepare_server_secrets(
         false,
         &mut plans,
     );
-    add_tls_plan(
+    let selected_key = add_tls_plan(
         &sources,
         SecretKind::TlsKey,
         &TLS_KEY_CANDIDATES,
@@ -218,7 +210,13 @@ pub fn prepare_server_secrets(
     );
 
     for source in sources.values() {
-        if source.kind != SecretKind::Ca {
+        let extra_nginx_candidate = source.relative.starts_with("nginx/ca/")
+            && match source.kind {
+                SecretKind::TlsCert => selected_cert.as_deref() != Some(&source.relative),
+                SecretKind::TlsKey => selected_key.as_deref() != Some(&source.relative),
+                _ => false,
+            };
+        if source.kind != SecretKind::Ca && !extra_nginx_candidate {
             continue;
         }
         let relative = safe_relative_path(Path::new(&source.relative)).map_err(|message| {
@@ -227,7 +225,8 @@ pub fn prepare_server_secrets(
                 source.relative
             ))
         })?;
-        let private = ca_file_is_private(&source.relative, &source.data);
+        let private =
+            source.kind == SecretKind::TlsKey || ca_file_is_private(&source.relative, &source.data);
         plans.push((
             options.target_data_dir.join(relative),
             if private { PRIVATE_MODE } else { PUBLIC_MODE },
@@ -406,16 +405,31 @@ fn write_staged_contents(path: &Path, mode: u32, data: &[u8]) -> Result<(), Migr
 
 fn commit_staged(staged: &StagedSecret) -> Result<(), MigrateError> {
     #[cfg(windows)]
-    if staged.target.exists() {
-        std::fs::remove_file(&staged.target).map_err(|source| MigrateError::Write {
+    {
+        if staged.target.exists() {
+            std::fs::remove_file(&staged.target).map_err(|source| MigrateError::Write {
+                path: staged.target.clone(),
+                source,
+            })?;
+        }
+        if let Err(source) = std::fs::rename(&staged.temporary, &staged.target) {
+            if let Some(backup) = &staged.backup {
+                let _ = std::fs::rename(backup, &staged.target);
+            }
+            return Err(MigrateError::Write {
+                path: staged.target.clone(),
+                source,
+            });
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(&staged.temporary, &staged.target).map_err(|source| MigrateError::Write {
             path: staged.target.clone(),
             source,
-        })?;
+        })
     }
-    std::fs::rename(&staged.temporary, &staged.target).map_err(|source| MigrateError::Write {
-        path: staged.target.clone(),
-        source,
-    })
 }
 
 fn rollback_committed(committed: &[StagedSecret]) -> Result<(), MigrateError> {
@@ -478,7 +492,7 @@ fn add_tls_plan(
     target_data_dir: &Path,
     private: bool,
     plans: &mut Vec<(PathBuf, u32, bool, String)>,
-) {
+) -> Option<String> {
     let relative = preferred
         .iter()
         .copied()
@@ -493,9 +507,7 @@ fn add_tls_plan(
                 .find(|source| source.kind == kind)
                 .map(|source| source.relative.as_str())
         });
-    let Some(relative) = relative else {
-        return;
-    };
+    let relative = relative?;
     let target = explicit_target
         .map(Path::to_path_buf)
         .unwrap_or_else(|| target_data_dir.join(relative));
@@ -505,11 +517,13 @@ fn add_tls_plan(
         private,
         relative.to_string(),
     ));
+    Some(relative.to_string())
 }
 
 fn read_directory(
     directory: &Path,
     sources: &mut BTreeMap<String, SourceSecret>,
+    total: &mut u64,
 ) -> Result<(), MigrateError> {
     let metadata = std::fs::symlink_metadata(directory).map_err(|source| MigrateError::Read {
         path: directory.to_path_buf(),
@@ -535,6 +549,7 @@ fn read_directory(
                 "private-chef-secrets.json",
                 SecretKind::Base,
                 sources,
+                total,
             )? {
                 continue;
             }
@@ -543,18 +558,19 @@ fn read_directory(
                 "private_chef_secrets.json",
                 SecretKind::Base,
                 sources,
+                total,
             )?;
             continue;
         }
-        add_root_file(directory, name, SecretKind::Base, sources)?;
+        add_root_file(directory, name, SecretKind::Base, sources, total)?;
     }
     for candidate in TLS_CERT_CANDIDATES {
-        if add_root_file(directory, candidate, SecretKind::TlsCert, sources)? {
+        if add_root_file(directory, candidate, SecretKind::TlsCert, sources, total)? {
             break;
         }
     }
     for candidate in TLS_KEY_CANDIDATES {
-        if add_root_file(directory, candidate, SecretKind::TlsKey, sources)? {
+        if add_root_file(directory, candidate, SecretKind::TlsKey, sources, total)? {
             break;
         }
     }
@@ -570,7 +586,7 @@ fn read_directory(
                 )))
             }
             Ok(metadata) if metadata.is_dir() => {
-                scan_ca_directory(&path, ca_dir, sources)?;
+                scan_ca_directory(&path, ca_dir, sources, total)?;
             }
             Ok(_) => {
                 return Err(MigrateError::ServerSecrets(format!(
@@ -590,12 +606,28 @@ fn read_directory(
     Ok(())
 }
 
+fn check_secret_size(path: &Path, size: u64, total: u64) -> Result<(), MigrateError> {
+    if size > MAX_SECRET_FILE_BYTES {
+        return Err(MigrateError::ServerSecrets(format!(
+            "secret source {} exceeds the {MAX_SECRET_FILE_BYTES}-byte file limit",
+            path.display()
+        )));
+    }
+    if total.saturating_add(size) > MAX_SECRET_TOTAL_BYTES {
+        return Err(MigrateError::ServerSecrets(format!(
+            "server secrets exceed the {MAX_SECRET_TOTAL_BYTES}-byte total limit"
+        )));
+    }
+    Ok(())
+}
+
 /// Return true when the file exists and was added.
 fn add_root_file(
     directory: &Path,
     relative: &str,
     kind: SecretKind,
     sources: &mut BTreeMap<String, SourceSecret>,
+    total: &mut u64,
 ) -> Result<bool, MigrateError> {
     let path = directory.join(relative);
     validate_source_ancestors(directory, &path)?;
@@ -607,16 +639,12 @@ fn add_root_file(
             )))
         }
         Ok(metadata) if metadata.is_file() => {
-            if metadata.len() > MAX_SECRET_FILE_BYTES {
-                return Err(MigrateError::ServerSecrets(format!(
-                    "secret source {} exceeds the {MAX_SECRET_FILE_BYTES}-byte file limit",
-                    path.display()
-                )));
-            }
+            check_secret_size(&path, metadata.len(), *total)?;
             let data = std::fs::read(&path).map_err(|source| MigrateError::Read {
                 path: path.clone(),
                 source,
             })?;
+            *total = total.saturating_add(metadata.len());
             sources.insert(
                 relative.to_string(),
                 SourceSecret {
@@ -640,6 +668,7 @@ fn scan_ca_directory(
     root: &Path,
     relative_prefix: &str,
     sources: &mut BTreeMap<String, SourceSecret>,
+    total: &mut u64,
 ) -> Result<(), MigrateError> {
     let mut entries = std::fs::read_dir(root)
         .map_err(|source| MigrateError::Read {
@@ -673,7 +702,7 @@ fn scan_ca_directory(
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            scan_ca_directory(&path, &format!("{relative_prefix}/{name}"), sources)?;
+            scan_ca_directory(&path, &format!("{relative_prefix}/{name}"), sources, total)?;
             continue;
         }
         if !metadata.is_file() {
@@ -682,12 +711,7 @@ fn scan_ca_directory(
                 path.display()
             )));
         }
-        if metadata.len() > MAX_SECRET_FILE_BYTES {
-            return Err(MigrateError::ServerSecrets(format!(
-                "CA source {} exceeds the {MAX_SECRET_FILE_BYTES}-byte file limit",
-                path.display()
-            )));
-        }
+        check_secret_size(&path, metadata.len(), *total)?;
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -697,6 +721,7 @@ fn scan_ca_directory(
             path: path.clone(),
             source,
         })?;
+        *total = total.saturating_add(metadata.len());
         let kind = classify_ca_file(relative_prefix, &name);
         sources.insert(
             relative.clone(),
@@ -713,6 +738,7 @@ fn scan_ca_directory(
 fn read_archive(
     archive: &Path,
     sources: &mut BTreeMap<String, SourceSecret>,
+    total: &mut u64,
 ) -> Result<(), MigrateError> {
     let metadata = std::fs::symlink_metadata(archive).map_err(|source| MigrateError::Read {
         path: archive.to_path_buf(),
@@ -805,11 +831,7 @@ fn read_archive(
                 "secrets archive contains an entry outside the allowlist: {relative:?}"
             )));
         };
-        if entry.size() > MAX_SECRET_FILE_BYTES {
-            return Err(MigrateError::ServerSecrets(format!(
-                "secrets archive entry {relative:?} exceeds the {MAX_SECRET_FILE_BYTES}-byte file limit"
-            )));
-        }
+        check_secret_size(archive, entry.size(), *total)?;
         let mut data = Vec::new();
         entry
             .read_to_end(&mut data)
@@ -817,6 +839,7 @@ fn read_archive(
                 path: archive.to_path_buf(),
                 source,
             })?;
+        *total = total.saturating_add(u64::try_from(data.len()).unwrap_or(u64::MAX));
         sources.insert(
             relative.clone(),
             SourceSecret {
@@ -942,8 +965,8 @@ fn ca_file_is_private(relative: &str, data: &[u8]) -> bool {
     if has_extension(name, "key") {
         return true;
     }
-    let text = String::from_utf8_lossy(data);
-    text.contains("PRIVATE KEY-----") || text.contains("BEGIN RSA PRIVATE KEY")
+    let text = String::from_utf8_lossy(data).to_ascii_uppercase();
+    text.contains("PRIVATE KEY") || text.contains("BEGIN RSA PRIVATE KEY")
 }
 
 fn validate_source_ancestors(source_root: &Path, path: &Path) -> Result<(), MigrateError> {

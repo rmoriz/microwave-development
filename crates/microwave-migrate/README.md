@@ -327,9 +327,15 @@ turning it into a non-expiring key. Missing `key_dump.json` or
 Imports are additive by default: existing users with the same username cause a
 clear error, and existing ACL grants/group members survive. Use
 `--merge-users` to reuse an existing user id/authz id (for example a
-bootstrapped `pivotal`) and update it, and `--replace-acls` to replace ACLs and
-group membership for targets present in the backup. Both flags affect only the
-selected import.
+bootstrapped `pivotal`). By default a merged user keeps non-empty target
+credentials, admin/recovery state, profile fields, and an existing target
+default key; the importer warns when the backup has no key material for that
+user. Pass `--replace-user-credentials` to apply credentials/admin/profile and
+the default key from the backup instead. `--replace-acls` replaces ACLs for
+targets present in the backup and membership only for groups read from group
+files, so target-only/synthesized groups such as global `users` are not
+cleared. Failed imports restore the captured previous ACL/group state. All
+flags affect only the selected import.
 
 ### Server-side private material
 
@@ -364,7 +370,10 @@ With `--database-url`, the default is `paths.data_dir` from `--config`
 directories are mode `0700`; existing directories are left unchanged. When
 more than one TLS candidate exists, selection order is `ssl/cert.pem`/
 `ssl/key.pem`, then `cert.pem`/`key.pem`, then the first sorted
-`nginx/ca/*.crt`/`*.key` pair; other candidates are not copied.
+`nginx/ca/*.crt`/`*.key` pair. Additional `nginx/ca/*.crt|*.key` pairs are
+kept as CA material at their relative paths instead of being dropped. Private
+CA detection uses a `.key` extension or a PEM private-key marker; DER-encoded
+keys without either marker are not inferred.
 
 Existing target files are refused unless `--force` is supplied. Symlink
 targets are always refused. All secret files are staged before any target is
@@ -381,7 +390,8 @@ and `nginx/ca/` trees), and symlinks, hardlinks, devices, and FIFOs are
 rejected. Directory entries outside those allowlisted prefixes are rejected.
 A single legacy top-level directory wrapping the allowlisted tree (for example
 `chef-secrets/pivotal.pem`) is accepted. Individual files are limited to
-16 MiB, the archive to 128 MiB, and the expanded set to 64 MiB.
+16 MiB, the archive to 128 MiB, and the expanded set to 64 MiB; the total is
+enforced while reading, before each file is buffered.
 
 `webui_priv.pem`/`webui_pub.pem` and `private-chef-secrets.json` are preserved
 for external tooling and operator reference. Microwave does not consume the
@@ -391,8 +401,11 @@ web-UI keypair or parse/merge the private-chef secret document at runtime.
 
 - No HTTP, `--purge`, or deletion sync. Import merges/upserts; objects removed
   from the backup remain in an existing target store. `--replace-acls` only
-  replaces ACLs and group membership for targets present in the backup and is
-  not one cross-target transaction.
+  replaces ACLs and membership for ACL targets and groups read from the
+  backup; inferred/target-only groups are left alone. It captures and restores
+  previous ACL/group state when the import fails, but is not one cross-target
+  transaction (a crash during the operation can still require operator
+  recovery).
 - The `metadata.rb` parser is not a Ruby interpreter. It does not evaluate
   arbitrary Ruby, conditionals, string interpolation, `eval`, or custom
   helper methods. Prefer a `metadata.json` when the source provides one.

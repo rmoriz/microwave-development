@@ -15,11 +15,12 @@ use crate::{runtime, validate_postgres_url, Compression, MigrateError, DATABASE_
 use chrono::{DateTime, NaiveDateTime, SecondsFormat, TimeZone, Utc};
 use microwave_objectstore::{md5_hex, LocalObjectStore, ObjectStore};
 use microwave_store::{
-    parse_version, ActorKeyRow, AuthzAclActorRow, AuthzAclGroupRow, AuthzEntityRow,
-    AuthzGroupActorRow, AuthzGroupGroupRow, AuthzRepository, ChecksumRow, ClientRow, ContainerRow,
-    CookbookRow, CookbookVersionChecksumRow, CookbookVersionRow, DataBagItemRow, GlobalGroupRow,
-    GroupRow, IdentityRepository, NamedObjectRow, NodeRow, OrgRow, OrgUserAssociationRow,
-    OrgUserInviteRow, Permission, StoreError, StoreSnapshot, User, UserRow,
+    parse_version, AclEntry, ActorKeyRow, ActorType, AuthzAclActorRow, AuthzAclGroupRow,
+    AuthzEntityRow, AuthzGroupActorRow, AuthzGroupGroupRow, AuthzRepository, ChecksumRow,
+    ClientRow, ContainerRow, CookbookRow, CookbookVersionChecksumRow, CookbookVersionRow,
+    DataBagItemRow, GlobalGroupRow, GroupMembers, GroupRow, IdentityRepository, NamedObjectRow,
+    NodeRow, OrgRow, OrgUserAssociationRow, OrgUserInviteRow, Permission, StoreError,
+    StoreSnapshot, User, UserRow,
 };
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -120,7 +121,7 @@ impl KnifeBackupSummary {
 /// `snapshot` contains decoded JSON bodies and all authz relationships;
 /// `blobs` contains cookbook contents that must be placed in the object store
 /// under `(org_id, checksum)` before the snapshot is imported.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct KnifeBackupPlan {
     pub snapshot: StoreSnapshot,
     pub blobs: Vec<BackupBlob>,
@@ -128,9 +129,21 @@ pub struct KnifeBackupPlan {
     /// ACL targets present in the backup, including targets whose ACEs are
     /// empty. Used by `--replace-acls`.
     pub acl_targets: Vec<String>,
-    /// Organization and global groups present in the backup. Used by
+    /// Group authz ids read from group files in the backup. Used by
     /// `--replace-acls` to replace group membership.
     pub group_authz_ids: Vec<String>,
+}
+
+impl std::fmt::Debug for KnifeBackupPlan {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("KnifeBackupPlan")
+            .field("summary", &self.summary)
+            .field("blobs", &self.blobs.len())
+            .field("acl_targets", &self.acl_targets.len())
+            .field("group_authz_ids", &self.group_authz_ids.len())
+            .finish()
+    }
 }
 
 /// Apply-time behavior for a parsed knife backup.
@@ -141,13 +154,27 @@ pub struct KnifeBackupApplyOptions {
     pub merge_users: bool,
     /// Replace ACLs and group membership for targets present in the backup.
     pub replace_acls: bool,
+    /// Replace a merged user's existing credentials, admin flag, profile, and
+    /// default key with backup values.
+    pub replace_user_credentials: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct BackupBlob {
     pub org_id: String,
     pub checksum: String,
     pub data: Vec<u8>,
+}
+
+impl std::fmt::Debug for BackupBlob {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BackupBlob")
+            .field("org_id", &self.org_id)
+            .field("checksum", &self.checksum)
+            .field("bytes", &self.data.len())
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -180,7 +207,16 @@ struct KeyTableRow {
 struct InlineKey {
     actor_id: String,
     actor_type: &'static str,
+    actor_name: String,
+    org_name: Option<String>,
     public_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct KeyIdentity {
+    actor_type: String,
+    actor_name: String,
+    org_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -311,14 +347,36 @@ pub fn apply_knife_backup_plan_sqlite_with_options(
         .map(|group| (group.name, group.authz_id))
         .collect();
     let existing_users = store.list_users()?;
-    let plan = reconcile_global_groups(plan, &existing_groups);
-    let plan = reconcile_users(&plan, &existing_users, options.merge_users)?;
-    write_blobs(bookshelf_dir, &plan.blobs)?;
-    if options.replace_acls {
-        let runtime = runtime()?;
-        runtime.block_on(clear_existing_acl_state(&store, &plan))?;
+    let mut existing_default_keys = HashSet::new();
+    for user in &existing_users {
+        if store
+            .list_actor_keys(&user.id, ActorType::User)?
+            .iter()
+            .any(|key| key.key_name == "default")
+        {
+            existing_default_keys.insert(user.id.clone());
+        }
     }
-    store.import_snapshot(&plan.snapshot)?;
+    let plan = reconcile_global_groups(plan, &existing_groups);
+    let plan = reconcile_users(&plan, &existing_users, &existing_default_keys, options)?;
+    write_blobs(bookshelf_dir, &plan.blobs)?;
+    let runtime = runtime()?;
+    let acl_state = if options.replace_acls {
+        Some(runtime.block_on(capture_existing_acl_state(&store, &plan))?)
+    } else {
+        None
+    };
+    if let Some(state) = &acl_state {
+        if let Err(error) = runtime.block_on(clear_existing_acl_state(&store, &plan)) {
+            return Err(restore_after_failure(&runtime, &store, state, error));
+        }
+    }
+    if let Err(error) = store.import_snapshot(&plan.snapshot) {
+        if let Some(state) = &acl_state {
+            return Err(restore_after_failure(&runtime, &store, state, error.into()));
+        }
+        return Err(error.into());
+    }
     Ok(plan.summary)
 }
 
@@ -360,13 +418,35 @@ pub fn apply_knife_backup_plan_postgres_with_options(
         .map(|group| (group.name, group.authz_id))
         .collect();
     let existing_users = runtime.block_on(store.list_users())?;
-    let plan = reconcile_global_groups(plan, &existing_groups);
-    let plan = reconcile_users(&plan, &existing_users, options.merge_users)?;
-    write_blobs(bookshelf_dir, &plan.blobs)?;
-    if options.replace_acls {
-        runtime.block_on(clear_existing_acl_state(&store, &plan))?;
+    let mut existing_default_keys = HashSet::new();
+    for user in &existing_users {
+        if runtime
+            .block_on(store.list_actor_keys(&user.id, ActorType::User))?
+            .iter()
+            .any(|key| key.key_name == "default")
+        {
+            existing_default_keys.insert(user.id.clone());
+        }
     }
-    runtime.block_on(store.import_snapshot(&plan.snapshot))?;
+    let plan = reconcile_global_groups(plan, &existing_groups);
+    let plan = reconcile_users(&plan, &existing_users, &existing_default_keys, options)?;
+    write_blobs(bookshelf_dir, &plan.blobs)?;
+    let acl_state = if options.replace_acls {
+        Some(runtime.block_on(capture_existing_acl_state(&store, &plan))?)
+    } else {
+        None
+    };
+    if let Some(state) = &acl_state {
+        if let Err(error) = runtime.block_on(clear_existing_acl_state(&store, &plan)) {
+            return Err(restore_after_failure(&runtime, &store, state, error));
+        }
+    }
+    if let Err(error) = runtime.block_on(store.import_snapshot(&plan.snapshot)) {
+        if let Some(state) = &acl_state {
+            return Err(restore_after_failure(&runtime, &store, state, error.into()));
+        }
+        return Err(error.into());
+    }
     Ok(plan.summary)
 }
 
@@ -454,10 +534,12 @@ fn reconcile_global_groups(
 fn reconcile_users(
     plan: &KnifeBackupPlan,
     existing: &[User],
-    merge: bool,
+    existing_default_keys: &HashSet<String>,
+    options: &KnifeBackupApplyOptions,
 ) -> Result<KnifeBackupPlan, MigrateError> {
     let mut id_replacements: HashMap<String, String> = HashMap::new();
     let mut authz_replacements: HashMap<String, String> = HashMap::new();
+    let mut merged_users: Vec<User> = Vec::new();
     for planned in &plan.snapshot.users {
         let Some(existing) = existing
             .iter()
@@ -468,11 +550,12 @@ fn reconcile_users(
         if existing.id == planned.id && existing.authz_id == planned.authz_id {
             continue;
         }
-        if !merge {
+        if !options.merge_users {
             return Err(MigrateError::ExistingUser {
                 username: planned.username.clone(),
             });
         }
+        merged_users.push(existing.clone());
         if existing.id != planned.id {
             id_replacements.insert(planned.id.clone(), existing.id.clone());
         }
@@ -486,6 +569,7 @@ fn reconcile_users(
 
     let mut snapshot = plan.snapshot.clone();
     let mut acl_targets = plan.acl_targets.clone();
+    let mut summary = plan.summary.clone();
     let replace_id = |value: &mut String| {
         if let Some(replacement) = id_replacements.get(value) {
             *value = replacement.clone();
@@ -500,10 +584,37 @@ fn reconcile_users(
     for user in &mut snapshot.users {
         replace_id(&mut user.id);
         replace_authz(&mut user.authz_id);
+        if let Some(existing) = merged_users
+            .iter()
+            .find(|existing| existing.username == user.username)
+        {
+            if !options.replace_user_credentials {
+                preserve_user_profile(user, existing);
+            }
+        }
     }
     for key in &mut snapshot.actor_keys {
         if key.actor_type == "user" {
             replace_id(&mut key.actor_id);
+        }
+    }
+    if !options.replace_user_credentials {
+        snapshot.actor_keys.retain(|key| {
+            !(key.actor_type == "user"
+                && key.key_name == "default"
+                && existing_default_keys.contains(&key.actor_id))
+        });
+    }
+    for existing in &merged_users {
+        if !snapshot
+            .actor_keys
+            .iter()
+            .any(|key| key.actor_type == "user" && key.actor_id == existing.id)
+        {
+            summary.warnings.push(format!(
+                "merged user {:?} has no imported key material; existing target keys were kept",
+                existing.username
+            ));
         }
     }
     for association in &mut snapshot.org_user_associations {
@@ -528,14 +639,75 @@ fn reconcile_users(
     for target in &mut acl_targets {
         replace_authz(target);
     }
+    summary.warnings.sort();
+    summary.warnings.dedup();
 
     Ok(KnifeBackupPlan {
         snapshot,
         blobs: plan.blobs.clone(),
-        summary: plan.summary.clone(),
+        summary,
         acl_targets,
         group_authz_ids: plan.group_authz_ids.clone(),
     })
+}
+
+fn preserve_user_profile(user: &mut UserRow, existing: &User) {
+    if !existing.password_hash.is_empty() {
+        user.password_hash = existing.password_hash.clone();
+        user.password_salt = existing.password_salt.clone();
+        if !existing.hash_type.is_empty() {
+            user.hash_type = existing.hash_type.clone();
+        }
+    }
+    user.admin = existing.admin;
+    user.recovery_authentication_enabled = existing.recovery_authentication_enabled;
+    preserve_option(&mut user.email, &existing.email);
+    preserve_option(
+        &mut user.external_authentication_uid,
+        &existing.external_authentication_uid,
+    );
+    preserve_option(&mut user.display_name, &existing.display_name);
+    preserve_option(&mut user.first_name, &existing.first_name);
+    preserve_option(&mut user.middle_name, &existing.middle_name);
+    preserve_option(&mut user.last_name, &existing.last_name);
+}
+
+fn preserve_option(target: &mut Option<String>, existing: &Option<String>) {
+    if existing.as_deref().is_some_and(|value| !value.is_empty()) {
+        *target = existing.clone();
+    }
+}
+
+struct CapturedAclState {
+    targets: Vec<(String, Vec<AclEntry>)>,
+    groups: Vec<(String, String, GroupMembers)>,
+}
+
+async fn capture_existing_acl_state<S: AuthzRepository + ?Sized>(
+    store: &S,
+    plan: &KnifeBackupPlan,
+) -> Result<CapturedAclState, MigrateError> {
+    let mut targets = Vec::with_capacity(plan.acl_targets.len());
+    for target in &plan.acl_targets {
+        match store.get_acl_entries(target).await {
+            Ok(entries) => targets.push((target.clone(), entries)),
+            Err(StoreError::NotFound(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let mut groups = Vec::with_capacity(plan.group_authz_ids.len());
+    for group_authz_id in &plan.group_authz_ids {
+        let org_id = plan
+            .snapshot
+            .groups
+            .iter()
+            .find(|group| &group.authz_id == group_authz_id)
+            .map(|group| group.org_id.clone())
+            .unwrap_or_default();
+        let members = store.list_group_members(&org_id, group_authz_id).await?;
+        groups.push((org_id, group_authz_id.clone(), members));
+    }
+    Ok(CapturedAclState { targets, groups })
 }
 
 async fn clear_existing_acl_state<S: AuthzRepository + ?Sized>(
@@ -556,11 +728,63 @@ async fn clear_existing_acl_state<S: AuthzRepository + ?Sized>(
         }
     }
     for group_authz_id in &plan.group_authz_ids {
+        let org_id = plan
+            .snapshot
+            .groups
+            .iter()
+            .find(|group| &group.authz_id == group_authz_id)
+            .map(|group| group.org_id.clone())
+            .unwrap_or_default();
         store
-            .replace_group_members("", group_authz_id, Some(&[]), Some(&[]), Some(&[]))
+            .replace_group_members(&org_id, group_authz_id, Some(&[]), Some(&[]), Some(&[]))
             .await?;
     }
     Ok(())
+}
+
+async fn restore_acl_state<S: AuthzRepository + ?Sized>(
+    store: &S,
+    state: &CapturedAclState,
+) -> Result<(), MigrateError> {
+    for (target, entries) in &state.targets {
+        for entry in entries {
+            store
+                .set_acl_for_permission_split(
+                    target,
+                    entry.permission,
+                    &entry.users,
+                    &entry.clients,
+                    &entry.groups,
+                )
+                .await?;
+        }
+    }
+    for (org_id, group_authz_id, members) in &state.groups {
+        store
+            .replace_group_members(
+                org_id,
+                group_authz_id,
+                Some(&members.users),
+                Some(&members.clients),
+                Some(&members.groups),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+fn restore_after_failure<S: AuthzRepository + ?Sized>(
+    runtime: &tokio::runtime::Runtime,
+    store: &S,
+    state: &CapturedAclState,
+    error: MigrateError,
+) -> MigrateError {
+    match runtime.block_on(restore_acl_state(store, state)) {
+        Ok(()) => error,
+        Err(restore_error) => MigrateError::AclRollback(format!(
+            "import failed: {error}; restoring the previous ACL state also failed: {restore_error}"
+        )),
+    }
 }
 
 fn write_blobs(root: &Path, blobs: &[BackupBlob]) -> Result<(), MigrateError> {
@@ -594,6 +818,8 @@ struct Builder {
     cookbook_authz: HashMap<(String, String), String>,
     pending_acls: Vec<PendingAcl>,
     acl_targets: HashSet<String>,
+    backup_group_authz_ids: HashSet<String>,
+    skipped_default_keys: HashSet<KeyIdentity>,
     inline_keys: Vec<InlineKey>,
     seen_users: HashSet<String>,
     seen_orgs: HashSet<String>,
@@ -634,6 +860,8 @@ impl Builder {
             cookbook_authz: HashMap::new(),
             pending_acls: Vec::new(),
             acl_targets: HashSet::new(),
+            backup_group_authz_ids: HashSet::new(),
+            skipped_default_keys: HashSet::new(),
             inline_keys: Vec::new(),
             seen_users: HashSet::new(),
             seen_orgs: HashSet::new(),
@@ -668,20 +896,8 @@ impl Builder {
             .collect();
         let mut acl_targets: Vec<String> = self.acl_targets.into_iter().collect();
         acl_targets.sort();
-        let mut group_authz_ids: Vec<String> = self
-            .data
-            .groups
-            .iter()
-            .map(|group| group.authz_id.clone())
-            .collect();
-        group_authz_ids.extend(
-            self.data
-                .global_groups
-                .iter()
-                .map(|group| group.authz_id.clone()),
-        );
+        let mut group_authz_ids: Vec<String> = self.backup_group_authz_ids.into_iter().collect();
         group_authz_ids.sort();
-        group_authz_ids.dedup();
         KnifeBackupPlan {
             snapshot: self.data,
             blobs,
@@ -851,6 +1067,8 @@ impl Builder {
                 self.inline_keys.push(InlineKey {
                     actor_id: id,
                     actor_type: "user",
+                    actor_name: username.clone(),
+                    org_name: None,
                     public_key,
                 });
             }
@@ -888,6 +1106,8 @@ impl Builder {
                 continue;
             };
             let actor_type = string_field(&row, "type").unwrap_or_default();
+            let key_name = non_empty_string(&row, "key_name").unwrap_or_else(|| "default".into());
+            let org_name = non_empty_string(&row, "org_name");
             let Some(public_key) = non_empty_string(&row, "public_key") else {
                 self.warn(format!(
                     "key_table_dump.json entry for {name:?} has no public key; skipping"
@@ -897,6 +1117,13 @@ impl Builder {
             let expires_at = match normalize_expires_at(row.get("expires_at")) {
                 Ok(expires_at) => expires_at,
                 Err(message) => {
+                    if key_name == "default" {
+                        self.skipped_default_keys.insert(KeyIdentity {
+                            actor_type: actor_type.clone(),
+                            actor_name: name.clone(),
+                            org_name: org_name.clone(),
+                        });
+                    }
                     self.warn(format!(
                         "key_table_dump.json entry for {name:?} has invalid expires_at {message}; skipping"
                     ));
@@ -910,8 +1137,8 @@ impl Builder {
             let key = KeyTableRow {
                 name,
                 actor_type,
-                org_name: non_empty_string(&row, "org_name"),
-                key_name: non_empty_string(&row, "key_name").unwrap_or_else(|| "default".into()),
+                org_name,
+                key_name,
                 public_key,
                 key_version: integer_field(&row, "key_version").unwrap_or(1),
                 expires_at,
@@ -987,11 +1214,15 @@ impl Builder {
 
     fn add_inline_default_keys(&mut self) {
         for key in std::mem::take(&mut self.inline_keys) {
-            if self
-                .data
-                .actor_keys
-                .iter()
-                .any(|existing| existing.actor_id == key.actor_id && existing.key_name == "default")
+            let identity = KeyIdentity {
+                actor_type: key.actor_type.to_string(),
+                actor_name: key.actor_name.clone(),
+                org_name: key.org_name.clone(),
+            };
+            if self.skipped_default_keys.contains(&identity)
+                || self.data.actor_keys.iter().any(|existing| {
+                    existing.actor_id == key.actor_id && existing.key_name == "default"
+                })
             {
                 continue;
             }
@@ -1141,6 +1372,8 @@ impl Builder {
                 self.inline_keys.push(InlineKey {
                     actor_id: id,
                     actor_type: "client",
+                    actor_name: name.clone(),
+                    org_name: Some(org_name.to_string()),
                     public_key,
                 });
             }
@@ -1217,6 +1450,7 @@ impl Builder {
             let id = stable_id(&format!("group:id:{org_name}:{name}"));
             let authz_id = stable_id(&format!("group:authz:{org_name}:{name}"));
             self.ensure_authz(&authz_id, "group", Some(&org_id));
+            self.backup_group_authz_ids.insert(authz_id.clone());
             self.group_authz
                 .insert((org_name.to_string(), name.clone()), authz_id.clone());
             self.data.groups.push(GroupRow {
@@ -2095,13 +2329,18 @@ impl Builder {
             }
 
             for group in groups {
-                if group.trim().is_empty() {
+                let group = group.trim();
+                if group.is_empty()
+                    || group
+                        .strip_prefix("::")
+                        .is_some_and(|name| name.trim().is_empty())
+                {
                     continue;
                 }
                 if let Some(group_authz) = if user_acl {
-                    self.resolve_global_group(&group)
+                    self.resolve_global_group(group)
                 } else {
-                    self.resolve_group_authz(org_name, &group)
+                    self.resolve_group_authz(org_name, group)
                 } {
                     self.add_acl_group(target_authz, permission, &group_authz);
                 } else {
@@ -2446,7 +2685,7 @@ fn timestamp_field(value: &Value, key: &str) -> Option<String> {
 fn normalize_expires_at(value: Option<&Value>) -> Result<String, String> {
     match value {
         None | Some(Value::Null) => Ok("infinity".into()),
-        Some(Value::String(text)) if text.trim().is_empty() => Ok("infinity".into()),
+        Some(Value::String(text)) if text.trim().is_empty() => Err("empty value".into()),
         Some(Value::String(text)) if text.trim().eq_ignore_ascii_case("infinity") => {
             Ok("infinity".into())
         }
@@ -2786,19 +3025,27 @@ fn read_cookbook_readme(
     filename: &str,
     metadata_path: &Path,
 ) -> Result<Option<String>, MigrateError> {
-    let mut components = Path::new(filename).components();
-    let Some(Component::Normal(name)) = components.next() else {
+    let mut name = None;
+    for component in Path::new(filename).components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(value) if name.is_none() => name = Some(value),
+            _ => {
+                return Err(MigrateError::InvalidBackup {
+                    path: metadata_path.to_path_buf(),
+                    message: format!(
+                        "long_description filename {filename:?} is not a single normal file"
+                    ),
+                })
+            }
+        }
+    }
+    let Some(name) = name else {
         return Err(MigrateError::InvalidBackup {
             path: metadata_path.to_path_buf(),
             message: format!("long_description filename {filename:?} is not a single normal file"),
         });
     };
-    if components.next().is_some() {
-        return Err(MigrateError::InvalidBackup {
-            path: metadata_path.to_path_buf(),
-            message: format!("long_description filename {filename:?} contains a path prefix"),
-        });
-    }
     let candidate = cookbook_root.join(name);
     let metadata = match std::fs::symlink_metadata(&candidate) {
         Ok(metadata) => metadata,
@@ -2981,7 +3228,7 @@ mod tests {
             r#"name 'demo'
 version '2.3.4'
 description %q{A demo cookbook}
-long_description IO.read(File.join(File.dirname(__FILE__), 'README.md'))
+long_description IO.read(File.join(File.dirname(__FILE__), './README.md'))
 depends 'apt', '~> 7.0'
 supports 'ubuntu', '>= 20.04'
 "#,

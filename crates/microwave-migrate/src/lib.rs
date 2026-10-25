@@ -131,6 +131,8 @@ pub enum MigrateError {
     ObjectStore(#[from] microwave_objectstore::ObjectStoreError),
     #[error("server secrets import: {0}")]
     ServerSecrets(String),
+    #[error("ACL rollback failed: {0}")]
+    AclRollback(String),
     #[error(
         "target store already has user {username:?} with a different id; re-run with --merge-users to reuse it"
     )]
