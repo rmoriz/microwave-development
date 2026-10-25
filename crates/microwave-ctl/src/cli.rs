@@ -310,6 +310,66 @@ pub enum Command {
         tar: bool,
     },
 
+    /// Edit a user's profile, email, admin flag, or password. Without
+    /// `--input`, the JSON document is opened in `$VISUAL`/`$EDITOR`.
+    UserEdit {
+        /// Username.
+        user: String,
+        /// Read the edited JSON document from this file instead of an editor.
+        #[arg(long, value_name = "FILE")]
+        input: Option<PathBuf>,
+    },
+
+    /// Show the client id, secret, and redirect URI of an OAuth application.
+    OcIdShowApp {
+        /// Application name.
+        app: String,
+    },
+
+    /// Remove authorization entities no longer referenced by any actor or
+    /// object. Use `--estimate-only` to report the count without deleting.
+    CleanupBifrost {
+        /// Report how many unused authorization entities would be removed.
+        #[arg(long)]
+        estimate_only: bool,
+        /// Seconds to wait for in-flight requests before starting.
+        #[arg(long, value_name = "SECONDS", default_value_t = 0)]
+        wait_time: u64,
+        /// Also remove stale internal cleanup tracking rows.
+        #[arg(long)]
+        force_cleanup: bool,
+    },
+
+    /// Write redacted, indexable objects for all organizations as JSON files.
+    FilteredDump {
+        /// Destination directory for the JSON files.
+        #[arg(long, value_name = "DIR", default_value = ".")]
+        output: PathBuf,
+        /// Limit the dump to one organization.
+        #[arg(long, value_name = "ORG")]
+        org: Option<String>,
+    },
+
+    /// Create a tarball of recent logs and redacted system information.
+    GatherLogs {
+        /// Destination `.tar.gz` file. Defaults to
+        /// `microwave-logs-<timestamp>.tar.gz` in the current directory.
+        #[arg(long, value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
+
+    /// Rotate the stored credentials for one service group.
+    RotateCredentials {
+        /// Credential/service group, for example `bookshelf` or `oc_id`.
+        service: String,
+    },
+
+    /// Rotate the stored credentials for every known service group.
+    RotateAllCredentials,
+
+    /// Rotate the shared secret/salt and every service credential.
+    RotateSharedSecrets,
+
     /// Import a Microwave migration snapshot (produced by the
     /// `microwave-migrate` binary) into the configured SQLite or PostgreSQL
     /// store. This merges into live metadata and asks for confirmation unless

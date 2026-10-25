@@ -4,15 +4,19 @@
 //! `chef-server-ctl` compatibility alias, so both expose exactly the same
 //! command surface.
 
+mod admin;
 mod backup;
 mod cli;
 mod commands;
 mod context;
 mod diagnostics;
+mod dump;
 mod error;
 mod keys;
+mod maintenance;
 mod pedant;
 mod pg;
+mod rotation;
 mod secrets;
 mod service;
 
@@ -176,5 +180,19 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
         Command::MigrateFromLegacy { input, yes } => {
             commands::migrate_from_legacy(&context, &input, yes)
         }
+        Command::UserEdit { user, input } => admin::user_edit(&context, &user, input.as_deref()),
+        Command::OcIdShowApp { app } => admin::oc_id_show_app(&context, &app),
+        Command::CleanupBifrost {
+            estimate_only,
+            wait_time,
+            force_cleanup,
+        } => maintenance::cleanup_bifrost(&context, estimate_only, wait_time, force_cleanup),
+        Command::FilteredDump { output, org } => {
+            dump::filtered_dump(&context, &output, org.as_deref())
+        }
+        Command::GatherLogs { output } => dump::gather_logs(&context, output.as_deref()),
+        Command::RotateCredentials { service } => rotation::rotate_credentials(&context, &service),
+        Command::RotateAllCredentials => rotation::rotate_all_credentials(&context),
+        Command::RotateSharedSecrets => rotation::rotate_shared_secrets(&context),
     }
 }
