@@ -205,4 +205,16 @@ async fn principals_are_readable_without_a_valid_signature_or_org_membership() {
     // Unassociated users remain forbidden from regular organization resources.
     let (status, _) = request(&app, "GET", "/organizations/acme/clients", b"", "outsider").await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // There is no principal collection resource; the route fallback is a 404
+    // even for a request whose signature cannot be verified.
+    let (status, _) = request(
+        &app,
+        "GET",
+        "/organizations/acme/principals/",
+        b"",
+        "invalid",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
