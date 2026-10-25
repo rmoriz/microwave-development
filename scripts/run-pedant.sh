@@ -242,6 +242,16 @@ EOF
   export PEDANT_DATABASE="$database"
   export PEDANT_ARTIFACTS="$TAG_DIR"
   export PEDANT_CONFIG="$TAG_DIR/pedant_config.rb"
+  # The ACL suite creates an auxiliary organization in a before(:all) hook
+  # only when Pedant is allowed to create the main organization. This harness
+  # bootstraps the main organization itself, so opt into auxiliary org
+  # management for that suite only (other suites use the flag to pick a
+  # dedicated org instead of the seeded one).
+  if [[ "$(pedant_tag "$tag")" == "acl" ]]; then
+    export PEDANT_AUX_ORG=1
+  else
+    unset PEDANT_AUX_ORG || true
+  fi
   if ! (cd "$PEDANT_DIR" && "$BUNDLE_BIN" exec "$RUBY_BIN" "$ROOT/scripts/pedant-bootstrap.rb"); then
     echo "error: [$tag] pedant bootstrap failed (see output above)" >&2
     exit 4
