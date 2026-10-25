@@ -331,6 +331,10 @@ pub trait AuthzRepository: Send + Sync {
 
     async fn ensure_global_group(&self, name: &str) -> Result<Group, StoreError>;
     async fn find_global_group(&self, name: &str) -> Result<Option<Group>, StoreError>;
+    async fn list_global_groups(&self) -> Result<Vec<Group>, StoreError>;
+    /// Remove a global group and every ACL/membership row that references its
+    /// authz entity. Missing groups are a no-op so cleanup stays idempotent.
+    async fn delete_global_group(&self, name: &str) -> Result<(), StoreError>;
 
     async fn check_permission(
         &self,

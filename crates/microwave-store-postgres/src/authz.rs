@@ -1061,6 +1061,61 @@ impl AuthzRepository for PostgresStore {
         .map_err(db)
     }
 
+    async fn list_global_groups(&self) -> Result<Vec<Group>, StoreError> {
+        let rows = sqlx::query("SELECT id, authz_id, name FROM global_groups ORDER BY name")
+            .fetch_all(self.pool())
+            .await
+            .map_err(db)?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(Group {
+                    id: row.try_get(0)?,
+                    authz_id: row.try_get(1)?,
+                    name: row.try_get(2)?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()
+            .map_err(db)
+    }
+
+    async fn delete_global_group(&self, name: &str) -> Result<(), StoreError> {
+        let mut transaction = self.pool().begin().await.map_err(db)?;
+        let authz_id: Option<String> =
+            sqlx::query_scalar("DELETE FROM global_groups WHERE name = $1 RETURNING authz_id")
+                .bind(name)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(db)?;
+        let Some(authz_id) = authz_id else {
+            transaction.commit().await.map_err(db)?;
+            return Ok(());
+        };
+
+        for statement in [
+            "DELETE FROM authz_acl_actor
+             WHERE target_authz_id = $1 OR actor_authz_id = $1",
+            "DELETE FROM authz_acl_group
+             WHERE target_authz_id = $1 OR group_authz_id = $1",
+            "DELETE FROM authz_group_actors
+             WHERE group_authz_id = $1 OR actor_authz_id = $1",
+            "DELETE FROM authz_group_groups
+             WHERE parent_group_authz_id = $1 OR child_group_authz_id = $1",
+        ] {
+            sqlx::query(statement)
+                .bind(&authz_id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(db)?;
+        }
+        sqlx::query("DELETE FROM authz_entities WHERE authz_id = $1")
+            .bind(&authz_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db)?;
+        transaction.commit().await.map_err(db)?;
+        Ok(())
+    }
+
     async fn check_permission(
         &self,
         actor_authz_id: &str,
@@ -1155,6 +1210,11 @@ impl AuthzRepository for PostgresStore {
     }
 
     async fn delete_org(&self, org_id: &str) -> Result<(), StoreError> {
+        let name: Option<String> = sqlx::query_scalar("SELECT name FROM orgs WHERE id = $1")
+            .bind(org_id)
+            .fetch_optional(self.pool())
+            .await
+            .map_err(db)?;
         let mut transaction = self.pool().begin().await.map_err(db)?;
 
         // `cookbook_version_checksums` and
@@ -1190,6 +1250,10 @@ impl AuthzRepository for PostgresStore {
         }
 
         transaction.commit().await.map_err(db)?;
+        if let Some(name) = name {
+            self.delete_global_group(&format!("{name}_read_access_group"))
+                .await?;
+        }
         Ok(())
     }
 }

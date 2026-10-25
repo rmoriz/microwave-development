@@ -13,6 +13,7 @@ use microwave_store::{
 };
 use microwave_store_postgres::PostgresStore;
 use sqlx::Row;
+use std::sync::OnceLock;
 
 fn assert_metadata_store<T: microwave_store::MetadataStore>() {}
 
@@ -27,6 +28,36 @@ fn test_url() -> Option<String> {
         .filter(|url| !url.trim().is_empty())
 }
 
+/// Apply the embedded schema exactly once per test binary.
+///
+/// Each test owns its runtime and its own pool. Running migration DDL
+/// concurrently from every test can deadlock against another test's DML on
+/// PostgreSQL, so the first caller migrates and later callers use
+/// `connect_existing`.
+fn ensure_postgres_schema(url: &str) {
+    static MIGRATED: OnceLock<Result<(), String>> = OnceLock::new();
+    let result = MIGRATED.get_or_init(|| {
+        let url = url.to_string();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| format!("build migration runtime: {error}"))?;
+            runtime.block_on(async move {
+                PostgresStore::connect(&url)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+        })
+        .join()
+        .unwrap_or_else(|_| Err("PostgreSQL migration thread panicked".to_string()))
+    });
+    if let Err(error) = result {
+        panic!("configured PostgreSQL migration failed: {error}");
+    }
+}
+
 /// Returns `None` (after printing a skip message) only when no test database
 /// was configured. A configured database that cannot be reached or migrated is
 /// a hard failure: silently skipping would hide broken migrations.
@@ -38,8 +69,9 @@ async fn test_store() -> Option<PostgresStore> {
         );
         return None;
     };
+    ensure_postgres_schema(&url);
     Some(
-        PostgresStore::connect(&url)
+        PostgresStore::connect_existing(&url)
             .await
             .expect("connect to configured PostgreSQL"),
     )
@@ -1720,6 +1752,59 @@ async fn resolves_global_groups_in_acls_and_membership() {
         .await
         .expect("list group members");
     assert_eq!(members.groups, vec![global_name]);
+}
+
+#[tokio::test]
+async fn deleting_org_removes_its_read_access_global_group_and_acl_rows() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let org = store
+        .create_org(&format!("delete-org-{}", suffix()), "Delete Org")
+        .await
+        .expect("create org");
+    let read_access_name = format!("{}_read_access_group", org.name);
+    let read_access = store
+        .ensure_global_group(&read_access_name)
+        .await
+        .expect("create read access group");
+    let child = store
+        .create_group_for_org(&org.id, "admins")
+        .await
+        .expect("create child group");
+    store
+        .add_group_child(&read_access.authz_id, &child.authz_id)
+        .await
+        .expect("nest child group");
+    assert!(!store
+        .get_acl_entries(&read_access.authz_id)
+        .await
+        .expect("read access ACL rows")
+        .is_empty());
+
+    store.delete_org(&org.id).await.expect("delete org");
+
+    assert!(store
+        .find_org(&org.name)
+        .await
+        .expect("find deleted org")
+        .is_none());
+    assert!(store
+        .find_global_group(&read_access_name)
+        .await
+        .expect("find deleted read access group")
+        .is_none());
+    assert!(!store
+        .list_global_groups()
+        .await
+        .expect("list global groups")
+        .iter()
+        .any(|group| group.name == read_access_name));
+    match store.get_acl_entries(&read_access.authz_id).await {
+        Ok(entries) => assert!(entries.is_empty(), "ACL rows survived: {entries:?}"),
+        Err(StoreError::NotFound(_)) => {}
+        Err(error) => panic!("ACL rows after org deletion: {error}"),
+    }
 }
 
 #[tokio::test]

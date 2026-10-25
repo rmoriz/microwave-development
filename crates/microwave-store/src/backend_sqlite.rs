@@ -477,6 +477,14 @@ impl AuthzRepository for SqliteStore {
         self.find_global_group(name)
     }
 
+    async fn list_global_groups(&self) -> Result<Vec<Group>, StoreError> {
+        self.list_global_groups()
+    }
+
+    async fn delete_global_group(&self, name: &str) -> Result<(), StoreError> {
+        self.delete_global_group(name)
+    }
+
     async fn check_permission(
         &self,
         actor_authz_id: &str,

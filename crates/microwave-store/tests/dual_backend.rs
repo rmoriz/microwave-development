@@ -251,6 +251,60 @@ async fn create_user<S: MetadataStore + ?Sized>(store: &S, prefix: &str) -> micr
 mod suite {
     use super::*;
 
+    pub async fn org_deletion(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let name = unique("delete-org");
+        let org = store
+            .create_org(&name, "Delete Organization")
+            .await
+            .expect("create org for deletion");
+        let read_access_name = format!("{name}_read_access_group");
+        let read_access = store
+            .ensure_global_group(&read_access_name)
+            .await
+            .expect("create org read access group");
+        let child = store
+            .create_group_for_org(&org.id, "admins")
+            .await
+            .expect("create org group");
+        store
+            .add_group_child(&read_access.authz_id, &child.authz_id)
+            .await
+            .expect("join read access group to org group");
+
+        assert!(store
+            .find_global_group(&read_access_name)
+            .await
+            .expect("find read access group")
+            .is_some());
+        assert!(!store
+            .get_acl_entries(&read_access.authz_id)
+            .await
+            .expect("read access group ACL rows")
+            .is_empty());
+
+        store.delete_org(&org.id).await.expect("delete org");
+
+        assert!(store
+            .find_org(&name)
+            .await
+            .expect("find deleted org")
+            .is_none());
+        assert!(store
+            .find_global_group(&read_access_name)
+            .await
+            .expect("find deleted read access group")
+            .is_none());
+        match store.get_acl_entries(&read_access.authz_id).await {
+            Ok(entries) => assert!(
+                entries.is_empty(),
+                "read access ACL rows survived org deletion: {entries:?}"
+            ),
+            Err(StoreError::NotFound(_)) => {}
+            Err(error) => panic!("read access ACL rows after delete: {error}"),
+        }
+        Vec::new()
+    }
+
     pub async fn identity(store: &Arc<dyn MetadataStore>) -> Vec<String> {
         let fixture = fixture(store.as_ref()).await;
         let org = &fixture.org;
@@ -2489,11 +2543,33 @@ macro_rules! matrix {
 matrix!(
     sqlite,
     sqlite_store,
-    [identity, authz, objects, cookbooks, policies, artifacts, membership, oauth, kv_secrets,]
+    [
+        org_deletion,
+        identity,
+        authz,
+        objects,
+        cookbooks,
+        policies,
+        artifacts,
+        membership,
+        oauth,
+        kv_secrets,
+    ]
 );
 
 matrix!(
     postgres,
     postgres_store,
-    [identity, authz, objects, cookbooks, policies, artifacts, membership, oauth, kv_secrets,]
+    [
+        org_deletion,
+        identity,
+        authz,
+        objects,
+        cookbooks,
+        policies,
+        artifacts,
+        membership,
+        oauth,
+        kv_secrets,
+    ]
 );

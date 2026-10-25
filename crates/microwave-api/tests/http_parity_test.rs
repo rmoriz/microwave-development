@@ -309,6 +309,16 @@ async fn cleanup_store(store: &dyn MetadataStore, run: &str) -> Result<(), Strin
                     ))
                 }
             }
+            let remaining = store
+                .find_actor_keys(&actor_id, ActorType::Client)
+                .await
+                .map_err(|error| format!("verify client keys for {actor_id}: {error}"))?;
+            if !remaining.is_empty() {
+                return Err(format!(
+                    "client {actor_id} still has {} keys after cleanup",
+                    remaining.len()
+                ));
+            }
         }
     }
 
@@ -352,6 +362,60 @@ async fn cleanup_store(store: &dyn MetadataStore, run: &str) -> Result<(), Strin
             Ok(()) | Err(StoreError::NotFound(_)) => {}
             Err(error) => return Err(format!("delete pivotal parity key: {error}")),
         }
+    }
+
+    // Org creation bootstraps `<org>_read_access_group` as a global group and
+    // grants it ACL rows. Production `delete_org` removes that group, but an
+    // organization deleted through the API before this cleanup pass is not in
+    // `list_orgs` any more, so sweep every run-named global group directly.
+    let global_groups = store
+        .list_global_groups()
+        .await
+        .map_err(|error| format!("list global groups: {error}"))?;
+    for group in global_groups
+        .iter()
+        .filter(|group| group.name.starts_with(run))
+    {
+        store
+            .delete_global_group(&group.name)
+            .await
+            .map_err(|error| format!("delete global group {}: {error}", group.name))?;
+    }
+
+    // Postcondition: nothing scoped to this run may survive. Every collection
+    // is re-read rather than trusted from the deletion pass.
+    let remaining_orgs = store
+        .list_orgs()
+        .await
+        .map_err(|error| format!("verify organizations: {error}"))?
+        .into_iter()
+        .filter(|org| org.name.starts_with(run))
+        .count();
+    let remaining_users = store
+        .list_users()
+        .await
+        .map_err(|error| format!("verify users: {error}"))?
+        .into_iter()
+        .filter(|user| user.username.starts_with(run))
+        .count();
+    let remaining_apps = store
+        .list_oauth_applications()
+        .await
+        .map_err(|error| format!("verify oauth applications: {error}"))?
+        .into_iter()
+        .filter(|application| application.name.starts_with(run))
+        .count();
+    let remaining_groups = store
+        .list_global_groups()
+        .await
+        .map_err(|error| format!("verify global groups: {error}"))?
+        .into_iter()
+        .filter(|group| group.name.starts_with(run))
+        .count();
+    if remaining_orgs > 0 || remaining_users > 0 || remaining_apps > 0 || remaining_groups > 0 {
+        return Err(format!(
+            "cleanup postcondition failed for {run}: orgs={remaining_orgs},              users={remaining_users}, oauth_apps={remaining_apps},              global_groups={remaining_groups}"
+        ));
     }
 
     Ok(())
@@ -1072,6 +1136,31 @@ async fn scenario_identity(h: &Harness) -> Vec<Step> {
         .await
         .expect_ok();
     assert_eq!(step.json()["name"], "renamed");
+    steps.push(step);
+
+    let step = h
+        .send(
+            "delete user",
+            "DELETE",
+            &format!("/users/{alice_renamed}"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_ok();
+    assert_eq!(step.json(), &json!({}));
+    steps.push(step);
+
+    let step = h
+        .send(
+            "read deleted user",
+            "GET",
+            &format!("/users/{alice_renamed}"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::NOT_FOUND);
     steps.push(step);
 
     // Organization CRUD and the provisioned validator client.
@@ -2479,6 +2568,22 @@ async fn scenario_content(h: &Harness) -> Vec<Step> {
         .expect_status(StatusCode::CREATED);
     steps.push(step);
 
+    let org_id = h
+        .store
+        .find_org(&org)
+        .await
+        .expect("find org before delete")
+        .expect("org exists")
+        .id;
+    let read_group_name = format!("{org}_read_access_group");
+    let read_group_authz_id = h
+        .store
+        .find_global_group(&read_group_name)
+        .await
+        .expect("find org read access group")
+        .expect("org read access group exists")
+        .authz_id;
+
     let step = h
         .send(
             "delete organization with checksums",
@@ -2491,6 +2596,60 @@ async fn scenario_content(h: &Harness) -> Vec<Step> {
         .expect_ok();
     assert_eq!(step.json(), &json!({}));
     steps.push(step);
+
+    // Production delete_org must remove the org's global read-access group
+    // and every dependent row, not just the org row itself.
+    assert!(h
+        .store
+        .find_org(&org)
+        .await
+        .expect("find deleted org")
+        .is_none());
+    assert!(h
+        .store
+        .find_global_group(&read_group_name)
+        .await
+        .expect("find deleted read access group")
+        .is_none());
+    match h.store.get_acl_entries(&read_group_authz_id).await {
+        Ok(entries) => assert!(
+            entries.is_empty(),
+            "global group ACL rows survived org deletion: {entries:?}"
+        ),
+        Err(StoreError::NotFound(_)) => {
+            // The authz entity is gone, which is the expected postcondition.
+        }
+        Err(error) => panic!("read access group ACL rows: {error}"),
+    }
+    assert!(h
+        .store
+        .list_cookbook_versions(&org_id)
+        .await
+        .expect("list cookbook versions after delete")
+        .is_empty());
+    assert!(h
+        .store
+        .list_cookbook_artifacts(&org_id)
+        .await
+        .expect("list cookbook artifacts after delete")
+        .is_empty());
+    assert!(!h
+        .store
+        .checksum_exists(&org_id, HELLO_CHECKSUM)
+        .await
+        .expect("checksum after delete"));
+    assert!(h
+        .store
+        .list_org_users(&org_id)
+        .await
+        .expect("org members after delete")
+        .is_empty());
+    assert!(h
+        .store
+        .list_nodes(&org_id)
+        .await
+        .expect("nodes after delete")
+        .is_empty());
 
     let step = h
         .send(
@@ -3094,12 +3253,27 @@ async fn scenario_membership(h: &Harness) -> Vec<Step> {
             "/id/v1/me/organizations",
             b"",
             "",
-            &[(header::AUTHORIZATION.as_str(), bearer)],
+            &[(header::AUTHORIZATION.as_str(), bearer.clone())],
         )
         .await
         .expect_ok();
     assert_eq!(step.json().as_array().unwrap().len(), 1);
     assert_eq!(step.json()[0]["name"], org);
+    steps.push(step);
+
+    let step = h
+        .send_anon(
+            "oauth v1 user",
+            "GET",
+            &format!("/id/v1/users/{bob}"),
+            b"",
+            "",
+            &[(header::AUTHORIZATION.as_str(), bearer)],
+        )
+        .await
+        .expect_ok();
+    assert_eq!(step.json()["id"], bob);
+    assert_eq!(step.json()["username"], bob);
     steps.push(step);
 
     let step = h

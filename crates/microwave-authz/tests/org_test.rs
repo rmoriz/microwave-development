@@ -1,5 +1,5 @@
 use microwave_authz::{create_organization, Permission};
-use microwave_store::SqliteStore;
+use microwave_store::{SqliteStore, StoreError};
 
 #[tokio::test]
 async fn creates_default_containers_groups_and_acls() {
@@ -260,4 +260,41 @@ async fn creates_global_read_access_and_server_admin_groups() {
         .groups
         .contains(&"::acme_read_access_group".to_string()));
     assert!(read.groups.contains(&"::server-admins".to_string()));
+}
+
+#[tokio::test]
+async fn deleting_an_organization_removes_its_global_read_access_group_and_acl_rows() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    let creator = store
+        .create_user("root", "root@example.com", "bcrypt", "hash", "salt", true)
+        .unwrap();
+    let org = create_organization(&store, "acme", "Acme Corp", &creator.id, &creator.authz_id)
+        .await
+        .unwrap();
+    let read_access = store
+        .find_global_group("acme_read_access_group")
+        .unwrap()
+        .expect("read access group");
+    assert!(!store
+        .get_acl_entries(&read_access.authz_id)
+        .unwrap()
+        .is_empty());
+
+    store.delete_org(&org.id).unwrap();
+
+    assert!(store.find_org("acme").unwrap().is_none());
+    assert!(store
+        .find_global_group("acme_read_access_group")
+        .unwrap()
+        .is_none());
+    assert!(!store
+        .list_global_groups()
+        .unwrap()
+        .iter()
+        .any(|group| group.name == "acme_read_access_group"));
+    match store.get_acl_entries(&read_access.authz_id) {
+        Ok(entries) => assert!(entries.is_empty(), "ACL rows survived: {entries:?}"),
+        Err(StoreError::NotFound(_)) => {}
+        Err(error) => panic!("ACL rows after org deletion: {error}"),
+    }
 }
