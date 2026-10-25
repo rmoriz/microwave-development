@@ -57,7 +57,7 @@ Packaging artifacts: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
 
 ## Remaining Work
 
-- Fix the remaining extended `oc-chef-pedant` failures: `keys` (86), `acls` (70), `search` (3), and `depsolver` (3). The core tags are near-green; the only failure is a known plain-HTTP pedant artifact.
+- Keep the full extended `oc-chef-pedant` suite green in CI. All eleven extended tags pass; the remaining 7 pending examples are Pedant's own skips. The core suite is also near-green, with only the known plain-HTTP header artifact.
 - PostgreSQL operational tooling. The HTTP runtime, OAuth, authorization, search, and bootstrap run against PostgreSQL; 16 store integration tests and 2 HTTP runtime tests pass. `microwave-ctl`/`microwave-migrate` and local backup/restore stay SQLite-only, and a multi-replica HA topology has not been load-validated.
 - HTTP enforcement of maintenance mode. `microwave-ctl maintenance on` persists the flag, but the request middleware does not return `503` yet; the command says so explicitly.
 - The remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup format).
@@ -80,7 +80,7 @@ The first `oc-chef-pedant` run is recorded in [`docs/pedant-report.md`](docs/ped
 
 The harness is `scripts/run-pedant.sh`. Users, organizations, clients, and nodes now pass with zero failures in this tag set. The only failure is the known plain-HTTP `headers` artifact; the 8 pending examples are pedant's own skips.
 
-Extended suites (post-merge, including the PostgreSQL runtime): **3,111 passed / 162 failed / 14 pending**. All extended tags except `keys` (86), `acls` (70), `search` (3), and `depsolver` (3) are green.
+Extended suites (final, including the PostgreSQL runtime): **3,280 passed / 0 failed / 7 pending**. All eleven extended tags are green.
 
 See `docs/superpowers/specs/2026-10-24-microwave-server-design.md` and `TODO.md` for the full target and remaining work.
 
