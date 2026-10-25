@@ -86,6 +86,7 @@ pub fn crawl_from_api(options: &FromApiOptions) -> Result<Snapshot, MigrateError
             url: Some(crawler.base_url.clone()),
             data_dir: None,
         },
+        secrets_included: false,
         data: crawler.data,
     })
 }

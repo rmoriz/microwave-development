@@ -9,21 +9,50 @@ envelope.
 ## Commands
 
 ```sh
-# Write a snapshot of ./data/microwave.db
+# Write a snapshot of ./data/microwave.db (secrets redacted)
 microwave-migrate export --data-dir ./data --output migration.json
 
-# Write a snapshot of a PostgreSQL metadata store
+# Include kvpair, OAuth grants/tokens, and OAuth application secrets
+microwave-migrate export --data-dir ./data --output migration.json --include-secrets
+
+# Write a PostgreSQL metadata snapshot
 microwave-migrate export \
   --database-url postgres://microwave:secret@db/microwave \
   --output migration.json
 
+# Write a self-contained archive: snapshot.json + local bookshelf/ blobs.
+# Database secrets and on-disk private keys are both excluded by default.
+microwave-migrate export --data-dir ./data --archive migration.tar.gz
+
+# Complete self-migration: include DB secret rows and private key files.
+# The result is credential material; protect and transfer it accordingly.
+microwave-migrate export --data-dir ./data --archive migration.tar.gz \
+  --include-secrets --include-private-keys \
+  --config /etc/microwave/microwave.toml
+
+# PostgreSQL metadata + a local bookshelf tree
+microwave-migrate export \
+  --database-url postgres://microwave:secret@db/microwave \
+  --bookshelf-dir /var/lib/microwave/bookshelf \
+  --archive migration.tar.gz
+
 # Create or merge into ./new-data/microwave.db
 microwave-migrate import --data-dir ./new-data --input migration.json --yes
 
-# Import into PostgreSQL (one transaction, ids and timestamps preserved)
+# Restore snapshot + bookshelf/ from an archive. Existing key files and
+# empty-over-populated bookshelf restores abort unless --force is given;
+# --secrets-dir puts all private files elsewhere.
+microwave-migrate import --data-dir ./new-data --archive migration.tar.gz --yes
+microwave-migrate import --data-dir ./new-data --archive migration.tar.gz \
+  --secrets-dir /safe/staging/private --yes
+microwave-migrate import --data-dir ./new-data --archive migration.tar.gz \
+  --config /etc/microwave/microwave.toml --force --yes
+
+# PostgreSQL archive import, restoring the local bookshelf tree too
 microwave-migrate import \
   --database-url postgres://microwave:secret@db/microwave \
-  --input migration.json \
+  --bookshelf-dir /var/lib/microwave/bookshelf \
+  --archive migration.tar.gz \
   --yes
 
 # Crawl a live legacy server as a superuser
@@ -75,6 +104,7 @@ schema version `1`.
     "url": null,
     "data_dir": "./data"
   },
+  "secrets_included": false,
   "data": {
     "orgs": [],
     "users": [],
@@ -106,10 +136,20 @@ schema version `1`.
     "policy_groups": [],
     "policy_revisions": [],
     "policy_group_revision_associations": [],
-    "oauth_applications": []
+    "oauth_applications": [],
+    "oauth_access_grants": [],
+    "oauth_access_tokens": [],
+    "kvpair": [],
+    "sandboxes": [],
+    "sandbox_checksums": [],
+    "telemetry": []
   }
 }
 ```
+
+Every collection is optional on read (`serde(default)`). A snapshot written by
+an older build omits the new collections and imports as empty; a new snapshot
+written without `--include-secrets` contains empty secret collections.
 
 ### Envelope fields
 
@@ -121,6 +161,7 @@ schema version `1`.
 | `source.kind` | `local-store` for local exports, `legacy-api` for crawler output. |
 | `source.url` | Legacy API URL for `legacy-api`; `null` otherwise. |
 | `source.data_dir` | Local data directory the snapshot was exported from. |
+| `secrets_included` | `true` only when `--include-secrets` was used. Older snapshots without the field are treated as `false`. |
 | `data` | Table-shaped store rows, described below. |
 
 ### Collections
@@ -156,23 +197,151 @@ database ids. See [Live legacy API crawler](#live-legacy-api-crawler).
 | `cookbook_artifacts`, `cookbook_artifact_versions`, `cookbook_artifact_version_checksums` | Policyfile cookbook artifacts |
 | `policies`, `policy_groups`, `policy_revisions`, `policy_group_revision_associations` | Policyfile objects and group assignments |
 | `oauth_applications` | `id`, `name`, `uid`, `secret`, `redirect_uri`, `scopes`, `confidential` |
+| `oauth_access_grants`, `oauth_access_tokens` | Pending authorization codes and bearer/refresh tokens, including ids, timestamps, expiry, and revocation |
+| `kvpair` | Raw key/value rows: operator secrets (`secret:*`), browser sessions, password-reset tokens, custom keys, and `maintenance:enabled` |
+| `sandboxes` | Explicit sandbox rows, including empty in-flight sandboxes with no uploads |
+| `sandbox_checksums` | SQLite's pending-upload rows used by `commit_sandbox`; PostgreSQL derives these from `sandboxed_checksums` |
+| `telemetry` | Append-only `property` / `event_timestamp` rows when the source table exists |
 
 `serialized_object`, metadata, and manifest fields are stored as the exact
 JSON text held by the local store, so object bodies survive byte-for-byte.
 
-### What is intentionally absent
+### Secrets and what remains intentionally absent
+
+Two independent opt-ins control sensitive data:
+
+| Flag | What it adds | Default |
+|---|---|---|
+| `--include-secrets` | `kvpair` (operator secrets, sessions, reset tokens, maintenance flag), OAuth access grants/tokens, and OAuth application secrets in `snapshot.json` | omitted/blank |
+| `--include-private-keys` | On-disk key/certificate material under `secrets/` | omitted |
+
+For a truly complete self-migration, pass **both** flags. `--include-secrets`
+alone still leaves `pivotal.pem`, TLS keys, and the other files on disk behind;
+`--include-private-keys` alone copies those files but leaves database-backed
+secrets redacted.
+
+`--include-private-keys` uses an explicit manifest, never a glob. It reads only
+files that exist from these lists:
+
+- `<data-dir>/pivotal.pem`
+- `<data-dir>/pivotal.password`
+- `<data-dir>/objectstore.secret`
+- `<data-dir>/private-chef-secrets.json` or `private_chef_secrets.json`
+- WebUI/oc-id keys, when present: `webui_priv.pem`, `webui_pub.pem`,
+  `oc_id_priv.pem`, `oc_id_pub.pem`, `ocid_priv.pem`, `ocid_pub.pem`,
+  `oc-id.pem`, `oc_id.pem`
+- the configured `server.tls.cert_path` and `server.tls.key_path` from
+  `--config` / `MW_CONFIG` / `./microwave.toml`. `cert_path` may be a PEM
+  bundle containing the chain.
+
+Unrecognized files, glob matches, and public data are never included.
+Symlinked data-dir candidates abort the export rather than being followed;
+explicitly configured TLS paths may be managed symlinks (for example Let's
+Encrypt `live/current`) and are read through.
+
+**Never printed.** The CLI reports only `Secrets: included/excluded` and
+`Private keys: included/excluded`; it never echoes key contents, passwords, or
+tokens. Snapshot and archive files are mode `0600`; extracted private files are
+mode `0600` and newly created parent directories mode `0700`.
 
 - **Plaintext passwords.** Only `password_hash`, `password_salt`, and
   `hash_type` are exported. Legacy hash types are preserved; the login path can
   upgrade them later.
-- **Private keys.** The store only holds public keys, and the exporter reads
-  only database rows. Adjacent PEM files such as `<data_dir>/pivotal.pem` are
-  never read.
-- **Cookbook blobs / the bookshelf directory, search indexes, telemetry,
-  `kvpair`, empty sandboxes, and OAuth access tokens/grants.** This slice
-  migrates metadata, authz, keys, in-flight sandbox uploads, and OAuth
-  application registrations. Copy or re-upload cookbook blobs separately, and
-  let the search index rebuild.
+- **Search indexes.** They are derived data; rebuild them after migration.
+- **Remote object stores.** Archives copy a local `bookshelf/` directory only.
+  For S3, Garage, or MinIO, replicate the bucket with your object-store
+  tooling; `microwave-migrate` does not enumerate remote objects.
+
+The snapshot still contains password hashes, public keys, ACLs, and user data,
+so even a safe export is sensitive.
+
+## Archive format
+
+`--archive PATH.tar.gz` writes a gzip-compressed tar with these members:
+
+```text
+snapshot.json
+bookshelf/
+  organization-<org_id>/
+    checksum-<md5>
+secrets/                     # only with --include-private-keys
+  manifest.json
+  files/
+    0001-pivotal.pem
+    0002-site.crt
+```
+
+The snapshot is byte-identical to the JSON export for the same secret mode.
+`bookshelf/` is the local object-store root (`<data_dir>/bookshelf` for
+SQLite). For PostgreSQL, point `--bookshelf-dir` at the local tree; the
+metadata comes from `--database-url`.
+
+`secrets/manifest.json` is a JSON document mapping each `secrets/files/...`
+member to its `kind` (`data-dir`, `tls-certificate`, `tls-private-key`), source
+`original_path`, data-dir `relative_path`, `suggested_name`, and source `mode`.
+The manifest is metadata only; it never contains file contents.
+
+Archive import extracts and validates into a private staging directory before
+touching live data:
+
+- only `snapshot.json`, `bookshelf/`, and `secrets/` entries are allowed;
+- absolute paths, `..`, empty names, backslash-separated names, symlinks, hard
+  links, devices, FIFOs, and duplicate entries are rejected;
+- every private payload must be listed exactly once in the manifest; an
+  unreferenced `secrets/files/` member or a missing manifest is rejected;
+- `data-dir` manifest entries are restricted to the fixed filename allowlist
+  used by export. Nested paths (`nested/evil.conf`), database files
+  (`microwave.db`), absolute paths, `..`, and inconsistent `suggested_name`
+  values are rejected;
+- the snapshot is parsed and its envelope validated before the database
+  transaction starts;
+- private destinations, parent directories, and overwrite conflicts are
+  checked and all private bytes are staged to mode-`0600` temporary files
+  before the database import, so a refused or unstageable import leaves
+  metadata untouched;
+- an empty archive `bookshelf/` never replaces a populated live bookshelf
+  without `--force`;
+- the database import runs in one transaction, then the staged `bookshelf/`
+  replaces the target tree, then the staged private files are renamed into
+  place as a set. If the private commit fails, the previous bookshelf is
+  restored from its retained backup.
+
+Restore destinations:
+
+- **Without `--secrets-dir`:** data-dir files return to the target data
+  directory using their original `relative_path`; TLS material returns to the
+  target `server.tls.cert_path` / `server.tls.key_path` from `--config`. If the
+  archive has TLS material but the target config has no matching path, the
+  import fails before touching the database.
+- **With `--secrets-dir DIR`:** every private file is written under `DIR` using
+  its `suggested_name` (for example `DIR/pivotal.pem`, `DIR/site.key`). Existing
+  files are still protected by the overwrite check.
+- Existing key files are never replaced without `--force`. Overwriting a key
+  can invalidate clients that still trust the old key; use `--force` only when
+  intentionally rotating or replacing the installation. `--force` is also
+  required to replace a populated live bookshelf with an empty archive
+  bookshelf.
+- If the target bookshelf is a symlink, the symlink itself is moved aside and
+  replaced with the restored directory. Its target is never followed or
+  modified.
+
+The database and bookshelf are separate stores, so the bookshelf swap happens
+after the database transaction commits. The previous bookshelf is retained
+under a sidecar name until private files are committed; a private-file commit
+failure restores it. A crash can still leave the new database with the old or
+newly swapped bookshelf; re-run the import from the same archive to finish.
+Keep the archive until the restored server has been verified.
+
+Archives are capped at 1,000,000 entries and 16 GiB total uncompressed bytes.
+A safe import (`secrets_included: false`) prints a warning that database secret
+values were not restored; re-export with `--include-secrets` for a complete
+migration.
+
+Import remains confirmation-gated. In scripts pass `--yes`; without it a
+non-interactive stdin is refused before any change. A non-local object store
+has no local bookshelf to export or replace, so archive export/import fails
+with an instruction to use bucket replication (`rclone`, `aws s3 sync`,
+Garage's replication, and so on).
 
 ## Import semantics
 
@@ -185,7 +354,18 @@ upserted by primary key, so:
 - importing into an existing store merges by id and updates the snapshot's
   rows. Existing rows that are not in the snapshot are left in place. ACL and
   group-membership rows are inserted idempotently, and cookbook checksum sets
-  are replaced per version to avoid duplicate association rows.
+  are replaced per version to avoid duplicate association rows;
+- explicit `sandboxes` rows restore empty in-flight sandboxes. Older snapshots
+  that only carry `sandboxed_checksums` still derive both explicit sandboxes and
+  SQLite's `sandbox_checksums` rows;
+- telemetry merges by `(property, event_timestamp)`: target-local events are
+  preserved, repeated imports do not duplicate snapshot rows, and an
+  absent/empty collection leaves target telemetry alone;
+- a safe snapshot leaves existing target secrets intact: omitted `kvpair` and
+  OAuth grant/token rows are not deleted, and an empty OAuth application
+  `secret` does not overwrite a non-empty stored secret;
+- OAuth grants and tokens keep their ids, timestamps, expiry, and revocation
+  state; PostgreSQL advances those sequences after import.
 
 Name uniqueness still applies: a row with the same unique name but a different
 id is rejected by the backend rather than silently rewritten. This matters most
@@ -194,9 +374,10 @@ global `server-admins` group from another installation; import into a fresh
 database (or reconcile the ids first) for a clean migration.
 
 PostgreSQL's sequence-backed identifiers (`cookbooks`, `cookbook_artifacts`,
-`cookbook_artifact_versions`, and `oauth_applications`) are inserted with the
-snapshot ids, then their sequences are advanced to the highest imported id.
-Later inserts cannot collide with the restored rows.
+`cookbook_artifact_versions`, `oauth_applications`, `oauth_access_grants`, and
+`oauth_access_tokens`) are inserted with the snapshot ids, then their sequences
+are advanced to the highest imported id. Later inserts cannot collide with the
+restored rows.
 
 ## Live legacy API crawler
 
