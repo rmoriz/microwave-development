@@ -146,10 +146,12 @@ cleanup() {
 }
 
 start_search_stub() {
-  local port
+  local server_url="$1" superuser_key="$2" port
   port="$("$RUBY_BIN" -rsocket -e 's=TCPServer.new("127.0.0.1",0); puts s.addr[1]; s.close')"
   PEDANT_SEARCH_SERVER="http://127.0.0.1:$port"
-  "$RUBY_BIN" "$ROOT/scripts/pedant-solr-stub.rb" "$port" >"$TAG_DIR/solr-stub.log" 2>&1 &
+  "$BUNDLE_BIN" exec "$RUBY_BIN" "$ROOT/scripts/pedant-solr-stub.rb" \
+    "$port" "$server_url" "$superuser_key" "${PEDANT_ORG:-pedant_testorg}" \
+    >"$TAG_DIR/solr-stub.log" 2>&1 &
   SEARCH_STUB_PID=$!
   export PEDANT_SEARCH_SERVER
 
@@ -184,7 +186,6 @@ start_server() {
   local database="$data_dir/microwave.db"
   local config="$TAG_DIR/microwave.toml"
   mkdir -p "$data_dir"
-  start_search_stub
 
   local port
   port="$("$RUBY_BIN" -rsocket -e 's=TCPServer.new("127.0.0.1",0); puts s.addr[1]; s.close')"
@@ -236,6 +237,11 @@ EOF
     echo "error: [$tag] server did not create $data_dir/pivotal.pem" >&2
     exit 3
   fi
+
+  # Pedant verifies index deletion by querying the configured search server
+  # directly.  Start the stub now that the API is reachable, so it can relay
+  # those narrow queries to the live search API.
+  start_search_stub "$SERVER_URL" "$data_dir/pivotal.pem"
 
   export PEDANT_SERVER_URL="$SERVER_URL"
   export PEDANT_SUPERUSER_KEY="$data_dir/pivotal.pem"

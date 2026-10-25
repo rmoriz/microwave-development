@@ -19,6 +19,9 @@ use serde_json::{json, Value};
 pub(crate) struct SearchEntry {
     /// Store identifier (GUID) used as the OpenSearch `_id`.
     pub id: String,
+    /// Authorization object consulted for read filtering. Data bag items use
+    /// the containing bag's ACL.
+    pub authz_id: String,
     pub url: String,
     pub output: Value,
     pub fields: Fields,
@@ -99,7 +102,7 @@ pub(crate) fn data_bag_item_document(
     item: &StoredDataBagItem,
 ) -> Result<SearchDocument, ApiError> {
     let data_bag = item.data_bag_name.clone();
-    let entry = data_bag_item_entry(item.clone(), &data_bag)?;
+    let entry = data_bag_item_entry(item.clone(), &data_bag, String::new())?;
     Ok(document_for_entry(
         org_id,
         &IndexKind::DataBag(data_bag.clone()),
@@ -170,6 +173,7 @@ fn node_entry(node: StoredNode) -> Result<SearchEntry, ApiError> {
 
     Ok(SearchEntry {
         id: node.id,
+        authz_id: node.authz_id,
         url: format!("/nodes/{}", node.name),
         output: raw.clone(),
         fields,
@@ -201,6 +205,7 @@ fn object_entry(
     }
     Ok(SearchEntry {
         id: object.id,
+        authz_id: object.authz_id,
         url: format!("{path}/{}", object.name),
         output: raw.clone(),
         fields,
@@ -249,6 +254,7 @@ fn client_entry(client: Client, org_name: &str, public_key: Option<&str>) -> Sea
     let fields = expand::flatten(&value);
     SearchEntry {
         id: client.id,
+        authz_id: client.authz_id,
         url: format!("/clients/{}", client.name),
         output: value.clone(),
         fields,
@@ -261,25 +267,26 @@ async fn data_bag_entries(
     org_id: &str,
     data_bag: &str,
 ) -> Result<Vec<SearchEntry>, ApiError> {
-    if store
+    let bag = store
         .find_data_bag(org_id, data_bag)
         .await
         .map_err(ApiError::from)?
-        .is_none()
-    {
-        return Err(unknown_index(data_bag));
-    }
+        .ok_or_else(|| unknown_index(data_bag))?;
 
     store
         .list_data_bag_items(org_id, data_bag)
         .await
         .map_err(ApiError::from)?
         .into_iter()
-        .map(|item| data_bag_item_entry(item, data_bag))
+        .map(|item| data_bag_item_entry(item, data_bag, bag.authz_id.clone()))
         .collect()
 }
 
-fn data_bag_item_entry(item: StoredDataBagItem, data_bag: &str) -> Result<SearchEntry, ApiError> {
+fn data_bag_item_entry(
+    item: StoredDataBagItem,
+    data_bag: &str,
+    authz_id: String,
+) -> Result<SearchEntry, ApiError> {
     let raw: Value =
         serde_json::from_str(&item.serialized_object).map_err(|_| ApiError::internal())?;
     let wrapper = json!({
@@ -305,6 +312,7 @@ fn data_bag_item_entry(item: StoredDataBagItem, data_bag: &str) -> Result<Search
 
     Ok(SearchEntry {
         id: item.id,
+        authz_id,
         url: format!("/data/{data_bag}/{}", item.item_name),
         output: wrapper.clone(),
         fields,
