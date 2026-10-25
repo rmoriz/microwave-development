@@ -101,8 +101,8 @@ A complete annotated example is
 |---|---|---|---|
 | `server.bind` | `MW_SERVER__BIND` | `0.0.0.0:8000` | Listener address. Plain HTTP unless `server.tls` is configured. |
 | `server.worker_threads` | `MW_SERVER__WORKER_THREADS` | `0` | `0` = size from available CPUs. |
-| `server.tls.enabled` | `MW_SERVER__TLS__ENABLED` | unset | `true` requires both paths; `false` forces plain HTTP; unset enables TLS when either path is set. |
-| `server.tls.cert_path` | `MW_SERVER__TLS__CERT_PATH` | unset | PEM certificate chain, leaf first. Setting it enables TLS. |
+| `server.tls.enabled` | `MW_SERVER__TLS__ENABLED` | unset | `true` requires both paths; `false` forces plain HTTP; unset enables TLS when either path is set (the other is then required and validated). |
+| `server.tls.cert_path` | `MW_SERVER__TLS__CERT_PATH` | unset | PEM certificate chain, leaf first. Setting either path enables TLS. |
 | `server.tls.key_path` | `MW_SERVER__TLS__KEY_PATH` | unset | PEM private key matching the certificate. Never printed or logged. |
 | `paths.data_dir` | `MW_PATHS__DATA_DIR` | `./data` | All mutable state. |
 | `database.driver` | `MW_DATABASE__DRIVER` | `sqlite` | `sqlite` or `postgres`. |
@@ -167,7 +167,8 @@ microwave-server serve
 
 `cert_path` may contain the leaf certificate followed by intermediate
 certificates; `key_path` is the PEM private key (PKCS#8, PKCS#1, or SEC1) that
-belongs to the leaf. Both `microwave-server serve --check` and
+belongs to the leaf. The listener advertises `h2` and `http/1.1` via ALPN.
+Both `microwave-server serve --check` and
 `microwave-ctl check-config` verify that the files exist, are readable regular
 files, contain the expected PEM objects, and form a matching pair. They print
 only the paths, never key material. An explicitly configured but invalid pair
@@ -184,7 +185,9 @@ Operational notes:
   certificate is suitable only for tests or when the CA is installed on every
   client.
 - When TLS is enabled, presigned URLs for the local `/bookshelf` backend use
-  `https://<server.bind>` instead of `http://`.
+  `https://<server.bind>` instead of `http://`, and API-generated URLs fall
+  back to `https` when no `X-Forwarded-Proto` header is present. A proxy may
+  still override the scheme with that header.
 - A TLS-terminating load balancer or reverse proxy in front of plain HTTP
   remains fully supported and is still the simplest option when you need
   automatic certificate rotation, multiple hostnames, or centralized TLS
@@ -263,9 +266,9 @@ Image properties:
 - `MW_CONFIG` and `RUST_LOG=info` are set;
 - `HEALTHCHECK` probes `/_status` on port `${MW_HTTP_PORT:-8000}`; set
   `MW_HEALTHCHECK_SCHEME=https` for a TLS listener, `MW_HEALTHCHECK_HOST` when
-  the certificate only covers a DNS name, and `MW_HEALTHCHECK_INSECURE=1` when
-  the health probe cannot verify the certificate (self-signed or not valid for
-  the probe hostname);
+  the certificate only covers a DNS name, and `MW_HEALTHCHECK_INSECURE=1` (or
+  `true`) when the health probe cannot verify the certificate (self-signed or
+  not valid for the probe hostname); any other value keeps verification on;
 - no `ENTRYPOINT`, so `docker run <image> microwave-ctl ...` and
   `docker compose exec microwave microwave-ctl ...` work.
 
@@ -302,10 +305,11 @@ docker run -d --name microwave-tls \
 curl -kfsS https://127.0.0.1:8443/_status
 ```
 
-`MW_HEALTHCHECK_INSECURE=1` is only for self-signed certificates or probes
-that cannot match the certificate hostname. With a publicly trusted
-certificate, set `MW_HEALTHCHECK_HOST` to a name covered by the certificate,
-or leave the default port and scheme and let a proxy expose TLS.
+`MW_HEALTHCHECK_INSECURE=1` (or `true`) is only for self-signed certificates
+or probes that cannot match the certificate hostname; any other value keeps
+certificate verification enabled. With a publicly trusted certificate, set
+`MW_HEALTHCHECK_HOST` to a name covered by the certificate, or leave the
+default port and scheme and let a proxy expose TLS.
 
 Use `--build-arg RUST_VERSION=<x.y>` to pin the compiler instead of tracking
 the latest stable `rust:1-*` image.
@@ -885,7 +889,8 @@ requires restoring that backup.
 | `Address already in use` | Another process holds `server.bind`. Change the port or stop the other process. |
 | `check-config` complains about object store | `s3`/`garage` needs endpoint, bucket, and credentials (config or `bookshelf.*` secrets). |
 | Sandbox completion returns `503` | The object store reports the uploaded checksum as missing. Check `endpoint` reachability from the server and bucket permissions. |
-| Cookbook download URLs point at `0.0.0.0` or an internal name | Local object store uses `server.bind`; switch to S3/Garage or bind a client-reachable address. || `401` from `chef-client` after migration | Client/server clock skew beyond `auth.skew_seconds`, or the client key was not imported. Check `microwave-ctl list-user-keys` / `list-client-keys`. |
+| Cookbook download URLs point at `0.0.0.0` or an internal name | Local object store uses `server.bind`; switch to S3/Garage or bind a client-reachable address. |
+| `401` from `chef-client` after migration | Client/server clock skew beyond `auth.skew_seconds`, or the client key was not imported. Check `microwave-ctl list-user-keys` / `list-client-keys`. |
 | Search returns no rows after switching backends | Remote search has no backfill; `reindex` is not implemented. Re-save objects or start from an empty install. |
 | `maintenance on` still serves requests | Check `microwave-ctl maintenance status` and that all replicas share the same database; `/_status` and `/_stats` are intentionally exempt. |
 | `psql` fails with `failed to run sqlite3` | Install `sqlite3` on the host (present in the container image). |

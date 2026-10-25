@@ -196,6 +196,20 @@ fn redact_database_url(url: &str) -> String {
     format!("{scheme}://{user}:***@{host}")
 }
 
+fn listener_scheme(config: &Config) -> &'static str {
+    if config.server.tls.is_enabled() {
+        "https"
+    } else {
+        "http"
+    }
+}
+
+/// Base URL for local `/bookshelf` presigned links. It follows the listener
+/// scheme because the server may serve HTTPS directly.
+fn local_object_store_base_url(config: &Config) -> String {
+    format!("{}://{}", listener_scheme(config), config.server.bind)
+}
+
 fn build_object_store(
     config: &Config,
     secret: &str,
@@ -204,15 +218,7 @@ fn build_object_store(
         ObjectStoreBackend::Local => Ok(Arc::new(LocalObjectStore::new(
             Path::new(&config.paths.data_dir).join("bookshelf"),
             secret,
-            format!(
-                "{}://{}",
-                if config.server.tls.is_enabled() {
-                    "https"
-                } else {
-                    "http"
-                },
-                config.server.bind
-            ),
+            local_object_store_base_url(config),
         ))),
         ObjectStoreBackend::S3 | ObjectStoreBackend::Garage => {
             let endpoint = config
@@ -250,8 +256,26 @@ fn build_object_store(
 
 #[cfg(test)]
 mod tests {
-    use super::{redact_config_for_output, redact_database_url};
+    use super::{local_object_store_base_url, redact_config_for_output, redact_database_url};
     use microwave_config::Config;
+
+    #[test]
+    fn local_object_store_uses_https_only_when_tls_is_enabled() {
+        let plain = Config::default();
+        assert_eq!(local_object_store_base_url(&plain), "http://0.0.0.0:8000");
+
+        let mut tls = Config::default();
+        tls.server.tls.cert_path = Some("/etc/microwave/tls.crt".into());
+        tls.server.tls.key_path = Some("/etc/microwave/tls.key".into());
+        assert_eq!(local_object_store_base_url(&tls), "https://0.0.0.0:8000");
+
+        let mut disabled = tls;
+        disabled.server.tls.enabled = Some(false);
+        assert_eq!(
+            local_object_store_base_url(&disabled),
+            "http://0.0.0.0:8000"
+        );
+    }
 
     #[test]
     fn redacts_database_data_collector_and_object_store_credentials() {

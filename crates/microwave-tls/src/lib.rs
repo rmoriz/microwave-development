@@ -69,7 +69,7 @@ pub fn load(tls: &TlsConfig) -> Result<LoadedTls, TlsError> {
         })?;
 
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let config = rustls::ServerConfig::builder_with_provider(provider)
+    let mut config = rustls::ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|error| TlsError::Invalid {
             reason: error.to_string(),
@@ -77,6 +77,9 @@ pub fn load(tls: &TlsConfig) -> Result<LoadedTls, TlsError> {
         .with_no_client_auth()
         .with_single_cert(certs, key)
         .map_err(map_pair_error)?;
+    // axum-server's `from_config` (unlike its PEM helpers) does not set ALPN,
+    // so advertise the protocols the axum router can speak.
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(LoadedTls {
         cert_path,
@@ -213,6 +216,16 @@ mod tests {
         let loaded = load(&config(&pair.cert, &pair.key)).unwrap();
         assert_eq!(loaded.cert_path, pair.cert);
         assert_eq!(loaded.key_path, pair.key);
+    }
+
+    #[test]
+    fn advertises_h2_and_http1_alpn() {
+        let pair = write_pair();
+        let loaded = load(&config(&pair.cert, &pair.key)).unwrap();
+        assert_eq!(
+            loaded.config.alpn_protocols,
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+        );
     }
 
     #[test]

@@ -278,6 +278,10 @@ impl Drop for ServerProcess {
     }
 }
 
+/// Serializes port selection and startup between the listener tests so two
+/// concurrently running tests cannot pick the same ephemeral port.
+static PORT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Pick an ephemeral port by binding and immediately releasing it. The server
 /// then binds the same address; the small race is acceptable for a test.
 fn ephemeral_addr() -> String {
@@ -287,8 +291,82 @@ fn ephemeral_addr() -> String {
     addr.to_string()
 }
 
+async fn wait_for_status(client: &reqwest::Client, url: &str) -> serde_json::Value {
+    let mut last_error = None;
+    for _ in 0..600 {
+        match client.get(url).send().await {
+            Ok(response) if response.status().is_success() => {
+                return response.json().await.unwrap();
+            }
+            Ok(response) => {
+                last_error = Some(format!("unexpected status {}", response.status()));
+            }
+            Err(error) => last_error = Some(format!("{error:?}")),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("listener never became ready at {url}: {last_error:?}");
+}
+
+/// Block until the child process has bound its listener. Keeping this
+/// synchronous lets the port lock be released before any async request.
+fn wait_for_tcp(bind: &str) {
+    for _ in 0..600 {
+        if std::net::TcpStream::connect(bind).is_ok() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("listener never bound {bind}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plain_http_listener_serves_status_and_does_not_serve_https() {
+    let port_guard = PORT_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let bind = ephemeral_addr();
+
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_microwave-server"))
+        .args(["serve"])
+        .env("MW_PATHS__DATA_DIR", dir.path())
+        .env("MW_SERVER__BIND", &bind)
+        .env_remove("MW_SERVER__TLS__CERT_PATH")
+        .env_remove("MW_SERVER__TLS__KEY_PATH")
+        .env_remove("MW_SERVER__TLS__ENABLED")
+        .env("RUST_LOG", "info")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .expect("spawn microwave-server");
+    let _guard = ServerProcess(Some(child));
+    wait_for_tcp(&bind);
+    drop(port_guard);
+
+    let plain = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    let body = wait_for_status(&plain, &format!("http://{bind}/_status")).await;
+    assert_eq!(body["status"], "pong");
+
+    // A TLS handshake must fail on a plain listener.
+    let tls = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    assert!(
+        tls.get(format!("https://{bind}/_status"))
+            .send()
+            .await
+            .is_err(),
+        "HTTPS unexpectedly succeeded on a plain listener"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn tls_listener_serves_https_and_rejects_plain_http() {
+    let port_guard = PORT_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let (cert, key) = write_tls_pair(dir.path());
     let bind = ephemeral_addr();
@@ -305,32 +383,16 @@ async fn tls_listener_serves_https_and_rejects_plain_http() {
         .spawn()
         .expect("spawn microwave-server");
     let _guard = ServerProcess(Some(child));
+    wait_for_tcp(&bind);
+    drop(port_guard);
 
     let https = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .timeout(Duration::from_secs(2))
         .build()
         .unwrap();
-    let url = format!("https://{bind}/_status");
-
-    let mut last_error = None;
-    let mut ready = false;
-    for _ in 0..600 {
-        match https.get(&url).send().await {
-            Ok(response) if response.status().is_success() => {
-                let body: serde_json::Value = response.json().await.unwrap();
-                assert_eq!(body["status"], "pong");
-                ready = true;
-                break;
-            }
-            Ok(response) => {
-                last_error = Some(format!("unexpected status {}", response.status()));
-            }
-            Err(error) => last_error = Some(format!("{error:?}")),
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(ready, "HTTPS listener never became ready: {last_error:?}");
+    let body = wait_for_status(&https, &format!("https://{bind}/_status")).await;
+    assert_eq!(body["status"], "pong");
 
     // The same port must not accept plain HTTP: a plaintext request cannot
     // complete a TLS handshake, so the client reports a transport error.

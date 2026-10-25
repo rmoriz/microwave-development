@@ -21,9 +21,9 @@ bind = "0.0.0.0:8000"
 # 0 lets the server size the Tokio runtime from the available CPUs.
 worker_threads = 0
 
-# Optional TLS listener (rustls). Setting both paths enables HTTPS
-# automatically; `enabled = true` makes the requirement explicit and
-# `enabled = false` keeps plain HTTP even when paths are present.
+# Optional TLS listener (rustls). Setting either path enables HTTPS; the other
+# is then required and the pair is validated. `enabled = true` makes that
+# explicit and `enabled = false` keeps plain HTTP even when paths are present.
 # [server.tls]
 # enabled = true
 # cert_path = "/etc/microwave/tls.crt"   # PEM certificate chain

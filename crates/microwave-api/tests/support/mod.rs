@@ -35,10 +35,15 @@ pub fn state_with_config(mut config: Config) -> AppState {
         .secret
         .get_or_insert_with(|| "test-secret".into());
     let secret = config.object_store.secret.clone().unwrap();
+    let scheme = if config.server.tls.is_enabled() {
+        "https"
+    } else {
+        "http"
+    };
     let object_store: Arc<dyn ObjectStore + Send + Sync> = Arc::new(LocalObjectStore::new(
         std::env::temp_dir().join(format!("mw-test-{}", Uuid::new_v4())),
         &secret,
-        "http://0.0.0.0:8000",
+        format!("{scheme}://{}", config.server.bind),
     ));
     AppState::from_sqlite(store, Arc::new(config), object_store).unwrap()
 }
