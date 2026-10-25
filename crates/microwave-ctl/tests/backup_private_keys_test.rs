@@ -70,6 +70,18 @@ fn run_ctl_with(
     private: bool,
     private_only: bool,
 ) -> Output {
+    run_ctl_with_failpoint(config, action, path, tar, private, private_only, None)
+}
+
+fn run_ctl_with_failpoint(
+    config: &Path,
+    action: &str,
+    path: &Path,
+    tar: bool,
+    private: bool,
+    private_only: bool,
+    fail_after: Option<usize>,
+) -> Output {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", "backup_child_dispatch", "--nocapture"])
@@ -77,6 +89,7 @@ fn run_ctl_with(
         .env_remove("MW_DATABASE__DRIVER")
         .env_remove("MW_DATABASE__URL")
         .env_remove("MW_PATHS__DATA_DIR")
+        .env_remove("MW_CTL_TEST_PRIVATE_APPLY_FAIL_AFTER")
         .env("MW_BACKUP_TEST_CONFIG", config)
         .env("MW_BACKUP_TEST_ACTION", action)
         .env("MW_BACKUP_TEST_PATH", path)
@@ -86,6 +99,12 @@ fn run_ctl_with(
             "MW_BACKUP_TEST_PRIVATE_ONLY",
             if private_only { "1" } else { "0" },
         );
+    if let Some(fail_after) = fail_after {
+        command.env(
+            "MW_CTL_TEST_PRIVATE_APPLY_FAIL_AFTER",
+            fail_after.to_string(),
+        );
+    }
     command.output().unwrap()
 }
 
@@ -968,6 +987,27 @@ fn default_backup_only_replaces_a_recognized_private_tree() {
         "USER-DATA"
     );
     assert!(!unrelated.join("microwave.db").exists());
+
+    let extra = installation.root.join("recognized-with-extra");
+    write_file(
+        &extra.join("private/manifest.json"),
+        r#"{"format":"microwave-ctl-private-files","version":1,"entries":[]}"#,
+        0o600,
+    );
+    std::fs::create_dir_all(extra.join("private/files")).unwrap();
+    write_file(&extra.join("private/extra.txt"), "EXTRA", 0o600);
+    let output = run_ctl(&installation.config, "backup", &extra, false, false);
+    assert_failure(&output);
+    assert!(
+        stderr(&output).contains("not a recognizable microwave-ctl private backup tree"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(
+        std::fs::read_to_string(extra.join("private/extra.txt")).unwrap(),
+        "EXTRA"
+    );
+    assert!(!extra.join("microwave.db").exists());
 }
 
 #[test]
@@ -1036,6 +1076,14 @@ fn an_empty_private_set_does_not_claim_key_material_was_included() {
     );
     let manifest = read_manifest(&backup);
     assert!(manifest_entries(&manifest).is_empty());
+
+    let output = run_private_only(&installation.config, &backup, false);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("nothing to restore"),
+        "stdout: {}",
+        stdout(&output)
+    );
 }
 
 #[test]
@@ -1086,6 +1134,110 @@ fn tar_restore_rejects_oversized_private_entries_before_extraction() {
         stderr(&output)
     );
     installation.assert_live_marker_untouched(&before);
+}
+
+#[test]
+fn rerunning_a_full_backup_keeps_the_existing_private_tree_byte_identical() {
+    let installation = Installation::new(true);
+    installation.seed_database(DB_SECRET);
+    installation.write_secrets();
+
+    let backup = installation.root.join("full-backup");
+    let output = run_ctl(&installation.config, "backup", &backup, false, true);
+    assert_success(&output);
+
+    let manifest = read_manifest(&backup);
+    let before = manifest_entries(&manifest)
+        .iter()
+        .map(|entry| {
+            let path = backup.join(entry["path"].as_str().unwrap());
+            (path.clone(), std::fs::read(&path).unwrap(), mode(&path))
+        })
+        .collect::<Vec<_>>();
+    let manifest_before = std::fs::read(backup.join("private/manifest.json")).unwrap();
+
+    let output = run_ctl(&installation.config, "backup", &backup, false, true);
+    assert_failure(&output);
+    assert!(
+        stderr(&output).contains("destination already contains"),
+        "stderr: {}",
+        stderr(&output)
+    );
+
+    assert_eq!(
+        std::fs::read(backup.join("private/manifest.json")).unwrap(),
+        manifest_before
+    );
+    for (path, contents, expected_mode) in before {
+        assert_eq!(std::fs::read(&path).unwrap(), contents, "{path:?}");
+        assert_eq!(mode(&path), expected_mode, "{path:?}");
+    }
+
+    let archive = installation.root.join("full-backup.tar");
+    let output = run_ctl(&installation.config, "backup", &archive, true, true);
+    assert_success(&output);
+    let archive_before = std::fs::read(&archive).unwrap();
+    let output = run_ctl(&installation.config, "backup", &archive, true, true);
+    assert_failure(&output);
+    assert_eq!(std::fs::read(&archive).unwrap(), archive_before);
+}
+
+#[test]
+fn private_apply_failure_rolls_back_earlier_overwrites_and_cleans_successful_backups() {
+    let installation = Installation::new(true);
+    installation.seed_database(DB_SECRET);
+    installation.write_secrets();
+
+    let backup = installation.root.join("backup");
+    let output = run_ctl(&installation.config, "backup", &backup, false, true);
+    assert_success(&output);
+
+    installation.replace_live_secrets();
+    let pivotal = installation.data_dir.join("pivotal.pem");
+    let tls_key = installation.tls_key.clone();
+    let pivotal_before = std::fs::read(&pivotal).unwrap();
+    let tls_before = std::fs::read(&tls_key).unwrap();
+    let pivotal_mode = mode(&pivotal);
+    let tls_mode = mode(&tls_key);
+
+    let output = run_ctl_with_failpoint(
+        &installation.config,
+        "restore",
+        &backup,
+        false,
+        true,
+        true,
+        Some(1),
+    );
+    assert_failure(&output);
+    let message = stderr(&output);
+    assert!(message.contains("applied 1 of 4"), "stderr: {message}");
+    assert!(message.contains("rolled back"), "stderr: {message}");
+    assert_eq!(std::fs::read(&pivotal).unwrap(), pivotal_before);
+    assert_eq!(std::fs::read(&tls_key).unwrap(), tls_before);
+    assert_eq!(mode(&pivotal), pivotal_mode);
+    assert_eq!(mode(&tls_key), tls_mode);
+    assert_no_staging_dirs(&installation.data_dir);
+    assert_no_staging_dirs(installation.tls_key.parent().unwrap());
+
+    let output = run_private_only(&installation.config, &backup, false);
+    assert_success(&output);
+    assert_eq!(std::fs::read_to_string(&pivotal).unwrap(), PIVOTAL_CONTENT);
+    assert_eq!(std::fs::read_to_string(&tls_key).unwrap(), TLS_KEY_CONTENT);
+    assert_no_staging_dirs(&installation.data_dir);
+    assert_no_staging_dirs(installation.tls_key.parent().unwrap());
+}
+
+fn assert_no_staging_dirs(parent: &Path) {
+    for entry in std::fs::read_dir(parent).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        assert!(
+            !name.starts_with(".microwave-private-restore-")
+                && !name.starts_with(".microwave-private-backup-preserved-"),
+            "private staging/backup artifact left behind: {name:?}"
+        );
+    }
 }
 
 fn tar_entries(path: &Path) -> Vec<(PathBuf, tar::EntryType)> {

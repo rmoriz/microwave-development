@@ -295,9 +295,12 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 > `--restore-private-keys` opt-in, validates and preflights/stages every
 > private destination before the database, and applies them as a set after a
 > successful database/bookshelf restore with rollback on ordinary commit
-> failure. `--private-only --restore-private-keys` retries keys without
-> replaying metadata. Without that flag, existing target keys are left
-> untouched. The default backup is key-**file**-free, not DB-secret-free:
+> failure; old-content backups are kept until the whole set commits and are
+> preserved at a reported path if rollback fails. Backup destinations are
+> preflighted before any private tree replacement, so a failed re-run cannot
+> destroy an existing full backup's keys. `--private-only
+> --restore-private-keys` retries keys without replaying metadata (an empty set
+> is a no-op). Without that flag, existing target keys are left untouched. The default backup is key-**file**-free, not DB-secret-free:
 > database-backed secrets (including the object-store secret in `kvpair`) are
 > always in the database dump. An existing destination cannot be extended; a
 > new backup in a new destination is required for keys.

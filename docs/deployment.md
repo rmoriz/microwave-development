@@ -746,13 +746,16 @@ Two complementary mechanisms exist.
 
 ```sh
 sudo -u microwave microwave-ctl --config /etc/microwave/microwave.toml \
-  backup /var/backups/microwave/2026-10-24
+  backup /var/backups/microwave/2026-10-24-db
 ```
 
 With the default directory format, the destination must be a directory
 (created if missing). For SQLite it must not already contain `microwave.db`;
-for PostgreSQL it must not already contain `microwave.dump`. The command
-writes:
+for PostgreSQL it must not already contain `microwave.dump`. All destination
+conflicts (database snapshot/dump, bookshelf, tar file, and a previous
+`private/` tree) are preflighted before anything is replaced. Re-running a full
+backup into the same destination therefore fails without modifying the
+existing private tree. The command writes:
 
 - `microwave.db` for SQLite — a `VACUUM INTO` snapshot, consistent including
   committed WAL contents, safe to take while the server is running;
@@ -767,7 +770,7 @@ For a single-file archive with the same payload, use the tar format:
 
 ```sh
 sudo -u microwave microwave-ctl --config /etc/microwave/microwave.toml \
-  backup /var/backups/microwave/2026-10-24.tar --format tar
+  backup /var/backups/microwave/2026-10-24-db.tar --format tar
 # `--tar` is equivalent shorthand
 ```
 
@@ -776,9 +779,11 @@ an existing file. It is uncompressed, so it is large but inspectable with
 `tar tf`; compress it with your backup tooling if needed. It contains exactly
 the same database snapshot/dump and `bookshelf/` tree as the directory format.
 Symlinks and other non-regular files under `bookshelf/` abort the backup rather
-than leaking link targets or blocking on a FIFO. On Unix, file copies also open
-with `O_NOFOLLOW`/`O_NONBLOCK`; see the restore notes below for the residual
-directory-level TOCTOU caveat.
+than leaking link targets or blocking on a FIFO. Data-directory private
+payload files that are symlinks are likewise refused. Configured *final TLS
+targets* may be managed symlinks and are resolved explicitly, as described
+below. On Unix, file copies also open with `O_NOFOLLOW`/`O_NONBLOCK`; see the
+restore notes below for the residual directory-level TOCTOU caveat.
 
 PostgreSQL backup requires `pg_dump` to be installed and on `PATH`. The
 password is removed from the child process command line. A `password` query
@@ -847,10 +852,13 @@ claim that key material was included.
 
 A full backup is even more sensitive than a default backup: it contains
 unencrypted private key files in addition to the database secrets. Protect the
-destination and its transport accordingly. When the default format writes over
-a destination that already has `private/`, it only replaces a recognizable
-microwave-ctl private tree (expected manifest format/version plus
-`private/files/`); an unrelated directory is refused rather than deleted.
+destination and its transport accordingly. When a backup writes over a
+destination that already has `private/`, it only replaces a fully recognizable
+microwave-ctl private tree (expected manifest format/version, `manifest.json`,
+`files/`, and only the referenced regular payload files); extra or unrelated
+content is refused rather than deleted. The old private tree is kept until the
+database and bookshelf backup has completed and the new private tree has been
+fully staged, then swapped via a sibling directory with rollback on failure.
 
 The bookshelf copy and private-file collection are not atomic with the
 database snapshot. Uploads or key rotations in flight during the copy can be
@@ -865,7 +873,7 @@ directory in place.
 ```sh
 sudo systemctl stop microwave-server
 sudo -u microwave microwave-ctl --config /etc/microwave/microwave.toml \
-  restore /var/backups/microwave/2026-10-24
+  restore /var/backups/microwave/2026-10-24-db
 sudo systemctl start microwave-server
 ```
 
@@ -875,11 +883,13 @@ and a tar archive are accepted; the format is detected from the path, or can be
 forced with `--format directory|tar` (`--tar` is shorthand). Tar entries are
 validated before extraction: only `microwave.db`, `microwave.dump`,
 `bookshelf/`, and the fixed `private/manifest.json` + `private/files/<file>`
-layout are allowed, and absolute paths, `..`, symlinks, hard links, devices,
-FIFOs, and unknown entries are rejected. Extraction happens in a temporary
-directory, so refusing confirmation never touches live data. For PostgreSQL it
-reads the archive TOC first and reports the database the dump was created from;
-a mismatch with the configured target is refused unless `--yes` is given.
+layout are allowed, and archive entries with absolute paths, `..`, symlinks,
+hard links, devices, FIFOs, or unknown names are rejected. Private entries
+whose tar header exceeds the per-file or total size limit are rejected even
+without `--restore-private-keys`. Extraction happens in a temporary directory,
+so refusing confirmation never touches live data. For PostgreSQL it reads the
+archive TOC first and reports the database the dump was created from; a
+mismatch with the configured target is refused unless `--yes` is given.
 
 Private key/certificate restore is **opt-in and separate** from the database
 and bookshelf restore:
@@ -897,20 +907,28 @@ and existing target key files are left untouched. With the flag, the manifest
 is validated (fixed format/version, allowlisted targets, canonical modes,
 referenced files present, no unreferenced files, no symlinks or traversal) and
 **every private destination is preflighted before live metadata is modified**.
-That preflight resolves the data-directory root (which may itself be a
-symlink), resolves a configured final TLS target symlink to its canonical
-regular file, rejects symlinked data-dir payload targets and unsafe parent
-types, creates missing parents with mode `0700`, and verifies writability by
-staging each payload and a temporary copy of any previous target beside the
-canonical destination. The database and bookshelf are restored next, and only
-then are the private files committed as a set. Private files are `0600` and
-public files `0644`.
+That preflight resolves each destination exactly once and pins it: the
+data-directory root may itself be a symlink and is canonicalized, data-dir
+payload filenames are never re-canonicalized, and a configured final TLS target
+symlink is resolved once to its canonical regular file. A symlink that appears
+at the pinned final target afterwards is rejected. Unsafe parent types are
+refused, missing parents are created with mode `0700`, and writability is
+verified by staging each payload and a temporary copy of any previous target in
+a mode-`0700` staging directory in the target parent. Keeping staging on the
+target filesystem makes the commit atomic; as a fallback, a SIGKILL can leave a
+private staging directory beside the target, which should be removed manually.
+The database and bookshelf are restored next, and only then are the private
+files committed as a set. Private files are `0600` and public files `0644`.
 
 If an ordinary private commit fails, files already applied in that run are
 rolled back from their temporary copies, and the error reports `applied X of
 Y`, the failing target, and any rollback failure that leaves partial private
-state. The already-restored database and bookshelf remain intact. To retry just
-the keys without replaying metadata and bookshelf, use:
+state. Old-content backups are retained until the whole set commits. If even
+rollback cannot restore a file, the old contents are preserved at the exact
+path reported in the error (and the staging directory is kept if a sibling
+copy is not possible) for operator recovery. The already-restored database and
+bookshelf remain intact. To retry just the keys without replaying metadata and
+bookshelf, use:
 
 ```sh
 sudo -u microwave microwave-ctl --config /etc/microwave/microwave.toml \
@@ -920,7 +938,8 @@ sudo -u microwave microwave-ctl --config /etc/microwave/microwave.toml \
 
 `--private-only` still validates the manifest/tar entries and requires
 `--restore-private-keys` and the normal confirmation. It leaves the database
-and bookshelf untouched.
+and bookshelf untouched. If the private manifest has no payload entries,
+`--private-only` is a successful no-op and does not prompt.
 
 Restoring `pivotal.pem`, WebUI/oc-id keys, or TLS material can invalidate
 existing clients, break a running server until restart, or make the configured
