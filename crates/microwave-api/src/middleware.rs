@@ -638,7 +638,6 @@ fn is_role_environment_path(path: &str) -> bool {
     third == "environments" && fifth == "roles" && sixth.is_some_and(|part| !part.is_empty())
 }
 
-
 /// `/organizations/:org/owners/:owner/compliance[/...]` and the legacy
 /// `/compliance/organizations/:org/owners/:owner/compliance[/...]` spelling.
 fn is_compliance_proxy_path(path: &str) -> bool {
