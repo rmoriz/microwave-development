@@ -10,7 +10,7 @@ use crate::search::opensearch::{OpenSearchBackend, SearchProvider};
 use crate::search::query::Query;
 use async_trait::async_trait;
 use microwave_config::{SearchBackend as ConfiguredSearchBackend, SearchConfig};
-use microwave_store::MetadataStore;
+use microwave_store::{MetadataStore, Permission};
 use std::sync::Arc;
 
 /// The logical Chef search index being queried.
@@ -67,6 +67,9 @@ pub struct SearchRequest {
     pub query: Query,
     pub start: usize,
     pub rows: usize,
+    /// Actor whose read ACLs should be applied by backends that can filter
+    /// results locally. `None` means the caller is a superuser.
+    pub actor_authz_id: Option<String>,
 }
 
 /// Matching document IDs in backend order.
@@ -143,10 +146,25 @@ impl SearchBackend for EmbeddedSearch {
         let entries = index::load_entries(self.store.as_ref(), &request.org_id, &request.kind)
             .await
             .map_err(|error| SearchError::Response(error.message))?;
-        let matched: Vec<&index::SearchEntry> = entries
+        let mut matched: Vec<&index::SearchEntry> = entries
             .iter()
             .filter(|entry| request.query.matches(&entry.fields))
             .collect();
+
+        if let Some(actor_authz_id) = request.actor_authz_id.as_deref() {
+            let mut allowed = Vec::with_capacity(matched.len());
+            for entry in matched {
+                let permitted = self
+                    .store
+                    .check_permission(actor_authz_id, &entry.authz_id, Permission::Read)
+                    .await
+                    .map_err(|error| SearchError::Response(error.to_string()))?;
+                if permitted {
+                    allowed.push(entry);
+                }
+            }
+            matched = allowed;
+        }
 
         Ok(SearchHits {
             total: matched.len(),

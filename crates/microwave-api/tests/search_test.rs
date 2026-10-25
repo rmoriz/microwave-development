@@ -21,6 +21,16 @@ async fn create_org(app: &axum::Router) {
 }
 
 async fn request(app: &axum::Router, method: &str, path: &str, body: &[u8]) -> (StatusCode, Value) {
+    request_as(app, method, path, body, "pivotal").await
+}
+
+async fn request_as(
+    app: &axum::Router,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    user: &str,
+) -> (StatusCode, Value) {
     let response = app
         .clone()
         .oneshot(support::signed_request(
@@ -28,7 +38,7 @@ async fn request(app: &axum::Router, method: &str, path: &str, body: &[u8]) -> (
             path,
             body,
             SignVersion::V1_3,
-            "pivotal",
+            user,
         ))
         .await
         .unwrap();
@@ -407,6 +417,137 @@ async fn client_search_rows_include_upstream_fields_by_api_version() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn search_rows_are_filtered_by_object_read_acl() {
+    let state = support::state_with_pivotal();
+    support::add_user(&state, "second", "second@example.com", false);
+    let app = support::app(state.clone());
+    create_org(&app).await;
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
+    let second = state.sqlite().find_user("second").unwrap().unwrap();
+    support::associate(&state, &org, &second);
+
+    create_node(&app, json!({ "name": "web1" })).await;
+    create_node(&app, json!({ "name": "web2" })).await;
+
+    let (status, _) = request(
+        &app,
+        "PUT",
+        "/organizations/acme/nodes/web2/_acl/read",
+        br#"{"actors":["pivotal"],"groups":[]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, result) = request_as(
+        &app,
+        "GET",
+        "/organizations/acme/search/node?q=name:*",
+        b"",
+        "second",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(names(&result["rows"]), vec!["web1"]);
+
+    let payload = json!({ "name": ["name"] });
+    let (status, result) = request_as(
+        &app,
+        "POST",
+        "/organizations/acme/search/node?q=name:*",
+        serde_json::to_vec(&payload).unwrap().as_slice(),
+        "second",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        result["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["data"]["name"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>(),
+        vec!["web1"]
+    );
+
+    let (status, result) =
+        request(&app, "GET", "/organizations/acme/search/node?q=name:*", b"").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(names(&result["rows"]), vec!["web1", "web2"]);
+
+    // Upstream accepts a trailing slash on the index name.
+    let (status, result) = request(
+        &app,
+        "GET",
+        "/organizations/acme/search/node/?q=name:web1",
+        b"",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(names(&result["rows"]), vec!["web1"]);
+}
+
+#[tokio::test]
+async fn data_bag_search_rows_use_the_bag_read_acl() {
+    let state = support::state_with_pivotal();
+    support::add_user(&state, "second", "second@example.com", false);
+    let app = support::app(state.clone());
+    create_org(&app).await;
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
+    let second = state.sqlite().find_user("second").unwrap().unwrap();
+    support::associate(&state, &org, &second);
+
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/organizations/acme/data",
+        br#"{"name":"secrets"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/organizations/acme/data/secrets",
+        br#"{"id":"database","engine":"postgres"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = request(
+        &app,
+        "PUT",
+        "/organizations/acme/data/secrets/_acl/read",
+        br#"{"actors":["pivotal"],"groups":[]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, result) = request_as(
+        &app,
+        "GET",
+        "/organizations/acme/search/secrets?q=id:*",
+        b"",
+        "second",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["total"], 0);
+    assert!(result["rows"].as_array().unwrap().is_empty());
+
+    let (status, result) = request(
+        &app,
+        "GET",
+        "/organizations/acme/search/secrets?q=id:*",
+        b"",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        names(&result["rows"]),
+        vec!["data_bag_item_secrets_database"]
+    );
 }
 
 #[tokio::test]

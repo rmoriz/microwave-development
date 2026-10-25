@@ -223,6 +223,15 @@ config = <<~RUBY
   search_server #{ENV["PEDANT_SEARCH_SERVER"].inspect}
   direct_solr_query_sleep_time 0
   maximum_search_time 10
+  # Microwave filters search rows by each object's read ACL, so run the
+  # ACL-filtered search examples instead of leaving them pending.  Mixlib only
+  # creates predicates for statically declared defaults, so define the one
+  # Pedant calls from the search specs.
+  search_acls true
+
+  def self.search_acls?
+    self[:search_acls] == true
+  end
 
   requestors({
     clients: {

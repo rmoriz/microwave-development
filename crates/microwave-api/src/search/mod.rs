@@ -6,7 +6,7 @@ pub(crate) mod index;
 mod opensearch;
 mod query;
 
-use crate::helpers::{base_url, container_authz, organization, require_permission};
+use crate::helpers::{base_url, container_authz, is_superuser, organization, require_permission};
 use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
@@ -34,6 +34,11 @@ pub fn routes() -> Router<AppState> {
         .route("/organizations/{organization}/search", get(list_indexes))
         .route(
             "/organizations/{organization}/search/{index}",
+            get(search).post(partial_search),
+        )
+        // Upstream accepts a trailing slash on search index URLs.
+        .route(
+            "/organizations/{organization}/search/{index}/",
             get(search).post(partial_search),
         )
 }
@@ -187,6 +192,7 @@ async fn execute_search(
         query,
         start,
         rows,
+        actor_authz_id: (!is_superuser(auth)).then(|| auth.principal.authz_id.clone()),
     };
     let hits = state
         .search

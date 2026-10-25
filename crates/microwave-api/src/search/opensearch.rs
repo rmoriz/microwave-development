@@ -337,6 +337,7 @@ mod tests {
             query: Query::parse(query).unwrap(),
             start: 5,
             rows: 10,
+            actor_authz_id: None,
         }
     }
 
