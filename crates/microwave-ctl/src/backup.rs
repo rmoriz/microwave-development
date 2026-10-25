@@ -1,7 +1,10 @@
+use crate::pg::PgTarget;
 use crate::{context::Context, CtlError};
 use microwave_config::DatabaseDriver;
 use microwave_store::SqliteStore;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use uuid::Uuid;
 
 const DATABASE_FILE: &str = "microwave.db";
@@ -68,6 +71,7 @@ fn backup_postgres(context: &Context, path: &Path) -> Result<(), CtlError> {
     let dump_arg = dump.to_str().ok_or_else(|| {
         CtlError::message(format!("backup path {} is not valid UTF-8", dump.display()))
     })?;
+    let target = PgTarget::parse(&context.database_url)?;
     run_tool(
         "pg_dump",
         &[
@@ -77,8 +81,9 @@ fn backup_postgres(context: &Context, path: &Path) -> Result<(), CtlError> {
             "--file",
             dump_arg,
             "--dbname",
-            &context.database_url,
+            target.url(),
         ],
+        &target,
     )?;
 
     if !dump.is_file() {
@@ -97,10 +102,10 @@ fn backup_postgres(context: &Context, path: &Path) -> Result<(), CtlError> {
 
 /// Restore a backup directory created by [`backup`]. The live database and
 /// bookshelf are replaced.
-pub fn restore(context: &Context, path: &Path) -> Result<(), CtlError> {
+pub fn restore(context: &Context, path: &Path, yes: bool) -> Result<(), CtlError> {
     match context.config.database.driver {
-        DatabaseDriver::Sqlite => restore_sqlite(context, path)?,
-        DatabaseDriver::Postgres => restore_postgres(context, path)?,
+        DatabaseDriver::Sqlite => restore_sqlite(context, path, yes)?,
+        DatabaseDriver::Postgres => restore_postgres(context, path, yes)?,
     }
 
     let bookshelf = context.data_dir.join(BOOKSHELF_DIR);
@@ -114,7 +119,7 @@ pub fn restore(context: &Context, path: &Path) -> Result<(), CtlError> {
     Ok(())
 }
 
-fn restore_sqlite(context: &Context, path: &Path) -> Result<(), CtlError> {
+fn restore_sqlite(context: &Context, path: &Path, yes: bool) -> Result<(), CtlError> {
     let database_path = context.sqlite_path()?;
     let database_backup = path.join(DATABASE_FILE);
     if !database_backup.is_file() {
@@ -131,6 +136,13 @@ fn restore_sqlite(context: &Context, path: &Path) -> Result<(), CtlError> {
             "the backup database is the live database; choose a separate backup directory",
         ));
     }
+
+    confirm_restore(
+        &format!("sqlite:{}", database_path.display()),
+        None,
+        "",
+        yes,
+    )?;
 
     context.prepare_data_dir()?;
     if let Some(parent) = database_path.parent() {
@@ -156,7 +168,7 @@ fn restore_sqlite(context: &Context, path: &Path) -> Result<(), CtlError> {
     Ok(())
 }
 
-fn restore_postgres(context: &Context, path: &Path) -> Result<(), CtlError> {
+fn restore_postgres(context: &Context, path: &Path, yes: bool) -> Result<(), CtlError> {
     let dump = path.join(POSTGRES_DUMP_FILE);
     if !dump.is_file() {
         return Err(CtlError::message(format!(
@@ -170,8 +182,17 @@ fn restore_postgres(context: &Context, path: &Path) -> Result<(), CtlError> {
         CtlError::message(format!("backup path {} is not valid UTF-8", dump.display()))
     })?;
 
-    // Validate the archive before dropping any live object.
-    run_tool("pg_restore", &["--list", dump_arg])?;
+    let target = PgTarget::parse(&context.database_url)?;
+    // Validate the archive and read its source database name before dropping
+    // any live object. The TOC is captured, not printed.
+    let toc = pg_restore_list(dump_arg, &target)?;
+    let archive_database = archive_database(&toc);
+    confirm_restore(
+        &format!("PostgreSQL {}", target.display()),
+        archive_database,
+        target.database(),
+        yes,
+    )?;
     run_tool(
         "pg_restore",
         &[
@@ -182,22 +203,90 @@ fn restore_postgres(context: &Context, path: &Path) -> Result<(), CtlError> {
             "--single-transaction",
             "--no-password",
             "--dbname",
-            &context.database_url,
+            target.url(),
             dump_arg,
         ],
+        &target,
     )?;
     Ok(())
 }
 
-fn run_tool(program: &str, args: &[&str]) -> Result<(), CtlError> {
-    let status = std::process::Command::new(program)
-        .args(args)
-        .status()
-        .map_err(|error| {
-            CtlError::message(format!(
-                "failed to run {program}: {error}; install the PostgreSQL client tools or use a separate backup workflow"
-            ))
-        })?;
+fn pg_restore_list(dump_arg: &str, target: &PgTarget) -> Result<String, CtlError> {
+    let mut command = Command::new("pg_restore");
+    command.args(["--list", dump_arg]);
+    target.apply_environment(&mut command);
+    let output = command.output().map_err(|error| {
+        CtlError::message(format!(
+            "failed to run pg_restore: {error}; install the PostgreSQL client tools or use a separate backup workflow"
+        ))
+    })?;
+    if !output.status.success() {
+        return Err(CtlError::message(format!(
+            "pg_restore --list failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn archive_database(toc: &str) -> Option<&str> {
+    toc.lines().find_map(|line| {
+        line.trim_start_matches(';')
+            .trim()
+            .strip_prefix("dbname:")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn confirm_restore(
+    target: &str,
+    archive_database: Option<&str>,
+    target_database: &str,
+    yes: bool,
+) -> Result<(), CtlError> {
+    println!("Restore target: {target}");
+    if let Some(archive_database) = archive_database {
+        println!("Backup database: {archive_database}");
+        if archive_database != target_database {
+            if !yes {
+                return Err(CtlError::message(format!(
+                    "backup was created from database {archive_database:?} but the target is {target_database:?}; re-run with --yes only after verifying the target"
+                )));
+            }
+            eprintln!(
+                "warning: backup database {archive_database:?} differs from target {target_database:?}; continuing because --yes was given"
+            );
+        }
+    }
+    if yes {
+        return Ok(());
+    }
+    if !std::io::stdin().is_terminal() {
+        return Err(CtlError::message(
+            "restore is destructive and stdin is not a terminal; re-run with --yes after verifying the target",
+        ));
+    }
+    print!("Type 'yes' to continue: ");
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if answer.trim() == "yes" {
+        Ok(())
+    } else {
+        Err(CtlError::message("restore cancelled"))
+    }
+}
+
+fn run_tool(program: &str, args: &[&str], target: &PgTarget) -> Result<(), CtlError> {
+    let mut command = Command::new(program);
+    command.args(args);
+    target.apply_environment(&mut command);
+    let status = command.status().map_err(|error| {
+        CtlError::message(format!(
+            "failed to run {program}: {error}; install the PostgreSQL client tools or use a separate backup workflow"
+        ))
+    })?;
     if status.success() {
         Ok(())
     } else {

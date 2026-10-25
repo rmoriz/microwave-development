@@ -9,6 +9,10 @@
 # Environment:
 #   MICROWAVE_POSTGRES_IMAGE   Image to use (default: postgres:18-alpine)
 #   MICROWAVE_KEEP_POSTGRES    Set to 1 to keep the container after the run
+#   MICROWAVE_TEST_SKIP_PG_CLIENT_TOOLS
+#                              Set to 1 to explicitly skip CLI backup/restore/
+#                              psql coverage when host pg_dump/pg_restore/psql
+#                              are unavailable. Without it, missing tools fail.
 #
 # The script exits 0 with a SKIP message when Docker or its daemon is not
 # available, so CI without Docker stays green. The tests themselves also skip
@@ -36,6 +40,23 @@ trap cleanup EXIT
 
 command -v docker >/dev/null 2>&1 || skip "docker is not installed"
 docker info >/dev/null 2>&1 || skip "the Docker daemon is not reachable"
+
+missing_client_tools=()
+for tool in pg_dump pg_restore psql; do
+    command -v "$tool" >/dev/null 2>&1 || missing_client_tools+=("$tool")
+done
+if [[ ${#missing_client_tools[@]} -gt 0 ]]; then
+    if [[ "${MICROWAVE_TEST_SKIP_PG_CLIENT_TOOLS:-0}" == "1" ]]; then
+        echo "WARNING: missing PostgreSQL client tools (${missing_client_tools[*]});" \
+             "backup/restore/psql CLI coverage will be skipped because" \
+             "MICROWAVE_TEST_SKIP_PG_CLIENT_TOOLS=1 was set explicitly." >&2
+    else
+        echo "ERROR: missing PostgreSQL client tools: ${missing_client_tools[*]}" >&2
+        echo "Install pg_dump/pg_restore/psql, or set" \
+             "MICROWAVE_TEST_SKIP_PG_CLIENT_TOOLS=1 to skip that CLI coverage explicitly." >&2
+        exit 1
+    fi
+fi
 
 echo "Starting disposable PostgreSQL ($IMAGE)..." >&2
 docker run --detach \

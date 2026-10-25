@@ -16,4 +16,5 @@ microwave-store = { path = "../microwave-store" }
 microwave-store-postgres = { path = "../microwave-store-postgres" }
 thiserror.workspace = true
 tokio.workspace = true
+url.workspace = true
 uuid.workspace = true

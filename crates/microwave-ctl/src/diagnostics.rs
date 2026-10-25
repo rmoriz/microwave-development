@@ -148,19 +148,30 @@ pub fn ha_status(context: &Context) -> Result<(), CtlError> {
 /// Open an interactive `sqlite3` shell on the configured database, or `psql`
 /// when a PostgreSQL URL is configured. Extra arguments are passed through.
 pub fn psql(context: &Context, args: &[String]) -> Result<(), CtlError> {
-    let (program, mut command_args) = match context.config.database.driver {
+    let (program, mut command_args, target) = match context.config.database.driver {
         DatabaseDriver::Sqlite => {
             let path = context.sqlite_path()?.to_path_buf();
             // Ensure the file exists and has the current schema before opening it.
             drop(context.open_store()?);
-            ("sqlite3", vec![path.display().to_string()])
+            ("sqlite3", vec![path.display().to_string()], None)
         }
-        DatabaseDriver::Postgres => ("psql", vec![context.database_url.clone()]),
+        DatabaseDriver::Postgres => {
+            let target = crate::pg::PgTarget::parse(&context.database_url)?;
+            (
+                "psql",
+                vec!["--dbname".to_string(), target.url().to_string()],
+                Some(target),
+            )
+        }
     };
 
     command_args.extend(args.iter().cloned());
-    let status = std::process::Command::new(program)
-        .args(&command_args)
+    let mut command = std::process::Command::new(program);
+    command.args(&command_args);
+    if let Some(target) = &target {
+        target.apply_environment(&mut command);
+    }
+    let status = command
         .status()
         .map_err(|error| CtlError::message(format!("failed to run {program}: {error}")))?;
 

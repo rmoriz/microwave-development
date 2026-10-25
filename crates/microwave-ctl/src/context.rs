@@ -24,7 +24,8 @@ impl Context {
             DatabaseDriver::Sqlite => {
                 let path = database_url.strip_prefix("sqlite://").ok_or_else(|| {
                     CtlError::message(format!(
-                        "unsupported database URL {database_url:?}; expected sqlite://<path>"
+                        "unsupported database URL {:?}; expected sqlite://<path>",
+                        redacted_database_url(&database_url)
                     ))
                 })?;
                 if path.is_empty() {
@@ -37,7 +38,8 @@ impl Context {
                     || database_url.starts_with("postgresql://"))
                 {
                     return Err(CtlError::message(format!(
-                        "unsupported database URL {database_url:?}; expected postgres://<url>"
+                        "unsupported database URL {:?}; expected postgres://<url>",
+                        redacted_database_url(&database_url)
                     )));
                 }
                 None
@@ -133,6 +135,11 @@ impl StoreHandle {
     }
 
     /// Run one repository future on the handle's current-thread runtime.
+    ///
+    /// Safety/usage: the CLI is synchronous, so this must only be called from
+    /// ordinary synchronous code. Do not call it from inside another Tokio
+    /// runtime or recursively from a future already driven by this handle; a
+    /// current-thread runtime cannot be entered re-entrantly and would panic.
     pub fn run<F: std::future::Future>(&self, future: F) -> F::Output {
         self.runtime.block_on(future)
     }
@@ -143,4 +150,45 @@ fn new_runtime() -> Result<tokio::runtime::Runtime, CtlError> {
         .enable_all()
         .build()
         .map_err(|error| CtlError::message(format!("failed to build tokio runtime: {error}")))
+}
+
+/// Remove a password from a URL before putting it in an error message.
+fn redacted_database_url(url: &str) -> String {
+    if let Ok(mut parsed) = url::Url::parse(url) {
+        if parsed.password().is_some() {
+            let _ = parsed.set_password(Some("***"));
+        }
+        return parsed.to_string();
+    }
+
+    // `Url::parse` may fail for a malformed URL. Do a conservative textual
+    // redaction so a partially typed password is still not echoed.
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let Some((userinfo, remainder)) = rest.split_once('@') else {
+        return url.to_string();
+    };
+    let user = userinfo
+        .split_once(':')
+        .map(|(user, _)| user)
+        .unwrap_or(userinfo);
+    format!("{scheme}://{user}:***@{remainder}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redacted_database_url;
+
+    #[test]
+    fn redacts_passwords_in_database_urls() {
+        let redacted = redacted_database_url("postgres://microwave:s3cret@db/microwave");
+        assert!(!redacted.contains("s3cret"));
+        assert!(redacted.contains("***"));
+        assert!(redacted.contains("microwave"));
+
+        let malformed = redacted_database_url("postgres://microwave:s3cret@[::bad");
+        assert!(!malformed.contains("s3cret"));
+        assert!(malformed.contains("***"));
+    }
 }

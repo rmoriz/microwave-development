@@ -152,7 +152,7 @@ fn unique(prefix: &str) -> String {
 
 #[test]
 fn postgres_export_and_import_round_trip_through_the_cli() {
-    use microwave_store::IdentityRepository;
+    use microwave_store::{IdentityRepository, OAuthRepository};
 
     let Some(url) = postgres_url() else {
         eprintln!("SKIP: MICROWAVE_TEST_POSTGRES_URL is not set");
@@ -176,6 +176,15 @@ fn postgres_export_and_import_round_trip_through_the_cli() {
             true,
         ))
         .expect("create user");
+    let source_application = runtime
+        .block_on(store.create_oauth_application(
+            &unique("pg-oauth-source"),
+            "https://example.com/source",
+            "",
+            true,
+        ))
+        .expect("create source OAuth application");
+    drop(store);
 
     let snapshots = tempfile::tempdir().unwrap();
     let snapshot = snapshots.path().join("pg-snapshot.json");
@@ -194,19 +203,15 @@ fn postgres_export_and_import_round_trip_through_the_cli() {
     assert!(stdout(&exported).contains("Exported snapshot"));
     assert!(snapshot.is_file());
 
-    runtime
-        .block_on(store.delete_user(&username))
-        .expect("delete user before import");
-    assert!(runtime
-        .block_on(store.find_user(&username))
-        .expect("find deleted user")
-        .is_none());
-
+    // Import into a fresh database so a missing sequence reset is detectable:
+    // the source database's sequences are already past the exported ids.
+    let scratch_suffix = unique("target");
+    let (scratch_name, target_url) = scratch_database(&url, &scratch_suffix);
     for attempt in 0..2 {
         let imported = run(&[
             "import",
             "--database-url",
-            &url,
+            &target_url,
             "--input",
             snapshot.to_str().unwrap(),
         ]);
@@ -218,26 +223,49 @@ fn postgres_export_and_import_round_trip_through_the_cli() {
         assert!(stdout(&imported).contains("Imported snapshot"));
     }
 
+    let target = runtime
+        .block_on(microwave_store_postgres::PostgresStore::connect(
+            &target_url,
+        ))
+        .expect("connect to fresh target");
     let restored = runtime
-        .block_on(store.find_user(&username))
+        .block_on(target.find_user(&username))
         .expect("find imported user")
         .expect("imported user exists");
     assert_eq!(restored.id, user.id);
     assert_eq!(restored.password_hash, "pg-hash");
     assert!(restored.admin);
 
-    // Importing explicitly assigned sequence ids must not leave the OAuth
-    // sequence behind. A fresh application has to receive a new id.
-    use microwave_store::OAuthRepository;
+    let max: i64 = runtime
+        .block_on(
+            sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM oauth_applications")
+                .fetch_one(target.pool()),
+        )
+        .expect("read imported OAuth max id");
+    assert!(max >= source_application.id);
+    let next: i64 = runtime
+        .block_on(
+            sqlx::query_scalar(
+                "SELECT nextval(pg_get_serial_sequence('oauth_applications', 'id'))",
+            )
+            .fetch_one(target.pool()),
+        )
+        .expect("read OAuth sequence");
+    assert!(
+        next > max,
+        "fresh target sequence must advance beyond imported max id {max}, got {next}"
+    );
     let application = runtime
-        .block_on(store.create_oauth_application(
-            &unique("pg-oauth"),
+        .block_on(target.create_oauth_application(
+            &unique("pg-oauth-after-import"),
             "https://example.com/callback",
             "",
             true,
         ))
         .expect("create OAuth application after snapshot import");
-    assert!(application.id > 0);
+    assert!(application.id > max);
+    drop(target);
+    drop_scratch_database(&url, &scratch_name);
 }
 
 #[test]
@@ -248,4 +276,55 @@ fn postgres_snapshot_source_flag_is_required() {
     assert!(!output.status.success());
     let message = stderr(&output);
     assert!(message.contains("--data-dir") || message.contains("--database-url"));
+}
+
+fn database_url_with_name(url: &str, name: &str) -> String {
+    let (base, query) = match url.split_once('?') {
+        Some((base, query)) => (base, format!("?{query}")),
+        None => (url, String::new()),
+    };
+    let prefix = match base.rfind('/') {
+        Some(index) => &base[..=index],
+        None => base,
+    };
+    format!("{prefix}{name}{query}")
+}
+
+fn scratch_database(base_url: &str, suffix: &str) -> (String, String) {
+    let name = format!("migrate_{suffix}").replace('-', "_");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let pool = sqlx::PgPool::connect(base_url)
+            .await
+            .expect("connect to configured PostgreSQL");
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{name}\"")))
+            .execute(&pool)
+            .await
+            .expect("create scratch database");
+        pool.close().await;
+    });
+    let url = database_url_with_name(base_url, &name);
+    (name, url)
+}
+
+fn drop_scratch_database(base_url: &str, name: &str) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let pool = sqlx::PgPool::connect(base_url)
+            .await
+            .expect("connect to configured PostgreSQL");
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP DATABASE \"{name}\" WITH (FORCE)"
+        )))
+        .execute(&pool)
+        .await
+        .expect("drop scratch database");
+        pool.close().await;
+    });
 }

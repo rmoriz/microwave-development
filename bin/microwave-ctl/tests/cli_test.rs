@@ -246,7 +246,15 @@ fn backup_and_restore_round_trip() {
     std::fs::write(bookshelf.join("blob"), b"mutated").unwrap();
     std::fs::write(bookshelf.join("extra"), b"extra").unwrap();
 
-    let restored = run(data.path(), &["restore", backup_path.to_str().unwrap()]);
+    let refused = run(data.path(), &["restore", backup_path.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("--yes"));
+    assert!(stdout(&refused).contains("Restore target:"));
+
+    let restored = run(
+        data.path(),
+        &["restore", backup_path.to_str().unwrap(), "--yes"],
+    );
     assert_success(&restored);
 
     let listed = run(data.path(), &["user-list"]);
@@ -941,6 +949,32 @@ fn pg_runtime() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
+/// Require a host PostgreSQL client tool when the test database is configured.
+///
+/// Missing tools are a hard failure so the PostgreSQL suite cannot silently
+/// report success while skipping backup/restore/psql coverage. Set
+/// `MICROWAVE_TEST_SKIP_PG_CLIENT_TOOLS=1` to opt out explicitly on a host
+/// that only has Docker.
+fn pg_client_tool_available(tool: &str) -> bool {
+    if std::process::Command::new(tool)
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
+        return true;
+    }
+    if std::env::var("MICROWAVE_TEST_SKIP_PG_CLIENT_TOOLS").as_deref() == Ok("1") {
+        eprintln!(
+            "SKIP: {tool} is not installed and MICROWAVE_TEST_SKIP_PG_CLIENT_TOOLS=1 was set explicitly"
+        );
+        return false;
+    }
+    panic!(
+        "{tool} is required for the PostgreSQL CLI tests; install the PostgreSQL client tools \
+         or set MICROWAVE_TEST_SKIP_PG_CLIENT_TOOLS=1 to skip backup/restore/psql coverage explicitly"
+    );
+}
+
 /// Create a uniquely named database from the configured test server and return
 /// its URL. The configured database is used only as the administrative
 /// connection; tests that import snapshots or restore dumps need an empty
@@ -1315,12 +1349,7 @@ fn postgres_psql_passes_queries_through() {
         eprintln!("SKIP: MICROWAVE_TEST_POSTGRES_URL is not set");
         return;
     };
-    if std::process::Command::new("psql")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        eprintln!("SKIP: psql is not installed");
+    if !pg_client_tool_available("psql") {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -1341,20 +1370,7 @@ fn postgres_backup_and_restore_round_trip() {
         eprintln!("SKIP: MICROWAVE_TEST_POSTGRES_URL is not set");
         return;
     };
-    if std::process::Command::new("pg_dump")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        eprintln!("SKIP: pg_dump is not installed");
-        return;
-    }
-    if std::process::Command::new("pg_restore")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        eprintln!("SKIP: pg_restore is not installed");
+    if !pg_client_tool_available("pg_dump") || !pg_client_tool_available("pg_restore") {
         return;
     }
 
@@ -1382,6 +1398,16 @@ fn postgres_backup_and_restore_round_trip() {
     let output = run_pg(data.path(), &url, &["backup", path.to_str().unwrap()]);
     assert_success(&output);
     assert!(path.join("microwave.dump").is_file());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path.join("microwave.dump"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
 
     let store = runtime
         .block_on(microwave_store_postgres::PostgresStore::connect(&url))
@@ -1399,7 +1425,28 @@ fn postgres_backup_and_restore_round_trip() {
         .expect("create transient user");
     drop(store);
 
-    let restored = run_pg(data.path(), &url, &["restore", path.to_str().unwrap()]);
+    let refused = run_pg(data.path(), &url, &["restore", path.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("--yes"));
+    let text = stdout(&refused);
+    assert!(text.contains("Restore target:"));
+    assert!(!text.contains("microwave:microwave"));
+
+    // A refused confirmation must not have dropped the live objects.
+    let store = runtime
+        .block_on(microwave_store_postgres::PostgresStore::connect(&url))
+        .expect("connect after refused restore");
+    assert!(runtime
+        .block_on(store.find_user(&transient))
+        .expect("find transient user after refused restore")
+        .is_some());
+    drop(store);
+
+    let restored = run_pg(
+        data.path(),
+        &url,
+        &["restore", path.to_str().unwrap(), "--yes"],
+    );
     assert_success(&restored);
     let store = runtime
         .block_on(microwave_store_postgres::PostgresStore::connect(&url))

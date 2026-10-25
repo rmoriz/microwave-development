@@ -213,8 +213,15 @@ pub enum Command {
     /// `VACUUM INTO`; PostgreSQL uses `pg_dump`.
     Backup { path: PathBuf },
     /// Restore metadata and bookshelf data from a backup. SQLite restores the
-    /// staged database file; PostgreSQL replays the `pg_dump` archive.
-    Restore { path: PathBuf },
+    /// staged database file; PostgreSQL replays the `pg_dump` archive. This is
+    /// destructive and asks for confirmation unless `--yes` is given.
+    Restore {
+        path: PathBuf,
+        /// Skip the interactive confirmation. Required when stdin is not a
+        /// terminal.
+        #[arg(long)]
+        yes: bool,
+    },
 
     /// Import a Microwave migration snapshot (produced by the
     /// `microwave-migrate` binary) into the configured SQLite or PostgreSQL

@@ -473,8 +473,9 @@ not already contain `microwave.db`; for PostgreSQL it must not already contain
 - `bookshelf/` — a recursive copy of the local blob store, if present.
 
 PostgreSQL backup requires `pg_dump` to be installed and on `PATH`. The
-database URL (including any password) is passed to the client tool, so protect
-the process list and `pgpass`/service configuration accordingly.
+password is removed from the URL in the child process arguments and supplied
+through `PGPASSWORD` instead, so it does not appear in process listings. Other
+connection parameters (host, port, user, database, `sslmode`) are preserved.
 
 It does **not** include:
 
@@ -508,12 +509,18 @@ sudo -u microwave microwave-ctl --config /etc/microwave/microwave.toml \
 sudo systemctl start microwave-server
 ```
 
+`restore` prints the target (without credentials) and asks for confirmation.
+In scripts and other non-interactive environments, pass `--yes`. For
+PostgreSQL it reads the archive TOC first and reports the database the dump was
+created from; a mismatch with the configured target is refused unless `--yes`
+is given.
+
 `restore`:
 
 - for SQLite, verifies `microwave.db` with `PRAGMA integrity_check` before
   touching live files;
-- for PostgreSQL, validates `microwave.dump` with `pg_restore --list` before
-  dropping any live object, then runs
+- for PostgreSQL, validates `microwave.dump` with `pg_restore --list` (the TOC
+  is captured, not printed) before dropping any live object, then runs
   `pg_restore --clean --if-exists --single-transaction`. The target database
   must be reachable and the archive must match the schema; extra objects that
   are not in the archive are not removed;
@@ -560,9 +567,9 @@ different id into a database that already has that name fails rather than
 rewriting live ACL references.
 
 Not included: cookbook blobs, `kvpair` secrets (including the maintenance
-flag), and the superuser key files. Copy `bookshelf/` (or the S3 bucket) in
-addition. The snapshot file is written with mode `0600`; it still contains
-password hashes and public keys, so treat it as sensitive. Use
+flag), empty sandboxes, and the superuser key files. Copy `bookshelf/` (or the
+S3 bucket) in addition. The snapshot file is written with mode `0600`; it still
+contains password hashes and public keys, so treat it as sensitive. Use
 `microwave-ctl backup` instead when you need the full database including
 `kvpair`.
 

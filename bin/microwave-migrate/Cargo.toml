@@ -17,5 +17,6 @@ microwave-migrate = { path = "../../crates/microwave-migrate" }
 assert_cmd.workspace = true
 microwave-store = { path = "../../crates/microwave-store" }
 microwave-store-postgres = { path = "../../crates/microwave-store-postgres" }
+sqlx.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

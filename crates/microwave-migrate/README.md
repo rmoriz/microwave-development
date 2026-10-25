@@ -165,9 +165,10 @@ JSON text held by the local store, so object bodies survive byte-for-byte.
   only database rows. Adjacent PEM files such as `<data_dir>/pivotal.pem` are
   never read.
 - **Cookbook blobs / the bookshelf directory, search indexes, telemetry,
-  `kvpair`, and OAuth access tokens/grants.** This slice migrates metadata,
-  authz, keys, checksums, and OAuth application registrations. Copy or
-  re-upload cookbook blobs separately, and let the search index rebuild.
+  `kvpair`, empty sandboxes, and OAuth access tokens/grants.** This slice
+  migrates metadata, authz, keys, in-flight sandbox uploads, and OAuth
+  application registrations. Copy or re-upload cookbook blobs separately, and
+  let the search index rebuild.
 
 ## Import semantics
 

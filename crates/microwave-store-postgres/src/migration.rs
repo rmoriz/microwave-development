@@ -1413,9 +1413,9 @@ async fn import_sandboxed_checksums(
         .await
         .map_err(db)?;
     }
-    // The snapshot format does not carry the explicit sandboxes table. Keep
-    // empty and in-flight sandboxes visible by deriving the rows the same way
-    // the embedded schema backfill does.
+    // The snapshot format does not carry the explicit sandboxes table or
+    // empty sandboxes. Derive rows for in-flight uploads the same way the
+    // embedded schema backfill does; empty sandboxes are not restored.
     sqlx::query(
         "INSERT INTO sandboxes (org_id, sandbox_id, created_at)
          SELECT org_id, sandbox_id, MIN(created_at)
