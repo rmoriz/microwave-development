@@ -581,7 +581,12 @@ fn journal_report() -> String {
     let unit = std::env::var("MW_SERVICE_UNIT")
         .ok()
         .map(|unit| unit.trim().to_string())
-        .filter(|unit| !unit.is_empty())
+        .filter(|unit| {
+            !unit.is_empty()
+                && unit
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '@' | '-'))
+        })
         .unwrap_or_else(|| "microwave-server".into());
 
     let mut out = String::new();

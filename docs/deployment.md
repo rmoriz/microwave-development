@@ -1353,6 +1353,13 @@ microwave-ctl --config /etc/microwave/microwave.toml reindex --org acme
 microwave-ctl --config /etc/microwave/microwave.toml ha-status
 microwave-ctl --config /etc/microwave/microwave.toml psql 'select count(*) from nodes;'
 microwave-ctl --config /etc/microwave/microwave.toml pedant users nodes
+microwave-ctl --config /etc/microwave/microwave.toml user-edit alice
+microwave-ctl --config /etc/microwave/microwave.toml oc-id-show-app supermarket
+microwave-ctl --config /etc/microwave/microwave.toml filtered-dump --output /tmp/dump --org acme
+microwave-ctl --config /etc/microwave/microwave.toml gather-logs --output /tmp/microwave-logs.tar.gz
+microwave-ctl --config /etc/microwave/microwave.toml cleanup-bifrost --estimate-only
+microwave-ctl --config /etc/microwave/microwave.toml rotate-credentials bookshelf
+microwave-ctl --config /etc/microwave/microwave.toml rotate-shared-secrets
 microwave-ctl service status
 ```
 
@@ -1371,9 +1378,28 @@ relational counts or backfills a remote search cluster; see
 (tags are passed as separate arguments, output is streamed, and the harness exit
 status is preserved; set `MW_PEDANT_SCRIPT` when the script is not in the
 current tree or beside the binary, and discovery stops at the repository root).
-`service` controls the systemd unit; in a container or on a host without
-systemd, `service start --foreground` (or `MW_SERVICE_FOREGROUND=1`) runs
-`microwave-server serve` in the foreground instead. `backup`/`restore` use
+`user-edit` writes the editable user JSON to a `0600` temporary file, opens
+`$VISUAL`/`$EDITOR`, hashes a non-empty `password` field, supports `null` to
+clear profile fields, and refuses to remove the configured superuser's admin
+flag; `--input FILE` makes the edit non-interactive. `oc-id-show-app` prints
+the named OAuth application's `uid`, `secret`, and `redirect_uri` (this is an
+intentional secret-revealing command). `filtered-dump` mirrors upstream's
+debug dump: organization/client metadata is preserved, but node, role, and
+environment attribute maps and data-bag values are replaced with placeholders;
+`--org` limits the output. `gather-logs` builds a `0600` `.tar.gz` with a
+redacted config summary, system/status reports, the last journald lines, and a
+data-directory name/size listing; database contents, bookshelf blobs, keys,
+and environment variables are excluded. `cleanup-bifrost` counts or deletes
+`authz_entities` rows no identity or object table references
+(`--estimate-only` avoids changes, `--wait-time` delays the start, and
+`--force-cleanup` reports that Microwave has no legacy tracking tables).
+Credential rotation updates the `kvpair`-backed service secrets and never
+prints generated values; `rotate-shared-secrets` also resets the shared
+credential version and requires redistributing the secrets and restarting or
+reconfiguring the server. `service` controls the systemd unit; in a container
+or on a host without systemd, `service start --foreground` (or
+`MW_SERVICE_FOREGROUND=1`) runs `microwave-server serve` in the foreground
+instead. `backup`/`restore` use
 `VACUUM INTO`
 for SQLite and `pg_dump`/`pg_restore` for PostgreSQL, in directory or tar
 format. `microwave-migrate` exports and imports both backends; see

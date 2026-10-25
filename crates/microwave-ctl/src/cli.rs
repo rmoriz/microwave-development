@@ -572,4 +572,92 @@ mod tests {
             }
         ));
     }
+
+    #[test]
+    fn parses_the_remaining_compatibility_commands() {
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "user-edit",
+            "alice",
+            "--input",
+            "/tmp/alice.json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::UserEdit { ref user, input: Some(ref path) }
+                if user == "alice" && path == std::path::Path::new("/tmp/alice.json")
+        ));
+
+        let cli = Cli::try_parse_from(["microwave-ctl", "oc-id-show-app", "supermarket"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::OcIdShowApp { ref app } if app == "supermarket"
+        ));
+
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "cleanup-bifrost",
+            "--estimate-only",
+            "--wait-time",
+            "5",
+            "--force-cleanup",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::CleanupBifrost {
+                estimate_only: true,
+                wait_time: 5,
+                force_cleanup: true
+            }
+        ));
+
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "filtered-dump",
+            "--output",
+            "/tmp/dump",
+            "--org",
+            "acme",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::FilteredDump { ref output, org: Some(ref org) }
+                if output == std::path::Path::new("/tmp/dump") && org == "acme"
+        ));
+
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "gather-logs",
+            "--output",
+            "/tmp/logs.tar.gz",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::GatherLogs { output: Some(ref path) }
+                if path == std::path::Path::new("/tmp/logs.tar.gz")
+        ));
+
+        let cli =
+            Cli::try_parse_from(["microwave-ctl", "rotate-credentials", "bookshelf"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::RotateCredentials { ref service } if service == "bookshelf"
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["microwave-ctl", "rotate-all-credentials"])
+                .unwrap()
+                .command,
+            Command::RotateAllCredentials
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["microwave-ctl", "rotate-shared-secrets"])
+                .unwrap()
+                .command,
+            Command::RotateSharedSecrets
+        ));
+    }
 }
