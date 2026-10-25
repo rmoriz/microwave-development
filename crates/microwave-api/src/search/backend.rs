@@ -121,6 +121,15 @@ pub trait SearchBackend: Send + Sync {
     /// Short backend name used by `/_status`.
     fn name(&self) -> &'static str;
 
+    /// Cheap liveness probe used by `GET /_status`.
+    ///
+    /// The embedded backend has no separate service to poll, so the default is
+    /// a successful no-op. Remote backends should override this with a bounded
+    /// request to a ping or cluster-health endpoint.
+    async fn health_check(&self) -> Result<(), SearchError> {
+        Ok(())
+    }
+
     /// Returns matching document IDs and the total hit count.
     async fn search(&self, request: &SearchRequest) -> Result<SearchHits, SearchError>;
 

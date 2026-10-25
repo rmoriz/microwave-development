@@ -64,6 +64,15 @@ pub trait ObjectStore: Send + Sync {
 
     /// Build a URL a client can use to `method` the blob directly.
     fn presigned_url(&self, method: &str, organization_id: &str, checksum: &str) -> String;
+
+    /// Cheap liveness probe used by `GET /_status`.
+    ///
+    /// Local storage checks that the data directory is readable and writable;
+    /// S3-compatible storage performs a bounded bucket request. The default is
+    /// a successful no-op so test doubles need only implement blob operations.
+    fn health_check(&self) -> Result<(), ObjectStoreError> {
+        Ok(())
+    }
 }
 
 /// Key layout shared by both backends: `organization-{org}/checksum-{checksum}`.
@@ -173,6 +182,29 @@ impl ObjectStore for LocalObjectStore {
             self.base_url
         )
     }
+
+    fn health_check(&self) -> Result<(), ObjectStoreError> {
+        // Create the root if a fresh deployment has not written a blob yet, then
+        // verify both read and write access. The probe file is removed
+        // immediately; a leftover file from a crashed process is truncated.
+        std::fs::create_dir_all(&self.root)?;
+        std::fs::read_dir(&self.root)?;
+
+        let probe = self
+            .root
+            .join(format!(".microwave-health-{}", std::process::id()));
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&probe)?;
+            file.write_all(b"ok")?;
+        }
+        std::fs::remove_file(&probe)?;
+        Ok(())
+    }
 }
 
 /// HMAC token used by the local `/bookshelf` routes.
@@ -247,5 +279,23 @@ mod tests {
         assert!(!bookshelf_token_matches(
             "", "GET", "acme", "abc", "anything"
         ));
+    }
+
+    #[test]
+    fn local_health_check_verifies_read_and_write_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("bookshelf");
+        let store = LocalObjectStore::new(&root, "secret", "http://localhost");
+
+        store.health_check().unwrap();
+        assert!(root.is_dir());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn local_health_check_fails_when_the_root_is_not_a_directory() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = LocalObjectStore::new(file.path(), "secret", "http://localhost");
+        assert!(store.health_check().is_err());
     }
 }

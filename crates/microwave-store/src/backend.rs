@@ -793,6 +793,20 @@ pub trait KvRepository: Send + Sync {
     async fn set_maintenance_enabled(&self, enabled: bool) -> Result<(), StoreError>;
 }
 
+/// Lightweight metadata-backend liveness probe used by `GET /_status`.
+///
+/// Implementations should issue a cheap query that exercises the connection
+/// (for example `SELECT 1`) without taking a write lock or scanning data. The
+/// default is a no-op so out-of-tree test doubles that implement the rest of
+/// the contract are not forced to add a probe; both in-tree backends override
+/// it.
+#[async_trait]
+pub trait HealthRepository: Send + Sync {
+    async fn health_check(&self) -> Result<(), StoreError> {
+        Ok(())
+    }
+}
+
 /// Operator-managed secrets stored under namespaced KV keys.
 #[async_trait]
 pub trait SecretsRepository: Send + Sync {
@@ -827,6 +841,7 @@ pub trait MetadataStore:
     + MembershipRepository
     + OAuthRepository
     + KvRepository
+    + HealthRepository
     + SecretsRepository
     + Send
     + Sync
@@ -844,6 +859,7 @@ impl<T> MetadataStore for T where
         + MembershipRepository
         + OAuthRepository
         + KvRepository
+        + HealthRepository
         + SecretsRepository
         + Send
         + Sync

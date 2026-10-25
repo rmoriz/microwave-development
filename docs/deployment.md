@@ -965,7 +965,7 @@ time, and keep the legacy server read-only until the new one is verified.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `GET /_status` | none | `{"status":"pong","upstreams":[],"keygen":{"status":"ok","cached":3,"capacity":3,"workers":1,"worker_healthy":true,"worker_failures":0,"warm_up_failures":0,"generated_on_demand":0},"indexing":{"mode":"embedded"}}`. |
+| `GET /_status` | none | `{"status":"pong","upstreams":{"chef_sql":"pong","chef_index":"pong","bookshelf":"pong"},"upstream_details":{...},"keygen":{"status":"ok","cached":3,"capacity":3,"workers":1,"worker_healthy":true,"worker_failures":0,"warm_up_failures":0,"generated_on_demand":0},"indexing":{"mode":"embedded"}}`. |
 | `GET /_stats` | none | Request counters, authentication failures, uptime, maintenance state, and node count. JSON by default, Prometheus text with `Accept: text/plain` or `?format=prometheus`. |
 | `GET /server_api_version` | none | `min_api_version` / `max_api_version` (`0`/`2`). |
 | `GET /license` | signed | Static license payload; telemetry is disabled. |
@@ -1004,13 +1004,19 @@ wait for RSA generation. A cache miss generates a keypair on Tokio's blocking
 pool, so the async runtime is not stalled. Private keys are only held in memory
 until handed to the API response and are never logged.
 
-`/_status` is a **liveness** probe, not a readiness probe. It always reports
-`pong` when the HTTP process is up. Its `keygen` object reports the cached
-keypair count, capacity, worker count, and worker health (`status` becomes
-`degraded` after a background or warm-up generation failure and returns to
-`ok` after the next successful background generation). `worker_failures` and
-`warm_up_failures` are cumulative counters. The probe still does not check the
-metadata backend, OpenSearch, or S3. Check dependencies separately:
+`/_status` reports keygen health and probes the metadata database, search
+backend, and object store. The `upstreams` object keeps upstream's
+`{"service": "pong"|"fail"}` shape with `chef_sql`, `chef_index` (or
+`chef_opensearch`/`chef_elasticsearch`), and `bookshelf`; `upstream_details`
+adds the probe status and detail. Each probe is bounded to 1.5 seconds and the
+whole snapshot is cached for one second, so health-check loops do not hammer
+the dependencies. A failing dependency sets the top-level `status` to `fail`
+(and the matching upstream to `fail`) but the endpoint still returns HTTP 200,
+so a reverse proxy or orchestrator can inspect the payload. The `keygen` object
+reports the cached keypair count, capacity, worker count, and worker health
+(`status` becomes `degraded` after a background or warm-up generation failure
+and returns to `ok` after the next successful background generation).
+`worker_failures` and `warm_up_failures` are cumulative counters.
 
 ```sh
 curl -fsS http://127.0.0.1:8000/_status

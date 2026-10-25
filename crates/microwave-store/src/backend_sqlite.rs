@@ -8,9 +8,9 @@
 use crate::artifacts::{StoredCookbookArtifact, StoredCookbookArtifactVersion};
 use crate::authz::{Acl, AclEntry, Container, Group, GroupMembers, Permission};
 use crate::backend::{
-    ArtifactRepository, AuthzRepository, CookbookRepository, IdentityRepository, KvRepository,
-    MembershipRepository, OAuthRepository, ObjectRepository, PolicyRepository, SandboxRepository,
-    SecretsRepository,
+    ArtifactRepository, AuthzRepository, CookbookRepository, HealthRepository, IdentityRepository,
+    KvRepository, MembershipRepository, OAuthRepository, ObjectRepository, PolicyRepository,
+    SandboxRepository, SecretsRepository,
 };
 use crate::cookbooks::StoredCookbookVersion;
 use crate::identity::{ActorKey, ActorType, Client, Org, Principal, User, UserPatch, UserProfile};
@@ -1259,6 +1259,21 @@ impl KvRepository for SqliteStore {
 }
 
 #[async_trait]
+impl HealthRepository for SqliteStore {
+    async fn health_check(&self) -> Result<(), StoreError> {
+        let connection = self.connection();
+        let value: i64 = connection.query_row("SELECT 1", [], |row| row.get(0))?;
+        if value == 1 {
+            Ok(())
+        } else {
+            Err(StoreError::Invalid(format!(
+                "SQLite health probe returned unexpected value {value}"
+            )))
+        }
+    }
+}
+
+#[async_trait]
 impl SecretsRepository for SqliteStore {
     async fn get_secret(&self, group: &str, name: &str) -> Result<Option<String>, StoreError> {
         self.get_secret(group, name)
@@ -1279,5 +1294,17 @@ impl SecretsRepository for SqliteStore {
 
     async fn remove_secret(&self, group: &str, name: &str) -> Result<(), StoreError> {
         self.remove_secret(group, name)
+    }
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::HealthRepository;
+    use crate::SqliteStore;
+
+    #[tokio::test]
+    async fn health_check_runs_a_select_against_the_connection() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store.health_check().await.unwrap();
     }
 }

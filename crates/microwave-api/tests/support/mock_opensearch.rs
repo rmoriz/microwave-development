@@ -78,6 +78,10 @@ async fn handler(State(state): State<MockState>, request: Request) -> Response {
         body: String::from_utf8_lossy(&body).to_string(),
     });
 
+    if uri.ends_with("/_cluster/health") {
+        return axum::Json(json!({ "status": "green" })).into_response();
+    }
+
     if uri.ends_with("/_search") {
         let hits = state.hits.lock().unwrap().clone();
         let hits: Vec<Value> = hits.iter().map(|id| json!({ "_id": id })).collect();

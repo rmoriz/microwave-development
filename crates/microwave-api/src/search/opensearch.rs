@@ -26,6 +26,11 @@ const BULK_CHUNK_SIZE: usize = 500;
 /// Fallback request timeout for backends built without a `SearchConfig`.
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
+/// Upper bound for the `/_status` liveness probe. It is intentionally much
+/// shorter than normal request deadlines so a wedged cluster cannot stall the
+/// health endpoint.
+const HEALTH_CHECK_TIMEOUT_MS: u64 = 1_500;
+
 /// Remote provider flavour. Elasticsearch 7+ shares the OpenSearch request
 /// shape used here; the distinction is kept for `/_status` and future tuning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -394,6 +399,17 @@ struct SearchHit {
 impl super::backend::SearchBackend for OpenSearchBackend {
     fn name(&self) -> &'static str {
         self.provider.name()
+    }
+
+    async fn health_check(&self) -> Result<(), SearchError> {
+        let url = self.url("/_cluster/health");
+        let response = self
+            .client
+            .get(&url)
+            .timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS))
+            .send()
+            .await?;
+        self.check_status(&url, response.status().as_u16())
     }
 
     async fn search(&self, request: &SearchRequest) -> Result<SearchHits, SearchError> {
@@ -1168,5 +1184,26 @@ mod tests {
         let hits = backend.search(&request("name:web1")).await.unwrap();
         assert_eq!(hits.total, 1);
         assert_eq!(hits.ids, vec!["one".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn health_check_uses_cluster_health_and_reports_backend_failures() {
+        let server = mock(200, json!({ "status": "green" })).await;
+        let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &server.base_url).unwrap();
+        backend.health_check().await.unwrap();
+        let requests = server.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "GET");
+        assert_eq!(requests[0].uri, "/_cluster/health");
+
+        let server = mock(503, json!({ "status": "red" })).await;
+        let backend =
+            OpenSearchBackend::new(SearchProvider::Elasticsearch, &server.base_url).unwrap();
+        match backend.health_check().await {
+            Err(SearchError::Backend { status: 503, url }) => {
+                assert_eq!(url, format!("{}/_cluster/health", server.base_url));
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
     }
 }

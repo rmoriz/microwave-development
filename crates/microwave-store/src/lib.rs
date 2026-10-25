@@ -21,9 +21,9 @@ mod sqlite;
 pub use artifacts::{StoredCookbookArtifact, StoredCookbookArtifactVersion};
 pub use authz::{Acl, AclEntry, Container, Group, GroupMembers, Permission};
 pub use backend::{
-    ArtifactRepository, AuthzRepository, CookbookRepository, IdentityRepository, KvRepository,
-    MembershipRepository, MetadataStore, OAuthRepository, ObjectRepository, PolicyRepository,
-    SandboxRepository, SecretsRepository,
+    ArtifactRepository, AuthzRepository, CookbookRepository, HealthRepository, IdentityRepository,
+    KvRepository, MembershipRepository, MetadataStore, OAuthRepository, ObjectRepository,
+    PolicyRepository, SandboxRepository, SecretsRepository,
 };
 pub use compression::{
     decode_serialized, decode_serialized_optional, encode_serialized, encode_serialized_optional,

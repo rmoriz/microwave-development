@@ -1670,6 +1670,7 @@ dependencies = [
  "md-5 0.10.6",
  "sha2 0.10.9",
  "subtle",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "ureq",

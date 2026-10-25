@@ -25,6 +25,7 @@
 mod artifacts;
 mod authz;
 mod cookbooks;
+mod health;
 mod identity;
 mod kv;
 mod membership;
