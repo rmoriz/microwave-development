@@ -39,6 +39,16 @@ impl std::fmt::Debug for LoadedTls {
 pub fn load(tls: &TlsConfig) -> Result<LoadedTls, TlsError> {
     let cert_path = required_path(tls.cert_path.as_deref(), Setting::CertPath)?;
     let key_path = required_path(tls.key_path.as_deref(), Setting::KeyPath)?;
+    load_paths(&cert_path, &key_path)
+}
+
+/// Validate and load a certificate/key pair from explicit paths.
+///
+/// Reloading reuses this function so a rotated pair passes exactly the same
+/// checks as the pair loaded at startup.
+pub fn load_paths(cert_path: &Path, key_path: &Path) -> Result<LoadedTls, TlsError> {
+    let cert_path = cert_path.to_path_buf();
+    let key_path = key_path.to_path_buf();
 
     let cert_pem = read_file(&cert_path, "certificate")?;
     let key_pem = read_file(&key_path, "private key")?;
@@ -207,6 +217,7 @@ mod tests {
             enabled: Some(true),
             cert_path: Some(cert.display().to_string()),
             key_path: Some(key.display().to_string()),
+            ..TlsConfig::default()
         }
     }
 
@@ -234,6 +245,7 @@ mod tests {
             enabled: Some(true),
             cert_path: None,
             key_path: Some("/tmp/key.pem".into()),
+            ..TlsConfig::default()
         })
         .unwrap_err();
         assert!(error.to_string().contains("server.tls.cert_path"));
@@ -242,6 +254,7 @@ mod tests {
             enabled: Some(true),
             cert_path: Some("/tmp/cert.pem".into()),
             key_path: None,
+            ..TlsConfig::default()
         })
         .unwrap_err();
         assert!(error.to_string().contains("server.tls.key_path"));
@@ -253,6 +266,7 @@ mod tests {
             enabled: Some(true),
             cert_path: Some("/nonexistent/microwave/cert.pem".into()),
             key_path: Some("/nonexistent/microwave/key.pem".into()),
+            ..TlsConfig::default()
         })
         .unwrap_err();
         let text = error.to_string();

@@ -28,12 +28,17 @@ worker_threads = 0
 # enabled = true
 # cert_path = "/etc/microwave/tls.crt"   # PEM certificate chain
 # key_path = "/etc/microwave/tls.key"    # PEM private key, mode 0600
+# Periodic reload in seconds; 0 disables polling. SIGHUP reloads immediately
+# on Unix. The timer only reloads when the files changed, and a failed reload
+# keeps the previous certificate. Maximum 604800.
+# reload_interval_seconds = 0
 #
 # The certificate must be valid for the names clients use; for chef-client
 # that is the server URL hostname. `check-config` verifies readability, PEM
 # structure, and that the key matches the certificate. Intermediate
-# certificates belong in cert_path, above the leaf certificate. Certificates
-# are not reloaded automatically: restart after rotating them.
+# certificates belong in cert_path, above the leaf certificate. Replace both
+# files atomically and send SIGHUP (or enable reload_interval_seconds) to
+# rotate them without a restart.
 
 [paths]
 # All mutable local state lives here: microwave.db (+ WAL/SHM), bookshelf/

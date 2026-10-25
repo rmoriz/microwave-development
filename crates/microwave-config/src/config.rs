@@ -35,6 +35,13 @@ impl Config {
             .map_err(|message| ConfigError::InvalidValue {
                 key: "keygen".into(),
                 value: message,
+            })?;
+        self.server
+            .tls
+            .validate()
+            .map_err(|message| ConfigError::InvalidValue {
+                key: "server.tls".into(),
+                value: message,
             })
     }
 
@@ -68,7 +75,8 @@ impl Config {
     ///
     /// Supported keys:
     /// - `MW_SERVER__BIND`, `MW_SERVER__TLS__ENABLED`,
-    ///   `MW_SERVER__TLS__CERT_PATH`, `MW_SERVER__TLS__KEY_PATH`
+    ///   `MW_SERVER__TLS__CERT_PATH`, `MW_SERVER__TLS__KEY_PATH`,
+    ///   `MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS`
     /// - `MW_PATHS__DATA_DIR`
     /// - `MW_DATABASE__DRIVER`, `MW_DATABASE__URL`
     /// - `MW_STORAGE__COMPRESSION`
@@ -101,6 +109,10 @@ impl Config {
         }
         if let Ok(value) = std::env::var("MW_SERVER__TLS__KEY_PATH") {
             self.server.tls.key_path = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS") {
+            self.server.tls.reload_interval_seconds =
+                parse_value("MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS", value)?;
         }
         if let Ok(value) = std::env::var("MW_PATHS__DATA_DIR") {
             self.paths.data_dir = value;
@@ -306,13 +318,34 @@ pub struct TlsConfig {
     pub cert_path: Option<String>,
     /// PEM private key matching the certificate. Never printed or logged.
     pub key_path: Option<String>,
+    /// Periodic certificate/key reload interval in seconds. `0` disables the
+    /// timer; SIGHUP still reloads on Unix. Requires TLS to be enabled.
+    pub reload_interval_seconds: u64,
 }
 
 impl TlsConfig {
+    /// Maximum accepted `reload_interval_seconds` (seven days).
+    pub const MAX_RELOAD_INTERVAL_SECONDS: u64 = 604_800;
+
     /// Resolve whether the listener should speak TLS.
     pub fn is_enabled(&self) -> bool {
         self.enabled
             .unwrap_or_else(|| self.has_cert_path() || self.has_key_path())
+    }
+
+    /// Reject reload settings that cannot take effect.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.reload_interval_seconds > Self::MAX_RELOAD_INTERVAL_SECONDS {
+            return Err(format!(
+                "server.tls.reload_interval_seconds must be at most {} (got {})",
+                Self::MAX_RELOAD_INTERVAL_SECONDS,
+                self.reload_interval_seconds
+            ));
+        }
+        if self.reload_interval_seconds > 0 && !self.is_enabled() {
+            return Err("server.tls.reload_interval_seconds requires TLS to be enabled".into());
+        }
+        Ok(())
     }
 
     fn has_cert_path(&self) -> bool {

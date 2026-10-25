@@ -50,7 +50,7 @@ rustls-pemfile = "2"
 rcgen = "0.14"
 async-trait = "0.1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

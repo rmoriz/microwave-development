@@ -50,8 +50,12 @@ cargo run -p microwave-server -- serve
 
 `microwave-server serve --check` and `microwave-ctl check-config` verify that both
 files exist, are readable, contain a certificate and private key, and form a
-matching pair. They print only the paths, never key material. A load balancer or
-reverse proxy terminating TLS in front of plain HTTP remains fully supported;
+matching pair. They print only the paths, never key material. After rotation,
+send `SIGHUP` on Unix (`kill -HUP`, `systemctl reload microwave-server`, or
+`docker kill --signal=HUP`) to swap in the new pair without dropping the
+listener; a failed reload keeps the previous certificate. Set
+`server.tls.reload_interval_seconds` to poll the files instead. A load balancer
+or reverse proxy terminating TLS in front of plain HTTP remains fully supported;
 see [`docs/deployment.md`](docs/deployment.md#tls-listener).
 
 The full workspace suite is green.
@@ -79,7 +83,8 @@ Packaging artifacts: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
 - Keep the full extended `oc-chef-pedant` suite green in CI. All eleven extended tags pass; the remaining 7 pending examples are Pedant's own skips. The core suite is also near-green, with only the known plain-HTTP header artifact.
 - PostgreSQL operational tooling. The HTTP runtime, OAuth, authorization, search, bootstrap, `microwave-ctl`, `microwave-migrate`, and backup/restore run against PostgreSQL. PostgreSQL backups use `pg_dump`/`pg_restore` and require the matching client tools on the host. Remaining gaps are the snapshot's intentional omission of `kvpair` secrets, no multi-replica HA load validation, and no automated failover.
 - The remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup format).
-- TLS certificate rotation/reload without a restart and the full dual-backend test matrix.
+- The full dual-backend test matrix. (TLS certificate rotation/reload without a
+  restart is implemented via SIGHUP and optional polling.)
 - OpenSearch 3.x evaluation and multi-node HA/performance validation.
 - Outbound telemetry export. The `telemetry` table (SQLite and PostgreSQL) and `telemetry.*` / `MW_TELEMETRY__*` configuration exist, but the sender is intentionally not implemented and defaults to disabled: Microwave never phones home. Operators can enable the flag for forward compatibility, but no background worker or external endpoint is contacted.
 - Optional data-collector mutation action notifications (`oc_chef_action`). The `POST /organizations/:org/data-collector` forwarding path itself is implemented.

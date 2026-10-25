@@ -14,7 +14,9 @@ Group=microwave
 # it contains object-store credentials.
 ExecStartPre=/usr/local/bin/microwave-ctl --config /etc/microwave/microwave.toml check-config
 ExecStart=/usr/local/bin/microwave-server serve --config /etc/microwave/microwave.toml
-# The server has no configuration-reload signal; restart to apply changes.
+# SIGHUP reloads the TLS certificate/key pair when the TLS listener is enabled.
+# It does not re-read the rest of the configuration; restart for that.
+ExecReload=/bin/kill -HUP $MAINPID
 
 Restart=on-failure
 RestartSec=5s

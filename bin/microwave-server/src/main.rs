@@ -7,6 +7,7 @@ use microwave_objectstore::{LocalObjectStore, ObjectStore, S3Config, S3ObjectSto
 use microwave_store::{Compression, MetadataStore, SqliteStore};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Debug, Parser)]
 #[command(name = "microwave-server", version, about = "Microwave Server")]
@@ -130,6 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let bind = config.server.bind.clone();
+            let reload_interval_seconds = config.server.tls.reload_interval_seconds;
             let state = match sqlite {
                 Some(sqlite) => AppState::from_sqlite(sqlite, Arc::new(config), object_store)?,
                 None => AppState::new(store, Arc::new(config), object_store)?,
@@ -141,6 +143,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some(tls) => {
                     let rustls_config =
                         axum_server::tls_rustls::RustlsConfig::from_config(tls.config);
+                    spawn_tls_reload_watchers(
+                        rustls_config.clone(),
+                        tls.cert_path.clone(),
+                        tls.key_path.clone(),
+                        reload_interval_seconds,
+                    );
                     let listener = listener.into_std()?;
                     axum_server::from_tcp_rustls(listener, rustls_config)?
                         .serve(router(state).into_make_service())
@@ -265,6 +273,140 @@ fn build_object_store(
             );
             s3_config.path_style = config.object_store.path_style;
             Ok(Arc::new(S3ObjectStore::new(s3_config)?))
+        }
+    }
+}
+
+/// Start background TLS certificate reloads.
+///
+/// On Unix a `SIGHUP` triggers an immediate reload. A positive
+/// `server.tls.reload_interval_seconds` additionally polls the files and
+/// reloads when their metadata changes. `axum-server` stores the rustls config
+/// in an `ArcSwap`, so the listener and in-flight connections keep running
+/// while the next handshake uses the new certificate.
+///
+/// A reload is only installed after the replacement pair passes the same
+/// validation as startup. On failure the previous certificate stays active.
+fn spawn_tls_reload_watchers(
+    handle: axum_server::tls_rustls::RustlsConfig,
+    cert_path: PathBuf,
+    key_path: PathBuf,
+    interval_seconds: u64,
+) {
+    // Register the signal handler synchronously, before `serve` starts
+    // accepting. Otherwise a SIGHUP sent immediately after startup could still
+    // use the default action and terminate the process.
+    #[cfg(unix)]
+    {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+            Ok(mut hangup) => {
+                let handle = handle.clone();
+                let cert_path = cert_path.clone();
+                let key_path = key_path.clone();
+                tokio::spawn(async move {
+                    while hangup.recv().await.is_some() {
+                        reload_tls(&handle, &cert_path, &key_path, "SIGHUP").await;
+                    }
+                });
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "failed to install the SIGHUP handler; TLS certificates will not reload on signal"
+                );
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    let _ = (&handle, &cert_path, &key_path);
+
+    if interval_seconds > 0 {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(interval_seconds));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // The first tick completes immediately; the startup pair was
+            // already installed by `microwave_tls::load`.
+            ticker.tick().await;
+            let mut last_seen = pair_stamp(&cert_path, &key_path);
+            loop {
+                ticker.tick().await;
+                let current = pair_stamp(&cert_path, &key_path);
+                if current == last_seen {
+                    continue;
+                }
+                // Record the observed files even when loading fails, so an
+                // unchanged invalid pair produces one clear error instead of
+                // one per tick. The next write changes the stamp and retries.
+                last_seen = current;
+                reload_tls(&handle, &cert_path, &key_path, "interval").await;
+            }
+        });
+    }
+}
+
+/// Metadata used to notice replaced certificate/key files without re-reading
+/// unchanged files on every timer tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+fn pair_stamp(cert_path: &Path, key_path: &Path) -> (Option<FileStamp>, Option<FileStamp>) {
+    (file_stamp(cert_path), file_stamp(key_path))
+}
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(FileStamp {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
+}
+
+/// Validate and install a replacement pair. On failure the previous pair stays
+/// active. Errors mention the configured paths but never key material.
+async fn reload_tls(
+    handle: &axum_server::tls_rustls::RustlsConfig,
+    cert_path: &Path,
+    key_path: &Path,
+    trigger: &'static str,
+) {
+    let cert_path_owned = cert_path.to_path_buf();
+    let key_path_owned = key_path.to_path_buf();
+    let loaded = tokio::task::spawn_blocking(move || {
+        microwave_tls::load_paths(&cert_path_owned, &key_path_owned)
+    })
+    .await;
+
+    match loaded {
+        Ok(Ok(loaded)) => {
+            handle.reload_from_config(loaded.config);
+            tracing::info!(
+                trigger,
+                cert = %cert_path.display(),
+                key = %key_path.display(),
+                "reloaded TLS certificate and key"
+            );
+        }
+        Ok(Err(error)) => {
+            tracing::error!(
+                trigger,
+                cert = %cert_path.display(),
+                key = %key_path.display(),
+                %error,
+                "TLS certificate reload failed; keeping the previous certificate"
+            );
+        }
+        Err(error) => {
+            tracing::error!(
+                trigger,
+                cert = %cert_path.display(),
+                key = %key_path.display(),
+                %error,
+                "TLS certificate reload task failed; keeping the previous certificate"
+            );
         }
     }
 }
