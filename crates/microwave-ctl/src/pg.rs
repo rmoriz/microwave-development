@@ -10,11 +10,8 @@
 
 use crate::CtlError;
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::Command;
-use url::form_urlencoded;
 use url::Url;
-use uuid::Uuid;
 
 const SERVICE_NAME: &str = "microwave_cli";
 
@@ -23,7 +20,7 @@ const SERVICE_NAME: &str = "microwave_cli";
 pub struct PgTarget {
     url: String,
     password: Option<String>,
-    service_file: Option<PathBuf>,
+    service_file: Option<tempfile::NamedTempFile>,
     display: String,
     database: Option<String>,
 }
@@ -56,41 +53,70 @@ impl PgTarget {
             Some(percent_decode(path_database)?)
         };
 
-        let mut remaining_query = Vec::new();
-        for (key, value) in parsed.query_pairs() {
-            match key.as_ref() {
-                "password" => password = Some(value.into_owned()),
-                "sslpassword" => ssl_password = Some(value.into_owned()),
-                "dbname" => {
-                    database = Some(value.clone().into_owned());
-                    remaining_query.push((key, value));
-                }
-                "user" => {
-                    username = Some(value.clone().into_owned());
-                    remaining_query.push((key, value));
-                }
-                "host" => {
-                    host = Some(value.clone().into_owned());
-                    remaining_query.push((key, value));
-                }
-                "port" => {
-                    if let Ok(parsed_port) = value.parse::<u16>() {
-                        port = Some(parsed_port);
+        // Work from the raw query string so every non-secret parameter stays
+        // byte-for-byte as the caller wrote it. Re-encoding through a form
+        // serializer would turn `%20` into `+`, which libpq treats literally
+        // for values such as `options` and certificate paths.
+        let mut remaining_query: Vec<&str> = Vec::new();
+        if let Some(raw_query) = parsed.query() {
+            for pair in raw_query.split('&') {
+                let (raw_key, raw_value) = match pair.split_once('=') {
+                    Some((key, value)) => (key, Some(value)),
+                    None => (pair, None),
+                };
+                let key = percent_decode(raw_key).unwrap_or_else(|_| raw_key.to_string());
+                match key.as_str() {
+                    "password" => {
+                        password = Some(
+                            raw_value
+                                .map(percent_decode)
+                                .transpose()?
+                                .unwrap_or_default(),
+                        );
                     }
-                    remaining_query.push((key, value));
+                    "sslpassword" => {
+                        ssl_password = Some(
+                            raw_value
+                                .map(percent_decode)
+                                .transpose()?
+                                .unwrap_or_default(),
+                        );
+                    }
+                    "dbname" => {
+                        if let Some(value) = raw_value {
+                            database = Some(decode_query_component(value));
+                        }
+                    }
+                    "user" => {
+                        if let Some(value) = raw_value {
+                            username = Some(decode_query_component(value));
+                        }
+                    }
+                    "host" => {
+                        if let Some(value) = raw_value {
+                            host = Some(decode_query_component(value));
+                        }
+                    }
+                    "port" => {
+                        if let Some(value) = raw_value {
+                            if let Ok(parsed_port) = decode_query_component(value).parse::<u16>() {
+                                port = Some(parsed_port);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                _ => remaining_query.push((key, value)),
+                if key != "password" && key != "sslpassword" {
+                    remaining_query.push(pair);
+                }
             }
         }
 
-        if remaining_query.is_empty() {
+        let kept_query = remaining_query.join("&");
+        if kept_query.is_empty() {
             parsed.set_query(None);
         } else {
-            let mut serializer = form_urlencoded::Serializer::new(String::new());
-            for (key, value) in &remaining_query {
-                serializer.append_pair(key, value);
-            }
-            parsed.set_query(Some(&serializer.finish()));
+            parsed.set_query(Some(&kept_query));
         }
         parsed.set_password(None).map_err(|_| invalid_url())?;
 
@@ -141,8 +167,8 @@ impl PgTarget {
         if let Some(password) = &self.password {
             command.env("PGPASSWORD", password);
         }
-        if let Some(path) = &self.service_file {
-            command.env("PGSERVICEFILE", path);
+        if let Some(file) = &self.service_file {
+            command.env("PGSERVICEFILE", file.path());
             command.env("PGSERVICE", SERVICE_NAME);
         }
     }
@@ -154,48 +180,44 @@ impl PgTarget {
 
     #[cfg(test)]
     fn service_file(&self) -> Option<&std::path::Path> {
-        self.service_file.as_deref()
+        self.service_file
+            .as_ref()
+            .map(tempfile::NamedTempFile::path)
     }
 }
 
-impl Drop for PgTarget {
-    fn drop(&mut self) {
-        if let Some(path) = &self.service_file {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-}
-
-fn create_service_file(ssl_password: Option<&str>) -> Result<Option<PathBuf>, CtlError> {
+fn create_service_file(
+    ssl_password: Option<&str>,
+) -> Result<Option<tempfile::NamedTempFile>, CtlError> {
     let Some(password) = ssl_password else {
         return Ok(None);
     };
-    let path = std::env::temp_dir().join(format!(
-        "microwave-pg-service-{}-{}.conf",
-        std::process::id(),
-        Uuid::new_v4().simple()
-    ));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+    if password.chars().any(char::is_control) {
+        return Err(CtlError::message(
+            "sslpassword contains control characters; refusing to write a libpq service file",
+        ));
     }
-    let mut file = options.open(&path).map_err(|error| {
-        CtlError::message(format!(
-            "failed to create temporary PostgreSQL service file: {error}"
-        ))
-    })?;
-    let write_result = writeln!(file, "[{SERVICE_NAME}]")
-        .and_then(|_| writeln!(file, "sslpassword={}", conninfo_quote(password)));
-    if let Err(error) = write_result {
-        let _ = std::fs::remove_file(&path);
-        return Err(CtlError::message(format!(
-            "failed to write temporary PostgreSQL service file: {error}"
-        )));
-    }
-    Ok(Some(path))
+    let mut file = tempfile::Builder::new()
+        .prefix("microwave-pg-service-")
+        .tempfile()
+        .map_err(|error| {
+            CtlError::message(format!(
+                "failed to create temporary PostgreSQL service file: {error}"
+            ))
+        })?;
+    writeln!(file, "[{SERVICE_NAME}]")
+        .and_then(|_| writeln!(file, "sslpassword={}", conninfo_quote(password)))
+        .and_then(|_| file.flush())
+        .map_err(|error| {
+            CtlError::message(format!(
+                "failed to write temporary PostgreSQL service file: {error}"
+            ))
+        })?;
+    Ok(Some(file))
+}
+
+fn decode_query_component(value: &str) -> String {
+    percent_decode(value).unwrap_or_else(|_| value.to_string())
 }
 
 fn conninfo_quote(value: &str) -> String {
@@ -321,10 +343,27 @@ mod tests {
         assert_eq!(target.database(), Some("microwave-prod"));
         assert_eq!(target.display(), "admin@db.example:5544/microwave-prod");
         assert!(target.url().contains("sslmode=disable"));
-        assert!(target.url().contains("dbname=microwave-prod"));
+        assert!(target.url().contains("dbname=microwave%2Dprod"));
         assert!(target.url().contains("user=admin"));
         assert!(target.url().contains("host=db.example"));
         assert!(target.url().contains("port=5544"));
+    }
+
+    #[test]
+    fn preserves_raw_query_encoding() {
+        let target = PgTarget::parse(
+            "postgres://host/db?options=-c%20statement_timeout%3D5s             &sslrootcert=%2Fetc%2Fssl%20certs%2Froot.crt             &password=query-secret&sslmode=require",
+        )
+        .unwrap();
+
+        assert!(target.url().contains("options=-c%20statement_timeout%3D5s"));
+        assert!(target
+            .url()
+            .contains("sslrootcert=%2Fetc%2Fssl%20certs%2Froot.crt"));
+        assert!(target.url().contains("sslmode=require"));
+        assert!(!target.url().contains('+'));
+        assert!(!target.url().contains("password="));
+        assert_eq!(target.password(), Some("query-secret"));
     }
 
     #[test]

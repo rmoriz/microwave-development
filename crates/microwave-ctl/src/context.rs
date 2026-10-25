@@ -25,7 +25,7 @@ impl Context {
                 let path = database_url.strip_prefix("sqlite://").ok_or_else(|| {
                     CtlError::message(format!(
                         "unsupported database URL {:?}; expected sqlite://<path>",
-                        redacted_database_url(&database_url)
+                        microwave_migrate::redacted_database_url(&database_url)
                     ))
                 })?;
                 if path.is_empty() {
@@ -34,14 +34,7 @@ impl Context {
                 Some(PathBuf::from(path))
             }
             DatabaseDriver::Postgres => {
-                if !(database_url.starts_with("postgres://")
-                    || database_url.starts_with("postgresql://"))
-                {
-                    return Err(CtlError::message(format!(
-                        "unsupported database URL {:?}; expected postgres://<url>",
-                        redacted_database_url(&database_url)
-                    )));
-                }
+                microwave_migrate::validate_postgres_url(&database_url)?;
                 None
             }
         };
@@ -150,45 +143,4 @@ fn new_runtime() -> Result<tokio::runtime::Runtime, CtlError> {
         .enable_all()
         .build()
         .map_err(|error| CtlError::message(format!("failed to build tokio runtime: {error}")))
-}
-
-/// Remove a password from a URL before putting it in an error message.
-fn redacted_database_url(url: &str) -> String {
-    if let Ok(mut parsed) = url::Url::parse(url) {
-        if parsed.password().is_some() {
-            let _ = parsed.set_password(Some("***"));
-        }
-        return parsed.to_string();
-    }
-
-    // `Url::parse` may fail for a malformed URL. Do a conservative textual
-    // redaction so a partially typed password is still not echoed.
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return url.to_string();
-    };
-    let Some((userinfo, remainder)) = rest.split_once('@') else {
-        return url.to_string();
-    };
-    let user = userinfo
-        .split_once(':')
-        .map(|(user, _)| user)
-        .unwrap_or(userinfo);
-    format!("{scheme}://{user}:***@{remainder}")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::redacted_database_url;
-
-    #[test]
-    fn redacts_passwords_in_database_urls() {
-        let redacted = redacted_database_url("postgres://microwave:s3cret@db/microwave");
-        assert!(!redacted.contains("s3cret"));
-        assert!(redacted.contains("***"));
-        assert!(redacted.contains("microwave"));
-
-        let malformed = redacted_database_url("postgres://microwave:s3cret@[::bad");
-        assert!(!malformed.contains("s3cret"));
-        assert!(malformed.contains("***"));
-    }
 }

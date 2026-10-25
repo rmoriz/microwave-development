@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use microwave_migrate::{
-    export, export_postgres, from_api_with_options, import, import_postgres, redacted_database_url,
-    FromApiOptions, MigrateError, DATABASE_FILE,
+    export, export_postgres, from_api_with_options, import, import_postgres, redacted_postgres_url,
+    validate_postgres_url, FromApiOptions, MigrateError, DATABASE_FILE,
 };
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
@@ -159,7 +159,8 @@ fn import_command(
                 .map(|()| println!("Imported snapshot from {}", input.display()))
         }
         (None, Some(database_url)) => {
-            println!("Import target: {}", redacted_database_url(&database_url));
+            validate_postgres_url(&database_url)?;
+            println!("Import target: {}", redacted_postgres_url(&database_url));
             confirm_import(yes)?;
             import_postgres(&database_url, input)
                 .map(|()| println!("Imported snapshot from {}", input.display()))

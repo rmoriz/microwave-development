@@ -254,9 +254,10 @@ pub fn migrate_from_legacy(context: &Context, input: &Path, yes: bool) -> Result
             );
         }
         microwave_config::DatabaseDriver::Postgres => {
+            microwave_migrate::validate_postgres_url(&context.database_url)?;
             println!(
                 "Import target: PostgreSQL {}",
-                microwave_migrate::redacted_database_url(&context.database_url)
+                microwave_migrate::redacted_postgres_url(&context.database_url)
             );
             crate::backup::confirm_destructive("import", yes)?;
             microwave_migrate::import_postgres(&context.database_url, input)?;

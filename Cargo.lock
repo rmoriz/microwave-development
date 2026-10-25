@@ -1413,6 +1413,7 @@ dependencies = [
  "microwave-migrate",
  "microwave-store",
  "microwave-store-postgres",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "url",
