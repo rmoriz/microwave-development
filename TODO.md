@@ -274,16 +274,24 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 
 ### 5.4 Legacy Data Migration Tool (`microwave-migrate`)
 > **Backend status:** export and import support both SQLite and PostgreSQL
-> through the shared versioned JSON snapshot. The snapshot intentionally omits
-> `kvpair` secrets; use `microwave-ctl backup` for a full database copy.
-- [ ] Implement **Mode 1: Archive / Backup Importer (`knife-ec-backup` & SQL dump format):**
-  - [ ] Import users (including legacy password hashes and salts), organizations, associations, invites, and server-admins.
-  - [ ] Import clients and multi-key records (`actor_keys`).
-  - [ ] Import containers, groups, and full ACL graphs (preserving `authz_id`s).
-  - [ ] Import nodes, roles, environments, data bags, cookbooks (and bookshelf blobs), cookbook artifacts, policies, and policy groups.
-  - [ ] Import `oc-id` OAuth applications.
-- [ ] Implement **Mode 2: Live API Crawler:**
-  - [ ] Crawl a running upstream server using `pivotal` credentials to pull all orgs, users, ACLs, cookbooks/blobs, policies, nodes, roles, environments, and data bags into the new server.
+> through the shared versioned JSON snapshot, including `kvpair`, OAuth
+> grants/tokens, explicit/empty sandboxes, and telemetry. Default exports are
+> secret-safe; `--include-secrets` adds secret values. `--archive PATH.tar.gz`
+> carries the snapshot plus local `bookshelf/` blobs with an allowlist,
+> traversal/symlink/special-file rejection, and confirmation-gated restore.
+> Remote S3/Garage objects are outside the archive; replicate the bucket.
+> Use `microwave-ctl backup` for a full database-file/dump copy.
+- [x] Implement **Snapshot importer (`microwave-migrate import`)** for both backends:
+  - [x] Import users (including legacy password hashes and salts), organizations, associations, invites, and server-admins.
+  - [x] Import clients and multi-key records (`actor_keys`).
+  - [x] Import containers, groups, and full ACL graphs (preserving `authz_id`s).
+  - [x] Import nodes, roles, environments, data bags, cookbooks, cookbook artifacts, policies, policy groups, sandboxes, and telemetry.
+  - [x] Import `oc-id` OAuth applications and access grants/tokens.
+  - [x] Import local bookshelf blobs through `--archive`.
+- [x] Implement **Mode 2: Live API Crawler:**
+  - [x] Crawl a running upstream server using `pivotal` credentials for metadata, ACLs, policies, nodes, roles, environments, data bags, and public keys.
+  - [ ] Crawl cookbook blobs from the legacy bookshelf layout (still manual; use bucket replication or a layout converter).
+- [ ] Implement **Mode 1: Archive / Backup Importer (`knife-ec-backup` & SQL dump format):** still not supported; the supported migration inputs are the Microwave snapshot/archive and the live API crawler.
 - [ ] Trigger full search reindex and verify object counts and checksum integrity post-migration.
 
 ### 5.5 Full Pedant Verification, HA & Performance Benchmarks

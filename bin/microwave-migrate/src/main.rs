@@ -1,9 +1,11 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use microwave_config::{Config, StorageCompression};
 use microwave_migrate::{
-    export, export_postgres, from_api_with_options, import_postgres_with_compression,
-    import_with_compression, redacted_postgres_url, validate_postgres_url, Compression,
-    FromApiOptions, MigrateError, DATABASE_FILE,
+    export_archive_postgres_with_options, export_archive_with_options,
+    export_postgres_with_options, export_with_options, from_api_with_options,
+    import_archive_postgres_with_compression, import_archive_with_compression,
+    import_postgres_with_compression, import_with_compression, redacted_postgres_url,
+    validate_postgres_url, Compression, FromApiOptions, MigrateError, DATABASE_FILE,
 };
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -22,7 +24,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Write a versioned JSON snapshot of a local store.
+    /// Write a versioned JSON snapshot or a snapshot-plus-bookshelf archive.
     Export {
         /// Data directory containing microwave.db (SQLite).
         #[arg(
@@ -40,11 +42,24 @@ enum Command {
             required_unless_present = "data_dir"
         )]
         database_url: Option<String>,
-        /// Snapshot file to write.
-        #[arg(long, value_name = "FILE")]
-        output: PathBuf,
+        /// Snapshot file to write (exactly one of --output and --archive).
+        #[arg(long, value_name = "FILE", conflicts_with = "archive")]
+        output: Option<PathBuf>,
+        /// Write a tar.gz archive containing snapshot.json and bookshelf/.
+        #[arg(long, value_name = "FILE", conflicts_with = "output")]
+        archive: Option<PathBuf>,
+        /// Local bookshelf directory for a PostgreSQL --archive export.
+        ///
+        /// Defaults to <data-dir>/bookshelf for SQLite. S3/Garage objects are
+        /// not fetched; replicate the bucket instead.
+        #[arg(long, value_name = "DIR", requires = "archive")]
+        bookshelf_dir: Option<PathBuf>,
+        /// Include secret values: kvpair (secrets, sessions, maintenance),
+        /// OAuth grants/tokens, and OAuth application secrets.
+        #[arg(long)]
+        include_secrets: bool,
     },
-    /// Import a snapshot into a local store, creating it when needed.
+    /// Import a snapshot or archive into a local store, creating it when needed.
     Import {
         /// Data directory containing (or receiving) microwave.db (SQLite).
         #[arg(
@@ -66,9 +81,16 @@ enum Command {
         /// terminal.
         #[arg(long)]
         yes: bool,
-        /// Snapshot file to read.
-        #[arg(long, value_name = "FILE")]
-        input: PathBuf,
+        /// Snapshot file to read (exactly one of --input and --archive).
+        #[arg(long, value_name = "FILE", conflicts_with = "archive")]
+        input: Option<PathBuf>,
+        /// Read a tar.gz archive containing snapshot.json and bookshelf/.
+        #[arg(long, value_name = "FILE", conflicts_with = "input")]
+        archive: Option<PathBuf>,
+        /// Local bookshelf directory to replace for a PostgreSQL --archive
+        /// import. Not used for SQLite, which uses <data-dir>/bookshelf.
+        #[arg(long, value_name = "DIR", requires = "archive")]
+        bookshelf_dir: Option<PathBuf>,
         /// Compression for imported `serialized_object` values.
         ///
         /// Without this flag the default comes from --config,
@@ -109,19 +131,33 @@ fn main() -> ExitCode {
             data_dir,
             database_url,
             output,
-        } => export_command(data_dir, database_url, &output),
+            archive,
+            bookshelf_dir,
+            include_secrets,
+        } => export_command(
+            data_dir,
+            database_url,
+            output.as_deref(),
+            archive.as_deref(),
+            bookshelf_dir.as_deref(),
+            include_secrets,
+        ),
         Command::Import {
             data_dir,
             database_url,
             yes,
             input,
+            archive,
+            bookshelf_dir,
             compression,
             config,
         } => import_command(
             data_dir,
             database_url,
             yes,
-            &input,
+            input.as_deref(),
+            archive.as_deref(),
+            bookshelf_dir.as_deref(),
             compression,
             config.as_deref(),
         ),
@@ -153,44 +189,168 @@ fn main() -> ExitCode {
 fn export_command(
     data_dir: Option<PathBuf>,
     database_url: Option<String>,
-    output: &std::path::Path,
+    output: Option<&Path>,
+    archive: Option<&Path>,
+    bookshelf_dir: Option<&Path>,
+    include_secrets: bool,
 ) -> Result<(), MigrateError> {
-    match (data_dir, database_url) {
-        (Some(data_dir), None) => export(&data_dir, output)
-            .map(|()| println!("Exported snapshot to {}", output.display())),
-        (None, Some(database_url)) => export_postgres(&database_url, output)
-            .map(|()| println!("Exported snapshot to {}", output.display())),
-        _ => unreachable!("clap requires exactly one of --data-dir and --database-url"),
+    match (output, archive) {
+        (Some(output), None) => {
+            if bookshelf_dir.is_some() {
+                return Err(MigrateError::Config(
+                    "--bookshelf-dir is only valid with --archive".into(),
+                ));
+            }
+            match (data_dir, database_url) {
+                (Some(data_dir), None) => {
+                    export_with_options(&data_dir, output, include_secrets)?;
+                }
+                (None, Some(database_url)) => {
+                    export_postgres_with_options(&database_url, output, include_secrets)?;
+                }
+                _ => unreachable!("clap requires exactly one of --data-dir and --database-url"),
+            }
+            println!("Exported snapshot to {}", output.display());
+            print_secret_mode(include_secrets);
+            Ok(())
+        }
+        (None, Some(archive)) => {
+            match (data_dir, database_url) {
+                (Some(data_dir), None) => {
+                    if bookshelf_dir.is_some() {
+                        return Err(MigrateError::Config(
+                            "--bookshelf-dir is only valid with --database-url; SQLite archives \
+                             use <data-dir>/bookshelf"
+                                .into(),
+                        ));
+                    }
+                    export_archive_with_options(&data_dir, archive, include_secrets)?;
+                }
+                (None, Some(database_url)) => {
+                    let bookshelf_dir = bookshelf_dir.ok_or_else(|| {
+                        MigrateError::Config(
+                            "PostgreSQL archive export needs --bookshelf-dir pointing at the local \
+                             bookshelf tree; for S3/Garage, replicate the bucket instead"
+                                .into(),
+                        )
+                    })?;
+                    export_archive_postgres_with_options(
+                        &database_url,
+                        bookshelf_dir,
+                        archive,
+                        include_secrets,
+                    )?;
+                    println!("Archive bookshelf source: {}", bookshelf_dir.display());
+                }
+                _ => unreachable!("clap requires exactly one of --data-dir and --database-url"),
+            }
+            println!("Exported archive to {}", archive.display());
+            print_secret_mode(include_secrets);
+            Ok(())
+        }
+        _ => Err(MigrateError::Config(
+            "exactly one of --output and --archive is required".into(),
+        )),
     }
 }
 
+fn print_secret_mode(include_secrets: bool) {
+    if include_secrets {
+        println!(
+            "Secrets: included (kvpair, OAuth grants/tokens, and OAuth application secrets); treat \
+             this file as a credential"
+        );
+    } else {
+        println!(
+            "Secrets: excluded (pass --include-secrets to include kvpair and OAuth grant/token \
+             values)"
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn import_command(
     data_dir: Option<PathBuf>,
     database_url: Option<String>,
     yes: bool,
-    input: &Path,
+    input: Option<&Path>,
+    archive: Option<&Path>,
+    bookshelf_dir: Option<&Path>,
     compression: Option<CompressionArg>,
     config: Option<&Path>,
 ) -> Result<(), MigrateError> {
     let compression = resolve_compression(compression, config)?;
-    match (data_dir, database_url) {
-        (Some(data_dir), None) => {
-            let target = data_dir.join(DATABASE_FILE);
-            println!("Import target: sqlite:{}", target.display());
-            println!("Import compression: {}", compression.as_str());
-            confirm_import(yes)?;
-            import_with_compression(&data_dir, input, compression)
-                .map(|()| println!("Imported snapshot from {}", input.display()))
+    match (input, archive) {
+        (Some(input), None) => {
+            if bookshelf_dir.is_some() {
+                return Err(MigrateError::Config(
+                    "--bookshelf-dir is only valid with --archive".into(),
+                ));
+            }
+            match (data_dir, database_url) {
+                (Some(data_dir), None) => {
+                    let target = data_dir.join(DATABASE_FILE);
+                    println!("Import target: sqlite:{}", target.display());
+                    println!("Import compression: {}", compression.as_str());
+                    confirm_import(yes)?;
+                    import_with_compression(&data_dir, input, compression)
+                        .map(|()| println!("Imported snapshot from {}", input.display()))
+                }
+                (None, Some(database_url)) => {
+                    validate_postgres_url(&database_url)?;
+                    println!("Import target: {}", redacted_postgres_url(&database_url));
+                    println!("Import compression: {}", compression.as_str());
+                    confirm_import(yes)?;
+                    import_postgres_with_compression(&database_url, input, compression)
+                        .map(|()| println!("Imported snapshot from {}", input.display()))
+                }
+                _ => unreachable!("clap requires exactly one of --data-dir and --database-url"),
+            }
         }
-        (None, Some(database_url)) => {
-            validate_postgres_url(&database_url)?;
-            println!("Import target: {}", redacted_postgres_url(&database_url));
-            println!("Import compression: {}", compression.as_str());
-            confirm_import(yes)?;
-            import_postgres_with_compression(&database_url, input, compression)
-                .map(|()| println!("Imported snapshot from {}", input.display()))
-        }
-        _ => unreachable!("clap requires exactly one of --data-dir and --database-url"),
+        (None, Some(archive)) => match (data_dir, database_url) {
+            (Some(data_dir), None) => {
+                if bookshelf_dir.is_some() {
+                    return Err(MigrateError::Config(
+                        "--bookshelf-dir is only valid when importing a PostgreSQL archive".into(),
+                    ));
+                }
+                let target = data_dir.join(DATABASE_FILE);
+                println!("Import target: sqlite:{}", target.display());
+                println!(
+                    "Archive bookshelf target: {}",
+                    data_dir.join("bookshelf").display()
+                );
+                println!("Import compression: {}", compression.as_str());
+                confirm_import(yes)?;
+                import_archive_with_compression(&data_dir, archive, compression)
+                    .map(|()| println!("Imported archive from {}", archive.display()))
+            }
+            (None, Some(database_url)) => {
+                validate_postgres_url(&database_url)?;
+                let bookshelf_dir = bookshelf_dir.ok_or_else(|| {
+                    MigrateError::Config(
+                        "PostgreSQL archive import needs --bookshelf-dir pointing at the local \
+                         bookshelf tree to replace; for S3/Garage, use bucket replication instead"
+                            .into(),
+                    )
+                })?;
+                println!("Import target: {}", redacted_postgres_url(&database_url));
+                println!("Archive bookshelf target: {}", bookshelf_dir.display());
+                println!("Import compression: {}", compression.as_str());
+                confirm_import(yes)?;
+                import_archive_postgres_with_compression(
+                    &database_url,
+                    bookshelf_dir,
+                    archive,
+                    compression,
+                )
+                .map(|()| println!("Imported archive from {}", archive.display()))
+            }
+            _ => unreachable!("clap requires exactly one of --data-dir and --database-url"),
+        },
+        _ => Err(MigrateError::Config(
+            "exactly one of --input and --archive is required".into(),
+        )),
     }
 }
 

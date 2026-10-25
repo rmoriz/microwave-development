@@ -20,9 +20,10 @@ use microwave_store::{
     AuthzAclGroupRow, AuthzEntityRow, AuthzGroupActorRow, AuthzGroupGroupRow, ChecksumRow,
     ClientRow, Compression, ContainerRow, CookbookArtifactRow, CookbookArtifactVersionChecksumRow,
     CookbookArtifactVersionRow, CookbookRow, CookbookVersionChecksumRow, CookbookVersionRow,
-    DataBagItemRow, GlobalGroupRow, GroupRow, NamedObjectRow, NodeRow, OAuthApplicationRow, OrgRow,
-    OrgUserAssociationRow, OrgUserInviteRow, PolicyGroupRevisionAssociationRow, PolicyGroupRow,
-    PolicyRevisionRow, PolicyRow, SandboxedChecksumRow, StoreError, StoreSnapshot, UserRow,
+    DataBagItemRow, GlobalGroupRow, GroupRow, KvPairRow, NamedObjectRow, NodeRow,
+    OAuthAccessGrantRow, OAuthAccessTokenRow, OAuthApplicationRow, OrgRow, OrgUserAssociationRow,
+    OrgUserInviteRow, PolicyGroupRevisionAssociationRow, PolicyGroupRow, PolicyRevisionRow,
+    PolicyRow, SandboxRow, SandboxedChecksumRow, StoreError, StoreSnapshot, TelemetryRow, UserRow,
 };
 use sqlx::postgres::{PgRow, Postgres};
 use sqlx::{Row, Transaction};
@@ -33,14 +34,27 @@ type PgTransaction<'a> = Transaction<'a, Postgres>;
 
 impl PostgresStore {
     /// Read every migration-relevant table into a [`StoreSnapshot`].
+    ///
+    /// This full-fidelity form includes secret-bearing `kvpair`, OAuth grant
+    /// and token rows, and OAuth application secrets. The `microwave-migrate`
+    /// command applies [`StoreSnapshot::redact_secrets`] unless the operator
+    /// passes `--include-secrets`.
     pub async fn export_snapshot(&self) -> Result<StoreSnapshot, StoreError> {
+        self.export_snapshot_with_options(true).await
+    }
+
+    /// Read every migration-relevant table, optionally excluding secrets.
+    pub async fn export_snapshot_with_options(
+        &self,
+        include_secrets: bool,
+    ) -> Result<StoreSnapshot, StoreError> {
         let mut transaction = self.pool().begin().await.map_err(db)?;
         sqlx::raw_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *transaction)
             .await
             .map_err(db)?;
 
-        let snapshot = StoreSnapshot {
+        let mut snapshot = StoreSnapshot {
             orgs: collect_orgs(&mut transaction).await?,
             users: collect_users(&mut transaction).await?,
             org_user_associations: collect_org_user_associations(&mut transaction).await?,
@@ -81,7 +95,18 @@ impl PostgresStore {
             )
             .await?,
             oauth_applications: collect_oauth_applications(&mut transaction).await?,
+            oauth_access_grants: collect_oauth_access_grants(&mut transaction).await?,
+            oauth_access_tokens: collect_oauth_access_tokens(&mut transaction).await?,
+            kvpair: collect_kvpair(&mut transaction).await?,
+            sandboxes: collect_sandboxes(&mut transaction).await?,
+            // PostgreSQL has no separate `sandbox_checksums` table; its
+            // commit path reads `sandboxed_checksums` directly.
+            sandbox_checksums: Vec::new(),
+            telemetry: collect_telemetry(&mut transaction).await?,
         };
+        if !include_secrets {
+            snapshot.redact_secrets();
+        }
 
         transaction.commit().await.map_err(db)?;
         Ok(snapshot)
@@ -128,6 +153,7 @@ impl PostgresStore {
         import_data_bag_items(&mut transaction, snapshot, self.compression()).await?;
         import_checksums(&mut transaction, snapshot).await?;
         import_sandboxed_checksums(&mut transaction, snapshot).await?;
+        import_sandboxes(&mut transaction, snapshot).await?;
         import_cookbooks(&mut transaction, snapshot).await?;
         import_cookbook_versions(&mut transaction, snapshot, self.compression()).await?;
         import_cookbook_version_checksums(&mut transaction, snapshot).await?;
@@ -139,6 +165,10 @@ impl PostgresStore {
         import_policy_revisions(&mut transaction, snapshot, self.compression()).await?;
         import_policy_group_revision_associations(&mut transaction, snapshot).await?;
         import_oauth_applications(&mut transaction, snapshot).await?;
+        import_oauth_access_grants(&mut transaction, snapshot).await?;
+        import_oauth_access_tokens(&mut transaction, snapshot).await?;
+        import_kvpair(&mut transaction, snapshot).await?;
+        import_telemetry(&mut transaction, snapshot).await?;
         advance_sequences(&mut transaction).await?;
 
         transaction.commit().await.map_err(db)?;
@@ -902,6 +932,146 @@ async fn collect_oauth_applications(
     .collect()
 }
 
+async fn collect_oauth_access_grants(
+    transaction: &mut PgTransaction<'_>,
+) -> Result<Vec<OAuthAccessGrantRow>, StoreError> {
+    if !table_exists(transaction, "oauth_access_grants").await? {
+        return Ok(Vec::new());
+    }
+    rows(
+        transaction,
+        "SELECT id, resource_owner_id, application_id, token, expires_in,
+                redirect_uri, scopes, created_at, revoked_at
+         FROM oauth_access_grants ORDER BY id",
+    )
+    .await?
+    .iter()
+    .map(|row| {
+        Ok(OAuthAccessGrantRow {
+            id: integer(row, 0)?,
+            resource_owner_id: text(row, 1)?,
+            application_id: integer(row, 2)?,
+            token: text(row, 3)?,
+            expires_in: integer(row, 4)?,
+            redirect_uri: text(row, 5)?,
+            scopes: text(row, 6)?,
+            created_at: text(row, 7)?,
+            revoked_at: opt_text(row, 8)?,
+        })
+    })
+    .collect()
+}
+
+async fn collect_oauth_access_tokens(
+    transaction: &mut PgTransaction<'_>,
+) -> Result<Vec<OAuthAccessTokenRow>, StoreError> {
+    if !table_exists(transaction, "oauth_access_tokens").await? {
+        return Ok(Vec::new());
+    }
+    rows(
+        transaction,
+        "SELECT id, resource_owner_id, application_id, token, refresh_token,
+                expires_in, scopes, created_at, revoked_at
+         FROM oauth_access_tokens ORDER BY id",
+    )
+    .await?
+    .iter()
+    .map(|row| {
+        Ok(OAuthAccessTokenRow {
+            id: integer(row, 0)?,
+            resource_owner_id: opt_text(row, 1)?,
+            application_id: opt_integer(row, 2)?,
+            token: text(row, 3)?,
+            refresh_token: opt_text(row, 4)?,
+            expires_in: opt_integer(row, 5)?,
+            scopes: text(row, 6)?,
+            created_at: text(row, 7)?,
+            revoked_at: opt_text(row, 8)?,
+        })
+    })
+    .collect()
+}
+
+async fn collect_kvpair(transaction: &mut PgTransaction<'_>) -> Result<Vec<KvPairRow>, StoreError> {
+    if !table_exists(transaction, "kvpair").await? {
+        return Ok(Vec::new());
+    }
+    rows(
+        transaction,
+        "SELECT key, value, updated_at FROM kvpair ORDER BY key",
+    )
+    .await?
+    .iter()
+    .map(|row| {
+        Ok(KvPairRow {
+            key: text(row, 0)?,
+            value: opt_text(row, 1)?,
+            updated_at: text(row, 2)?,
+        })
+    })
+    .collect()
+}
+
+async fn collect_sandboxes(
+    transaction: &mut PgTransaction<'_>,
+) -> Result<Vec<SandboxRow>, StoreError> {
+    if !table_exists(transaction, "sandboxes").await? {
+        return Ok(Vec::new());
+    }
+    rows(
+        transaction,
+        "SELECT org_id, sandbox_id, created_at
+         FROM sandboxes ORDER BY org_id, sandbox_id",
+    )
+    .await?
+    .iter()
+    .map(|row| {
+        Ok(SandboxRow {
+            org_id: text(row, 0)?,
+            sandbox_id: text(row, 1)?,
+            created_at: text(row, 2)?,
+        })
+    })
+    .collect()
+}
+
+async fn collect_telemetry(
+    transaction: &mut PgTransaction<'_>,
+) -> Result<Vec<TelemetryRow>, StoreError> {
+    if !table_exists(transaction, "telemetry").await? {
+        return Ok(Vec::new());
+    }
+    rows(
+        transaction,
+        "SELECT property, event_timestamp
+         FROM telemetry ORDER BY event_timestamp, property",
+    )
+    .await?
+    .iter()
+    .map(|row| {
+        Ok(TelemetryRow {
+            property: text(row, 0)?,
+            event_timestamp: text(row, 1)?,
+        })
+    })
+    .collect()
+}
+
+async fn table_exists(
+    transaction: &mut PgTransaction<'_>,
+    table: &str,
+) -> Result<bool, StoreError> {
+    sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+        .bind(table)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(db)
+}
+
+fn opt_integer(row: &PgRow, index: usize) -> Result<Option<i64>, StoreError> {
+    row.try_get(index).map_err(db)
+}
+
 // ---------------------------------------------------------------------------
 // Import
 // ---------------------------------------------------------------------------
@@ -1446,9 +1616,8 @@ async fn import_sandboxed_checksums(
         .await
         .map_err(db)?;
     }
-    // The snapshot format does not carry the explicit sandboxes table or
-    // empty sandboxes. Derive rows for in-flight uploads the same way the
-    // embedded schema backfill does; empty sandboxes are not restored.
+    // Derive sandbox rows for pre-sandbox snapshots and older crawler output.
+    // Explicit rows, including empty in-flight sandboxes, are applied next.
     sqlx::query(
         "INSERT INTO sandboxes (org_id, sandbox_id, created_at)
          SELECT org_id, sandbox_id, MIN(created_at)
@@ -1459,6 +1628,27 @@ async fn import_sandboxed_checksums(
     .execute(&mut **transaction)
     .await
     .map_err(db)?;
+    Ok(())
+}
+
+async fn import_sandboxes(
+    transaction: &mut PgTransaction<'_>,
+    snapshot: &StoreSnapshot,
+) -> Result<(), StoreError> {
+    for row in &snapshot.sandboxes {
+        sqlx::query(
+            "INSERT INTO sandboxes (org_id, sandbox_id, created_at)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (org_id, sandbox_id)
+             DO UPDATE SET created_at = EXCLUDED.created_at",
+        )
+        .bind(&row.org_id)
+        .bind(&row.sandbox_id)
+        .bind(&row.created_at)
+        .execute(&mut **transaction)
+        .await
+        .map_err(db)?;
+    }
     Ok(())
 }
 
@@ -1812,7 +2002,10 @@ async fn import_oauth_applications(
              ON CONFLICT (id) DO UPDATE SET
                  name = EXCLUDED.name,
                  uid = EXCLUDED.uid,
-                 secret = EXCLUDED.secret,
+                 secret = CASE
+                     WHEN EXCLUDED.secret = '' THEN oauth_applications.secret
+                     ELSE EXCLUDED.secret
+                 END,
                  redirect_uri = EXCLUDED.redirect_uri,
                  scopes = EXCLUDED.scopes,
                  confidential = EXCLUDED.confidential,
@@ -1835,12 +2028,129 @@ async fn import_oauth_applications(
     Ok(())
 }
 
+async fn import_oauth_access_grants(
+    transaction: &mut PgTransaction<'_>,
+    snapshot: &StoreSnapshot,
+) -> Result<(), StoreError> {
+    for row in &snapshot.oauth_access_grants {
+        sqlx::query(
+            "INSERT INTO oauth_access_grants
+             (id, resource_owner_id, application_id, token, expires_in,
+              redirect_uri, scopes, created_at, revoked_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (id) DO UPDATE SET
+                 resource_owner_id = EXCLUDED.resource_owner_id,
+                 application_id = EXCLUDED.application_id,
+                 token = EXCLUDED.token,
+                 expires_in = EXCLUDED.expires_in,
+                 redirect_uri = EXCLUDED.redirect_uri,
+                 scopes = EXCLUDED.scopes,
+                 created_at = EXCLUDED.created_at,
+                 revoked_at = EXCLUDED.revoked_at",
+        )
+        .bind(row.id)
+        .bind(&row.resource_owner_id)
+        .bind(row.application_id)
+        .bind(&row.token)
+        .bind(row.expires_in)
+        .bind(&row.redirect_uri)
+        .bind(&row.scopes)
+        .bind(&row.created_at)
+        .bind(row.revoked_at.as_deref())
+        .execute(&mut **transaction)
+        .await
+        .map_err(db)?;
+    }
+    Ok(())
+}
+
+async fn import_oauth_access_tokens(
+    transaction: &mut PgTransaction<'_>,
+    snapshot: &StoreSnapshot,
+) -> Result<(), StoreError> {
+    for row in &snapshot.oauth_access_tokens {
+        sqlx::query(
+            "INSERT INTO oauth_access_tokens
+             (id, resource_owner_id, application_id, token, refresh_token,
+              expires_in, scopes, created_at, revoked_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (id) DO UPDATE SET
+                 resource_owner_id = EXCLUDED.resource_owner_id,
+                 application_id = EXCLUDED.application_id,
+                 token = EXCLUDED.token,
+                 refresh_token = EXCLUDED.refresh_token,
+                 expires_in = EXCLUDED.expires_in,
+                 scopes = EXCLUDED.scopes,
+                 created_at = EXCLUDED.created_at,
+                 revoked_at = EXCLUDED.revoked_at",
+        )
+        .bind(row.id)
+        .bind(row.resource_owner_id.as_deref())
+        .bind(row.application_id)
+        .bind(&row.token)
+        .bind(row.refresh_token.as_deref())
+        .bind(row.expires_in)
+        .bind(&row.scopes)
+        .bind(&row.created_at)
+        .bind(row.revoked_at.as_deref())
+        .execute(&mut **transaction)
+        .await
+        .map_err(db)?;
+    }
+    Ok(())
+}
+
+async fn import_kvpair(
+    transaction: &mut PgTransaction<'_>,
+    snapshot: &StoreSnapshot,
+) -> Result<(), StoreError> {
+    for row in &snapshot.kvpair {
+        sqlx::query(
+            "INSERT INTO kvpair (key, value, updated_at)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (key) DO UPDATE SET
+                 value = EXCLUDED.value,
+                 updated_at = EXCLUDED.updated_at",
+        )
+        .bind(&row.key)
+        .bind(row.value.as_deref())
+        .bind(&row.updated_at)
+        .execute(&mut **transaction)
+        .await
+        .map_err(db)?;
+    }
+    Ok(())
+}
+
+async fn import_telemetry(
+    transaction: &mut PgTransaction<'_>,
+    snapshot: &StoreSnapshot,
+) -> Result<(), StoreError> {
+    if !snapshot.telemetry.is_empty() {
+        sqlx::query("DELETE FROM telemetry")
+            .execute(&mut **transaction)
+            .await
+            .map_err(db)?;
+        for row in &snapshot.telemetry {
+            sqlx::query("INSERT INTO telemetry (property, event_timestamp) VALUES ($1, $2)")
+                .bind(&row.property)
+                .bind(&row.event_timestamp)
+                .execute(&mut **transaction)
+                .await
+                .map_err(db)?;
+        }
+    }
+    Ok(())
+}
+
 async fn advance_sequences(transaction: &mut PgTransaction<'_>) -> Result<(), StoreError> {
     for table in [
         "cookbooks",
         "cookbook_artifacts",
         "cookbook_artifact_versions",
         "oauth_applications",
+        "oauth_access_grants",
+        "oauth_access_tokens",
     ] {
         let sql = format!(
             "SELECT setval(

@@ -123,6 +123,128 @@ fn export_and_import_round_trip_through_the_cli() {
 }
 
 #[test]
+fn archive_export_and_import_round_trip_bookshelf_and_snapshot() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(source.path())).unwrap();
+    let org = store.create_org("archive-cli", "Archive CLI").unwrap();
+    store
+        .create_user(
+            "archive-user",
+            "archive@example.com",
+            "bcrypt",
+            "archive-hash",
+            "archive-salt",
+            false,
+        )
+        .unwrap();
+    drop(store);
+
+    let blob_dir = source
+        .path()
+        .join("bookshelf")
+        .join(format!("organization-{}", org.id));
+    std::fs::create_dir_all(&blob_dir).unwrap();
+    std::fs::write(blob_dir.join("checksum-feedface"), b"blob").unwrap();
+
+    let archive = source.path().join("migration.tar.gz");
+    let exported = run(&[
+        "export",
+        "--data-dir",
+        source.path().to_str().unwrap(),
+        "--archive",
+        archive.to_str().unwrap(),
+    ]);
+    assert!(
+        exported.status.success(),
+        "archive export failed: {}",
+        stderr(&exported)
+    );
+    assert!(stdout(&exported).contains("Exported archive"));
+    assert!(stdout(&exported).contains("Secrets: excluded"));
+    assert!(archive.is_file());
+
+    let target = tempfile::tempdir().unwrap();
+    let refused = run(&[
+        "import",
+        "--data-dir",
+        target.path().to_str().unwrap(),
+        "--archive",
+        archive.to_str().unwrap(),
+    ]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("--yes"));
+    assert!(!database(target.path()).exists());
+
+    let imported = run(&[
+        "import",
+        "--data-dir",
+        target.path().to_str().unwrap(),
+        "--archive",
+        archive.to_str().unwrap(),
+        "--yes",
+    ]);
+    assert!(
+        imported.status.success(),
+        "archive import failed: {}",
+        stderr(&imported)
+    );
+    assert!(stdout(&imported).contains("Imported archive"));
+
+    let restored = SqliteStore::open(&database(target.path())).unwrap();
+    assert!(restored.find_user("archive-user").unwrap().is_some());
+    assert_eq!(
+        std::fs::read(
+            target
+                .path()
+                .join("bookshelf")
+                .join(format!("organization-{}", org.id))
+                .join("checksum-feedface")
+        )
+        .unwrap(),
+        b"blob"
+    );
+}
+
+#[test]
+fn export_include_secrets_controls_kvpair_content() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(source.path())).unwrap();
+    store
+        .set_secret("bookshelf", "secret_access_key", "cli-secret-value")
+        .unwrap();
+    drop(store);
+
+    let snapshots = tempfile::tempdir().unwrap();
+    let safe = snapshots.path().join("safe.json");
+    let full = snapshots.path().join("full.json");
+    let exported = run(&[
+        "export",
+        "--data-dir",
+        source.path().to_str().unwrap(),
+        "--output",
+        safe.to_str().unwrap(),
+    ]);
+    assert!(exported.status.success(), "{}", stderr(&exported));
+    let safe_text = std::fs::read_to_string(&safe).unwrap();
+    assert!(!safe_text.contains("cli-secret-value"));
+    assert!(safe_text.contains("\"secrets_included\": false"));
+
+    let exported = run(&[
+        "export",
+        "--data-dir",
+        source.path().to_str().unwrap(),
+        "--output",
+        full.to_str().unwrap(),
+        "--include-secrets",
+    ]);
+    assert!(exported.status.success(), "{}", stderr(&exported));
+    assert!(stdout(&exported).contains("Secrets: included"));
+    let full_text = std::fs::read_to_string(&full).unwrap();
+    assert!(full_text.contains("cli-secret-value"));
+    assert!(full_text.contains("\"secrets_included\": true"));
+}
+
+#[test]
 fn import_with_compression_none_stores_plain_serialized_objects() {
     let source = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(&database(source.path())).unwrap();
@@ -524,6 +646,99 @@ fn postgres_import_with_compression_none_stores_plain_serialized_objects() {
         .expect("imported node exists");
     assert_eq!(node.serialized_object, body);
 
+    drop(target);
+    drop_scratch_database(&url, &scratch_name);
+}
+
+#[test]
+fn postgres_archive_export_and_import_round_trip_bookshelf() {
+    use microwave_store::IdentityRepository;
+
+    let Some(url) = postgres_url() else {
+        eprintln!("SKIP: MICROWAVE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let store = runtime
+        .block_on(microwave_store_postgres::PostgresStore::connect(&url))
+        .expect("connect to configured PostgreSQL");
+    let username = unique("pg-archive-user");
+    let user = runtime
+        .block_on(store.create_user(
+            &username,
+            &format!("{username}@example.com"),
+            "bcrypt",
+            "pg-archive-hash",
+            "pg-archive-salt",
+            false,
+        ))
+        .expect("create archive user");
+    drop(store);
+
+    let source = tempfile::tempdir().unwrap();
+    let bookshelf = source.path().join("bookshelf");
+    let blob_dir = bookshelf.join("organization-archive");
+    std::fs::create_dir_all(&blob_dir).unwrap();
+    std::fs::write(blob_dir.join("checksum-feedface"), b"pg-blob").unwrap();
+    let archive = source.path().join("pg-archive.tar.gz");
+    let exported = run(&[
+        "export",
+        "--database-url",
+        &url,
+        "--bookshelf-dir",
+        bookshelf.to_str().unwrap(),
+        "--archive",
+        archive.to_str().unwrap(),
+    ]);
+    assert!(
+        exported.status.success(),
+        "archive export failed: {}",
+        stderr(&exported)
+    );
+    assert!(archive.is_file());
+
+    let suffix = unique("pg-archive-target");
+    let (scratch_name, target_url) = scratch_database(&url, &suffix);
+    let target_root = tempfile::tempdir().unwrap();
+    let target_bookshelf = target_root.path().join("bookshelf");
+    let imported = run(&[
+        "import",
+        "--database-url",
+        &target_url,
+        "--bookshelf-dir",
+        target_bookshelf.to_str().unwrap(),
+        "--archive",
+        archive.to_str().unwrap(),
+        "--yes",
+    ]);
+    assert!(
+        imported.status.success(),
+        "archive import failed: {}",
+        stderr(&imported)
+    );
+
+    let target = runtime
+        .block_on(microwave_store_postgres::PostgresStore::connect(
+            &target_url,
+        ))
+        .expect("connect to archive target");
+    let restored = runtime
+        .block_on(target.find_user(&username))
+        .expect("find archive user")
+        .expect("archive user exists");
+    assert_eq!(restored.id, user.id);
+    assert_eq!(
+        std::fs::read(
+            target_bookshelf
+                .join("organization-archive")
+                .join("checksum-feedface")
+        )
+        .unwrap(),
+        b"pg-blob"
+    );
     drop(target);
     drop_scratch_database(&url, &scratch_name);
 }

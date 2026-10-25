@@ -1,6 +1,9 @@
 use microwave_authz::create_organization;
-use microwave_migrate::{export, import, MigrateError};
+use microwave_migrate::{
+    export, export_archive, export_with_options, import, import_archive, MigrateError,
+};
 use microwave_store::{ActorType, NewNode, Permission, SqliteStore};
+use serde_json::Value;
 use std::path::Path;
 
 const PUBLIC_KEY: &str = include_str!("../../microwave-crypto/tests/fixtures/test_key_pub.pem");
@@ -160,12 +163,13 @@ async fn exported_snapshot_round_trips_identity_authz_and_objects() {
         .unwrap();
 
     let snapshot_path = source_dir.path().join("snapshot.json");
-    export(source_dir.path(), &snapshot_path).unwrap();
+    export_with_options(source_dir.path(), &snapshot_path, true).unwrap();
     let document: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&snapshot_path).unwrap()).unwrap();
     assert_eq!(document["format"], "microwave-server-snapshot");
     assert_eq!(document["version"], 1);
     assert_eq!(document["source"]["kind"], "local-store");
+    assert_eq!(document["secrets_included"], true);
     assert_eq!(
         document["data"]["oauth_applications"][0]["secret"],
         oauth_application.secret
@@ -399,6 +403,358 @@ fn rejects_malformed_and_unsupported_snapshots() {
     .unwrap();
     let error = import(dir.path(), &snapshot_path).unwrap_err();
     assert!(matches!(error, MigrateError::UnsupportedFormat(_)));
+}
+
+#[test]
+fn safe_export_redacts_secrets_and_include_secrets_round_trips_them() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(source.path())).unwrap();
+    let org = store.create_org("secure", "Secure Org").unwrap();
+    store
+        .set_secret("bookshelf", "secret_access_key", "bookshelf-secret")
+        .unwrap();
+    store.set_kv("custom:flag", "custom-value").unwrap();
+    store.set_maintenance_enabled(true).unwrap();
+    let application = store
+        .create_oauth_application("Portal", "https://portal.example.com/cb", "openid", true)
+        .unwrap();
+    let grant = store
+        .create_oauth_access_grant(
+            "resource-owner",
+            application.id,
+            "https://portal.example.com/cb",
+            "openid",
+            300,
+        )
+        .unwrap();
+    let token = store
+        .create_oauth_access_token("resource-owner", application.id, "openid", Some(3600), true)
+        .unwrap();
+    let refresh_token = token.refresh_token.clone().unwrap();
+    let (sandbox_id, _) = store.create_sandbox(&org.id, &[]).unwrap();
+    let sandbox_created_at = store
+        .sandbox_created_at(&org.id, &sandbox_id)
+        .unwrap()
+        .unwrap();
+    drop(store);
+
+    let connection = rusqlite::Connection::open(database(source.path())).unwrap();
+    connection
+        .execute(
+            "INSERT INTO telemetry (property, event_timestamp) VALUES ('usage', '2026-10-25T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let safe = source.path().join("safe.json");
+    export(source.path(), &safe).unwrap();
+    let safe_text = std::fs::read_to_string(&safe).unwrap();
+    for secret in [
+        application.secret.as_str(),
+        grant.token.as_str(),
+        token.token.as_str(),
+        refresh_token.as_str(),
+        "bookshelf-secret",
+        "custom-value",
+    ] {
+        assert!(
+            !safe_text.contains(secret),
+            "safe export leaked secret {secret:?}"
+        );
+    }
+    let document: Value = serde_json::from_str(&safe_text).unwrap();
+    assert_eq!(document["secrets_included"], false);
+    assert_eq!(document["data"]["kvpair"], serde_json::json!([]));
+    assert_eq!(
+        document["data"]["oauth_access_grants"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        document["data"]["oauth_access_tokens"],
+        serde_json::json!([])
+    );
+    assert_eq!(document["data"]["oauth_applications"][0]["secret"], "");
+    assert_eq!(document["data"]["sandboxes"].as_array().unwrap().len(), 1);
+    assert_eq!(document["data"]["telemetry"].as_array().unwrap().len(), 1);
+
+    let safe_target = tempfile::tempdir().unwrap();
+    import(safe_target.path(), &safe).unwrap();
+    let imported = SqliteStore::open(&database(safe_target.path())).unwrap();
+    assert!(imported
+        .get_secret("bookshelf", "secret_access_key")
+        .unwrap()
+        .is_none());
+    assert!(imported.get_kv("custom:flag").unwrap().is_none());
+    assert!(!imported.maintenance_enabled().unwrap());
+    assert!(imported
+        .find_oauth_access_grant(&grant.token)
+        .unwrap()
+        .is_none());
+    assert!(imported
+        .find_oauth_access_token(&token.token)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        imported
+            .find_oauth_application(application.id)
+            .unwrap()
+            .unwrap()
+            .secret,
+        ""
+    );
+    assert!(imported.sandbox_exists(&org.id, &sandbox_id).unwrap());
+    assert_eq!(
+        imported.sandbox_created_at(&org.id, &sandbox_id).unwrap(),
+        Some(sandbox_created_at.clone())
+    );
+    drop(imported);
+
+    let full = source.path().join("full.json");
+    export_with_options(source.path(), &full, true).unwrap();
+    let full_document: Value =
+        serde_json::from_str(&std::fs::read_to_string(&full).unwrap()).unwrap();
+    assert_eq!(full_document["secrets_included"], true);
+
+    let full_target = tempfile::tempdir().unwrap();
+    import(full_target.path(), &full).unwrap();
+    let restored = SqliteStore::open(&database(full_target.path())).unwrap();
+    assert_eq!(
+        restored
+            .get_secret("bookshelf", "secret_access_key")
+            .unwrap()
+            .as_deref(),
+        Some("bookshelf-secret")
+    );
+    assert_eq!(
+        restored.get_kv("custom:flag").unwrap().as_deref(),
+        Some("custom-value")
+    );
+    assert!(restored.maintenance_enabled().unwrap());
+    assert_eq!(
+        restored
+            .find_oauth_application(application.id)
+            .unwrap()
+            .unwrap()
+            .secret,
+        application.secret
+    );
+    let restored_grant = restored
+        .find_oauth_access_grant(&grant.token)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored_grant.id, grant.id);
+    assert_eq!(restored_grant.created_at, grant.created_at);
+    let restored_token = restored
+        .find_oauth_access_token(&token.token)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored_token.id, token.id);
+    assert_eq!(
+        restored_token.refresh_token.as_deref(),
+        Some(refresh_token.as_str())
+    );
+    assert_eq!(restored_token.created_at, token.created_at);
+    assert_eq!(
+        restored.sandbox_created_at(&org.id, &sandbox_id).unwrap(),
+        Some(sandbox_created_at)
+    );
+
+    let connection = rusqlite::Connection::open(database(full_target.path())).unwrap();
+    let telemetry: Vec<(String, String)> = {
+        let mut statement = connection
+            .prepare("SELECT property, event_timestamp FROM telemetry ORDER BY property")
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap();
+        rows.collect::<Result<Vec<_>, _>>().unwrap()
+    };
+    assert_eq!(
+        telemetry,
+        vec![("usage".to_string(), "2026-10-25T00:00:00Z".to_string())]
+    );
+    drop(connection);
+
+    // Importing a safe snapshot into an existing store must not erase secrets
+    // that the safe snapshot omitted or blanked.
+    import(full_target.path(), &safe).unwrap();
+    let preserved = SqliteStore::open(&database(full_target.path())).unwrap();
+    assert_eq!(
+        preserved
+            .find_oauth_application(application.id)
+            .unwrap()
+            .unwrap()
+            .secret,
+        application.secret
+    );
+    assert_eq!(
+        preserved
+            .get_secret("bookshelf", "secret_access_key")
+            .unwrap()
+            .as_deref(),
+        Some("bookshelf-secret")
+    );
+    assert!(preserved
+        .find_oauth_access_token(&token.token)
+        .unwrap()
+        .is_some());
+    drop(preserved);
+
+    // A second import of the full snapshot is idempotent.
+    import(full_target.path(), &full).unwrap();
+    let again = SqliteStore::open(&database(full_target.path())).unwrap();
+    let connection = rusqlite::Connection::open(database(full_target.path())).unwrap();
+    let count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM telemetry", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(
+        again
+            .find_oauth_access_token(&token.token)
+            .unwrap()
+            .unwrap()
+            .id,
+        token.id
+    );
+}
+
+#[test]
+fn archive_round_trips_snapshot_and_bookshelf_blob() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(source.path())).unwrap();
+    let org = store.create_org("archive", "Archive Org").unwrap();
+    drop(store);
+
+    let blob_dir = source
+        .path()
+        .join("bookshelf")
+        .join(format!("organization-{}", org.id));
+    std::fs::create_dir_all(&blob_dir).unwrap();
+    let blob = blob_dir.join("checksum-0123456789abcdef0123456789abcdef");
+    std::fs::write(&blob, b"cookbook-bytes").unwrap();
+
+    let archive = source.path().join("migration.tar.gz");
+    export_archive(source.path(), &archive).unwrap();
+    assert!(archive.is_file());
+
+    let target = tempfile::tempdir().unwrap();
+    import_archive(target.path(), &archive).unwrap();
+    let restored = SqliteStore::open(&database(target.path())).unwrap();
+    assert_eq!(restored.find_org("archive").unwrap().unwrap().id, org.id);
+    let restored_blob = target
+        .path()
+        .join("bookshelf")
+        .join(format!("organization-{}", org.id))
+        .join("checksum-0123456789abcdef0123456789abcdef");
+    assert_eq!(std::fs::read(restored_blob).unwrap(), b"cookbook-bytes");
+}
+
+fn write_test_archive(path: &Path, entries: &[(&str, tar::EntryType, Option<&str>, &[u8])]) {
+    let file = std::fs::File::create(path).unwrap();
+    let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    let mut builder = tar::Builder::new(encoder);
+    for (name, entry_type, link_name, data) in entries {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(*entry_type);
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_mtime(0);
+        let bytes = name.as_bytes();
+        header.as_gnu_mut().unwrap().name[..bytes.len()].copy_from_slice(bytes);
+        if let Some(link_name) = link_name {
+            header.set_link_name(link_name).unwrap();
+        }
+        header.set_cksum();
+        builder.append(&header, *data).unwrap();
+    }
+    let encoder = builder.into_inner().unwrap();
+    encoder.finish().unwrap();
+}
+
+#[test]
+fn archive_import_rejects_path_traversal_and_symlinks_before_touching_data() {
+    let valid_snapshot = r#"{"format":"microwave-server-snapshot","version":1,"generated_at":"2026-10-25T00:00:00Z","source":{"kind":"local-store"},"data":{}}"#;
+
+    let dir = tempfile::tempdir().unwrap();
+    let traversal = dir.path().join("traversal.tar.gz");
+    write_test_archive(
+        &traversal,
+        &[
+            (
+                "snapshot.json",
+                tar::EntryType::Regular,
+                None,
+                valid_snapshot.as_bytes(),
+            ),
+            ("../escape", tar::EntryType::Regular, None, b"escaped"),
+        ],
+    );
+    let target = tempfile::tempdir().unwrap();
+    let error = import_archive(target.path(), &traversal).unwrap_err();
+    assert!(matches!(error, MigrateError::Archive(_)));
+    assert!(!database(target.path()).exists());
+    assert!(!target.path().join("escape").exists());
+
+    let symlink = dir.path().join("symlink.tar.gz");
+    write_test_archive(
+        &symlink,
+        &[
+            (
+                "snapshot.json",
+                tar::EntryType::Regular,
+                None,
+                valid_snapshot.as_bytes(),
+            ),
+            (
+                "bookshelf/link",
+                tar::EntryType::Symlink,
+                Some("/etc/passwd"),
+                b"",
+            ),
+        ],
+    );
+    let target = tempfile::tempdir().unwrap();
+    let error = import_archive(target.path(), &symlink).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("symlink"), "unexpected error: {message}");
+    assert!(!database(target.path()).exists());
+    assert!(!target.path().join("bookshelf").join("link").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn archive_export_rejects_symlinked_bookshelf_content() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(source.path())).unwrap();
+    store
+        .create_org("archive-symlink", "Archive Symlink")
+        .unwrap();
+    drop(store);
+    let bookshelf = source.path().join("bookshelf");
+    std::fs::create_dir_all(&bookshelf).unwrap();
+    std::os::unix::fs::symlink("/etc/passwd", bookshelf.join("leaked")).unwrap();
+
+    let archive = source.path().join("unsafe.tar.gz");
+    let error = export_archive(source.path(), &archive).unwrap_err();
+    assert!(matches!(error, MigrateError::Archive(_)));
+    assert!(!archive.exists());
+}
+
+#[test]
+fn old_snapshot_without_extended_fields_still_imports() {
+    let dir = tempfile::tempdir().unwrap();
+    let snapshot = dir.path().join("old.json");
+    std::fs::write(
+        &snapshot,
+        r#"{"format":"microwave-server-snapshot","version":1,"generated_at":"2026-10-24T00:00:00Z","source":{"kind":"local-store"},"data":{"users":[{"id":"u1","authz_id":"a1","username":"alice","password_hash":"hash","password_salt":"salt","hash_type":"bcrypt","admin":false,"recovery_authentication_enabled":false,"last_updated_by":"","created_at":"2026-10-24T00:00:00Z","updated_at":"2026-10-24T00:00:00Z"}]}}"#,
+    )
+    .unwrap();
+    let target = tempfile::tempdir().unwrap();
+    import(target.path(), &snapshot).unwrap();
+    let store = SqliteStore::open(&database(target.path())).unwrap();
+    assert_eq!(store.find_user("alice").unwrap().unwrap().id, "u1");
+    assert!(store.get_kv("anything").unwrap().is_none());
 }
 
 #[test]

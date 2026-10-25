@@ -870,6 +870,17 @@ objects. Restore those from your separate copies.
 microwave-migrate export --data-dir /var/lib/microwave --output /var/backups/snapshot.json
 microwave-migrate import --data-dir /var/lib/microwave-new --input /var/backups/snapshot.json --yes
 
+# Include kvpair (secrets/sessions/maintenance), OAuth grants/tokens, and
+# OAuth application secrets. Treat the result as a credential.
+microwave-migrate export --data-dir /var/lib/microwave \
+  --output /var/backups/snapshot-with-secrets.json --include-secrets
+
+# Self-contained archive: snapshot + local bookshelf blobs
+microwave-migrate export --data-dir /var/lib/microwave \
+  --archive /var/backups/microwave-migration.tar.gz
+microwave-migrate import --data-dir /var/lib/microwave-new \
+  --archive /var/backups/microwave-migration.tar.gz --yes
+
 # Store imported serialized objects as plain JSON instead of the default MWZ1
 # envelope (or point --config at the target server's microwave.toml):
 microwave-migrate import --data-dir /var/lib/microwave-new \
@@ -883,6 +894,17 @@ microwave-migrate import \
   --database-url postgres://microwave:secret@db/microwave-new \
   --input /var/backups/snapshot.json \
   --yes
+
+# PostgreSQL archive with a local bookshelf tree
+microwave-migrate export \
+  --database-url postgres://microwave:secret@db/microwave \
+  --bookshelf-dir /var/lib/microwave/bookshelf \
+  --archive /var/backups/microwave-migration.tar.gz
+microwave-migrate import \
+  --database-url postgres://microwave:secret@db/microwave-new \
+  --bookshelf-dir /var/lib/microwave-new/bookshelf \
+  --archive /var/backups/microwave-migration.tar.gz \
+  --yes
 ```
 
 `import` merges into live metadata and asks for confirmation. Use `--yes` in
@@ -892,23 +914,45 @@ authority or query-string passwords.
 The snapshot is versioned JSON (`format: microwave-server-snapshot`,
 `version: 1`) containing users (including password hashes), organizations,
 clients, actor keys, ACLs, groups, containers, nodes, roles, environments, data
-bags, checksums, cookbooks, cookbook artifacts, policies, policy groups, and
-OAuth applications. Import applies in one transaction on either backend and
-preserves ids, authz ids, timestamps, and keys. PostgreSQL imports advance the
-sequence-backed cookbook, artifact, and OAuth identifiers so later inserts do
-not collide.
+bags, checksums, cookbooks, cookbook artifacts, policies, policy groups,
+OAuth applications, OAuth grants/tokens, explicit and empty sandboxes, telemetry
+rows, and `kvpair`. Import applies in one transaction on either backend and
+preserves ids, authz ids, timestamps, hashes, keys, and token expiry/revocation
+state. PostgreSQL imports advance the sequence-backed cookbook, artifact, and
+OAuth identifiers so later inserts do not collide.
+
+**Secret default.** Without `--include-secrets`, the export omits `kvpair`
+(operator secrets, browser sessions, password-reset tokens, and the maintenance
+flag), OAuth access grants/tokens, and OAuth application secrets. The envelope
+records `secrets_included: false`. Use `--include-secrets` only when the output
+is stored and transferred as a credential, and remember that the CLI prints
+only whether secrets were included, never their values. Old snapshots without
+the new collections or the `secrets_included` field still import unchanged.
+
+Archives (`--archive PATH.tar.gz`) add the local `bookshelf/` tree to the
+snapshot. They are written atomically with mode `0600`. Import validates tar
+entries before extraction (only `snapshot.json` and `bookshelf/`, no absolute
+paths, `..`, symlinks, hard links, or special files), stages them privately,
+imports the database in one transaction, and only then swaps the bookshelf into
+place. Import remains confirmation-gated; pass `--yes` non-interactively.
+
+For S3/Garage/MinIO there is no local bookshelf to archive. Replicate the
+bucket with your object-store tooling (`rclone`, `aws s3 sync`, Garage
+replication, versioning) and use a JSON snapshot for metadata, or provide a
+local mirror via `--bookshelf-dir` for the archive. Trying to archive a
+PostgreSQL database without `--bookshelf-dir` fails with that instruction
+rather than silently omitting blobs.
 
 Import into a fresh database when possible. The same unique-name rule applies
 on both backends: importing a `server-admins` or other global group with a
 different id into a database that already has that name fails rather than
 rewriting live ACL references.
 
-Not included: cookbook blobs, `kvpair` secrets (including the maintenance
-flag), empty sandboxes, and the superuser key files. Copy `bookshelf/` (or the
-S3 bucket) in addition. The snapshot file is written with mode `0600`; it still
-contains password hashes and public keys, so treat it as sensitive. Use
-`microwave-ctl backup` instead when you need the full database including
-`kvpair`.
+Still not included: private key files (`pivotal.pem`, `pivotal.password`,
+`objectstore.secret`), remote object-store objects, and the search index. The
+snapshot and archive still contain password hashes, public keys, ACLs, and user
+data, so even a safe export is sensitive. Use `microwave-ctl backup` when you
+need the full database file/dump plus bookshelf without secret redaction.
 
 ## 10. Migration from a legacy server
 
@@ -946,11 +990,12 @@ snapshot or need to stage the copy yourself:
    `microwave-migrate import --database-url postgres://... --input ... --yes`
    with the same compression flags. Both import paths ask for confirmation
    unless `--yes` is given.
-4. **Copy cookbook blobs.** The snapshot is metadata only. Place files under
-   the object key layout `organization-<org_id>/checksum-<md5>` in
-   `/var/lib/microwave/bookshelf/` for the local backend, or upload them to the
-   configured S3 bucket under the same keys. The legacy bookshelf directory
-   layout is not converted by any tool here; this step is manual today.
+4. **Copy cookbook blobs.** If the source is a local-bookshelf Microwave
+   installation, use `microwave-migrate export --archive` / `import --archive`
+   to carry `snapshot.json` plus `bookshelf/` in one validated archive. The
+   legacy Chef Server bookshelf layout is not converted automatically; for an
+   external S3/Garage bucket, replicate the bucket and keep the object keys
+   `organization-<org_id>/checksum-<md5>`.
 5. **Verify** with `microwave-ctl status`, `user-list`, `org-list`,
    `org-show <org>`, and a `knife` or `chef-client` read against a test org.
 6. **Start the server** and drain clients over gradually.
@@ -962,9 +1007,10 @@ cookbook metadata and checksum references, policyfiles/policy groups, and
 OAuth applications. Chef clients keep their existing keys and URLs, so no
 client reconfiguration is needed if the endpoint stays the same.
 
-Until a blob importer exists, the practical migration is a parallel run: keep
-the legacy server authoritative, move one organization at a
-time, and keep the legacy server read-only until the new one is verified.
+For a legacy Chef Server source whose bookshelf layout is not the Microwave
+`organization-<org_id>/checksum-<md5>` tree, keep the legacy server
+authoritative, move one organization at a time, and keep the legacy server
+read-only until the new one is verified.
 
 ## 11. Health, status, and logs
 

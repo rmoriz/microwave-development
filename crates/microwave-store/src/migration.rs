@@ -50,6 +50,38 @@ pub struct StoreSnapshot {
     pub policy_revisions: Vec<PolicyRevisionRow>,
     pub policy_group_revision_associations: Vec<PolicyGroupRevisionAssociationRow>,
     pub oauth_applications: Vec<OAuthApplicationRow>,
+    /// Latest OAuth access grants. Secret material; omitted from safe exports.
+    pub oauth_access_grants: Vec<OAuthAccessGrantRow>,
+    /// Latest OAuth access tokens. Secret material; omitted from safe exports.
+    pub oauth_access_tokens: Vec<OAuthAccessTokenRow>,
+    /// Raw `kvpair` rows, including `secret:*`, session, reset, and
+    /// `maintenance:enabled`. Secret material; omitted from safe exports.
+    pub kvpair: Vec<KvPairRow>,
+    /// Explicit sandbox rows. Carries empty in-flight sandboxes that have no
+    /// uploaded checksums yet.
+    pub sandboxes: Vec<SandboxRow>,
+    /// Pending sandbox upload rows used by SQLite's commit path. PostgreSQL
+    /// derives this collection from `sandboxed_checksums` instead.
+    pub sandbox_checksums: Vec<SandboxChecksumRow>,
+    /// Telemetry event rows, when the source table exists.
+    pub telemetry: Vec<TelemetryRow>,
+}
+
+impl StoreSnapshot {
+    /// Remove every secret-bearing value from this snapshot.
+    ///
+    /// Callers writing a default (safe) export use this before serializing.
+    /// The returned document still carries metadata, password hashes, public
+    /// keys, and ACLs, so it remains sensitive; it simply no longer contains
+    /// long-lived bearer tokens or operator secret values.
+    pub fn redact_secrets(&mut self) {
+        self.kvpair.clear();
+        self.oauth_access_grants.clear();
+        self.oauth_access_tokens.clear();
+        for application in &mut self.oauth_applications {
+            application.secret.clear();
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -401,9 +433,82 @@ pub struct OAuthApplicationRow {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OAuthAccessGrantRow {
+    pub id: i64,
+    pub resource_owner_id: String,
+    pub application_id: i64,
+    pub token: String,
+    pub expires_in: i64,
+    pub redirect_uri: String,
+    pub scopes: String,
+    pub created_at: String,
+    pub revoked_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OAuthAccessTokenRow {
+    pub id: i64,
+    pub resource_owner_id: Option<String>,
+    pub application_id: Option<i64>,
+    pub token: String,
+    pub refresh_token: Option<String>,
+    pub expires_in: Option<i64>,
+    pub scopes: String,
+    pub created_at: String,
+    pub revoked_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KvPairRow {
+    pub key: String,
+    pub value: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SandboxRow {
+    pub org_id: String,
+    pub sandbox_id: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SandboxChecksumRow {
+    pub org_id: String,
+    pub sandbox_id: String,
+    pub checksum: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TelemetryRow {
+    pub property: String,
+    pub event_timestamp: String,
+}
+
 impl SqliteStore {
     /// Read every migration-relevant table into a [`StoreSnapshot`].
+    ///
+    /// This full-fidelity form includes secret-bearing `kvpair`, OAuth grant
+    /// and token rows, and OAuth application secrets. The `microwave-migrate`
+    /// command applies [`StoreSnapshot::redact_secrets`] unless the operator
+    /// passes `--include-secrets`.
     pub fn export_snapshot(&self) -> Result<StoreSnapshot, StoreError> {
+        self.export_snapshot_with_options(true)
+    }
+
+    /// Read every migration-relevant table, optionally excluding secrets.
+    pub fn export_snapshot_with_options(
+        &self,
+        include_secrets: bool,
+    ) -> Result<StoreSnapshot, StoreError> {
         let connection = self.connection();
         let mut snapshot = StoreSnapshot {
             orgs: collect(
@@ -893,7 +998,119 @@ impl SqliteStore {
                     })
                 },
             )?,
+            oauth_access_grants: if table_exists(&connection, "oauth_access_grants")? {
+                collect(
+                    &connection,
+                    "SELECT id, resource_owner_id, application_id, token, expires_in,
+                            redirect_uri, scopes, created_at, revoked_at
+                     FROM oauth_access_grants ORDER BY id",
+                    |row| {
+                        Ok(OAuthAccessGrantRow {
+                            id: row.get(0)?,
+                            resource_owner_id: row.get(1)?,
+                            application_id: row.get(2)?,
+                            token: row.get(3)?,
+                            expires_in: row.get(4)?,
+                            redirect_uri: row.get(5)?,
+                            scopes: row.get(6)?,
+                            created_at: row.get(7)?,
+                            revoked_at: row.get(8)?,
+                        })
+                    },
+                )?
+            } else {
+                Vec::new()
+            },
+            oauth_access_tokens: if table_exists(&connection, "oauth_access_tokens")? {
+                collect(
+                    &connection,
+                    "SELECT id, resource_owner_id, application_id, token, refresh_token,
+                            expires_in, scopes, created_at, revoked_at
+                     FROM oauth_access_tokens ORDER BY id",
+                    |row| {
+                        Ok(OAuthAccessTokenRow {
+                            id: row.get(0)?,
+                            resource_owner_id: row.get(1)?,
+                            application_id: row.get(2)?,
+                            token: row.get(3)?,
+                            refresh_token: row.get(4)?,
+                            expires_in: row.get(5)?,
+                            scopes: row.get(6)?,
+                            created_at: row.get(7)?,
+                            revoked_at: row.get(8)?,
+                        })
+                    },
+                )?
+            } else {
+                Vec::new()
+            },
+            kvpair: if table_exists(&connection, "kvpair")? {
+                collect(
+                    &connection,
+                    "SELECT key, value, updated_at FROM kvpair ORDER BY key",
+                    |row| {
+                        Ok(KvPairRow {
+                            key: row.get(0)?,
+                            value: row.get(1)?,
+                            updated_at: row.get(2)?,
+                        })
+                    },
+                )?
+            } else {
+                Vec::new()
+            },
+            sandboxes: if table_exists(&connection, "sandboxes")? {
+                collect(
+                    &connection,
+                    "SELECT org_id, sandbox_id, created_at
+                     FROM sandboxes ORDER BY org_id, sandbox_id",
+                    |row| {
+                        Ok(SandboxRow {
+                            org_id: row.get(0)?,
+                            sandbox_id: row.get(1)?,
+                            created_at: row.get(2)?,
+                        })
+                    },
+                )?
+            } else {
+                Vec::new()
+            },
+            sandbox_checksums: if table_exists(&connection, "sandbox_checksums")? {
+                collect(
+                    &connection,
+                    "SELECT org_id, sandbox_id, checksum, created_at
+                     FROM sandbox_checksums ORDER BY org_id, sandbox_id, checksum",
+                    |row| {
+                        Ok(SandboxChecksumRow {
+                            org_id: row.get(0)?,
+                            sandbox_id: row.get(1)?,
+                            checksum: row.get(2)?,
+                            created_at: row.get(3)?,
+                        })
+                    },
+                )?
+            } else {
+                Vec::new()
+            },
+            telemetry: if table_exists(&connection, "telemetry")? {
+                collect(
+                    &connection,
+                    "SELECT property, event_timestamp
+                     FROM telemetry ORDER BY event_timestamp, property",
+                    |row| {
+                        Ok(TelemetryRow {
+                            property: row.get(0)?,
+                            event_timestamp: row.get(1)?,
+                        })
+                    },
+                )?
+            } else {
+                Vec::new()
+            },
         };
+        if !include_secrets {
+            snapshot.redact_secrets();
+        }
         decode_snapshot_serialized(&mut snapshot)?;
         Ok(snapshot)
     }
@@ -922,6 +1139,15 @@ where
         values.push(row?);
     }
     Ok(values)
+}
+
+fn table_exists(connection: &Connection, table: &str) -> Result<bool, StoreError> {
+    let exists: i64 = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |row| row.get(0),
+    )?;
+    Ok(exists != 0)
 }
 
 /// Snapshots always carry plain JSON, never the storage-level `mwz1:` form.
@@ -1347,6 +1573,40 @@ fn import_all(
         )?;
     }
 
+    // Backfill explicit sandboxes and SQLite's commit-path checksum rows for
+    // pre-sandbox snapshots and older crawler output.
+    transaction.execute(
+        "INSERT OR IGNORE INTO sandboxes (org_id, sandbox_id, created_at)
+         SELECT org_id, sandbox_id, MIN(created_at)
+         FROM sandboxed_checksums
+         GROUP BY org_id, sandbox_id",
+        [],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO sandbox_checksums (org_id, sandbox_id, checksum, created_at)
+         SELECT org_id, sandbox_id, checksum, created_at
+         FROM sandboxed_checksums",
+        [],
+    )?;
+    for row in &snapshot.sandboxes {
+        transaction.execute(
+            "INSERT INTO sandboxes (org_id, sandbox_id, created_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(org_id, sandbox_id)
+             DO UPDATE SET created_at = excluded.created_at",
+            params![row.org_id, row.sandbox_id, row.created_at],
+        )?;
+    }
+    for row in &snapshot.sandbox_checksums {
+        transaction.execute(
+            "INSERT INTO sandbox_checksums (org_id, sandbox_id, checksum, created_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(sandbox_id, org_id, checksum)
+             DO UPDATE SET created_at = excluded.created_at",
+            params![row.org_id, row.sandbox_id, row.checksum, row.created_at],
+        )?;
+    }
+
     for row in &snapshot.cookbooks {
         transaction.execute(
             "INSERT INTO cookbooks (id, org_id, name, authz_id)
@@ -1589,7 +1849,10 @@ fn import_all(
              ON CONFLICT(id) DO UPDATE SET
                  name = excluded.name,
                  uid = excluded.uid,
-                 secret = excluded.secret,
+                 secret = CASE
+                     WHEN excluded.secret = '' THEN oauth_applications.secret
+                     ELSE excluded.secret
+                 END,
                  redirect_uri = excluded.redirect_uri,
                  scopes = excluded.scopes,
                  confidential = excluded.confidential,
@@ -1607,6 +1870,89 @@ fn import_all(
                 row.updated_at
             ],
         )?;
+    }
+
+    for row in &snapshot.oauth_access_grants {
+        transaction.execute(
+            "INSERT INTO oauth_access_grants
+             (id, resource_owner_id, application_id, token, expires_in,
+              redirect_uri, scopes, created_at, revoked_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(id) DO UPDATE SET
+                 resource_owner_id = excluded.resource_owner_id,
+                 application_id = excluded.application_id,
+                 token = excluded.token,
+                 expires_in = excluded.expires_in,
+                 redirect_uri = excluded.redirect_uri,
+                 scopes = excluded.scopes,
+                 created_at = excluded.created_at,
+                 revoked_at = excluded.revoked_at",
+            params![
+                row.id,
+                row.resource_owner_id,
+                row.application_id,
+                row.token,
+                row.expires_in,
+                row.redirect_uri,
+                row.scopes,
+                row.created_at,
+                row.revoked_at
+            ],
+        )?;
+    }
+
+    for row in &snapshot.oauth_access_tokens {
+        transaction.execute(
+            "INSERT INTO oauth_access_tokens
+             (id, resource_owner_id, application_id, token, refresh_token,
+              expires_in, scopes, created_at, revoked_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(id) DO UPDATE SET
+                 resource_owner_id = excluded.resource_owner_id,
+                 application_id = excluded.application_id,
+                 token = excluded.token,
+                 refresh_token = excluded.refresh_token,
+                 expires_in = excluded.expires_in,
+                 scopes = excluded.scopes,
+                 created_at = excluded.created_at,
+                 revoked_at = excluded.revoked_at",
+            params![
+                row.id,
+                row.resource_owner_id,
+                row.application_id,
+                row.token,
+                row.refresh_token,
+                row.expires_in,
+                row.scopes,
+                row.created_at,
+                row.revoked_at
+            ],
+        )?;
+    }
+
+    for row in &snapshot.kvpair {
+        transaction.execute(
+            "INSERT INTO kvpair (key, value, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET
+                 value = excluded.value,
+                 updated_at = excluded.updated_at",
+            params![row.key, row.value, row.updated_at],
+        )?;
+    }
+
+    // Telemetry is an append-only event log with no primary key. Replace it
+    // when the snapshot carries rows so importing the same snapshot twice
+    // stays idempotent. An absent/empty collection leaves target rows alone,
+    // matching the merge semantics of every other collection.
+    if !snapshot.telemetry.is_empty() {
+        transaction.execute("DELETE FROM telemetry", [])?;
+        for row in &snapshot.telemetry {
+            transaction.execute(
+                "INSERT INTO telemetry (property, event_timestamp) VALUES (?1, ?2)",
+                params![row.property, row.event_timestamp],
+            )?;
+        }
     }
 
     Ok(())

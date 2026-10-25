@@ -6,8 +6,8 @@
 
 use microwave_store::{
     ActorType, ArtifactRepository, AuthzRepository, Compression, CookbookRepository,
-    IdentityRepository, MembershipRepository, NewNode, OAuthRepository, ObjectRepository,
-    PolicyRepository, SandboxRepository, COMPRESSED_PREFIX,
+    IdentityRepository, KvRepository, MembershipRepository, NewNode, OAuthRepository,
+    ObjectRepository, PolicyRepository, SandboxRepository, SecretsRepository, COMPRESSED_PREFIX,
 };
 use microwave_store_postgres::PostgresStore;
 
@@ -190,8 +190,85 @@ async fn snapshot_round_trips_every_seeded_collection() {
         )
         .await
         .unwrap();
+    let grant = store
+        .create_oauth_access_grant(
+            &format!("owner-{suffix}"),
+            application.id,
+            "https://example.com/callback",
+            "openid",
+            300,
+        )
+        .await
+        .unwrap();
+    let access_token = store
+        .create_oauth_access_token(
+            &format!("owner-{suffix}"),
+            application.id,
+            "openid",
+            Some(3600),
+            true,
+        )
+        .await
+        .unwrap();
+    store
+        .set_kv(&format!("snapshot:flag-{suffix}"), "snapshot-value")
+        .await
+        .unwrap();
+    store
+        .set_secret("bookshelf", "secret_access_key", "snapshot-secret")
+        .await
+        .unwrap();
+    store.set_maintenance_enabled(true).await.unwrap();
+    let (empty_sandbox, _) = store.create_sandbox(&org.id, &[]).await.unwrap();
+    sqlx::query("INSERT INTO telemetry (property, event_timestamp) VALUES ($1, $2)")
+        .bind(format!("snapshot-{suffix}"))
+        .bind("2026-10-25T00:00:00Z")
+        .execute(store.pool())
+        .await
+        .unwrap();
 
     let before = store.export_snapshot().await.unwrap();
+    assert!(before
+        .kvpair
+        .iter()
+        .any(|row| row.key == format!("snapshot:flag-{suffix}")
+            && row.value.as_deref() == Some("snapshot-value")));
+    assert!(before
+        .oauth_access_grants
+        .iter()
+        .any(|row| row.token == grant.token));
+    assert!(before
+        .oauth_access_tokens
+        .iter()
+        .any(|row| row.token == access_token.token));
+    assert!(before
+        .sandboxes
+        .iter()
+        .any(|row| row.sandbox_id == empty_sandbox));
+    assert!(before
+        .telemetry
+        .iter()
+        .any(|row| row.property == format!("snapshot-{suffix}")));
+
+    // A safe export is a separate view: it must not disturb the store and it
+    // must omit every secret-bearing row/value.
+    let safe = store.export_snapshot_with_options(false).await.unwrap();
+    assert!(safe.kvpair.is_empty());
+    assert!(safe.oauth_access_grants.is_empty());
+    assert!(safe.oauth_access_tokens.is_empty());
+    assert!(safe
+        .oauth_applications
+        .iter()
+        .filter(|row| row.id == application.id)
+        .all(|row| row.secret.is_empty()));
+    assert!(safe
+        .sandboxes
+        .iter()
+        .any(|row| row.sandbox_id == empty_sandbox));
+    assert!(safe
+        .telemetry
+        .iter()
+        .any(|row| row.property == format!("snapshot-{suffix}")));
     assert!(before.orgs.iter().any(|row| row.name == org_name));
     let exported_node = before
         .nodes
@@ -257,12 +334,52 @@ async fn snapshot_round_trips_every_seeded_collection() {
     target.import_snapshot(&before).await.unwrap();
     let target_snapshot = target.export_snapshot().await.unwrap();
     assert_eq!(before, target_snapshot);
+    assert_eq!(
+        target
+            .get_secret("bookshelf", "secret_access_key")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("snapshot-secret")
+    );
+    assert!(target.maintenance_enabled().await.unwrap());
+    assert_eq!(
+        target
+            .find_oauth_access_grant(&grant.token)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        grant.id
+    );
+    assert_eq!(
+        target
+            .find_oauth_access_token(&access_token.token)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        access_token.id
+    );
+    assert!(target
+        .sandbox_exists(&org.id, &empty_sandbox)
+        .await
+        .unwrap());
+    let telemetry_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM telemetry WHERE property = $1")
+            .bind(format!("snapshot-{suffix}"))
+            .fetch_one(target.pool())
+            .await
+            .unwrap();
+    assert_eq!(telemetry_count, 1);
 
     for table in [
         "cookbooks",
         "cookbook_artifacts",
         "cookbook_artifact_versions",
         "oauth_applications",
+        "oauth_access_grants",
+        "oauth_access_tokens",
     ] {
         let max: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT COALESCE(MAX(id), 0) FROM {table}"
@@ -297,6 +414,98 @@ async fn snapshot_round_trips_every_seeded_collection() {
         .await
         .unwrap();
     assert!(next.id > application.id);
+    drop(target);
+    drop_scratch_database(&url, &scratch_name).await;
+    // Maintenance mode is global to the shared test database; restore it so
+    // later HTTP runtime/CLI suites do not see 503 responses.
+    store.set_maintenance_enabled(false).await.unwrap();
+}
+
+#[tokio::test]
+async fn safe_snapshot_import_restores_metadata_without_secrets() {
+    let Some(url) = test_url() else {
+        eprintln!(
+            "SKIP: MICROWAVE_TEST_POSTGRES_URL is not set; start a disposable \
+             PostgreSQL with scripts/run-postgres-tests.sh"
+        );
+        return;
+    };
+    let store = PostgresStore::connect(&url)
+        .await
+        .expect("connect to configured PostgreSQL");
+    let suffix = suffix();
+    let org = store
+        .create_org(&format!("safe-org-{suffix}"), "Safe Org")
+        .await
+        .unwrap();
+    let application = store
+        .create_oauth_application(
+            &format!("safe-app-{suffix}"),
+            "https://example.com/safe",
+            "",
+            true,
+        )
+        .await
+        .unwrap();
+    let grant = store
+        .create_oauth_access_grant(
+            &format!("safe-owner-{suffix}"),
+            application.id,
+            "https://example.com/safe",
+            "",
+            300,
+        )
+        .await
+        .unwrap();
+    let access_token = store
+        .create_oauth_access_token(
+            &format!("safe-owner-{suffix}"),
+            application.id,
+            "",
+            Some(300),
+            false,
+        )
+        .await
+        .unwrap();
+    store
+        .set_secret("bookshelf", "secret_access_key", "safe-secret")
+        .await
+        .unwrap();
+    let (sandbox, _) = store.create_sandbox(&org.id, &[]).await.unwrap();
+
+    let snapshot = store.export_snapshot_with_options(false).await.unwrap();
+    let (scratch_name, scratch_url) = create_scratch_database(&url, &suffix).await;
+    let target = PostgresStore::connect(&scratch_url)
+        .await
+        .expect("connect to safe snapshot target");
+    target.import_snapshot(&snapshot).await.unwrap();
+
+    assert!(target
+        .get_secret("bookshelf", "secret_access_key")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(target
+        .find_oauth_access_grant(&grant.token)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(target
+        .find_oauth_access_token(&access_token.token)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        target
+            .find_oauth_application(application.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .secret,
+        ""
+    );
+    assert!(target.sandbox_exists(&org.id, &sandbox).await.unwrap());
+
     drop(target);
     drop_scratch_database(&url, &scratch_name).await;
 }

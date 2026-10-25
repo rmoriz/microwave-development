@@ -6,15 +6,20 @@
 //!
 //! ```text
 //! microwave-migrate export --data-dir ./data --output snapshot.json
+//! microwave-migrate export --data-dir ./data --archive snapshot.tar.gz
 //! microwave-migrate export --database-url postgres://db/microwave --output snapshot.json
 //! microwave-migrate import --data-dir ./new-data --input snapshot.json
+//! microwave-migrate import --data-dir ./new-data --archive snapshot.tar.gz
 //! microwave-migrate import --database-url postgres://db/microwave --input snapshot.json
 //! microwave-migrate from-api --url https://chef.example.com \
 //!     --client-name migrator --key migrator.pem --output snapshot.json
 //! ```
 //!
-//! The live crawler signs every request with `microwave-crypto::sign_request`
-//! and writes the same snapshot envelope as a local export.
+//! Default exports omit secret values (`kvpair`, OAuth grants/tokens, and OAuth
+//! application secrets); pass `--include-secrets` to include them. Archives
+//! add a local `bookshelf/` tree to the snapshot. The live crawler signs every
+//! request with `microwave_crypto::sign_request` and writes the same snapshot
+//! envelope as a local export.
 
 use chrono::{SecondsFormat, Utc};
 pub use microwave_store::Compression;
@@ -26,8 +31,15 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use url::Url;
 
+mod archive;
 mod from_api;
 
+pub use archive::{
+    export_archive, export_archive_postgres, export_archive_postgres_with_options,
+    export_archive_with_options, import_archive, import_archive_postgres,
+    import_archive_postgres_with_compression, import_archive_with_compression,
+    ARCHIVE_BOOKSHELF_PREFIX, ARCHIVE_SNAPSHOT_ENTRY,
+};
 pub use from_api::{crawl_from_api, from_api_with_options, read_private_key, FromApiOptions};
 
 /// Value of the snapshot envelope's `format` field.
@@ -44,6 +56,12 @@ pub struct Snapshot {
     pub version: u32,
     pub generated_at: String,
     pub source: SnapshotSource,
+    /// Whether this document includes `kvpair`, OAuth grants/tokens, and OAuth
+    /// application secrets. Default exports set this to `false` and redact the
+    /// values. Old snapshots omit the field and are treated as `false`; their
+    /// data still imports unchanged.
+    #[serde(default)]
+    pub secrets_included: bool,
     pub data: StoreSnapshot,
 }
 
@@ -120,21 +138,47 @@ pub enum MigrateError {
     Confirmation(String),
     #[error("invalid PostgreSQL database URL")]
     InvalidDatabaseUrl,
+    #[error("invalid migration archive: {0}")]
+    Archive(String),
 }
 
 /// Export the store under `data_dir` to a JSON snapshot at `output`.
+///
+/// This default form omits secret-bearing values. Use
+/// [`export_with_options`] with `include_secrets = true` only when the output
+/// will be handled as a credential.
 pub fn export(data_dir: &Path, output: &Path) -> Result<(), MigrateError> {
-    export_database(&data_dir.join(DATABASE_FILE), output)
+    export_with_options(data_dir, output, false)
+}
+
+/// Export the store under `data_dir`, optionally including secrets.
+pub fn export_with_options(
+    data_dir: &Path,
+    output: &Path,
+    include_secrets: bool,
+) -> Result<(), MigrateError> {
+    export_database_with_options(&data_dir.join(DATABASE_FILE), output, include_secrets)
 }
 
 /// Export a specific SQLite database to a JSON snapshot.
+///
+/// This default form omits secret-bearing values.
 pub fn export_database(database: &Path, output: &Path) -> Result<(), MigrateError> {
+    export_database_with_options(database, output, false)
+}
+
+/// Export a specific SQLite database, optionally including secrets.
+pub fn export_database_with_options(
+    database: &Path,
+    output: &Path,
+    include_secrets: bool,
+) -> Result<(), MigrateError> {
     if !database.is_file() {
         return Err(MigrateError::MissingDatabase(database.to_path_buf()));
     }
 
     let store = SqliteStore::open_read_only(database)?;
-    let data = store.export_snapshot()?;
+    let data = store.export_snapshot_with_options(include_secrets)?;
     let snapshot = Snapshot {
         format: SNAPSHOT_FORMAT.to_string(),
         version: SNAPSHOT_VERSION,
@@ -144,6 +188,7 @@ pub fn export_database(database: &Path, output: &Path) -> Result<(), MigrateErro
             url: None,
             data_dir: Some(data_dir_of(database)),
         },
+        secrets_included: include_secrets,
         data,
     };
     write_snapshot(&snapshot, output)
@@ -201,10 +246,19 @@ pub fn import_database_with_compression(
 /// call it from inside an existing Tokio runtime; use the async
 /// [`PostgresStore`] methods directly in that case.
 pub fn export_postgres(database_url: &str, output: &Path) -> Result<(), MigrateError> {
+    export_postgres_with_options(database_url, output, false)
+}
+
+/// Export a PostgreSQL metadata store, optionally including secrets.
+pub fn export_postgres_with_options(
+    database_url: &str,
+    output: &Path,
+    include_secrets: bool,
+) -> Result<(), MigrateError> {
     validate_postgres_url(database_url)?;
     let runtime = runtime()?;
     let store = runtime.block_on(PostgresStore::connect_existing(database_url))?;
-    let data = runtime.block_on(store.export_snapshot())?;
+    let data = runtime.block_on(store.export_snapshot_with_options(include_secrets))?;
     let snapshot = Snapshot {
         format: SNAPSHOT_FORMAT.to_string(),
         version: SNAPSHOT_VERSION,
@@ -214,6 +268,7 @@ pub fn export_postgres(database_url: &str, output: &Path) -> Result<(), MigrateE
             url: None,
             data_dir: None,
         },
+        secrets_included: include_secrets,
         data,
     };
     write_snapshot(&snapshot, output)
@@ -440,7 +495,7 @@ pub fn write_snapshot(snapshot: &Snapshot, output: &Path) -> Result<(), MigrateE
     result
 }
 
-fn temporary_path(output: &Path) -> PathBuf {
+pub(crate) fn temporary_path(output: &Path) -> PathBuf {
     let name = output
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
