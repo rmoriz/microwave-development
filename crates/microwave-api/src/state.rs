@@ -30,7 +30,7 @@ impl AppState {
         object_store: Arc<dyn ObjectStore + Send + Sync>,
     ) -> Result<Self, SearchError> {
         let search = build_search_backend(&config.search, store.clone())?;
-        let http_client = build_http_client(&config);
+        let http_client = build_http_client(&config)?;
         Ok(Self {
             store,
             sqlite: None,
@@ -52,7 +52,7 @@ impl AppState {
         object_store: Arc<dyn ObjectStore + Send + Sync>,
     ) -> Result<Self, SearchError> {
         let search = build_search_backend(&config.search, store.clone())?;
-        let http_client = build_http_client(&config);
+        let http_client = build_http_client(&config)?;
         Ok(Self {
             store: store.clone(),
             sqlite: Some(store),
@@ -76,7 +76,7 @@ impl AppState {
     }
 }
 
-fn build_http_client(config: &Config) -> reqwest::Client {
+fn build_http_client(config: &Config) -> Result<reqwest::Client, SearchError> {
     let request_timeout = Duration::from_millis(config.data_collector.timeout.max(1));
     reqwest::Client::builder()
         .connect_timeout(request_timeout.min(Duration::from_secs(10)))
@@ -87,9 +87,8 @@ fn build_http_client(config: &Config) -> reqwest::Client {
         // following them, matching nginx's proxy behavior.
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .unwrap_or_else(|error| {
-            tracing::error!(%error, "failed to build shared HTTP client; using defaults");
-            reqwest::Client::new()
+        .map_err(|error| {
+            SearchError::Configuration(format!("failed to build shared HTTP client: {error}"))
         })
 }
 
@@ -110,5 +109,16 @@ impl microwave_oauth::ProvidesOAuthState for AppState {
             store: self.store.clone(),
             config: self.config.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_http_client;
+    use microwave_config::Config;
+
+    #[test]
+    fn builds_a_shared_http_client_from_defaults() {
+        assert!(build_http_client(&Config::default()).is_ok());
     }
 }

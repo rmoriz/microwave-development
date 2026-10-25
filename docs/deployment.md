@@ -609,9 +609,8 @@ not hold database locks across the outbound request.
 The optional `required_recipe` endpoint is off by default. Enabling it requires
 `required_recipe.path`; the file is read on each request and served as plain
 text. The file must be a regular file no larger than 1 MiB, must not be a
-symlink, must not be group- or world-writable, and must be owned by root when
-the server runs as root (otherwise by the server's effective user). The
-feature is independent of telemetry.
+symlink, must not be group- or world-writable, and must be owned by root or by
+the server's effective user. The feature is independent of telemetry.
 
 Telemetry is off by default and there is no outbound sender. The `telemetry`
 table exists in both SQLite and PostgreSQL for schema compatibility, and the

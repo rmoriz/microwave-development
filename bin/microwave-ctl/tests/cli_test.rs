@@ -850,6 +850,107 @@ fn check_config_rejects_required_recipe_without_a_path() {
 }
 
 #[test]
+fn check_config_rejects_missing_required_recipe_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("microwave.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[required_recipe]\nenabled = true\npath = {:?}\n",
+            dir.path().join("missing.rb")
+        ),
+    )
+    .unwrap();
+
+    let output = ctl(dir.path())
+        .args(["--config", config.to_str().unwrap(), "check-config"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("required_recipe.path"));
+    assert!(stderr(&output).contains("cannot read file"));
+}
+
+#[cfg(unix)]
+#[test]
+fn check_config_rejects_group_or_world_writable_required_recipe_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let recipe = dir.path().join("required_recipe.rb");
+    std::fs::write(&recipe, "# recipe\n").unwrap();
+    std::fs::set_permissions(&recipe, std::fs::Permissions::from_mode(0o666)).unwrap();
+    let config = dir.path().join("microwave.toml");
+    std::fs::write(
+        &config,
+        format!("[required_recipe]\nenabled = true\npath = {:?}\n", recipe),
+    )
+    .unwrap();
+
+    let output = ctl(dir.path())
+        .args(["--config", config.to_str().unwrap(), "check-config"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("group- or world-writable"));
+}
+
+#[test]
+fn check_config_accepts_a_safe_required_recipe_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let recipe = dir.path().join("required_recipe.rb");
+    std::fs::write(&recipe, "# recipe\n").unwrap();
+    let config = dir.path().join("microwave.toml");
+    std::fs::write(
+        &config,
+        format!("[required_recipe]\nenabled = true\npath = {:?}\n", recipe),
+    )
+    .unwrap();
+
+    let output = ctl(dir.path())
+        .args(["--config", config.to_str().unwrap(), "check-config"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(stdout(&output).contains("required_recipe.path"));
+}
+
+#[test]
+fn check_config_redacts_data_collector_userinfo() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("microwave.toml");
+    std::fs::write(
+        &config,
+        "[data_collector]\nroot_url = \"https://user:supersecret@automate.example.com/ingest\"\n",
+    )
+    .unwrap();
+
+    let output = ctl(dir.path())
+        .args(["--config", config.to_str().unwrap(), "check-config"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let text = stdout(&output);
+    assert!(text.contains("https://automate.example.com"));
+    assert!(!text.contains("supersecret"));
+    assert!(!text.contains("user:"));
+}
+
+#[test]
+fn check_config_rejects_hostless_data_collector_urls() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("microwave.toml");
+    std::fs::write(&config, "[data_collector]\nroot_url = \"http://?foo\"\n").unwrap();
+
+    let output = ctl(dir.path())
+        .args(["--config", config.to_str().unwrap(), "check-config"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("data_collector.root_url"));
+}
+
+#[test]
 fn check_config_accepts_a_postgres_url_without_connecting() {
     let dir = tempfile::tempdir().unwrap();
     let output = ctl(dir.path())

@@ -137,17 +137,13 @@ fn validate_permissions(metadata: &std::fs::Metadata) -> Result<(), String> {
         }
 
         let owner = metadata.uid();
-        // Upstream requires a root-owned file. When the server itself runs as
-        // an unprivileged service account, require that account instead of
-        // forcing every installation to run as root.
         let effective_uid = unsafe { libc::geteuid() };
-        if effective_uid == 0 {
-            if owner != 0 {
-                return Err("required recipe must be owned by root".to_string());
-            }
-        } else if owner != effective_uid {
+        // Upstream expects root ownership. A dedicated service account may
+        // also own the file, but a root-owned recipe remains valid even when
+        // the server runs as an unprivileged UID (common in containers).
+        if !ownership_allowed(owner, effective_uid) {
             return Err(format!(
-                "required recipe must be owned by the server user (uid {effective_uid})"
+                "required recipe must be owned by root or the server user (uid {effective_uid}), got uid {owner}"
             ));
         }
     }
@@ -156,4 +152,23 @@ fn validate_permissions(metadata: &std::fs::Metadata) -> Result<(), String> {
         let _ = metadata;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn ownership_allowed(owner: u32, effective_uid: u32) -> bool {
+    owner == 0 || owner == effective_uid
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn root_or_service_user_ownership_is_allowed() {
+        use super::ownership_allowed;
+
+        assert!(ownership_allowed(0, 0));
+        assert!(ownership_allowed(0, 10_001));
+        assert!(ownership_allowed(10_001, 10_001));
+        assert!(!ownership_allowed(10_002, 10_001));
+    }
 }

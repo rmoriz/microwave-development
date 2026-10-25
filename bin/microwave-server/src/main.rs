@@ -141,6 +141,21 @@ fn redact_config_for_output(config: &mut Config) {
         .token
         .as_ref()
         .map(|_| "***".to_string());
+    config.object_store.secret = config
+        .object_store
+        .secret
+        .as_ref()
+        .map(|_| "***".to_string());
+    config.object_store.access_key = config
+        .object_store
+        .access_key
+        .as_ref()
+        .map(|_| "***".to_string());
+    config.object_store.secret_key = config
+        .object_store
+        .secret_key
+        .as_ref()
+        .map(|_| "***".to_string());
 }
 
 /// Hide the password in a database URL before printing configuration.
@@ -210,11 +225,14 @@ mod tests {
     use microwave_config::Config;
 
     #[test]
-    fn redacts_database_and_data_collector_credentials() {
+    fn redacts_database_data_collector_and_object_store_credentials() {
         let mut config = Config::default();
         config.database.url =
             Some("postgres://microwave:s3cr3t@db.example.com/microwave".to_string());
         config.data_collector.token = Some("collector-token".to_string());
+        config.object_store.secret = Some("bookshelf-secret".to_string());
+        config.object_store.access_key = Some("access-key".to_string());
+        config.object_store.secret_key = Some("secret-key".to_string());
 
         redact_config_for_output(&mut config);
 
@@ -223,6 +241,9 @@ mod tests {
             Some("postgres://microwave:***@db.example.com/microwave")
         );
         assert_eq!(config.data_collector.token.as_deref(), Some("***"));
+        assert_eq!(config.object_store.secret.as_deref(), Some("***"));
+        assert_eq!(config.object_store.access_key.as_deref(), Some("***"));
+        assert_eq!(config.object_store.secret_key.as_deref(), Some("***"));
     }
 
     #[test]

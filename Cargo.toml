@@ -50,6 +50,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 subtle = "2"
 libc = "0.2"
+url = "2"
 num-bigint-dig = "0.8"
 tempfile = "3"
 assert_cmd = "2"

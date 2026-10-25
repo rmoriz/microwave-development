@@ -2,6 +2,10 @@ use crate::{context::Context, CtlError};
 use microwave_config::{DatabaseDriver, ObjectStoreBackend, SearchBackend};
 use microwave_store::SqliteStore;
 use std::net::SocketAddr;
+use std::path::Path;
+use url::Url;
+
+const MAX_REQUIRED_RECIPE_BYTES: u64 = 1_048_576;
 
 /// Load the resolved configuration and validate the values required to serve
 /// requests. External backends are checked for the credentials they need.
@@ -113,12 +117,13 @@ pub fn check_config(context: &Context) -> Result<(), CtlError> {
     }
 
     if let Some(root_url) = non_empty(config.data_collector.root_url.as_deref()) {
-        if !is_http_url(root_url) {
-            problems.push(format!(
-                "data_collector.root_url must be an http:// or https:// URL with a host, got {root_url}"
-            ));
-        } else {
-            checks.push(format!("data_collector.root_url {root_url}"));
+        match parse_http_url(root_url) {
+            Some(url) => checks.push(format!("data_collector.root_url {}", redacted_url(&url))),
+            // Never echo the raw URL: it may contain userinfo/passwords.
+            None => problems.push(
+                "data_collector.root_url must be an http:// or https:// URL with a host"
+                    .to_string(),
+            ),
         }
     }
     if config.data_collector.timeout == 0 {
@@ -131,7 +136,12 @@ pub fn check_config(context: &Context) -> Result<(), CtlError> {
     }
     if config.required_recipe.enabled {
         match non_empty(config.required_recipe.path.as_deref()) {
-            Some(path) => checks.push(format!("required_recipe.path {path}")),
+            Some(path) => match validate_required_recipe_path(Path::new(path)) {
+                Ok(()) => checks.push(format!("required_recipe.path {path}")),
+                Err(reason) => {
+                    problems.push(format!("required_recipe.path {path}: {reason}"));
+                }
+            },
             None => problems.push(
                 "required_recipe.path must be set when required_recipe.enabled is true".to_string(),
             ),
@@ -201,18 +211,45 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
-fn is_http_url(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    let Some(rest) = lower
-        .strip_prefix("http://")
-        .or_else(|| lower.strip_prefix("https://"))
-    else {
-        return false;
-    };
-    !rest.is_empty()
-        && !rest.starts_with('/')
-        && !rest.chars().any(char::is_whitespace)
-        && !rest.starts_with(':')
+fn parse_http_url(value: &str) -> Option<Url> {
+    let url = Url::parse(value).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    url.host_str().filter(|host| !host.is_empty())?;
+    Some(url)
+}
+
+fn redacted_url(url: &Url) -> String {
+    let host = url.host_str().unwrap_or_default();
+    match url.port() {
+        Some(port) => format!("{}://{host}:{port}", url.scheme()),
+        None => format!("{}://{host}", url.scheme()),
+    }
+}
+
+fn validate_required_recipe_path(path: &Path) -> Result<(), String> {
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|error| format!("cannot read file: {error}"))?;
+    if metadata.file_type().is_symlink() {
+        return Err("must not be a symlink".to_string());
+    }
+    if !metadata.is_file() {
+        return Err("must be a regular file".to_string());
+    }
+    if metadata.len() > MAX_REQUIRED_RECIPE_BYTES {
+        return Err(format!(
+            "must be no larger than {MAX_REQUIRED_RECIPE_BYTES} bytes"
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.mode() & 0o022 != 0 {
+            return Err("must not be group- or world-writable".to_string());
+        }
+    }
+    Ok(())
 }
 
 fn stored_secret(context: &Context, group: &str, name: &str) -> Option<String> {
