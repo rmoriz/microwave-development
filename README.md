@@ -56,6 +56,31 @@ see [`docs/deployment.md`](docs/deployment.md#tls-listener).
 
 The full workspace suite is green.
 
+### Dual-backend store matrix
+
+[`crates/microwave-store/tests/dual_backend.rs`](crates/microwave-store/tests/dual_backend.rs)
+contains one async suite for every repository domain and runs it against both
+backends through `MetadataStore`:
+
+- identity: orgs, users (profiles/patches), clients, actor keys, principals
+- authorization: groups/containers, nested and global groups, ACL replacement,
+  recursive permission checks, org read-access ACEs
+- objects: nodes, roles, environments, data bags and bag items
+- cookbooks: sandboxes, checksum commit/purge, version create/find/update/delete
+- policies: revisions, policy groups, associations
+- artifacts: artifact/version create/find/delete and checksum purge
+- membership: add/remove, invitations accept/reject/delete, `users`/`admins`
+- OAuth: applications, grants, access/refresh tokens, ID sessions, password resets
+- KV/secrets: raw KV, maintenance flag, secret bootstrap
+
+SQLite always runs in-memory. The PostgreSQL half runs when
+`MICROWAVE_TEST_POSTGRES_URL` is set and is skipped only when the variable is
+unset; a configured database that cannot connect or migrate fails the test.
+`scripts/run-postgres-tests.sh` exports the URL and runs the matrix as part of
+the PostgreSQL gate. Names and checksums are unique per run, and org-scoped
+fixtures are deleted afterwards, so the suite can share a database with the
+existing PostgreSQL tests and run in parallel.
+
 ## Deployment
 
 Docker, Docker Compose, systemd, backup/restore, migration, and the supported
@@ -79,7 +104,7 @@ Packaging artifacts: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
 - Keep the full extended `oc-chef-pedant` suite green in CI. All eleven extended tags pass; the remaining 7 pending examples are Pedant's own skips. The core suite is also near-green, with only the known plain-HTTP header artifact.
 - PostgreSQL operational tooling. The HTTP runtime, OAuth, authorization, search, bootstrap, `microwave-ctl`, `microwave-migrate`, and backup/restore run against PostgreSQL. PostgreSQL backups use `pg_dump`/`pg_restore` and require the matching client tools on the host. Remaining gaps are the snapshot's intentional omission of `kvpair` secrets, no multi-replica HA load validation, and no automated failover.
 - The remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup format).
-- TLS certificate rotation/reload without a restart and the full dual-backend test matrix.
+- TLS certificate rotation/reload without a restart. The store-level dual-backend matrix now covers all eleven repository traits; HTTP-route parity continues to rely on the existing SQLite API suites plus the PostgreSQL runtime and HTTP coverage tests.
 - OpenSearch 3.x evaluation and multi-node HA/performance validation.
 - Outbound telemetry export. The `telemetry` table (SQLite and PostgreSQL) and `telemetry.*` / `MW_TELEMETRY__*` configuration exist, but the sender is intentionally not implemented and defaults to disabled: Microwave never phones home. Operators can enable the flag for forward compatibility, but no background worker or external endpoint is contacted.
 - Optional data-collector mutation action notifications (`oc_chef_action`). The `POST /organizations/:org/data-collector` forwarding path itself is implemented.

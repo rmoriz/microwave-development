@@ -1137,7 +1137,10 @@ async fn manages_membership_and_invitations() {
         .iter()
         .find(|entry| entry.permission == Permission::Update)
         .expect("update entry");
-    assert_eq!(update.users, vec![other.username.clone()]);
+    // The unrelated grant survives; the user's own default ACE also remains,
+    // matching the SQLite backend's user-creation ACL.
+    assert!(update.users.contains(&other.username));
+    assert!(update.users.contains(&user.username));
 
     // Accept an invitation: association, users group and read ACE.
     let invite = store

@@ -69,20 +69,50 @@ owns the pool, and call `migrate()` explicitly.
 ## Tests
 
 ```bash
-# Skip cleanly when no database is configured:
+# Crate integration tests; skip cleanly when no database is configured:
 cargo test -p microwave-store-postgres
 
-# Start a disposable PostgreSQL container, run migrations and tests:
+# Cross-backend matrix: SQLite always, PostgreSQL when the URL is set:
+cargo test -p microwave-store --test dual_backend
+
+# Start a disposable PostgreSQL container and run the whole PostgreSQL gate
+# (crate integration tests, dual-backend matrix, HTTP runtime/coverage, CLI,
+# and snapshot import/export):
 scripts/run-postgres-tests.sh
 ```
 
-The tests skip with an explicit `SKIP:` message when
-`MICROWAVE_TEST_POSTGRES_URL` is unset or unreachable. The script also skips
-when Docker or its daemon is unavailable, so `cargo test --workspace` remains
-green on machines without Docker.
+`MICROWAVE_TEST_POSTGRES_URL` selects the database. Both the crate tests and
+the matrix skip with an explicit `SKIP:` message when it is unset; when it is
+set, a connection or migration failure is a hard test failure. The script also
+skips only when Docker or its daemon is unavailable, so
+`cargo test --workspace` remains green on machines without Docker.
 
-Each test uses a unique org/name suffix so the suite can run in parallel
-against one database.
+The dual-backend matrix lives in
+[`../microwave-store/tests/dual_backend.rs`](../microwave-store/tests/dual_backend.rs)
+and covers identity, authz/ACLs, objects, sandboxes/cookbooks, policies,
+artifacts, membership/invitations, OAuth, and KV/secrets. Names, checksums and
+organizations are unique per run and org-scoped fixtures are deleted, so the
+matrix and the crate tests can run in parallel against one database.
+
+Because every `#[tokio::test]` owns its runtime, the matrix cannot share one
+pool across tests. It applies the embedded schema once per test binary (in a
+dedicated thread) and then opens a fresh pool per test with
+`connect_existing`. This avoids running migration DDL concurrently with suite
+DML, which PostgreSQL can deadlock on even though the migration itself is
+advisory-locked.
+
+### Parity fixes found by the matrix
+
+- `create_user_with_profile` now adds the default self grant and the
+  `server-admins` group ACL entries (all permissions except `grant`), and adds
+  admin users to that group, matching SQLite. Previously PostgreSQL users had
+  no self ACL and no server-admin default, so authorization results differed by
+  backend.
+- `create_client_with_acl` now grants a non-validator client all permissions on
+  itself, matching SQLite.
+- `ensure_global_group` is race-safe: concurrent first-user/first-org startup
+  inserts `ON CONFLICT (name) DO NOTHING`, rolls back the losing authz entity,
+  and returns the winning group instead of a spurious conflict.
 
 ## Runtime integration
 
