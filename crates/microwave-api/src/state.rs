@@ -1,3 +1,4 @@
+use crate::health::HealthCache;
 use crate::metrics::Metrics;
 use crate::search::{build_search_backend, SearchBackend, SearchError};
 use microwave_config::Config;
@@ -22,6 +23,8 @@ pub struct AppState {
     pub metrics: Arc<Metrics>,
     /// Pre-generated 2048-bit RSA keypairs used by API key creation paths.
     pub keygen: Arc<KeygenCache>,
+    /// Short-lived dependency probe results served by `GET /_status`.
+    pub(crate) health: Arc<HealthCache>,
     /// Shared connection pool for outbound compatibility forwards. Per-request
     /// deadlines are applied by each caller so the pool can be reused safely.
     pub(crate) http_client: reqwest::Client,
@@ -55,6 +58,7 @@ impl AppState {
             metrics: Arc::new(Metrics::new()),
             keygen,
             actions,
+            health: Arc::new(HealthCache::new()),
             http_client,
             compliance_client,
         })
@@ -85,6 +89,7 @@ impl AppState {
             search,
             metrics: Arc::new(Metrics::new()),
             keygen,
+            health: Arc::new(HealthCache::new()),
             http_client,
             compliance_client,
         })

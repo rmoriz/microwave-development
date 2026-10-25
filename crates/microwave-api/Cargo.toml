@@ -31,6 +31,8 @@ uuid.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
+microwave-store = { path = "../microwave-store", features = ["test-support"] }
 microwave-store-postgres = { path = "../microwave-store-postgres" }
 tempfile.workspace = true
 tokio.workspace = true

@@ -18,6 +18,9 @@ const ALGORITHM: &str = "AWS4-HMAC-SHA256";
 const SERVICE: &str = "s3";
 const CONTENT_TYPE: &str = "application/x-binary";
 
+/// Maximum time the `/_status` object-store probe may spend on the wire.
+const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_millis(1_500);
+
 /// Connection settings for an S3-compatible backend.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct S3Config {
@@ -238,6 +241,37 @@ impl S3ObjectStore {
         }
     }
 
+    fn bucket_target(&self) -> Target {
+        let endpoint = self.config.endpoint.trim_end_matches('/');
+        let (scheme, rest) = endpoint.split_once("://").unwrap_or(("http", endpoint));
+        let (authority, base_path) = match rest.find('/') {
+            Some(index) => (&rest[..index], &rest[index..]),
+            None => (rest, ""),
+        };
+        let encoded_bucket = uri_encode(&self.config.bucket, true);
+
+        if self.config.path_style {
+            let canonical_uri = format!("{base_path}/{encoded_bucket}");
+            Target {
+                host: authority.to_string(),
+                url: format!("{scheme}://{authority}{canonical_uri}"),
+                canonical_uri,
+            }
+        } else {
+            let host = format!("{}.{}", self.config.bucket, authority);
+            let canonical_uri = if base_path.is_empty() {
+                "/".to_string()
+            } else {
+                base_path.to_string()
+            };
+            Target {
+                url: format!("{scheme}://{host}{canonical_uri}"),
+                canonical_uri,
+                host,
+            }
+        }
+    }
+
     fn execute(
         &self,
         method: &str,
@@ -324,6 +358,30 @@ impl ObjectStore for S3ObjectStore {
 
     fn presigned_url(&self, method: &str, organization_id: &str, checksum: &str) -> String {
         self.presigned_url_at(method, organization_id, checksum, Utc::now())
+    }
+
+    fn health_check(&self) -> Result<(), ObjectStoreError> {
+        let target = self.bucket_target();
+        let headers = self.request_headers("HEAD", &target, &[], Utc::now());
+        let response = with_headers(
+            self.agent
+                .head(&target.url)
+                .config()
+                .timeout_global(Some(HEALTH_CHECK_TIMEOUT))
+                .build(),
+            &headers,
+        )
+        .call()
+        .map_err(|error| ObjectStoreError::Http(error.to_string()))?;
+
+        let status = response.status().as_u16();
+        if status == 404 {
+            return Err(ObjectStoreError::NotFound);
+        }
+        if !(200..300).contains(&status) {
+            return Err(ObjectStoreError::HttpStatus(status));
+        }
+        Ok(())
     }
 }
 
@@ -520,5 +578,71 @@ mod tests {
         assert_eq!(uri_encode("a b/c", false), "a%20b/c");
         assert_eq!(uri_encode("a/b", true), "a%2Fb");
         assert_eq!(uri_encode("a-_.~", true), "a-_.~");
+    }
+
+    /// Keep local-network health tests from competing under parallel CI runs.
+    static NETWORK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    type BucketRequest = (String, Option<String>);
+
+    async fn bucket_server(
+        status: u16,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<BucketRequest>>>) {
+        use axum::http::StatusCode;
+        use axum::Router;
+
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        let app = Router::new().fallback(move |request: axum::extract::Request| {
+            let seen = seen.clone();
+            async move {
+                let line = format!("{} {}", request.method(), request.uri().path());
+                let authorization = request
+                    .headers()
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_string);
+                seen.lock().unwrap().push((line, authorization));
+                StatusCode::from_u16(status).unwrap()
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{address}"), requests)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn health_check_heads_the_bucket_with_a_bounded_signed_request() {
+        let _network = NETWORK_TEST_LOCK.lock().await;
+        let (base_url, requests) = bucket_server(200).await;
+        let store =
+            S3ObjectStore::new(S3Config::new(base_url, "chef", "garage", "key", "secret")).unwrap();
+
+        store.health_check().unwrap();
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].0, "HEAD /chef");
+        let authorization = requests[0].1.as_deref().expect("signed request");
+        assert!(
+            authorization.starts_with("AWS4-HMAC-SHA256 Credential=key/"),
+            "unexpected authorization header: {authorization}"
+        );
+        assert!(authorization.contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn health_check_reports_bucket_failures() {
+        let _network = NETWORK_TEST_LOCK.lock().await;
+        let (base_url, _requests) = bucket_server(503).await;
+        let store =
+            S3ObjectStore::new(S3Config::new(base_url, "chef", "garage", "key", "secret")).unwrap();
+
+        match store.health_check() {
+            Err(ObjectStoreError::HttpStatus(503)) => {}
+            other => panic!("unexpected result: {other:?}"),
+        }
     }
 }

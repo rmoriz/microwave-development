@@ -8,9 +8,9 @@
 use crate::artifacts::{StoredCookbookArtifact, StoredCookbookArtifactVersion};
 use crate::authz::{Acl, AclEntry, Container, Group, GroupMembers, Permission};
 use crate::backend::{
-    ArtifactRepository, AuthzRepository, CookbookRepository, IdentityRepository, KvRepository,
-    MembershipRepository, OAuthRepository, ObjectRepository, PolicyRepository, SandboxRepository,
-    SecretsRepository,
+    ArtifactRepository, AuthzRepository, CookbookRepository, HealthRepository, IdentityRepository,
+    KvRepository, MembershipRepository, OAuthRepository, ObjectRepository, PolicyRepository,
+    SandboxRepository, SecretsRepository,
 };
 use crate::cookbooks::StoredCookbookVersion;
 use crate::identity::{ActorKey, ActorType, Client, Org, Principal, User, UserPatch, UserProfile};
@@ -23,6 +23,7 @@ use crate::policies::{
 use crate::sandboxes::SandboxCheck;
 use crate::sqlite::{SqliteStore, StoreError};
 use async_trait::async_trait;
+use std::time::{Duration, Instant};
 
 #[async_trait]
 impl IdentityRepository for SqliteStore {
@@ -1258,6 +1259,59 @@ impl KvRepository for SqliteStore {
     }
 }
 
+/// How long a health probe waits for a briefly busy SQLite connection.
+const HEALTH_LOCK_RETRY_BUDGET: Duration = Duration::from_millis(200);
+/// Backoff between `try_lock` attempts while the connection is busy.
+const HEALTH_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(2);
+
+#[async_trait]
+impl HealthRepository for SqliteStore {
+    async fn health_check(&self) -> Result<(), StoreError> {
+        // Acquire the connection lock and run the query on Tokio's blocking
+        // pool. The shared lock can be held by a long-running store call, so
+        // doing this inline would pin an async worker past the caller's
+        // timeout.
+        let connection = self.connection_handle();
+        let probe = tokio::task::spawn_blocking(move || {
+            let deadline = Instant::now() + HEALTH_LOCK_RETRY_BUDGET;
+            let connection = loop {
+                match connection.try_lock() {
+                    Ok(connection) => break connection,
+                    Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                        break poisoned.into_inner()
+                    }
+                    Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                        // A normal API request holds the connection only
+                        // briefly; retry within a small fixed budget instead of
+                        // declaring the database unhealthy on first contention.
+                        std::thread::sleep(HEALTH_LOCK_RETRY_INTERVAL);
+                    }
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        return Err(StoreError::Invalid(
+                            "SQLite health probe is busy; metadata connection lock is held".into(),
+                        ))
+                    }
+                }
+            };
+            let value: i64 = connection.query_row("SELECT 1", [], |row| row.get(0))?;
+            if value == 1 {
+                Ok(())
+            } else {
+                Err(StoreError::Invalid(format!(
+                    "SQLite health probe returned unexpected value {value}"
+                )))
+            }
+        })
+        .await;
+        match probe {
+            Ok(result) => result,
+            Err(error) => Err(StoreError::Invalid(format!(
+                "SQLite health probe task failed: {error}"
+            ))),
+        }
+    }
+}
+
 #[async_trait]
 impl SecretsRepository for SqliteStore {
     async fn get_secret(&self, group: &str, name: &str) -> Result<Option<String>, StoreError> {
@@ -1279,5 +1333,109 @@ impl SecretsRepository for SqliteStore {
 
     async fn remove_secret(&self, group: &str, name: &str) -> Result<(), StoreError> {
         self.remove_secret(group, name)
+    }
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::HealthRepository;
+    use crate::SqliteStore;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn health_check_runs_a_select_against_the_connection() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store.health_check().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn health_check_stays_healthy_during_normal_reads() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader = {
+            let store = Arc::clone(&store);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    store.table_names().unwrap();
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
+        };
+
+        for _ in 0..25 {
+            store.health_check().await.unwrap();
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        reader.join().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn health_check_reports_busy_without_waiting_for_the_connection_lock() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let held = store.connection_handle();
+        let (started_tx, started_rx) = mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _guard = held.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            started_tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+        });
+        started_rx.recv().unwrap();
+
+        let started = Instant::now();
+        let result = tokio::time::timeout(Duration::from_millis(600), store.health_check()).await;
+        let error = result
+            .expect("busy probe must return within its bounded retry budget")
+            .expect_err("held lock should report busy");
+        assert!(error.to_string().contains("busy"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the probe exceeded its bounded retry budget: {:?}",
+            started.elapsed()
+        );
+
+        holder.join().unwrap();
+        store.health_check().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn repeated_health_checks_do_not_queue_while_the_lock_is_held() {
+        use std::sync::Arc;
+
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let held = store.connection_handle();
+        let (started_tx, started_rx) = mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _guard = held.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            started_tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_secs(1));
+        });
+        started_rx.recv().unwrap();
+
+        let started = Instant::now();
+        let mut probes = tokio::task::JoinSet::new();
+        for _ in 0..50 {
+            let store = Arc::clone(&store);
+            probes.spawn(async move { store.health_check().await });
+        }
+        while let Some(result) = probes.join_next().await {
+            let error = result
+                .expect("probe task")
+                .expect_err("held lock should report busy");
+            assert!(error.to_string().contains("busy"), "{error}");
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "busy probes queued behind the held lock: {:?}",
+            started.elapsed()
+        );
+
+        holder.join().unwrap();
+        store.health_check().await.unwrap();
     }
 }

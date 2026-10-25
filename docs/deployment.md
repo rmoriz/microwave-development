@@ -972,7 +972,7 @@ time, and keep the legacy server read-only until the new one is verified.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `GET /_status` | none | `{"status":"pong","upstreams":[],"keygen":{"status":"ok","cached":3,"capacity":3,"workers":1,"worker_healthy":true,"worker_failures":0,"warm_up_failures":0,"generated_on_demand":0},"indexing":{"mode":"embedded"}}`. |
+| `GET /_status` | none | `{"status":"pong","upstreams":{"chef_sql":"pong","chef_index":"pong","bookshelf":"pong"},"upstream_details":{...},"keygen":{"status":"ok","cached":3,"capacity":3,"workers":1,"worker_healthy":true,"worker_failures":0,"warm_up_failures":0,"generated_on_demand":0},"indexing":{"mode":"embedded"}}`. |
 | `GET /_stats` | none | Request counters, authentication failures, uptime, maintenance state, and node count. JSON by default, Prometheus text with `Accept: text/plain` or `?format=prometheus`. |
 | `GET /server_api_version` | none | `min_api_version` / `max_api_version` (`0`/`2`). |
 | `GET /license` | signed | Static license payload; telemetry is disabled. |
@@ -1050,13 +1050,45 @@ wait for RSA generation. A cache miss generates a keypair on Tokio's blocking
 pool, so the async runtime is not stalled. Private keys are only held in memory
 until handed to the API response and are never logged.
 
-`/_status` is a **liveness** probe, not a readiness probe. It always reports
-`pong` when the HTTP process is up. Its `keygen` object reports the cached
-keypair count, capacity, worker count, and worker health (`status` becomes
-`degraded` after a background or warm-up generation failure and returns to
-`ok` after the next successful background generation). `worker_failures` and
-`warm_up_failures` are cumulative counters. The probe still does not check the
-metadata backend, OpenSearch, or S3. Check dependencies separately:
+`/_status` reports keygen health and probes the metadata database, search
+backend, and object store. The `upstreams` object keeps upstream's
+`{"service": "pong"|"fail"}` shape with `chef_sql`, `chef_index` (or
+`chef_opensearch`/`chef_elasticsearch`), and `bookshelf`; `upstream_details`
+adds the probe status and detail. A failing dependency sets the top-level
+`status` to `fail` (and the matching upstream to `fail`) but the endpoint still
+returns HTTP 200, so a reverse proxy or orchestrator can inspect the payload.
+
+Each probe is bounded to 1.5 seconds. SQLite's health query runs on Tokio's
+blocking pool using an owned connection handle. It retries `try_lock` for up to
+200ms so a normal request briefly holding the metadata connection does not make
+the database look unhealthy; if the lock is still held after that budget the
+probe reports `busy` instead of queuing blocking tasks indefinitely. PostgreSQL
+uses an async `SELECT 1` against the pool. OpenSearch and Elasticsearch call
+`/_cluster/health`; only an explicit `green` or `yellow` status is healthy. A
+red cluster, an unparseable 200 response, a missing status, or an unknown status
+is reported as a failure (`yellow` is valid for a single node). Local object
+storage verifies read/write access with a unique probe file per call; orphan
+probe files older than one hour are swept at most once per hour, so a crash does
+not grow the directory and health checks do not rescan it on every request. S3
+and Garage perform a signed, bounded `HEAD` request on the bucket. A custom
+object store that blocks past the deadline leaves one detached blocking task
+until it returns; the built-in local and S3 stores bound their own I/O.
+
+The completed snapshot is cached for one second. Concurrent cold requests share
+a single in-flight probe. An expired snapshot is served immediately while
+exactly one background refresh task runs (stale-while-refresh); additional
+stale requests reuse the same snapshot without spawning more tasks. A snapshot
+is never served stale beyond five seconds: after that a request waits for a
+real probe instead of reporting arbitrarily old health data. These guarantees
+are process-local; each replica probes its own dependencies.
+
+The S3/Garage credentials must allow `s3:HeadBucket` (and therefore
+`s3:ListBucket`) on the configured bucket; object read/write permissions alone
+make the `bookshelf` probe fail with `403`. The `keygen` object reports the
+cached keypair count, capacity, worker count, and worker health (`status`
+becomes `degraded` after a background or warm-up generation failure and returns
+to `ok` after the next successful background generation). `worker_failures` and
+`warm_up_failures` are cumulative counters.
 
 ```sh
 curl -fsS http://127.0.0.1:8000/_status

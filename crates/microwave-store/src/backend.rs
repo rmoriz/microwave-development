@@ -793,6 +793,24 @@ pub trait KvRepository: Send + Sync {
     async fn set_maintenance_enabled(&self, enabled: bool) -> Result<(), StoreError>;
 }
 
+/// Lightweight metadata-backend liveness probe used by `GET /_status`.
+///
+/// Implementations should issue a cheap query that exercises the connection
+/// (for example `SELECT 1`) without taking a write lock or scanning data. The
+/// default is a no-op so out-of-tree test doubles that implement the rest of
+/// the contract are not forced to add a probe; both in-tree backends override
+/// it. PostgreSQL runs the query asynchronously against its pool. SQLite runs
+/// it on Tokio's blocking pool, retrying `try_lock` for up to 200ms so briefly
+/// contended normal requests do not make the database look unhealthy; if the
+/// lock is still held after that budget the probe reports "busy" rather than
+/// waiting indefinitely or accumulating queued blocking tasks.
+#[async_trait]
+pub trait HealthRepository: Send + Sync {
+    async fn health_check(&self) -> Result<(), StoreError> {
+        Ok(())
+    }
+}
+
 /// Operator-managed secrets stored under namespaced KV keys.
 #[async_trait]
 pub trait SecretsRepository: Send + Sync {
@@ -827,6 +845,7 @@ pub trait MetadataStore:
     + MembershipRepository
     + OAuthRepository
     + KvRepository
+    + HealthRepository
     + SecretsRepository
     + Send
     + Sync
@@ -844,6 +863,7 @@ impl<T> MetadataStore for T where
         + MembershipRepository
         + OAuthRepository
         + KvRepository
+        + HealthRepository
         + SecretsRepository
         + Send
         + Sync

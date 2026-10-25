@@ -14,6 +14,7 @@ pub mod depsolver;
 pub mod environments;
 pub mod error;
 pub mod groups;
+pub mod health;
 pub mod helpers;
 pub mod internal_api;
 pub mod keys;
@@ -110,9 +111,14 @@ pub fn router(state: AppState) -> Router {
 
 async fn status(State(state): State<AppState>) -> Json<Value> {
     let keygen = state.keygen.status();
+    let dependencies = state
+        .health
+        .snapshot(&state.store, &state.search, &state.object_store)
+        .await;
     Json(json!({
-        "status": "pong",
-        "upstreams": [],
+        "status": if dependencies.healthy() { "pong" } else { "fail" },
+        "upstreams": dependencies.upstreams(),
+        "upstream_details": dependencies.details(),
         "keygen": {
             "status": if keygen.worker_healthy { "ok" } else { "degraded" },
             "cached": keygen.cached,
