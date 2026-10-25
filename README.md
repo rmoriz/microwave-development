@@ -8,6 +8,7 @@ The repository contains a working vertical slice:
 
 - **Configuration** — TOML plus `MW_*` environment overrides.
 - **Authentication** — `X-Ops-Sign` 1.0/1.1/1.3 canonicalization, RSA signing/verification, key reassembly, and legacy password hash compatibility.
+- **Key generation** — API-created keys use a bounded, thread-safe cache of pre-generated 2048-bit RSA keypairs. Background workers refill it, `keygen.size` / `keygen.workers` / `keygen.warm_up` (and `MW_KEYGEN__*`) control it, and `/_status` reports cached count, capacity, and worker health.
 - **Storage** — one metadata contract with two backends: SQLite (default) and PostgreSQL, selected by `database.driver` / `MW_DATABASE__DRIVER`. The HTTP API, OAuth/identity surface, embedded search, authorization policy, bootstrap, operational CLI, and snapshot migration run on either backend. SQLite remains the default and the only backend with an in-process database file.
 - **Authorization** — recursive ACL/group checks, cycle rejection, the default organization policy, and ACL read/write endpoints with granular `users`/`clients` responses.
 - **HTTP API** — `/_status`, `/_stats`, `/server_api_version`, `/license`, users, organizations, clients, principals, key management, organization memberships/invitations, nodes, environments, roles, data bags, sandboxes, bookshelf uploads, cookbooks, cookbook resolution, policyfiles/policy groups, ACL endpoints, search (node/role/environment/client/data-bag indexes with a query subset and partial search), data-collector forwarding, and the optional server-enforced `required_recipe` endpoint.
@@ -61,7 +62,7 @@ Packaging artifacts: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
 - Keep the full extended `oc-chef-pedant` suite green in CI. All eleven extended tags pass; the remaining 7 pending examples are Pedant's own skips. The core suite is also near-green, with only the known plain-HTTP header artifact.
 - PostgreSQL operational tooling. The HTTP runtime, OAuth, authorization, search, bootstrap, `microwave-ctl`, `microwave-migrate`, and backup/restore run against PostgreSQL. PostgreSQL backups use `pg_dump`/`pg_restore` and require the matching client tools on the host. Remaining gaps are the snapshot's intentional omission of `kvpair` secrets, no multi-replica HA load validation, and no automated failover.
 - The remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup format).
-- TLS listener, key-generation cache, transparent `serialized_object` compression, and the dual-backend test matrix.
+- TLS listener, transparent `serialized_object` compression, and the dual-backend test matrix.
 - OpenSearch 3.x evaluation and multi-node HA/performance validation.
 - Outbound telemetry export. The `telemetry` table (SQLite and PostgreSQL) and `telemetry.*` / `MW_TELEMETRY__*` configuration exist, but the sender is intentionally not implemented and defaults to disabled: Microwave never phones home. Operators can enable the flag for forward compatibility, but no background worker or external endpoint is contacted.
 - Optional data-collector mutation action notifications (`oc_chef_action`). The `POST /organizations/:org/data-collector` forwarding path itself is implemented.

@@ -99,10 +99,19 @@ pub fn router(state: AppState) -> Router {
 }
 
 async fn status(State(state): State<AppState>) -> Json<Value> {
+    let keygen = state.keygen.status();
     Json(json!({
         "status": "pong",
         "upstreams": [],
-        "keygen": { "status": "ok" },
+        "keygen": {
+            "status": if keygen.worker_healthy { "ok" } else { "degraded" },
+            "cached": keygen.cached,
+            "capacity": keygen.capacity,
+            "workers": keygen.workers,
+            "worker_healthy": keygen.worker_healthy,
+            "worker_failures": keygen.worker_failures,
+            "generated_on_demand": keygen.generated_on_demand,
+        },
         "indexing": { "mode": state.search.name() }
     }))
 }

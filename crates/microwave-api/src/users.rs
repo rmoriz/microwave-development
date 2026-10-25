@@ -6,8 +6,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use microwave_crypto::{
-    generate_rsa_keypair, hash_password, needs_upgrade, parse_public_key_pem, verify_password,
-    PasswordHash,
+    hash_password, needs_upgrade, parse_public_key_pem, verify_password, PasswordHash,
 };
 use microwave_store::{ActorType, User, UserPatch, UserProfile};
 use serde_json::{json, Map, Value};
@@ -163,8 +162,10 @@ async fn create_user(
         CreateKey::None => (None, None),
         CreateKey::Supplied(public_key) => (Some(public_key), None),
         CreateKey::Generated => {
-            let (private_key, public_key) =
-                generate_rsa_keypair().map_err(|_| ApiError::internal())?;
+            let (private_key, public_key) = state
+                .generate_keypair()
+                .await
+                .map_err(|_| ApiError::internal())?;
             (Some(public_key), Some(private_key))
         }
     };
@@ -307,8 +308,10 @@ async fn update_user(
                 .map_err(ApiError::from)?;
         }
         UpdateKey::Generated => {
-            let (generated_private, public_key) =
-                generate_rsa_keypair().map_err(|_| ApiError::internal())?;
+            let (generated_private, public_key) = state
+                .generate_keypair()
+                .await
+                .map_err(|_| ApiError::internal())?;
             state
                 .store
                 .update_or_create_default_key(&user.id, ActorType::User, &public_key)

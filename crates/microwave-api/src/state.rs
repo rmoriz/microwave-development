@@ -1,6 +1,7 @@
 use crate::metrics::Metrics;
 use crate::search::{build_search_backend, SearchBackend, SearchError};
 use microwave_config::Config;
+use microwave_crypto::{CryptoError, KeygenCache};
 use microwave_objectstore::ObjectStore;
 use microwave_store::{MetadataStore, Org, Principal, SqliteStore};
 use std::sync::Arc;
@@ -19,6 +20,8 @@ pub struct AppState {
     pub search: Arc<dyn SearchBackend>,
     /// Process-local request metrics served by `GET /_stats`.
     pub metrics: Arc<Metrics>,
+    /// Pre-generated 2048-bit RSA keypairs used by API key creation paths.
+    pub keygen: Arc<KeygenCache>,
     /// Shared connection pool for outbound compatibility forwards. Per-request
     /// deadlines are applied by each caller so the pool can be reused safely.
     pub(crate) http_client: reqwest::Client,
@@ -34,6 +37,7 @@ impl AppState {
     ) -> Result<Self, SearchError> {
         let search = build_search_backend(&config.search, store.clone())?;
         let http_client = build_http_client(&config)?;
+        let keygen = build_keygen_cache(&config);
         Ok(Self {
             store,
             sqlite: None,
@@ -41,6 +45,7 @@ impl AppState {
             object_store,
             search,
             metrics: Arc::new(Metrics::new()),
+            keygen,
             http_client,
         })
     }
@@ -57,6 +62,7 @@ impl AppState {
     ) -> Result<Self, SearchError> {
         let search = build_search_backend(&config.search, store.clone())?;
         let http_client = build_http_client(&config)?;
+        let keygen = build_keygen_cache(&config);
         Ok(Self {
             store: store.clone(),
             sqlite: Some(store),
@@ -64,6 +70,7 @@ impl AppState {
             object_store,
             search,
             metrics: Arc::new(Metrics::new()),
+            keygen,
             http_client,
         })
     }
@@ -79,6 +86,29 @@ impl AppState {
             .as_deref()
             .expect("AppState::sqlite() called while running against a non-SQLite backend")
     }
+
+    /// Produce a fresh 2048-bit RSA keypair for an API response.
+    ///
+    /// A cached keypair is returned immediately. On a cache miss, generation
+    /// runs on Tokio's blocking pool so the async runtime is never stalled by
+    /// RSA key generation.
+    pub async fn generate_keypair(&self) -> Result<(String, String), CryptoError> {
+        if let Some(pair) = self.keygen.try_take() {
+            return Ok(pair);
+        }
+        let cache = self.keygen.clone();
+        tokio::task::spawn_blocking(move || cache.take())
+            .await
+            .map_err(|_| CryptoError::InvalidKey("key generation task failed".into()))?
+    }
+}
+
+fn build_keygen_cache(config: &Config) -> Arc<KeygenCache> {
+    let cache = KeygenCache::new(config.keygen.size, config.keygen.workers);
+    if config.keygen.warm_up {
+        cache.warm_up();
+    }
+    Arc::new(cache)
 }
 
 fn build_http_client(config: &Config) -> Result<reqwest::Client, SearchError> {

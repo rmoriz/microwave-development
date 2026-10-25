@@ -16,6 +16,9 @@ fn defaults_are_safe_and_local() {
     assert_eq!(c.object_store.backend, ObjectStoreBackend::Local);
     assert_eq!(c.auth.skew_seconds, 900);
     assert_eq!(c.auth.superuser_name, "pivotal");
+    assert_eq!(c.keygen.size, 3);
+    assert_eq!(c.keygen.workers, 1);
+    assert!(!c.keygen.warm_up);
     assert!(!c.data_collector.is_configured());
     assert_eq!(c.data_collector.timeout, 30_000);
     assert!(!c.required_recipe.enabled);
@@ -37,6 +40,40 @@ fn toml_overrides_defaults() {
     assert_eq!(c.server.bind, "127.0.0.1:9000");
     assert_eq!(c.auth.skew_seconds, 60);
     assert_eq!(c.paths.data_dir, "./data");
+}
+
+#[test]
+fn keygen_settings_can_be_overridden_from_toml_and_env() {
+    let c = Config::from_toml_str(
+        r#"
+        [keygen]
+        size = 5
+        workers = 2
+        warm_up = true
+    "#,
+    )
+    .unwrap();
+    assert_eq!(c.keygen.size, 5);
+    assert_eq!(c.keygen.workers, 2);
+    assert!(c.keygen.warm_up);
+
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("MW_KEYGEN__SIZE", "4");
+    std::env::set_var("MW_KEYGEN__WORKERS", "2");
+    std::env::set_var("MW_KEYGEN__WARM_UP", "yes");
+    let mut c = Config::default();
+    c.apply_env().unwrap();
+    assert_eq!(c.keygen.size, 4);
+    assert_eq!(c.keygen.workers, 2);
+    assert!(c.keygen.warm_up);
+
+    std::env::set_var("MW_KEYGEN__SIZE", "not-a-number");
+    let mut c = Config::default();
+    assert!(c.apply_env().is_err());
+
+    std::env::remove_var("MW_KEYGEN__SIZE");
+    std::env::remove_var("MW_KEYGEN__WORKERS");
+    std::env::remove_var("MW_KEYGEN__WARM_UP");
 }
 
 #[test]

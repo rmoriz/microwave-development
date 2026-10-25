@@ -12,6 +12,7 @@ pub struct Config {
     pub search: SearchConfig,
     pub object_store: ObjectStoreConfig,
     pub auth: AuthConfig,
+    pub keygen: KeygenConfig,
     pub license: LicenseConfig,
     pub data_collector: DataCollectorConfig,
     pub required_recipe: RequiredRecipeConfig,
@@ -62,6 +63,7 @@ impl Config {
     ///   `MW_OBJECT_STORE__SECRET_KEY`, `MW_OBJECT_STORE__PATH_STYLE`
     /// - `MW_OBJECT_STORE__SECRET` (local bookshelf token secret)
     /// - `MW_AUTH__SKEW_SECONDS`, `MW_AUTH__SUPERUSER_NAME`
+    /// - `MW_KEYGEN__SIZE`, `MW_KEYGEN__WORKERS`, `MW_KEYGEN__WARM_UP`
     /// - `MW_LICENSE__NODE_LICENSE`, `MW_LICENSE__UPGRADE_URL`
     /// - `MW_DATA_COLLECTOR__ROOT_URL`, `MW_DATA_COLLECTOR__TOKEN`,
     ///   `MW_DATA_COLLECTOR__TIMEOUT` (alias `MW_DATA_COLLECTOR__TIMEOUT_MS`)
@@ -149,6 +151,15 @@ impl Config {
         }
         if let Ok(value) = std::env::var("MW_AUTH__SUPERUSER_NAME") {
             self.auth.superuser_name = value;
+        }
+        if let Ok(value) = std::env::var("MW_KEYGEN__SIZE") {
+            self.keygen.size = parse_value("MW_KEYGEN__SIZE", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_KEYGEN__WORKERS") {
+            self.keygen.workers = parse_value("MW_KEYGEN__WORKERS", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_KEYGEN__WARM_UP") {
+            self.keygen.warm_up = parse_bool("MW_KEYGEN__WARM_UP", &value)?;
         }
         if let Ok(value) = std::env::var("MW_LICENSE__NODE_LICENSE") {
             self.license.node_license = parse_value("MW_LICENSE__NODE_LICENSE", value)?;
@@ -355,6 +366,34 @@ impl Default for AuthConfig {
         Self {
             skew_seconds: 900,
             superuser_name: "pivotal".into(),
+        }
+    }
+}
+
+/// Pre-generated RSA keypair cache settings.
+///
+/// API key creation paths normally take a keypair from this cache instead of
+/// generating one inline. Background workers refill the cache as soon as room
+/// appears; `warm_up` additionally fills it synchronously during startup.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct KeygenConfig {
+    /// Maximum number of keypairs kept ready. `0` disables caching and makes
+    /// every request generate a keypair on demand.
+    pub size: usize,
+    /// Background worker threads. Capped at `size`; `0` disables background
+    /// generation (the cache is then only filled by `warm_up` or on demand).
+    pub workers: usize,
+    /// Fill the cache synchronously at startup instead of in the background.
+    pub warm_up: bool,
+}
+
+impl Default for KeygenConfig {
+    fn default() -> Self {
+        Self {
+            size: 3,
+            workers: 1,
+            warm_up: false,
         }
     }
 }

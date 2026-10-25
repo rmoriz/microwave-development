@@ -5,7 +5,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
 use microwave_authz::create_organization;
-use microwave_crypto::generate_rsa_keypair;
 use microwave_store::{ActorType, Client, Permission};
 use serde_json::{json, Map, Value};
 
@@ -51,7 +50,10 @@ async fn create_org(
 
     // Generate the validator key before creating any rows so a key generation
     // failure cannot leave a half-created organization behind.
-    let (private_key, public_key) = generate_rsa_keypair().map_err(|_| ApiError::internal())?;
+    let (private_key, public_key) = state
+        .generate_keypair()
+        .await
+        .map_err(|_| ApiError::internal())?;
 
     let org = create_organization(
         state.store.as_ref(),
