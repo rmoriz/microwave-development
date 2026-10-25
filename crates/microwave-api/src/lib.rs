@@ -7,6 +7,7 @@ pub mod containers;
 pub mod cookbook_artifacts;
 pub mod cookbooks;
 pub mod data_bags;
+pub mod data_collector;
 pub mod depsolver;
 pub mod environments;
 pub mod error;
@@ -18,6 +19,7 @@ pub mod middleware;
 pub mod nodes;
 pub mod organizations;
 pub mod policies;
+pub mod required_recipe;
 pub mod roles;
 pub mod sandboxes;
 pub mod search;
@@ -34,7 +36,7 @@ pub use microwave_oauth as oauth;
 pub use state::{ApiVersion, AppState, AuthContext};
 
 pub fn router(state: AppState) -> Router {
-    let inner = Router::new()
+    let mut inner = Router::new()
         .route("/_status", get(status))
         .route("/server_api_version", get(server_api_version))
         .route("/license", get(license))
@@ -57,7 +59,18 @@ pub fn router(state: AppState) -> Router {
         .merge(cookbooks::routes())
         .merge(cookbook_artifacts::routes())
         .merge(depsolver::routes())
-        .merge(oauth::routes())
+        .merge(oauth::routes());
+
+    // Both optional surfaces are absent from the router when disabled so the
+    // fallback produces upstream's 404 for every method.
+    if state.config.data_collector.is_configured() {
+        inner = inner.merge(data_collector::routes());
+    }
+    if state.config.required_recipe.enabled {
+        inner = inner.merge(required_recipe::routes());
+    }
+
+    let inner = inner
         .fallback(not_found)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

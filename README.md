@@ -10,7 +10,7 @@ The repository contains a working vertical slice:
 - **Authentication** — `X-Ops-Sign` 1.0/1.1/1.3 canonicalization, RSA signing/verification, key reassembly, and legacy password hash compatibility.
 - **Storage** — one metadata contract with two backends: SQLite (default) and PostgreSQL, selected by `database.driver` / `MW_DATABASE__DRIVER`. The HTTP API, OAuth/identity surface, embedded search, authorization policy, and bootstrap all run on either backend. `microwave-ctl` and `microwave-migrate` remain SQLite-only.
 - **Authorization** — recursive ACL/group checks, cycle rejection, the default organization policy, and ACL read/write endpoints with granular `users`/`clients` responses.
-- **HTTP API** — `/_status`, `/server_api_version`, `/license`, users, organizations, clients, principals, key management, organization memberships/invitations, nodes, environments, roles, data bags, sandboxes, bookshelf uploads, cookbooks, cookbook resolution, policyfiles/policy groups, ACL endpoints, and search (node/role/environment/client/data-bag indexes with a query subset and partial search).
+- **HTTP API** — `/_status`, `/server_api_version`, `/license`, users, organizations, clients, principals, key management, organization memberships/invitations, nodes, environments, roles, data bags, sandboxes, bookshelf uploads, cookbooks, cookbook resolution, policyfiles/policy groups, ACL endpoints, search (node/role/environment/client/data-bag indexes with a query subset and partial search), data-collector forwarding, and the optional server-enforced `required_recipe` endpoint.
 - **Operations CLI** — `microwave-ctl` with a `chef-server-ctl` compatibility binary: user/org administration, server-admin grant/remove/list, org membership, password reset, key rotation (add/list/delete user and client keys), secrets management, maintenance state, `check-config`, `ha-status`, `psql`, status, local backup/restore, `migrate-from-legacy` snapshot import, and a clear not-implemented response for reindex.
 - **Migration** — `microwave-migrate` exports a versioned JSON snapshot of the local store (users with password hashes, organizations, clients, keys, authz ACLs, nodes, roles, environments, data bags, checksums, cookbooks, policies, and OAuth applications) and imports it with original ids, authz ids, timestamps, and keys intact. The live legacy API crawler (`from-api`) is implemented.
 - **OAuth/identity** — `/id` sign-in/sessions, OAuth application management, authorization-code and refresh-token flows, `/id/v1/me`, `/id/v1/me/organizations`, `/id/v1/status`, profile/password/key regeneration, and password-reset tokens.
@@ -63,7 +63,8 @@ Packaging artifacts: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
 - The remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup format).
 - TLS listener, `_stats`/metrics, key-generation cache, transparent `serialized_object` compression, and the dual-backend test matrix.
 - OpenSearch 3.x evaluation and multi-node HA/performance validation.
-- Data Collector forwarding, `required_recipe`, and telemetry export.
+- Outbound telemetry export. The `telemetry` table (SQLite and PostgreSQL) and `telemetry.*` / `MW_TELEMETRY__*` configuration exist, but the sender is intentionally not implemented and defaults to disabled: Microwave never phones home. Operators can enable the flag for forward compatibility, but no background worker or external endpoint is contacted.
+- Optional data-collector mutation action notifications (`oc_chef_action`). The `POST /organizations/:org/data-collector` forwarding path itself is implemented.
 
 ### Pedant Compatibility
 

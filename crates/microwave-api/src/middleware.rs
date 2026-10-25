@@ -66,6 +66,43 @@ pub async fn authenticate(
         );
     }
 
+    // Optional compatibility surfaces are defined by nginx upstream rather
+    // than by the signed API. Match their pre-auth semantics: a disabled
+    // required recipe is always 404 for every method, a non-GET is 405 before
+    // authentication, and data collector requests may authenticate with the
+    // configured shared token instead of a Chef signature.
+    if is_required_recipe_path(&path) {
+        let enabled = state.config.required_recipe.enabled;
+        if !enabled || request.method() != axum::http::Method::GET {
+            let response = next.run(request).await;
+            return with_version_header(
+                response,
+                &requested_version.to_string(),
+                &requested_version.to_string(),
+            );
+        }
+        if !has_signing_headers(request.headers()) {
+            let response = ApiError::bad_request("Invalid request").into_response();
+            return with_version_header(
+                response,
+                &requested_version.to_string(),
+                &requested_version.to_string(),
+            );
+        }
+    }
+
+    if is_data_collector_path(&path) {
+        let configured = state.config.data_collector.is_configured();
+        if !configured || crate::data_collector::has_valid_token(&state, request.headers()).await {
+            let response = next.run(request).await;
+            return with_version_header(
+                response,
+                &requested_version.to_string(),
+                &requested_version.to_string(),
+            );
+        }
+    }
+
     if is_principal_path(&path) {
         // The principal resource is unauthenticated upstream but still needs
         // the negotiated API version to choose the v0 vs v1+ response shape.
@@ -351,6 +388,38 @@ fn is_org_user_keys_path(path: &str) -> bool {
         && parts.next() == Some("users")
         && parts.next().is_some_and(|part| !part.is_empty())
         && parts.next() == Some("keys")
+}
+
+/// `/organizations/:org/data-collector` (exact, no trailing slash).
+fn is_data_collector_path(path: &str) -> bool {
+    let mut parts = path.trim_matches('/').split('/');
+    parts.next() == Some("organizations")
+        && parts.next().is_some_and(|part| !part.is_empty())
+        && parts.next() == Some("data-collector")
+        && parts.next().is_none()
+}
+
+/// `/organizations/:org/required_recipe` (exact, no trailing slash).
+fn is_required_recipe_path(path: &str) -> bool {
+    let mut parts = path.trim_matches('/').split('/');
+    parts.next() == Some("organizations")
+        && parts.next().is_some_and(|part| !part.is_empty())
+        && parts.next() == Some("required_recipe")
+        && parts.next().is_none()
+}
+
+fn has_signing_headers(headers: &HeaderMap) -> bool {
+    [
+        "x-ops-sign",
+        "x-ops-userid",
+        "x-ops-timestamp",
+        "x-ops-content-hash",
+    ]
+    .iter()
+    .all(|name| headers.contains_key(*name))
+        && headers
+            .keys()
+            .any(|name| name.as_str().starts_with("x-ops-authorization-"))
 }
 
 fn organization_name_from_path(path: &str) -> Option<String> {

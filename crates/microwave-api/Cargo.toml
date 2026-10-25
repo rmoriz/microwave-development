@@ -20,6 +20,7 @@ microwave-store = { path = "../microwave-store" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tower.workspace = true

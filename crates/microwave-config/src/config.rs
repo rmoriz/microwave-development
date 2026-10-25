@@ -13,6 +13,9 @@ pub struct Config {
     pub object_store: ObjectStoreConfig,
     pub auth: AuthConfig,
     pub license: LicenseConfig,
+    pub data_collector: DataCollectorConfig,
+    pub required_recipe: RequiredRecipeConfig,
+    pub telemetry: TelemetryConfig,
 }
 
 impl Config {
@@ -60,6 +63,12 @@ impl Config {
     /// - `MW_OBJECT_STORE__SECRET` (local bookshelf token secret)
     /// - `MW_AUTH__SKEW_SECONDS`, `MW_AUTH__SUPERUSER_NAME`
     /// - `MW_LICENSE__NODE_LICENSE`, `MW_LICENSE__UPGRADE_URL`
+    /// - `MW_DATA_COLLECTOR__ROOT_URL`, `MW_DATA_COLLECTOR__TOKEN`,
+    ///   `MW_DATA_COLLECTOR__TIMEOUT` (alias `MW_DATA_COLLECTOR__TIMEOUT_MS`)
+    /// - `MW_REQUIRED_RECIPE__ENABLED` (alias `MW_REQUIRED_RECIPE__ENABLE`),
+    ///   `MW_REQUIRED_RECIPE__PATH`
+    /// - `MW_TELEMETRY__ENABLED`, `MW_TELEMETRY__REPORTING_URL`,
+    ///   `MW_TELEMETRY__INTERVAL_SECONDS`
     pub fn apply_env(&mut self) -> Result<(), ConfigError> {
         if let Ok(value) = std::env::var("MW_SERVER__BIND") {
             self.server.bind = value;
@@ -147,6 +156,34 @@ impl Config {
         if let Ok(value) = std::env::var("MW_LICENSE__UPGRADE_URL") {
             self.license.upgrade_url = value;
         }
+        if let Ok(value) = std::env::var("MW_DATA_COLLECTOR__ROOT_URL") {
+            self.data_collector.root_url = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_DATA_COLLECTOR__TOKEN") {
+            self.data_collector.token = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_DATA_COLLECTOR__TIMEOUT")
+            .or_else(|_| std::env::var("MW_DATA_COLLECTOR__TIMEOUT_MS"))
+        {
+            self.data_collector.timeout = parse_value("MW_DATA_COLLECTOR__TIMEOUT", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_REQUIRED_RECIPE__ENABLED")
+            .or_else(|_| std::env::var("MW_REQUIRED_RECIPE__ENABLE"))
+        {
+            self.required_recipe.enabled = parse_bool("MW_REQUIRED_RECIPE__ENABLED", &value)?;
+        }
+        if let Ok(value) = std::env::var("MW_REQUIRED_RECIPE__PATH") {
+            self.required_recipe.path = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_TELEMETRY__ENABLED") {
+            self.telemetry.enabled = parse_bool("MW_TELEMETRY__ENABLED", &value)?;
+        }
+        if let Ok(value) = std::env::var("MW_TELEMETRY__REPORTING_URL") {
+            self.telemetry.reporting_url = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_TELEMETRY__INTERVAL_SECONDS") {
+            self.telemetry.interval_seconds = parse_value("MW_TELEMETRY__INTERVAL_SECONDS", value)?;
+        }
         Ok(())
     }
 
@@ -171,6 +208,11 @@ where
         key: key.into(),
         value,
     })
+}
+
+fn non_empty(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 fn parse_bool(key: &str, value: &str) -> Result<bool, ConfigError> {
@@ -332,6 +374,76 @@ impl Default for LicenseConfig {
         Self {
             node_license: 1000,
             upgrade_url: "https://www.chef.io/pricing".into(),
+        }
+    }
+}
+
+/// Data Collector forwarding configuration, mirroring upstream's
+/// `data_collector['root_url']`, `data_collector['token']` and
+/// `data_collector['timeout']` settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DataCollectorConfig {
+    /// Base URL of the external data collector. Setting this enables
+    /// `POST /organizations/:org/data-collector`.
+    pub root_url: Option<String>,
+    /// Shared secret accepted from clients as `x-data-collector-token` and
+    /// sent upstream. The forwarded value always comes from this server-side
+    /// setting (or the `data_collector.token` secret), never from the client.
+    pub token: Option<String>,
+    /// Request timeout in milliseconds. Upstream key is `timeout` and the
+    /// default is 30000.
+    #[serde(alias = "timeout_ms")]
+    pub timeout: u64,
+}
+
+impl DataCollectorConfig {
+    /// True when a non-empty `root_url` is configured.
+    pub fn is_configured(&self) -> bool {
+        self.root_url
+            .as_deref()
+            .is_some_and(|url| !url.trim().is_empty())
+    }
+}
+
+impl Default for DataCollectorConfig {
+    fn default() -> Self {
+        Self {
+            root_url: None,
+            token: None,
+            timeout: 30_000,
+        }
+    }
+}
+
+/// Optional server-enforced recipe, mirroring upstream's
+/// `required_recipe['enable']` and `required_recipe['path']`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct RequiredRecipeConfig {
+    #[serde(alias = "enable")]
+    pub enabled: bool,
+    /// Path to the recipe file served by `GET /organizations/:org/required_recipe`.
+    pub path: Option<String>,
+}
+
+/// Telemetry settings. Export is opt-in and disabled by default: Microwave
+/// never phones home unless an operator both enables telemetry and configures
+/// a reporting URL.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct TelemetryConfig {
+    pub enabled: bool,
+    pub reporting_url: Option<String>,
+    pub interval_seconds: u64,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            reporting_url: None,
+            interval_seconds: 86_400,
         }
     }
 }

@@ -114,6 +114,14 @@ A complete annotated example is
 | `object_store.secret` | `MW_OBJECT_STORE__SECRET` | generated | Only used by the local `/bookshelf` backend. |
 | `auth.skew_seconds` | `MW_AUTH__SKEW_SECONDS` | `900` | `X-Ops-Timestamp` tolerance. |
 | `auth.superuser_name` | `MW_AUTH__SUPERUSER_NAME` | `pivotal` | Account that cannot be demoted. |
+| `data_collector.root_url` | `MW_DATA_COLLECTOR__ROOT_URL` | unset | Enables `POST /organizations/:org/data-collector` and receives the forwarded payload, e.g. `https://automate.example.com/data-collector/v0/`. |
+| `data_collector.token` | `MW_DATA_COLLECTOR__TOKEN` | unset | Shared bearer token accepted inbound and sent upstream as `x-data-collector-token`. Falls back to the `data_collector.token` secret. |
+| `data_collector.timeout` | `MW_DATA_COLLECTOR__TIMEOUT` (alias `MW_DATA_COLLECTOR__TIMEOUT_MS`) | `30000` | Upstream forwarding timeout in milliseconds (TOML alias `timeout_ms`). |
+| `required_recipe.enabled` | `MW_REQUIRED_RECIPE__ENABLED` (alias `MW_REQUIRED_RECIPE__ENABLE`) | `false` | Enables `GET /organizations/:org/required_recipe`. TOML alias `enable`. |
+| `required_recipe.path` | `MW_REQUIRED_RECIPE__PATH` | unset | Recipe file served as `text/plain` when the endpoint is enabled. |
+| `telemetry.enabled` | `MW_TELEMETRY__ENABLED` | `false` | Reserved toggle. No outbound sender is implemented, so enabling it does not phone home. |
+| `telemetry.reporting_url` | `MW_TELEMETRY__REPORTING_URL` | unset | Reserved reporting destination for a future opt-in exporter. |
+| `telemetry.interval_seconds` | `MW_TELEMETRY__INTERVAL_SECONDS` | `86400` | Reserved exporter interval. |
 
 Validate a configuration file without starting the server:
 
@@ -584,6 +592,27 @@ time, and keep the legacy server read-only until the new one is verified.
 | `GET /_status` | none | `{"status":"pong","upstreams":[],"keygen":{"status":"ok"},"indexing":{"mode":"embedded"}}`. |
 | `GET /server_api_version` | none | `min_api_version` / `max_api_version` (`0`/`2`). |
 | `GET /license` | signed | Static license payload; telemetry is disabled. |
+| `POST /organizations/:org/data-collector` | signed or `x-data-collector-token` | Present only when `data_collector.root_url` is configured. Forwards the JSON body to the configured collector and preserves its status and body. Timeouts map to `504`, other upstream failures to `502`; a disabled endpoint returns `404`. |
+| `GET /organizations/:org/required_recipe` | signed | Present only when `required_recipe.enabled` is true. Returns the configured recipe file as `text/plain`; `POST` returns `405`, and the disabled endpoint returns `404` for every method. |
+
+### Data Collector, required recipe, and telemetry
+
+Data Collector forwarding is disabled until `data_collector.root_url` is set.
+The optional `data_collector.token` is accepted from clients as
+`x-data-collector-token` (or resolved from the `data_collector.token` secret)
+and is always replaced with the server-side value when forwarding upstream.
+Clients without a token may authenticate with a normal Chef signature instead.
+The forwarder uses the configured timeout and does not hold database locks
+across the outbound request.
+
+The optional `required_recipe` endpoint is off by default. Enabling it requires
+`required_recipe.path`; the file is read on each request and served as plain
+text. The feature is independent of telemetry.
+
+Telemetry is off by default and there is no outbound sender. The `telemetry`
+table exists in both SQLite and PostgreSQL for schema compatibility, and the
+`telemetry.*` configuration keys are parsed, but Microwave does not contact an
+external telemetry service. This is intentional: no phone-home.
 
 `/_status` is a **liveness** probe, not a readiness probe. It always reports
 `pong` when the HTTP process is up; it does not check the metadata backend,
