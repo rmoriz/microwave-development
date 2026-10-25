@@ -38,13 +38,14 @@ mod archive;
 mod from_api;
 
 pub use archive::{
-    export_archive, export_archive_postgres, export_archive_postgres_with_options,
-    export_archive_postgres_with_private_keys, export_archive_with_options,
-    export_archive_with_private_keys, import_archive, import_archive_postgres,
-    import_archive_postgres_with_compression, import_archive_postgres_with_private_keys,
-    import_archive_with_compression, import_archive_with_private_keys, PrivateKeyExportOptions,
-    PrivateKeyImportOptions, ARCHIVE_BOOKSHELF_PREFIX, ARCHIVE_SECRETS_FILES_PREFIX,
-    ARCHIVE_SECRETS_MANIFEST, ARCHIVE_SECRETS_PREFIX, ARCHIVE_SNAPSHOT_ENTRY,
+    archive_secrets_included, export_archive, export_archive_postgres,
+    export_archive_postgres_with_options, export_archive_postgres_with_private_keys,
+    export_archive_with_options, export_archive_with_private_keys, import_archive,
+    import_archive_postgres, import_archive_postgres_with_compression,
+    import_archive_postgres_with_private_keys, import_archive_with_compression,
+    import_archive_with_private_keys, PrivateKeyExportOptions, PrivateKeyImportOptions,
+    ARCHIVE_BOOKSHELF_PREFIX, ARCHIVE_SECRETS_FILES_PREFIX, ARCHIVE_SECRETS_MANIFEST,
+    ARCHIVE_SECRETS_PREFIX, ARCHIVE_SNAPSHOT_ENTRY,
 };
 pub use from_api::{crawl_from_api, from_api_with_options, read_private_key, FromApiOptions};
 

@@ -1941,18 +1941,20 @@ fn import_all(
         )?;
     }
 
-    // Telemetry is an append-only event log with no primary key. Replace it
-    // when the snapshot carries rows so importing the same snapshot twice
-    // stays idempotent. An absent/empty collection leaves target rows alone,
-    // matching the merge semantics of every other collection.
-    if !snapshot.telemetry.is_empty() {
-        transaction.execute("DELETE FROM telemetry", [])?;
-        for row in &snapshot.telemetry {
-            transaction.execute(
-                "INSERT INTO telemetry (property, event_timestamp) VALUES (?1, ?2)",
-                params![row.property, row.event_timestamp],
-            )?;
-        }
+    // Telemetry is an append-only event log with no primary key. Merge rows
+    // by (property, event_timestamp): importing the same snapshot twice stays
+    // idempotent, while target-local events are preserved instead of being
+    // deleted.
+    for row in &snapshot.telemetry {
+        transaction.execute(
+            "INSERT INTO telemetry (property, event_timestamp)
+             SELECT ?1, ?2
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM telemetry
+                 WHERE property = ?1 AND event_timestamp = ?2
+             )",
+            params![row.property, row.event_timestamp],
+        )?;
     }
 
     Ok(())

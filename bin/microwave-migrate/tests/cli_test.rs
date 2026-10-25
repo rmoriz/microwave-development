@@ -189,6 +189,7 @@ fn archive_export_and_import_round_trip_bookshelf_and_snapshot() {
         stderr(&imported)
     );
     assert!(stdout(&imported).contains("Imported archive"));
+    assert!(stderr(&imported).contains("secrets_included=false"));
 
     let restored = SqliteStore::open(&database(target.path())).unwrap();
     assert!(restored.find_user("archive-user").unwrap().is_some());
@@ -478,6 +479,64 @@ fn archive_private_keys_use_configured_tls_paths() {
         std::fs::read(target_data.path().join("pivotal.pem")).unwrap(),
         b"CLI-PIVOTAL-MARKER"
     );
+}
+
+#[test]
+fn safe_import_warns_about_a_partial_secret_restore() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(source.path())).unwrap();
+    store
+        .set_secret("bookshelf", "secret_access_key", "warning-secret")
+        .unwrap();
+    drop(store);
+
+    let snapshots = tempfile::tempdir().unwrap();
+    let safe = snapshots.path().join("safe.json");
+    let full = snapshots.path().join("full.json");
+    assert!(run(&[
+        "export",
+        "--data-dir",
+        source.path().to_str().unwrap(),
+        "--output",
+        safe.to_str().unwrap(),
+    ])
+    .status
+    .success());
+    assert!(run(&[
+        "export",
+        "--data-dir",
+        source.path().to_str().unwrap(),
+        "--output",
+        full.to_str().unwrap(),
+        "--include-secrets",
+    ])
+    .status
+    .success());
+
+    let safe_target = tempfile::tempdir().unwrap();
+    let imported = run(&[
+        "import",
+        "--data-dir",
+        safe_target.path().to_str().unwrap(),
+        "--input",
+        safe.to_str().unwrap(),
+        "--yes",
+    ]);
+    assert!(imported.status.success(), "{}", stderr(&imported));
+    assert!(stderr(&imported).contains("secrets_included=false"));
+    assert!(stderr(&imported).contains("--include-secrets"));
+
+    let full_target = tempfile::tempdir().unwrap();
+    let imported = run(&[
+        "import",
+        "--data-dir",
+        full_target.path().to_str().unwrap(),
+        "--input",
+        full.to_str().unwrap(),
+        "--yes",
+    ]);
+    assert!(imported.status.success(), "{}", stderr(&imported));
+    assert!(!stderr(&imported).contains("secrets_included=false"));
 }
 
 #[test]

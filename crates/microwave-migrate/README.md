@@ -39,8 +39,9 @@ microwave-migrate export \
 # Create or merge into ./new-data/microwave.db
 microwave-migrate import --data-dir ./new-data --input migration.json --yes
 
-# Restore snapshot + bookshelf/ from an archive. Existing key files abort
-# unless --force is given; --secrets-dir puts all private files elsewhere.
+# Restore snapshot + bookshelf/ from an archive. Existing key files and
+# empty-over-populated bookshelf restores abort unless --force is given;
+# --secrets-dir puts all private files elsewhere.
 microwave-migrate import --data-dir ./new-data --archive migration.tar.gz --yes
 microwave-migrate import --data-dir ./new-data --archive migration.tar.gz \
   --secrets-dir /safe/staging/private --yes
@@ -288,12 +289,22 @@ touching live data:
   links, devices, FIFOs, and duplicate entries are rejected;
 - every private payload must be listed exactly once in the manifest; an
   unreferenced `secrets/files/` member or a missing manifest is rejected;
+- `data-dir` manifest entries are restricted to the fixed filename allowlist
+  used by export. Nested paths (`nested/evil.conf`), database files
+  (`microwave.db`), absolute paths, `..`, and inconsistent `suggested_name`
+  values are rejected;
 - the snapshot is parsed and its envelope validated before the database
   transaction starts;
-- private destinations and overwrite conflicts are checked before the database
-  import, so a refused import leaves metadata untouched;
+- private destinations, parent directories, and overwrite conflicts are
+  checked and all private bytes are staged to mode-`0600` temporary files
+  before the database import, so a refused or unstageable import leaves
+  metadata untouched;
+- an empty archive `bookshelf/` never replaces a populated live bookshelf
+  without `--force`;
 - the database import runs in one transaction, then the staged `bookshelf/`
-  replaces the target tree, then private files are written.
+  replaces the target tree, then the staged private files are renamed into
+  place as a set. If the private commit fails, the previous bookshelf is
+  restored from its retained backup.
 
 Restore destinations:
 
@@ -307,15 +318,24 @@ Restore destinations:
   files are still protected by the overwrite check.
 - Existing key files are never replaced without `--force`. Overwriting a key
   can invalidate clients that still trust the old key; use `--force` only when
-  intentionally rotating or replacing the installation.
+  intentionally rotating or replacing the installation. `--force` is also
+  required to replace a populated live bookshelf with an empty archive
+  bookshelf.
+- If the target bookshelf is a symlink, the symlink itself is moved aside and
+  replaced with the restored directory. Its target is never followed or
+  modified.
 
 The database and bookshelf are separate stores, so the bookshelf swap happens
-after the database transaction commits. A crash between them leaves the new
-metadata with the old blobs; re-run the import from the same archive to finish.
-Private files are written after that, so a storage failure can similarly leave
-metadata restored with some private files not yet written; the archive remains
-safe to re-run with `--force` where necessary. Keep the archive until the
-restored server has been verified.
+after the database transaction commits. The previous bookshelf is retained
+under a sidecar name until private files are committed; a private-file commit
+failure restores it. A crash can still leave the new database with the old or
+newly swapped bookshelf; re-run the import from the same archive to finish.
+Keep the archive until the restored server has been verified.
+
+Archives are capped at 1,000,000 entries and 16 GiB total uncompressed bytes.
+A safe import (`secrets_included: false`) prints a warning that database secret
+values were not restored; re-export with `--include-secrets` for a complete
+migration.
 
 Import remains confirmation-gated. In scripts pass `--yes`; without it a
 non-interactive stdin is refused before any change. A non-local object store
@@ -338,9 +358,9 @@ upserted by primary key, so:
 - explicit `sandboxes` rows restore empty in-flight sandboxes. Older snapshots
   that only carry `sandboxed_checksums` still derive both explicit sandboxes and
   SQLite's `sandbox_checksums` rows;
-- non-empty `telemetry` collections replace the target event log so repeated
-  imports do not duplicate rows. An absent/empty collection leaves target
-  telemetry alone, matching the merge semantics used elsewhere;
+- telemetry merges by `(property, event_timestamp)`: target-local events are
+  preserved, repeated imports do not duplicate snapshot rows, and an
+  absent/empty collection leaves target telemetry alone;
 - a safe snapshot leaves existing target secrets intact: omitted `kvpair` and
   OAuth grant/token rows are not deleted, and an empty OAuth application
   `secret` does not overwrite a non-empty stored secret;

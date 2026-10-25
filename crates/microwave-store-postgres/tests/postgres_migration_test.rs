@@ -478,7 +478,21 @@ async fn safe_snapshot_import_restores_metadata_without_secrets() {
     let target = PostgresStore::connect(&scratch_url)
         .await
         .expect("connect to safe snapshot target");
+    let local_telemetry = format!("local-telemetry-{suffix}");
+    sqlx::query("INSERT INTO telemetry (property, event_timestamp) VALUES ($1, $2)")
+        .bind(&local_telemetry)
+        .bind("2026-10-24T00:00:00Z")
+        .execute(target.pool())
+        .await
+        .unwrap();
     target.import_snapshot(&snapshot).await.unwrap();
+    let local_telemetry_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM telemetry WHERE property = $1")
+            .bind(&local_telemetry)
+            .fetch_one(target.pool())
+            .await
+            .unwrap();
+    assert_eq!(local_telemetry_count, 1);
 
     assert!(target
         .get_secret("bookshelf", "secret_access_key")

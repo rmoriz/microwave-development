@@ -1,12 +1,12 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use microwave_config::{Config, StorageCompression};
 use microwave_migrate::{
-    export_archive_postgres_with_private_keys, export_archive_with_private_keys,
-    export_postgres_with_options, export_with_options, from_api_with_options,
-    import_archive_postgres_with_private_keys, import_archive_with_private_keys,
-    import_postgres_with_compression, import_with_compression, redacted_postgres_url,
-    validate_postgres_url, Compression, FromApiOptions, MigrateError, PrivateKeyExportOptions,
-    PrivateKeyImportOptions, DATABASE_FILE,
+    archive_secrets_included, export_archive_postgres_with_private_keys,
+    export_archive_with_private_keys, export_postgres_with_options, export_with_options,
+    from_api_with_options, import_archive_postgres_with_private_keys,
+    import_archive_with_private_keys, import_postgres_with_compression, import_with_compression,
+    read_snapshot, redacted_postgres_url, validate_postgres_url, Compression, FromApiOptions,
+    MigrateError, PrivateKeyExportOptions, PrivateKeyImportOptions, DATABASE_FILE,
 };
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -369,6 +369,7 @@ fn import_command(
                     println!("Import target: sqlite:{}", target.display());
                     println!("Import compression: {}", compression.as_str());
                     confirm_import(yes)?;
+                    warn_if_partial_restore(read_snapshot(input)?.secrets_included);
                     import_with_compression(&data_dir, input, compression)
                         .map(|()| println!("Imported snapshot from {}", input.display()))
                 }
@@ -377,6 +378,7 @@ fn import_command(
                     println!("Import target: {}", redacted_postgres_url(&database_url));
                     println!("Import compression: {}", compression.as_str());
                     confirm_import(yes)?;
+                    warn_if_partial_restore(read_snapshot(input)?.secrets_included);
                     import_postgres_with_compression(&database_url, input, compression)
                         .map(|()| println!("Imported snapshot from {}", input.display()))
                 }
@@ -401,6 +403,7 @@ fn import_command(
                 print_private_import_mode(secrets_dir);
                 println!("Import compression: {}", compression.as_str());
                 confirm_import(yes)?;
+                warn_if_partial_restore(archive_secrets_included(archive)?);
                 import_archive_with_private_keys(&data_dir, archive, compression, &private_options)
                     .map(|()| println!("Imported archive from {}", archive.display()))
             }
@@ -419,6 +422,7 @@ fn import_command(
                 print_private_import_mode(secrets_dir);
                 println!("Import compression: {}", compression.as_str());
                 confirm_import(yes)?;
+                warn_if_partial_restore(archive_secrets_included(archive)?);
                 import_archive_postgres_with_private_keys(
                     &database_url,
                     bookshelf_dir,
@@ -463,6 +467,16 @@ fn print_private_import_mode(secrets_dir: Option<&Path>) {
             "Private keys: restore to data-dir-relative and configured TLS paths (existing files \
              require --force)"
         ),
+    }
+}
+
+fn warn_if_partial_restore(secrets_included: bool) {
+    if !secrets_included {
+        eprintln!(
+            "warning: snapshot has secrets_included=false; database secret values (kvpair, \
+             OAuth grants/tokens, and OAuth application secrets) are not in this archive. \
+             Re-export with --include-secrets for a complete restore."
+        );
     }
 }
 

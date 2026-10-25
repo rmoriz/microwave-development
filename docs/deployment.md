@@ -938,8 +938,10 @@ bags, checksums, cookbooks, cookbook artifacts, policies, policy groups,
 OAuth applications, OAuth grants/tokens, explicit and empty sandboxes, telemetry
 rows, and `kvpair`. Import applies in one transaction on either backend and
 preserves ids, authz ids, timestamps, hashes, keys, and token expiry/revocation
-state. PostgreSQL imports advance the sequence-backed cookbook, artifact, and
-OAuth identifiers so later inserts do not collide.
+state. Telemetry merges by `(property, event_timestamp)`, so target-local events
+are preserved and repeated imports do not duplicate rows. PostgreSQL imports
+advance the sequence-backed cookbook, artifact, and OAuth identifiers so later
+inserts do not collide.
 
 **Secret default.** Without `--include-secrets`, the export omits `kvpair`
 (operator secrets, browser sessions, password-reset tokens, and the maintenance
@@ -968,19 +970,34 @@ For a complete migration pass both `--include-secrets` and
 
 Archives (`--archive PATH.tar.gz`) add the local `bookshelf/` tree and,
 optionally, `secrets/manifest.json` plus `secrets/files/...` to the snapshot.
-They are written atomically with mode `0600`. Import validates tar entries
-before extraction (only `snapshot.json`, `bookshelf/`, and `secrets/`, no
-absolute paths, `..`, symlinks, hard links, or special files), stages them
-privately, checks private-file destinations and overwrite conflicts, imports
-the database in one transaction, swaps the bookshelf into place, then writes
-private files as mode `0600` with newly created parent directories mode `0700`.
-Import remains confirmation-gated; pass `--yes` non-interactively.
+They are written atomically with mode `0600`. Archive size is capped at
+1,000,000 entries and 16 GiB total uncompressed bytes. Import validates tar
+entries before extraction (only `snapshot.json`, `bookshelf/`, and `secrets/`,
+no absolute paths, `..`, symlinks, hard links, or special files), stages them
+privately, checks private-file destinations, parent directories, and overwrite
+conflicts, then imports the database in one transaction. It swaps the
+bookshelf into place and commits the pre-staged private files as mode `0600`
+with newly created parent directories mode `0700`. The previous bookshelf is
+retained until the private-file commit succeeds and restored if that commit
+fails. Import remains confirmation-gated; pass `--yes` non-interactively.
+
+A `data-dir` private-file manifest entry is restricted to the fixed export
+allowlist. Nested paths such as `nested/evil.conf`, `microwave.db`, absolute
+paths, `..`, and inconsistent `suggested_name` values are rejected.
+
+An empty archive `bookshelf/` will not replace a populated live bookshelf
+without `--force`. If the live `bookshelf` path is a symlink, the symlink
+itself is moved aside and replaced with the restored directory; its target is
+never followed or modified.
 
 Private files restore to the target data directory and the target config's TLS
 paths by default. Pass `--secrets-dir DIR` to put every private file under one
-directory instead, or `--force` to replace an existing key file. Overwriting a
-key can invalidate clients that trust the old key, so use `--force` only for a
-deliberate replacement.
+directory instead, or `--force` to replace an existing key file or a populated
+bookshelf with an empty archive one. Overwriting a key can invalidate clients
+that trust the old key, so use `--force` only for a deliberate replacement.
+
+A safe snapshot (`secrets_included: false`) prints a warning during import;
+re-export with `--include-secrets` for a complete database-secret restore.
 
 For S3/Garage/MinIO there is no local bookshelf to archive. Replicate the
 bucket with your object-store tooling (`rclone`, `aws s3 sync`, Garage

@@ -622,6 +622,66 @@ fn safe_export_redacts_secrets_and_include_secrets_round_trips_them() {
     );
 }
 
+fn telemetry_rows(database: &Path) -> Vec<(String, String)> {
+    let connection = rusqlite::Connection::open(database).unwrap();
+    let mut statement = connection
+        .prepare("SELECT property, event_timestamp FROM telemetry ORDER BY property")
+        .unwrap();
+    let rows = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap();
+    rows.collect::<Result<Vec<_>, _>>().unwrap()
+}
+
+#[test]
+fn telemetry_import_merges_and_preserves_local_rows() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(source.path())).unwrap();
+    store
+        .create_org("telemetry-merge", "Telemetry Merge")
+        .unwrap();
+    let connection = rusqlite::Connection::open(database(source.path())).unwrap();
+    connection
+        .execute(
+            "INSERT INTO telemetry (property, event_timestamp) VALUES ('source-event', '2026-10-25T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+    drop(store);
+    let snapshot = source.path().join("telemetry.json");
+    export(source.path(), &snapshot).unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    let target_store = SqliteStore::open(&database(target.path())).unwrap();
+    let connection = rusqlite::Connection::open(database(target.path())).unwrap();
+    connection
+        .execute(
+            "INSERT INTO telemetry (property, event_timestamp) VALUES ('local-event', '2026-10-24T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+    drop(target_store);
+
+    import(target.path(), &snapshot).unwrap();
+    assert_eq!(
+        telemetry_rows(&database(target.path())),
+        vec![
+            (
+                "local-event".to_string(),
+                "2026-10-24T00:00:00Z".to_string()
+            ),
+            (
+                "source-event".to_string(),
+                "2026-10-25T00:00:00Z".to_string()
+            ),
+        ]
+    );
+    import(target.path(), &snapshot).unwrap();
+    assert_eq!(telemetry_rows(&database(target.path())).len(), 2);
+}
+
 #[test]
 fn archive_round_trips_snapshot_and_bookshelf_blob() {
     let source = tempfile::tempdir().unwrap();
@@ -873,6 +933,211 @@ fn archive_private_keys_round_trip_to_data_dir_and_tls_paths() {
 }
 
 #[test]
+fn empty_archive_bookshelf_requires_force_over_populated_target() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(source.path())).unwrap();
+    store
+        .create_org("empty-bookshelf", "Empty Bookshelf")
+        .unwrap();
+    drop(store);
+    let archive = source.path().join("empty-bookshelf.tar.gz");
+    export_archive(source.path(), &archive).unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    let live_bookshelf = target.path().join("bookshelf");
+    std::fs::create_dir_all(&live_bookshelf).unwrap();
+    std::fs::write(live_bookshelf.join("live-blob"), b"LIVE-DATA").unwrap();
+    let options = PrivateKeyImportOptions {
+        data_dir: Some(target.path().to_path_buf()),
+        ..PrivateKeyImportOptions::default()
+    };
+    let error =
+        import_archive_with_private_keys(target.path(), &archive, Compression::default(), &options)
+            .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("bookshelf is empty"), "{message}");
+    assert!(message.contains("--force"), "{message}");
+    assert_eq!(
+        std::fs::read(live_bookshelf.join("live-blob")).unwrap(),
+        b"LIVE-DATA"
+    );
+    assert!(!database(target.path()).exists());
+
+    let forced = PrivateKeyImportOptions {
+        force: true,
+        ..options
+    };
+    import_archive_with_private_keys(target.path(), &archive, Compression::default(), &forced)
+        .unwrap();
+    assert!(database(target.path()).exists());
+    assert!(live_bookshelf.is_dir());
+    assert_eq!(std::fs::read_dir(&live_bookshelf).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn archive_bookshelf_replaces_a_symlink_without_following_it() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(source.path())).unwrap();
+    let org = store
+        .create_org("symlink-bookshelf", "Symlink Bookshelf")
+        .unwrap();
+    drop(store);
+    let source_blob_dir = source
+        .path()
+        .join("bookshelf")
+        .join(format!("organization-{}", org.id));
+    std::fs::create_dir_all(&source_blob_dir).unwrap();
+    std::fs::write(source_blob_dir.join("checksum-new"), b"NEW-DATA").unwrap();
+    let archive = source.path().join("symlink-bookshelf.tar.gz");
+    export_archive(source.path(), &archive).unwrap();
+
+    let external = tempfile::tempdir().unwrap();
+    std::fs::write(external.path().join("old-blob"), b"OLD-DATA").unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let live_bookshelf = target.path().join("bookshelf");
+    std::os::unix::fs::symlink(external.path(), &live_bookshelf).unwrap();
+
+    let options = PrivateKeyImportOptions {
+        data_dir: Some(target.path().to_path_buf()),
+        ..PrivateKeyImportOptions::default()
+    };
+    import_archive_with_private_keys(target.path(), &archive, Compression::default(), &options)
+        .unwrap();
+
+    let metadata = std::fs::symlink_metadata(&live_bookshelf).unwrap();
+    assert!(metadata.is_dir());
+    assert!(!metadata.file_type().is_symlink());
+    let restored = live_bookshelf
+        .join(format!("organization-{}", org.id))
+        .join("checksum-new");
+    assert_eq!(std::fs::read(restored).unwrap(), b"NEW-DATA");
+    assert_eq!(
+        std::fs::read(external.path().join("old-blob")).unwrap(),
+        b"OLD-DATA"
+    );
+}
+
+fn write_pivotal_manifest_archive(path: &Path, snapshot: &str) {
+    let manifest = serde_json::json!({
+        "format": "microwave-migrate-private-files",
+        "version": 1,
+        "entries": [{
+            "kind": "data-dir",
+            "archive_path": "secrets/files/0001-pivotal.pem",
+            "original_path": "/source/pivotal.pem",
+            "relative_path": "pivotal.pem",
+            "suggested_name": "pivotal.pem",
+            "mode": 384,
+        }]
+    });
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+    write_test_archive(
+        path,
+        &[
+            (
+                "snapshot.json",
+                tar::EntryType::Regular,
+                None,
+                snapshot.as_bytes(),
+            ),
+            (
+                "secrets/manifest.json",
+                tar::EntryType::Regular,
+                None,
+                &manifest_bytes,
+            ),
+            (
+                "secrets/files/0001-pivotal.pem",
+                tar::EntryType::Regular,
+                None,
+                b"STAGED-KEY",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn private_files_are_not_committed_when_database_import_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("db-failure.tar.gz");
+    let snapshot = serde_json::json!({
+        "format": "microwave-server-snapshot",
+        "version": 1,
+        "generated_at": "2026-10-25T00:00:00Z",
+        "source": {"kind": "local-store"},
+        "secrets_included": false,
+        "data": {
+            "users": [
+                {"id": "u1", "authz_id": "a1", "username": "duplicate-user"},
+                {"id": "u2", "authz_id": "a2", "username": "duplicate-user"}
+            ]
+        }
+    });
+    write_pivotal_manifest_archive(&archive, &snapshot.to_string());
+
+    let target = tempfile::tempdir().unwrap();
+    let options = PrivateKeyImportOptions {
+        data_dir: Some(target.path().to_path_buf()),
+        ..PrivateKeyImportOptions::default()
+    };
+    let error =
+        import_archive_with_private_keys(target.path(), &archive, Compression::default(), &options)
+            .unwrap_err();
+    assert!(!error.to_string().is_empty());
+    assert!(!target.path().join("pivotal.pem").exists());
+    let staged_temps = std::fs::read_dir(target.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+        .count();
+    assert_eq!(staged_temps, 0);
+    let store = SqliteStore::open(&database(target.path())).unwrap();
+    assert!(store.find_user("duplicate-user").unwrap().is_none());
+}
+
+#[test]
+fn private_restore_preflight_rejects_bad_parent_before_database() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(source.path())).unwrap();
+    store
+        .create_org("private-preflight", "Private Preflight")
+        .unwrap();
+    drop(store);
+    write_private_fixture(&source.path().join("pivotal.pem"), b"PIVOTAL");
+    let tls_source = tempfile::tempdir().unwrap();
+    let cert = tls_source.path().join("site.crt");
+    let key = tls_source.path().join("site.key");
+    write_private_fixture(&cert, b"CERT");
+    write_private_fixture(&key, b"KEY");
+    let archive = source.path().join("preflight.tar.gz");
+    let export_options = PrivateKeyExportOptions {
+        data_dir: Some(source.path().to_path_buf()),
+        tls_cert_path: Some(cert),
+        tls_key_path: Some(key),
+    };
+    export_archive_with_private_keys(source.path(), &archive, false, Some(&export_options))
+        .unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    let blocker = target.path().join("blocker");
+    std::fs::write(&blocker, b"not-a-directory").unwrap();
+    let options = PrivateKeyImportOptions {
+        data_dir: Some(target.path().to_path_buf()),
+        tls_cert_path: Some(blocker.join("cert.pem")),
+        tls_key_path: Some(blocker.join("key.pem")),
+        ..PrivateKeyImportOptions::default()
+    };
+    let error =
+        import_archive_with_private_keys(target.path(), &archive, Compression::default(), &options)
+            .unwrap_err();
+    assert!(error.to_string().contains("is not a directory"));
+    assert!(!database(target.path()).exists());
+    assert!(!target.path().join("pivotal.pem").exists());
+    assert_eq!(std::fs::read(&blocker).unwrap(), b"not-a-directory");
+}
+
+#[test]
 fn archive_private_keys_refuse_overwrite_and_support_secrets_dir() {
     let source = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(&database(source.path())).unwrap();
@@ -965,6 +1230,96 @@ fn write_test_archive(path: &Path, entries: &[(&str, tar::EntryType, Option<&str
     }
     let encoder = builder.into_inner().unwrap();
     encoder.finish().unwrap();
+}
+
+fn write_manifest_archive(
+    path: &Path,
+    kind: &str,
+    relative_path: Option<&str>,
+    suggested_name: &str,
+    original_path: &str,
+) {
+    let valid_snapshot = r#"{"format":"microwave-server-snapshot","version":1,"generated_at":"2026-10-25T00:00:00Z","source":{"kind":"local-store"},"data":{}}"#;
+    let manifest = serde_json::json!({
+        "format": "microwave-migrate-private-files",
+        "version": 1,
+        "entries": [{
+            "kind": kind,
+            "archive_path": "secrets/files/0001-payload",
+            "original_path": original_path,
+            "relative_path": relative_path,
+            "suggested_name": suggested_name,
+            "mode": 384,
+        }]
+    });
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+    write_test_archive(
+        path,
+        &[
+            (
+                "snapshot.json",
+                tar::EntryType::Regular,
+                None,
+                valid_snapshot.as_bytes(),
+            ),
+            (
+                "secrets/manifest.json",
+                tar::EntryType::Regular,
+                None,
+                &manifest_bytes,
+            ),
+            (
+                "secrets/files/0001-payload",
+                tar::EntryType::Regular,
+                None,
+                b"payload",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn private_manifest_rejects_non_allowlisted_or_inconsistent_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let cases = [
+        ("nested/evil.conf", "evil.conf"),
+        ("microwave.db", "microwave.db"),
+        ("/tmp/evil", "evil"),
+        ("../evil", "evil"),
+        ("pivotal.pem", "other.pem"),
+    ];
+    for (index, (relative_path, suggested_name)) in cases.iter().enumerate() {
+        let archive = dir.path().join(format!("bad-{index}.tar.gz"));
+        write_manifest_archive(
+            &archive,
+            "data-dir",
+            Some(relative_path),
+            suggested_name,
+            "/source/pivotal.pem",
+        );
+        let target = tempfile::tempdir().unwrap();
+        let error = import_archive(target.path(), &archive).unwrap_err();
+        assert!(
+            matches!(error, MigrateError::Archive(_)),
+            "unexpected error for {relative_path:?}: {error}"
+        );
+        assert!(!database(target.path()).exists());
+        assert!(!target.path().join("nested/evil.conf").exists());
+        assert!(!target.path().join("evil").exists());
+    }
+
+    let archive = dir.path().join("bad-tls-relative.tar.gz");
+    write_manifest_archive(
+        &archive,
+        "tls-certificate",
+        Some("nested/site.crt"),
+        "site.crt",
+        "/source/site.crt",
+    );
+    let target = tempfile::tempdir().unwrap();
+    let error = import_archive(target.path(), &archive).unwrap_err();
+    assert!(matches!(error, MigrateError::Archive(_)));
+    assert!(!database(target.path()).exists());
 }
 
 #[test]

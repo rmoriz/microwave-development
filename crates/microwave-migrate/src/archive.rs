@@ -12,9 +12,15 @@
 //! Import extracts into a private staging directory before touching the live
 //! database, bookshelf, or private files. Entry names are restricted to that
 //! allowlist, and absolute paths, `..`, symlinks, hard links, and special
-//! files are rejected. Private destinations and existing-file conflicts are
-//! checked before the database transaction starts; extracted private files are
-//! always written mode `0600`.
+//! files are rejected. Archives are capped at one million entries.
+//! Private destinations, parent directories, existing-file conflicts, and
+//! empty-over-populated bookshelf replacements are checked, and private files
+//! are staged, before the database transaction starts. Extracted private files
+//! are always written mode `0600`; parent directories created by the importer
+//! are mode `0700`.
+//!
+//! A live bookshelf path that is a symlink is moved aside as a symlink entry;
+//! its target is never followed or modified.
 //!
 //! Archives only carry a *local* bookshelf directory. Microwave does not fetch
 //! S3/Garage objects here: use bucket replication or `rclone`/`aws s3 sync`
@@ -22,14 +28,15 @@
 
 use crate::{
     export_postgres_with_options, export_with_options, import_database_with_compression,
-    import_postgres_with_compression, read_snapshot, Compression, MigrateError, DATABASE_FILE,
+    import_postgres_with_compression, read_snapshot, Compression, MigrateError, Snapshot,
+    DATABASE_FILE,
 };
 use flate2::write::GzEncoder;
 use flate2::Compression as GzipLevel;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tar::{Builder, Header};
@@ -48,6 +55,7 @@ pub const ARCHIVE_SECRETS_FILES_PREFIX: &str = "secrets/files";
 const SECRETS_MANIFEST_FORMAT: &str = "microwave-migrate-private-files";
 const SECRETS_MANIFEST_VERSION: u32 = 1;
 const MAX_ARCHIVE_ENTRY_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRIES: usize = 1_000_000;
 
 /// Explicit data-directory filenames that may contain private material.
 ///
@@ -149,6 +157,18 @@ struct ExtractedPrivateFile {
 struct PlannedPrivateFile {
     source: PathBuf,
     destination: PathBuf,
+}
+
+#[derive(Clone)]
+struct StagedPrivateFile {
+    temporary: PathBuf,
+    destination: PathBuf,
+    backup: Option<PathBuf>,
+}
+
+struct BookshelfSwap {
+    target: PathBuf,
+    backup: Option<PathBuf>,
 }
 
 /// Export a local SQLite data directory and its `bookshelf/` tree with
@@ -404,6 +424,42 @@ fn sanitize_private_name(name: &str) -> String {
         .collect()
 }
 
+/// Read only the snapshot envelope from an archive and report whether it
+/// contains database secret values.
+///
+/// The CLI uses this to warn before a partial (`secrets_included: false`)
+/// restore. It does not extract bookshelf or private material.
+pub fn archive_secrets_included(input: &Path) -> Result<bool, MigrateError> {
+    let file = File::open(input).map_err(|source| MigrateError::Read {
+        path: input.to_path_buf(),
+        source,
+    })?;
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    let mut entry_count = 0_usize;
+    for entry in archive.entries().map_err(archive_error)? {
+        entry_count += 1;
+        check_entry_count(entry_count)?;
+        let mut entry = entry.map_err(archive_error)?;
+        let path = entry.path().map_err(archive_error)?;
+        if path == Path::new(ARCHIVE_SNAPSHOT_ENTRY) {
+            let size = entry.header().size().map_err(archive_error)?;
+            if size > MAX_ARCHIVE_ENTRY_BYTES {
+                return Err(MigrateError::Archive(
+                    "snapshot.json exceeds the archive entry size limit".into(),
+                ));
+            }
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).map_err(archive_error)?;
+            let snapshot: Snapshot = serde_json::from_slice(&bytes)?;
+            return Ok(snapshot.secrets_included);
+        }
+    }
+    Err(MigrateError::Archive(format!(
+        "archive does not contain a {ARCHIVE_SNAPSHOT_ENTRY} file"
+    )))
+}
+
 /// Import an archive into a local SQLite data directory using the default
 /// serialized-object compression.
 ///
@@ -449,18 +505,46 @@ pub fn import_archive_with_private_keys(
             ))
         })?;
     let extracted = extract_archive(input, staging.path())?;
-    // Resolve and check every private destination before the database or
-    // bookshelf is touched. This is where overwrite refusal happens.
+    let bookshelf_target = data_dir.join(ARCHIVE_BOOKSHELF_PREFIX);
+    // Resolve and check every private destination and the bookshelf
+    // replacement before the database or live bookshelf is touched.
     let private_plan = plan_private_files(&extracted.secrets, data_dir, private_keys)?;
-    import_database_with_compression(
+    preflight_bookshelf(
+        extracted.bookshelf.as_deref(),
+        &bookshelf_target,
+        private_keys.force,
+    )?;
+    let staged_private = stage_private_files(&private_plan)?;
+
+    if let Err(error) = import_database_with_compression(
         &data_dir.join(DATABASE_FILE),
         &extracted.snapshot_path,
         compression,
-    )?;
-    if let Some(bookshelf) = extracted.bookshelf {
-        replace_bookshelf(&bookshelf, &data_dir.join(ARCHIVE_BOOKSHELF_PREFIX))?;
+    ) {
+        cleanup_staged_private_files(&staged_private);
+        return Err(error);
     }
-    restore_private_files(&private_plan, private_keys.force)?;
+
+    let mut bookshelf_swap = None;
+    if let Some(bookshelf) = extracted.bookshelf {
+        match swap_bookshelf(&bookshelf, &bookshelf_target) {
+            Ok(swap) => bookshelf_swap = Some(swap),
+            Err(error) => {
+                cleanup_staged_private_files(&staged_private);
+                return Err(error);
+            }
+        }
+    }
+
+    if let Err(error) = commit_staged_private_files(staged_private, private_keys.force) {
+        if let Some(swap) = bookshelf_swap {
+            rollback_bookshelf_swap(swap);
+        }
+        return Err(error);
+    }
+    if let Some(swap) = bookshelf_swap {
+        finalize_bookshelf_swap(swap);
+    }
     Ok(())
 }
 
@@ -532,11 +616,40 @@ pub fn import_archive_postgres_with_private_keys(
         .unwrap_or_else(|| Path::new("."));
     let extracted = extract_archive(input, staging.path())?;
     let private_plan = plan_private_files(&extracted.secrets, default_data_dir, private_keys)?;
-    import_postgres_with_compression(database_url, &extracted.snapshot_path, compression)?;
-    if let Some(bookshelf) = extracted.bookshelf {
-        replace_bookshelf(&bookshelf, bookshelf_dir)?;
+    preflight_bookshelf(
+        extracted.bookshelf.as_deref(),
+        bookshelf_dir,
+        private_keys.force,
+    )?;
+    let staged_private = stage_private_files(&private_plan)?;
+
+    if let Err(error) =
+        import_postgres_with_compression(database_url, &extracted.snapshot_path, compression)
+    {
+        cleanup_staged_private_files(&staged_private);
+        return Err(error);
     }
-    restore_private_files(&private_plan, private_keys.force)?;
+
+    let mut bookshelf_swap = None;
+    if let Some(bookshelf) = extracted.bookshelf {
+        match swap_bookshelf(&bookshelf, bookshelf_dir) {
+            Ok(swap) => bookshelf_swap = Some(swap),
+            Err(error) => {
+                cleanup_staged_private_files(&staged_private);
+                return Err(error);
+            }
+        }
+    }
+
+    if let Err(error) = commit_staged_private_files(staged_private, private_keys.force) {
+        if let Some(swap) = bookshelf_swap {
+            rollback_bookshelf_swap(swap);
+        }
+        return Err(error);
+    }
+    if let Some(swap) = bookshelf_swap {
+        finalize_bookshelf_swap(swap);
+    }
     Ok(())
 }
 
@@ -564,9 +677,12 @@ fn extract_archive(input: &Path, staging: &Path) -> Result<ExtractedArchive, Mig
     let mut seen_manifest = false;
     let mut secret_staging_paths = Vec::new();
     let mut total_bytes = 0_u64;
+    let mut entry_count = 0_usize;
 
     let entries = archive.entries().map_err(archive_error)?;
     for entry in entries {
+        entry_count += 1;
+        check_entry_count(entry_count)?;
         let mut entry = entry.map_err(archive_error)?;
         let raw_path = entry.path().map_err(archive_error)?.into_owned();
         let path = safe_archive_path(&raw_path).ok_or_else(|| {
@@ -905,19 +1021,25 @@ fn read_private_manifest(
                         entry.archive_path
                     )));
                 };
-                if safe_archive_path(Path::new(relative_path)).is_none() {
+                let Some(fixed_name) = data_dir_private_relative_path(relative_path) else {
                     return Err(MigrateError::Archive(format!(
-                        "secrets manifest data-dir path {relative_path:?} is not safe"
+                        "secrets manifest data-dir path {relative_path:?} is not an allowed \
+                         private filename"
+                    )));
+                };
+                if entry.suggested_name != fixed_name {
+                    return Err(MigrateError::Archive(format!(
+                        "secrets manifest data-dir entry {:?} has suggested_name {:?}; expected {:?}",
+                        entry.archive_path, entry.suggested_name, fixed_name
                     )));
                 }
             }
             PrivateFileKind::TlsCertificate | PrivateFileKind::TlsPrivateKey => {
-                if let Some(relative_path) = &entry.relative_path {
-                    if safe_archive_path(Path::new(relative_path)).is_none() {
-                        return Err(MigrateError::Archive(format!(
-                            "secrets manifest TLS path {relative_path:?} is not safe"
-                        )));
-                    }
+                if entry.relative_path.is_some() {
+                    return Err(MigrateError::Archive(format!(
+                        "secrets manifest TLS entry {:?} must not carry a data-dir relative_path",
+                        entry.archive_path
+                    )));
                 }
             }
         }
@@ -950,6 +1072,19 @@ fn read_private_manifest(
         }
     }
     Ok(entries)
+}
+
+/// Return the fixed data-dir filename for an allowed private file.
+///
+/// Data-dir private files are restricted to the same explicit manifest used
+/// by export. This deliberately rejects nested paths such as
+/// `nested/evil.conf`, database files such as `microwave.db`, and any other
+/// file that would otherwise land inside the data directory.
+fn data_dir_private_relative_path(value: &str) -> Option<&'static str> {
+    DATA_DIR_PRIVATE_FILES
+        .iter()
+        .copied()
+        .find(|name| *name == value)
 }
 
 fn safe_single_name(name: &str) -> Option<&str> {
@@ -1004,12 +1139,18 @@ fn plan_private_files(
                             private.entry.archive_path
                         ))
                     })?;
-                    let relative = safe_archive_path(Path::new(relative)).ok_or_else(|| {
+                    let fixed_name = data_dir_private_relative_path(relative).ok_or_else(|| {
                         MigrateError::Archive(format!(
-                            "private data-dir path {relative:?} is not safe"
+                            "private data-dir path {relative:?} is not an allowed private filename"
                         ))
                     })?;
-                    data_dir.join(relative)
+                    if private.entry.suggested_name != fixed_name {
+                        return Err(MigrateError::Archive(format!(
+                            "private data-dir entry {:?} has an inconsistent suggested_name",
+                            private.entry.archive_path
+                        )));
+                    }
+                    data_dir.join(fixed_name)
                 }
                 PrivateFileKind::TlsCertificate => {
                     options.tls_cert_path.clone().ok_or_else(|| {
@@ -1038,6 +1179,7 @@ fn plan_private_files(
                 destination.display()
             )));
         }
+        validate_private_destination_parent(&destination)?;
         match fs::symlink_metadata(&destination) {
             Ok(metadata) => {
                 if metadata.is_dir() {
@@ -1070,18 +1212,48 @@ fn plan_private_files(
     Ok(plan)
 }
 
-fn restore_private_files(plan: &[PlannedPrivateFile], force: bool) -> Result<(), MigrateError> {
-    for private in plan {
-        if let Some(parent) = private.destination.parent() {
-            if !parent.as_os_str().is_empty() {
-                create_private_parents(parent)?;
+fn validate_private_destination_parent(destination: &Path) -> Result<(), MigrateError> {
+    let Some(parent) = destination.parent() else {
+        return Ok(());
+    };
+    let mut current = PathBuf::new();
+    for component in parent.components() {
+        current.push(component.as_os_str());
+        match fs::metadata(&current) {
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(MigrateError::Archive(format!(
+                    "private key parent {} is not a directory",
+                    current.display()
+                )))
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(MigrateError::Read {
+                    path: current,
+                    source: error,
+                })
             }
         }
-        let data = fs::read(&private.source).map_err(|source| MigrateError::Read {
-            path: private.source.clone(),
-            source,
-        })?;
-        if force {
+    }
+    Ok(())
+}
+
+fn stage_private_files(
+    plan: &[PlannedPrivateFile],
+) -> Result<Vec<StagedPrivateFile>, MigrateError> {
+    let mut staged = Vec::with_capacity(plan.len());
+    for private in plan {
+        let result = (|| -> Result<StagedPrivateFile, MigrateError> {
+            if let Some(parent) = private.destination.parent() {
+                if !parent.as_os_str().is_empty() {
+                    create_private_parents(parent)?;
+                }
+            }
+            let data = fs::read(&private.source).map_err(|source| MigrateError::Read {
+                path: private.source.clone(),
+                source,
+            })?;
             let temporary = private.destination.with_file_name(format!(
                 ".{}.tmp-{}-{}",
                 private
@@ -1093,18 +1265,133 @@ fn restore_private_files(plan: &[PlannedPrivateFile], force: bool) -> Result<(),
                 now_nanos()
             ));
             write_private_file(&temporary, &data)?;
-            if let Err(source) = fs::rename(&temporary, &private.destination) {
-                let _ = fs::remove_file(&temporary);
-                return Err(MigrateError::Write {
-                    path: private.destination.clone(),
+            Ok(StagedPrivateFile {
+                temporary,
+                destination: private.destination.clone(),
+                backup: None,
+            })
+        })();
+        match result {
+            Ok(file) => staged.push(file),
+            Err(error) => {
+                cleanup_staged_private_files(&staged);
+                return Err(error);
+            }
+        }
+    }
+    Ok(staged)
+}
+
+fn cleanup_staged_private_files(staged: &[StagedPrivateFile]) {
+    for private in staged {
+        let _ = fs::remove_file(&private.temporary);
+    }
+}
+
+fn commit_staged_private_files(
+    staged: Vec<StagedPrivateFile>,
+    force: bool,
+) -> Result<(), MigrateError> {
+    let mut committed: Vec<StagedPrivateFile> = Vec::new();
+    let mut pending = staged.into_iter();
+    while let Some(mut private) = pending.next() {
+        match fs::symlink_metadata(&private.destination) {
+            Ok(metadata) => {
+                if metadata.is_dir() {
+                    cleanup_staged_private_files(&[private.clone()]);
+                    cleanup_staged_private_files(&committed);
+                    cleanup_staged_private_files(&pending.collect::<Vec<_>>());
+                    rollback_committed_private_files(&mut committed);
+                    return Err(MigrateError::Archive(format!(
+                        "refusing to replace directory {} with a private file",
+                        private.destination.display()
+                    )));
+                }
+                if !force {
+                    cleanup_staged_private_files(&[private.clone()]);
+                    cleanup_staged_private_files(&committed);
+                    cleanup_staged_private_files(&pending.collect::<Vec<_>>());
+                    rollback_committed_private_files(&mut committed);
+                    return Err(MigrateError::Archive(format!(
+                        "refusing to overwrite existing private file {}; pass --force to replace \
+                         it (this can invalidate existing clients)",
+                        private.destination.display()
+                    )));
+                }
+                let backup = private.destination.with_file_name(format!(
+                    ".{}.backup-{}-{}",
+                    private
+                        .destination
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("private"),
+                    std::process::id(),
+                    now_nanos()
+                ));
+                if let Err(source) = fs::rename(&private.destination, &backup) {
+                    cleanup_staged_private_files(&[private.clone()]);
+                    cleanup_staged_private_files(&pending.collect::<Vec<_>>());
+                    rollback_committed_private_files(&mut committed);
+                    return Err(MigrateError::Write {
+                        path: private.destination.clone(),
+                        source,
+                    });
+                }
+                private.backup = Some(backup);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                cleanup_staged_private_files(&[private.clone()]);
+                cleanup_staged_private_files(&pending.collect::<Vec<_>>());
+                rollback_committed_private_files(&mut committed);
+                return Err(MigrateError::Read {
+                    path: private.destination,
                     source,
                 });
             }
-        } else {
-            write_private_file(&private.destination, &data)?;
+        }
+
+        if let Err(source) = fs::rename(&private.temporary, &private.destination) {
+            if let Some(backup) = &private.backup {
+                let _ = fs::rename(backup, &private.destination);
+            }
+            cleanup_staged_private_files(&[private.clone()]);
+            cleanup_staged_private_files(&pending.collect::<Vec<_>>());
+            rollback_committed_private_files(&mut committed);
+            return Err(MigrateError::Write {
+                path: private.destination,
+                source,
+            });
+        }
+        committed.push(private);
+    }
+    for private in &committed {
+        if let Some(backup) = &private.backup {
+            remove_path_if_exists(backup);
         }
     }
     Ok(())
+}
+
+fn rollback_committed_private_files(committed: &mut Vec<StagedPrivateFile>) {
+    for private in committed.drain(..).rev() {
+        remove_path_if_exists(&private.destination);
+        if let Some(backup) = &private.backup {
+            let _ = fs::rename(backup, &private.destination);
+        }
+    }
+}
+
+fn remove_path_if_exists(path: &Path) {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => {
+            let _ = fs::remove_dir_all(path);
+        }
+        Ok(_) => {
+            let _ = fs::remove_file(path);
+        }
+        Err(_) => {}
+    }
 }
 
 fn write_private_file(path: &Path, data: &[u8]) -> Result<(), MigrateError> {
@@ -1176,6 +1463,15 @@ fn create_private_parents(parent: &Path) -> Result<(), MigrateError> {
                 })
             }
         }
+    }
+    Ok(())
+}
+
+fn check_entry_count(count: usize) -> Result<(), MigrateError> {
+    if count > MAX_ARCHIVE_ENTRIES {
+        return Err(MigrateError::Archive(format!(
+            "archive contains more than {MAX_ARCHIVE_ENTRIES} entries"
+        )));
     }
     Ok(())
 }
@@ -1442,7 +1738,47 @@ fn append_bytes<W: Write>(
         .map_err(archive_error)
 }
 
-fn replace_bookshelf(staged: &Path, target: &Path) -> Result<(), MigrateError> {
+fn preflight_bookshelf(
+    staged: Option<&Path>,
+    target: &Path,
+    force: bool,
+) -> Result<(), MigrateError> {
+    let Some(staged) = staged else {
+        return Ok(());
+    };
+    if !directory_is_empty(staged)? {
+        return Ok(());
+    }
+    let target_has_content = match fs::read_dir(target) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => true,
+        Err(error) => {
+            return Err(MigrateError::Read {
+                path: target.to_path_buf(),
+                source: error,
+            })
+        }
+    };
+    if target_has_content && !force {
+        return Err(MigrateError::Archive(format!(
+            "archive bookshelf is empty but target {} is not; pass --force to replace a populated \
+             bookshelf with an empty archive",
+            target.display()
+        )));
+    }
+    Ok(())
+}
+
+fn directory_is_empty(path: &Path) -> Result<bool, MigrateError> {
+    let mut entries = fs::read_dir(path).map_err(|source| MigrateError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(entries.next().is_none())
+}
+
+fn swap_bookshelf(staged: &Path, target: &Path) -> Result<BookshelfSwap, MigrateError> {
     if let Some(parent) = target.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent).map_err(|source| MigrateError::Write {
@@ -1472,14 +1808,25 @@ fn replace_bookshelf(staged: &Path, target: &Path) -> Result<(), MigrateError> {
             source,
         });
     }
-    if had_target {
-        if backup.is_dir() {
-            let _ = fs::remove_dir_all(&backup);
-        } else {
-            let _ = fs::remove_file(&backup);
-        }
+    Ok(BookshelfSwap {
+        target: target.to_path_buf(),
+        backup: had_target.then_some(backup),
+    })
+}
+
+fn finalize_bookshelf_swap(swap: BookshelfSwap) {
+    if let Some(backup) = swap.backup {
+        remove_path_if_exists(&backup);
     }
-    Ok(())
+}
+
+fn rollback_bookshelf_swap(swap: BookshelfSwap) {
+    // Never follow a symlink at the target: remove the restored directory and
+    // put the previous entry (which may itself be a symlink) back.
+    remove_path_if_exists(&swap.target);
+    if let Some(backup) = swap.backup {
+        let _ = fs::rename(backup, &swap.target);
+    }
 }
 
 fn archive_error(error: impl std::fmt::Display) -> MigrateError {
@@ -1498,4 +1845,15 @@ fn now_nanos() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{check_entry_count, MAX_ARCHIVE_ENTRIES};
+
+    #[test]
+    fn archive_entry_cap_is_enforced() {
+        assert!(check_entry_count(MAX_ARCHIVE_ENTRIES).is_ok());
+        assert!(check_entry_count(MAX_ARCHIVE_ENTRIES + 1).is_err());
+    }
 }

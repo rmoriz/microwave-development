@@ -2126,19 +2126,20 @@ async fn import_telemetry(
     transaction: &mut PgTransaction<'_>,
     snapshot: &StoreSnapshot,
 ) -> Result<(), StoreError> {
-    if !snapshot.telemetry.is_empty() {
-        sqlx::query("DELETE FROM telemetry")
-            .execute(&mut **transaction)
-            .await
-            .map_err(db)?;
-        for row in &snapshot.telemetry {
-            sqlx::query("INSERT INTO telemetry (property, event_timestamp) VALUES ($1, $2)")
-                .bind(&row.property)
-                .bind(&row.event_timestamp)
-                .execute(&mut **transaction)
-                .await
-                .map_err(db)?;
-        }
+    for row in &snapshot.telemetry {
+        sqlx::query(
+            "INSERT INTO telemetry (property, event_timestamp)
+             SELECT $1, $2
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM telemetry
+                 WHERE property = $1 AND event_timestamp = $2
+             )",
+        )
+        .bind(&row.property)
+        .bind(&row.event_timestamp)
+        .execute(&mut **transaction)
+        .await
+        .map_err(db)?;
     }
     Ok(())
 }

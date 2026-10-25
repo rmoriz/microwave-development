@@ -283,10 +283,14 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 > `--archive PATH.tar.gz` carries the snapshot plus local `bookshelf/` blobs
 > with an allowlist, traversal/symlink/absolute-path/special-file rejection,
 > mode-0600 extraction, overwrite refusal unless `--force`, `--secrets-dir`
-> support, and confirmation-gated restore. Use both secret flags for a truly
-> complete self-migration. Remote S3/Garage objects are outside the archive;
-> replicate the bucket. `microwave-ctl backup` remains a database-file/dump
-> plus bookshelf copy without private keys.
+> support, and confirmation-gated restore. Data-dir private paths are restricted
+> to the fixed export allowlist; an empty archive bookshelf requires `--force`
+> over a populated live one; telemetry merges instead of deleting local events;
+> private files are pre-staged and committed as a set; partial-secret imports
+> warn; archives are capped at 1,000,000 entries. Use both secret flags for a
+> truly complete self-migration. Remote S3/Garage objects are outside the
+> archive; replicate the bucket. `microwave-ctl backup` remains a
+> database-file/dump plus bookshelf copy without private keys.
 - [x] Implement **Snapshot importer (`microwave-migrate import`)** for both backends:
   - [x] Import users (including legacy password hashes and salts), organizations, associations, invites, and server-admins.
   - [x] Import clients and multi-key records (`actor_keys`).
