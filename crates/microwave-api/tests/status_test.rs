@@ -74,6 +74,29 @@ async fn status_reports_a_failing_search_backend_without_leaking_credentials() {
     assert_eq!(body["indexing"]["mode"], "embedded");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn status_bounds_a_hanging_object_store_probe() {
+    let mut state = support::state_with_pivotal();
+    state.object_store = Arc::new(HangingObjectStore);
+    let app = support::app(state);
+
+    let started = Instant::now();
+    let (status, body) = status_body(&app).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "fail");
+    assert_eq!(body["upstreams"]["bookshelf"], "fail");
+    assert_eq!(
+        body["upstream_details"]["bookshelf"]["detail"],
+        "probe timed out"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "object-store probe exceeded its bound: {:?}",
+        started.elapsed()
+    );
+}
+
 #[tokio::test]
 async fn status_reports_a_failing_object_store() {
     let mut state = support::state_with_pivotal();
@@ -114,6 +137,34 @@ async fn status_bounds_a_hanging_search_probe() {
         "health probe exceeded its bound: {:?}",
         started.elapsed()
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn status_stays_healthy_during_normal_sqlite_reads() {
+    let state = support::state_with_pivotal();
+    let sqlite = state.sqlite.clone().expect("sqlite handle");
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                sqlite.table_names().unwrap();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        })
+    };
+    let app = support::app(state.clone());
+
+    for _ in 0..20 {
+        state.store.health_check().await.unwrap();
+    }
+    let (status, body) = status_body(&app).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "pong");
+    assert_eq!(body["upstreams"]["chef_sql"], "pong");
+
+    stop.store(true, Ordering::Relaxed);
+    reader.join().unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -348,6 +399,40 @@ impl SearchBackend for CountingSearch {
 
     async fn delete_index(&self, _org_id: &str) -> Result<(), SearchError> {
         unreachable!()
+    }
+}
+
+struct HangingObjectStore;
+
+impl ObjectStore for HangingObjectStore {
+    fn put(
+        &self,
+        _organization_id: &str,
+        _checksum: &str,
+        _data: &[u8],
+    ) -> Result<(), ObjectStoreError> {
+        unreachable!()
+    }
+
+    fn get(&self, _organization_id: &str, _checksum: &str) -> Result<Vec<u8>, ObjectStoreError> {
+        unreachable!()
+    }
+
+    fn exists(&self, _organization_id: &str, _checksum: &str) -> bool {
+        false
+    }
+
+    fn delete(&self, _organization_id: &str, _checksum: &str) -> Result<bool, ObjectStoreError> {
+        unreachable!()
+    }
+
+    fn presigned_url(&self, _method: &str, _organization_id: &str, _checksum: &str) -> String {
+        unreachable!()
+    }
+
+    fn health_check(&self) -> Result<(), ObjectStoreError> {
+        std::thread::sleep(Duration::from_secs(2));
+        Ok(())
     }
 }
 

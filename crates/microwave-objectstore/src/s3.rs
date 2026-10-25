@@ -580,6 +580,9 @@ mod tests {
         assert_eq!(uri_encode("a-_.~", true), "a-_.~");
     }
 
+    /// Keep local-network health tests from competing under parallel CI runs.
+    static NETWORK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     type BucketRequest = (String, Option<String>);
 
     async fn bucket_server(
@@ -613,6 +616,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn health_check_heads_the_bucket_with_a_bounded_signed_request() {
+        let _network = NETWORK_TEST_LOCK.lock().await;
         let (base_url, requests) = bucket_server(200).await;
         let store =
             S3ObjectStore::new(S3Config::new(base_url, "chef", "garage", "key", "secret")).unwrap();
@@ -631,6 +635,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn health_check_reports_bucket_failures() {
+        let _network = NETWORK_TEST_LOCK.lock().await;
         let (base_url, _requests) = bucket_server(503).await;
         let store =
             S3ObjectStore::new(S3Config::new(base_url, "chef", "garage", "key", "secret")).unwrap();

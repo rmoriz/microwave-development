@@ -8,7 +8,7 @@
 
 use crate::search::{SearchBackend, SearchError};
 use microwave_objectstore::ObjectStore;
-use microwave_store::MetadataStore;
+use microwave_store::{HealthRepository, MetadataStore};
 use serde_json::{json, Map, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -211,10 +211,14 @@ async fn collect(
     search: &Arc<dyn SearchBackend>,
     object_store: &Arc<dyn ObjectStore + Send + Sync>,
 ) -> DependencySnapshot {
-    let metadata = probe_metadata(store);
+    let metadata = probe_metadata(store.as_ref());
     let search_probe = probe_search(search);
     let object = object_store.clone();
     let object_probe = async move {
+        // `spawn_blocking` tasks cannot be cancelled. The built-in local and
+        // S3 stores bound their own I/O; a custom store that hangs beyond the
+        // deadline leaves one detached blocking task alive, while the handler
+        // still returns at PROBE_TIMEOUT.
         match tokio::time::timeout(
             PROBE_TIMEOUT,
             tokio::task::spawn_blocking(move || object.health_check()),
@@ -234,7 +238,7 @@ async fn collect(
     }
 }
 
-async fn probe_metadata(store: &Arc<dyn MetadataStore>) -> DependencyProbe {
+async fn probe_metadata(store: &dyn HealthRepository) -> DependencyProbe {
     match tokio::time::timeout(PROBE_TIMEOUT, store.health_check()).await {
         Ok(Ok(())) => healthy("chef_sql", "ok"),
         Ok(Err(error)) => failed("chef_sql", error.to_string()),
@@ -321,9 +325,10 @@ fn redact_credentials(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        redact_credentials, truncate_detail, DependencyProbe, DependencySnapshot, HealthCache,
-        MAX_DETAIL_LEN, MAX_STALE_AGE,
+        probe_metadata, redact_credentials, truncate_detail, DependencyProbe, DependencySnapshot,
+        HealthCache, MAX_DETAIL_LEN, MAX_STALE_AGE,
     };
+    use microwave_store::{HealthRepository, StoreError};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -375,6 +380,45 @@ mod tests {
             "a snapshot older than the ceiling must not be served stale"
         );
         assert!(cache.latest().is_some());
+    }
+
+    struct FailingMetadata;
+
+    #[async_trait::async_trait]
+    impl HealthRepository for FailingMetadata {
+        async fn health_check(&self) -> Result<(), StoreError> {
+            Err(StoreError::Invalid("metadata is unavailable".to_string()))
+        }
+    }
+
+    struct HangingMetadata;
+
+    #[async_trait::async_trait]
+    impl HealthRepository for HangingMetadata {
+        async fn health_check(&self) -> Result<(), StoreError> {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn metadata_probe_reports_failures() {
+        let probe = probe_metadata(&FailingMetadata).await;
+        assert_eq!(probe.status, "fail");
+        assert!(probe.detail.contains("metadata is unavailable"));
+    }
+
+    #[tokio::test]
+    async fn metadata_probe_times_out() {
+        let started = Instant::now();
+        let probe = probe_metadata(&HangingMetadata).await;
+        assert_eq!(probe.status, "fail");
+        assert_eq!(probe.detail, "probe timed out");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "metadata probe exceeded its bound: {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

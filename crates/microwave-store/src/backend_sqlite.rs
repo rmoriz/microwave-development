@@ -23,6 +23,7 @@ use crate::policies::{
 use crate::sandboxes::SandboxCheck;
 use crate::sqlite::{SqliteStore, StoreError};
 use async_trait::async_trait;
+use std::time::{Duration, Instant};
 
 #[async_trait]
 impl IdentityRepository for SqliteStore {
@@ -1258,6 +1259,11 @@ impl KvRepository for SqliteStore {
     }
 }
 
+/// How long a health probe waits for a briefly busy SQLite connection.
+const HEALTH_LOCK_RETRY_BUDGET: Duration = Duration::from_millis(200);
+/// Backoff between `try_lock` attempts while the connection is busy.
+const HEALTH_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(2);
+
 #[async_trait]
 impl HealthRepository for SqliteStore {
     async fn health_check(&self) -> Result<(), StoreError> {
@@ -1267,13 +1273,24 @@ impl HealthRepository for SqliteStore {
         // timeout.
         let connection = self.connection_handle();
         let probe = tokio::task::spawn_blocking(move || {
-            let connection = match connection.try_lock() {
-                Ok(connection) => connection,
-                Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-                Err(std::sync::TryLockError::WouldBlock) => {
-                    return Err(StoreError::Invalid(
-                        "SQLite health probe is busy; metadata connection lock is held".into(),
-                    ))
+            let deadline = Instant::now() + HEALTH_LOCK_RETRY_BUDGET;
+            let connection = loop {
+                match connection.try_lock() {
+                    Ok(connection) => break connection,
+                    Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                        break poisoned.into_inner()
+                    }
+                    Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                        // A normal API request holds the connection only
+                        // briefly; retry within a small fixed budget instead of
+                        // declaring the database unhealthy on first contention.
+                        std::thread::sleep(HEALTH_LOCK_RETRY_INTERVAL);
+                    }
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        return Err(StoreError::Invalid(
+                            "SQLite health probe is busy; metadata connection lock is held".into(),
+                        ))
+                    }
                 }
             };
             let value: i64 = connection.query_row("SELECT 1", [], |row| row.get(0))?;
@@ -1332,6 +1349,32 @@ mod health_tests {
         store.health_check().await.unwrap();
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn health_check_stays_healthy_during_normal_reads() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader = {
+            let store = Arc::clone(&store);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    store.table_names().unwrap();
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
+        };
+
+        for _ in 0..25 {
+            store.health_check().await.unwrap();
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        reader.join().unwrap();
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn health_check_reports_busy_without_waiting_for_the_connection_lock() {
         let store = SqliteStore::open_in_memory().unwrap();
@@ -1345,14 +1388,14 @@ mod health_tests {
         started_rx.recv().unwrap();
 
         let started = Instant::now();
-        let result = tokio::time::timeout(Duration::from_millis(100), store.health_check()).await;
+        let result = tokio::time::timeout(Duration::from_millis(600), store.health_check()).await;
         let error = result
-            .expect("busy probe must return before the timeout")
+            .expect("busy probe must return within its bounded retry budget")
             .expect_err("held lock should report busy");
         assert!(error.to_string().contains("busy"), "{error}");
         assert!(
-            started.elapsed() < Duration::from_millis(200),
-            "the probe waited for the held connection lock: {:?}",
+            started.elapsed() < Duration::from_millis(500),
+            "the probe exceeded its bounded retry budget: {:?}",
             started.elapsed()
         );
 
@@ -1387,7 +1430,7 @@ mod health_tests {
             assert!(error.to_string().contains("busy"), "{error}");
         }
         assert!(
-            started.elapsed() < Duration::from_millis(500),
+            started.elapsed() < Duration::from_secs(1),
             "busy probes queued behind the held lock: {:?}",
             started.elapsed()
         );

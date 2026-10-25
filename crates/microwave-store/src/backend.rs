@@ -799,9 +799,11 @@ pub trait KvRepository: Send + Sync {
 /// (for example `SELECT 1`) without taking a write lock or scanning data. The
 /// default is a no-op so out-of-tree test doubles that implement the rest of
 /// the contract are not forced to add a probe; both in-tree backends override
-/// it. PostgreSQL runs the query asynchronously against its pool; SQLite runs
-/// it on Tokio's blocking pool using a non-blocking `try_lock` and reports
-/// "busy" rather than waiting for a held metadata connection.
+/// it. PostgreSQL runs the query asynchronously against its pool. SQLite runs
+/// it on Tokio's blocking pool, retrying `try_lock` for up to 200ms so briefly
+/// contended normal requests do not make the database look unhealthy; if the
+/// lock is still held after that budget the probe reports "busy" rather than
+/// waiting indefinitely or accumulating queued blocking tasks.
 #[async_trait]
 pub trait HealthRepository: Send + Sync {
     async fn health_check(&self) -> Result<(), StoreError> {

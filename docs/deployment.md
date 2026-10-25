@@ -1013,15 +1013,20 @@ adds the probe status and detail. A failing dependency sets the top-level
 returns HTTP 200, so a reverse proxy or orchestrator can inspect the payload.
 
 Each probe is bounded to 1.5 seconds. SQLite's health query runs on Tokio's
-blocking pool using an owned connection handle and a non-blocking `try_lock`;
-if another operation holds the metadata connection, the probe reports `busy`
-immediately instead of queuing a blocking task, so repeated refreshes cannot
-accumulate waiting workers. PostgreSQL uses an async `SELECT 1` against the
-pool. OpenSearch and Elasticsearch call `/_cluster/health`; a red cluster or an
-unparseable 200 response is unhealthy (`yellow` is valid for a single node).
-Local object storage verifies read/write access with a unique probe file per
-call and sweeps probe files older than one hour that were left by a crash; S3
-and Garage perform a signed, bounded `HEAD` request on the bucket.
+blocking pool using an owned connection handle. It retries `try_lock` for up to
+200ms so a normal request briefly holding the metadata connection does not make
+the database look unhealthy; if the lock is still held after that budget the
+probe reports `busy` instead of queuing blocking tasks indefinitely. PostgreSQL
+uses an async `SELECT 1` against the pool. OpenSearch and Elasticsearch call
+`/_cluster/health`; only an explicit `green` or `yellow` status is healthy. A
+red cluster, an unparseable 200 response, a missing status, or an unknown status
+is reported as a failure (`yellow` is valid for a single node). Local object
+storage verifies read/write access with a unique probe file per call; orphan
+probe files older than one hour are swept at most once per hour, so a crash does
+not grow the directory and health checks do not rescan it on every request. S3
+and Garage perform a signed, bounded `HEAD` request on the bucket. A custom
+object store that blocks past the deadline leaves one detached blocking task
+until it returns; the built-in local and S3 stores bound their own I/O.
 
 The completed snapshot is cached for one second. Concurrent cold requests share
 a single in-flight probe. An expired snapshot is served immediately while

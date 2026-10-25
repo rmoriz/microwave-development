@@ -12,6 +12,7 @@ use md5::{Digest, Md5};
 use sha2::Sha256;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
@@ -28,6 +29,8 @@ const HEALTH_PROBE_PREFIX: &str = ".microwave-health-";
 static HEALTH_PROBE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// Probe files older than this are leftovers from a crashed process.
 const HEALTH_PROBE_SWEEP_AGE: Duration = Duration::from_secs(3_600);
+/// Minimum interval between orphan sweeps, even on repeated health checks.
+const HEALTH_PROBE_SWEEP_INTERVAL: Duration = Duration::from_secs(3_600);
 
 /// Default lifetime for presigned S3 URLs, matching the upstream bookshelf default.
 pub const DEFAULT_PRESIGN_EXPIRY_SECONDS: u64 = 900;
@@ -102,6 +105,7 @@ pub struct LocalObjectStore {
     root: PathBuf,
     secret: Vec<u8>,
     base_url: String,
+    last_probe_sweep: Arc<AtomicU64>,
 }
 
 impl LocalObjectStore {
@@ -110,6 +114,7 @@ impl LocalObjectStore {
             root: root.into(),
             secret: secret.as_bytes().to_vec(),
             base_url: base_url.into(),
+            last_probe_sweep: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -197,31 +202,47 @@ impl ObjectStore for LocalObjectStore {
         // verify both read and write access. Each call uses a unique probe path
         // so concurrent health checks cannot delete each other's file.
         std::fs::create_dir_all(&self.root)?;
+        // Opening the directory is also the read-access check. The iterator is
+        // only consumed when the rate-limited orphan sweep runs.
         let entries = std::fs::read_dir(&self.root)?;
 
         // Best-effort cleanup of probe files left behind by a crash. Only
         // files older than an hour are removed, so an in-flight probe from
-        // another process is never touched.
+        // another process is never touched. Sweep at most once per hour; the
+        // CAS keeps concurrent health checks from all scanning the root.
         let now = SystemTime::now();
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            if !name.to_string_lossy().starts_with(HEALTH_PROBE_PREFIX) {
-                continue;
-            }
-            let Ok(metadata) = entry.metadata() else {
-                continue;
-            };
-            if !metadata.is_file() {
-                continue;
-            }
-            let Ok(modified) = metadata.modified() else {
-                continue;
-            };
-            let Ok(age) = now.duration_since(modified) else {
-                continue;
-            };
-            if age >= HEALTH_PROBE_SWEEP_AGE {
-                let _ = std::fs::remove_file(entry.path());
+        let now_secs = now
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or_default();
+        let previous = self.last_probe_sweep.load(Ordering::Relaxed);
+        let due = now_secs.saturating_sub(previous) >= HEALTH_PROBE_SWEEP_INTERVAL.as_secs();
+        if due
+            && self
+                .last_probe_sweep
+                .compare_exchange(previous, now_secs, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+        {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if !name.to_string_lossy().starts_with(HEALTH_PROBE_PREFIX) {
+                    continue;
+                }
+                let Ok(metadata) = entry.metadata() else {
+                    continue;
+                };
+                if !metadata.is_file() {
+                    continue;
+                }
+                let Ok(modified) = metadata.modified() else {
+                    continue;
+                };
+                let Ok(age) = now.duration_since(modified) else {
+                    continue;
+                };
+                if age >= HEALTH_PROBE_SWEEP_AGE {
+                    let _ = std::fs::remove_file(entry.path());
+                }
             }
         }
 
@@ -391,5 +412,41 @@ mod tests {
         store.health_check().unwrap();
         assert!(!stale.exists(), "stale probe file was not swept");
         assert!(fresh.exists(), "a recent probe file must not be removed");
+    }
+
+    #[test]
+    fn health_check_rate_limits_orphan_sweeps() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("bookshelf");
+        let store = LocalObjectStore::new(&root, "secret", "http://localhost");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let old = SystemTime::now() - Duration::from_secs(7_200);
+        let write_stale = |path: &Path| {
+            std::fs::write(path, b"stale").unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(old))
+                .unwrap();
+        };
+
+        let first = root.join(format!("{HEALTH_PROBE_PREFIX}first"));
+        write_stale(&first);
+        store.health_check().unwrap();
+        assert!(!first.exists(), "the first probe should sweep stale files");
+
+        let second = root.join(format!("{HEALTH_PROBE_PREFIX}second"));
+        write_stale(&second);
+        store.health_check().unwrap();
+        assert!(
+            second.exists(),
+            "a second probe within the interval must not rescan"
+        );
+
+        store.last_probe_sweep.store(0, Ordering::Relaxed);
+        store.health_check().unwrap();
+        assert!(!second.exists(), "the next due probe should sweep");
     }
 }

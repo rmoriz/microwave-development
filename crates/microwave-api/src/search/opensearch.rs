@@ -414,13 +414,21 @@ impl super::backend::SearchBackend for OpenSearchBackend {
         // A red cluster still answers with HTTP 200 by default. Yellow is
         // expected on a single-node cluster while replicas are unassigned, but
         // red means primary shards are unavailable and search is degraded.
+        // Anything other than an explicit green/yellow is treated as unhealthy
+        // so an empty or unknown health document cannot mask a broken cluster.
         let health: Value = response.json().await.map_err(|error| {
             SearchError::Response(format!("invalid cluster health response: {error}"))
         })?;
-        if health.get("status").and_then(Value::as_str) == Some("red") {
-            return Err(SearchError::Response("cluster health is red".to_string()));
+        match health.get("status").and_then(Value::as_str) {
+            Some("green" | "yellow") => Ok(()),
+            Some("red") => Err(SearchError::Response("cluster health is red".to_string())),
+            Some(status) => Err(SearchError::Response(format!(
+                "unexpected cluster health status: {status}"
+            ))),
+            None => Err(SearchError::Response(
+                "cluster health response has no status".to_string(),
+            )),
         }
-        Ok(())
     }
 
     async fn search(&self, request: &SearchRequest) -> Result<SearchHits, SearchError> {
@@ -538,6 +546,9 @@ mod tests {
         uri: String,
         body: String,
     }
+
+    /// Keep local-network health tests from competing under parallel CI runs.
+    static NETWORK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     type Responder = Arc<dyn Fn(&CapturedRequest) -> (u16, Value) + Send + Sync>;
 
@@ -1199,6 +1210,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn health_check_uses_cluster_health_and_reports_backend_failures() {
+        let _network = NETWORK_TEST_LOCK.lock().await;
         let server = mock(200, json!({ "status": "green" })).await;
         let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &server.base_url).unwrap();
         backend.health_check().await.unwrap();
@@ -1219,6 +1231,26 @@ mod tests {
                 assert!(message.contains("red"), "unexpected detail: {message}");
             }
             other => panic!("unexpected result: {other:?}"),
+        }
+
+        for body in [
+            json!({}),
+            json!(null),
+            json!({ "status": "blue" }),
+            json!({ "status": 7 }),
+        ] {
+            let server = mock(200, body).await;
+            let backend =
+                OpenSearchBackend::new(SearchProvider::OpenSearch, &server.base_url).unwrap();
+            match backend.health_check().await {
+                Err(SearchError::Response(message)) => {
+                    assert!(
+                        message.contains("no status") || message.contains("unexpected"),
+                        "unexpected detail: {message}"
+                    );
+                }
+                other => panic!("unexpected result: {other:?}"),
+            }
         }
 
         let server = mock(503, json!({ "status": "red" })).await;
@@ -1253,6 +1285,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn health_check_rejects_a_malformed_cluster_health_body() {
+        let _network = NETWORK_TEST_LOCK.lock().await;
         let base_url = raw_health_server(200, "not json").await;
         let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, base_url).unwrap();
         match backend.health_check().await {
