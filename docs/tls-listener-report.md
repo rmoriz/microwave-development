@@ -39,3 +39,21 @@
   reject it at handshake).
 - No chef-client-over-HTTPS e2e; clients must trust the issuing CA.
 - No client-certificate (mTLS) support.
+
+## Review fix round 2
+
+| # | Finding | Status | Change |
+|---|---|---|---|
+| 1 | HTTP/2 requests carry `:authority` but no `Host`, so `base_url()` fell back to `server.bind` | ADDRESSED | New `middleware::ensure_host_header` runs before handlers and inserts `Host` from the request URI authority only when neither `Host` nor `X-Forwarded-Host` is present. HTTP/1.1 and proxy precedence are unchanged. |
+| 2 | `tls_urls_test` only asserted the bind fallback | ADDRESSED | Tests now send absolute-form URIs with an authority distinct from the bind address and assert that authority is used. Added explicit `X-Forwarded-Host` precedence and HTTP/1.1 `Host` cases. |
+| 3 | No real HTTP/2-over-TLS test | ADDRESSED | Process test starts `serve` with TLS, negotiates HTTP/2 with reqwest over TLS (asserts `Version::HTTP_2`), uses `chef.example.com:<port>` resolved to loopback, and asserts generated URLs use that authority. A second request asserts `X-Forwarded-Host` wins. |
+| 4 | Listener tests did not clear `MW_CONFIG` | ADDRESSED | All three listener/process tests remove `MW_CONFIG` (and relevant `MW_SERVER__TLS__*` variables) from the child environment. |
+| 5 | `PORT_LOCK` could stay poisoned after a panicking test | ADDRESSED | Both plain and TLS listener tests and the HTTP/2 test recover the guard with `unwrap_or_else(PoisonError::into_inner)`. |
+
+### Verification (round 2)
+
+- `cargo fmt --all -- --check`
+- `cargo test -p microwave-api -p microwave-server -p microwave-tls` — passed
+- `cargo clippy -p microwave-api -p microwave-server -p microwave-tls --all-targets -- -D warnings` — passed
+- strict chef-client e2e: `MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0` — PASS
+- HTTP/2 process test reports `HTTP_2` and `https://chef.example.com:<port>/...`

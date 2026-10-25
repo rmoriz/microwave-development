@@ -26,6 +26,29 @@ pub async fn authenticate(
     response
 }
 
+/// Give handlers a `Host` header for HTTP/2 requests.
+///
+/// HTTP/2 clients send `:authority` instead of a `Host` header. Hyper exposes
+/// it as the request URI authority, while code that builds absolute URLs reads
+/// `Host`/`X-Forwarded-Host`. Inserting the authority keeps URL generation
+/// correct without changing HTTP/1.1 or proxy precedence.
+pub async fn ensure_host_header(
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    use axum::http::header::HOST;
+
+    if !request.headers().contains_key(HOST) && !request.headers().contains_key("x-forwarded-host")
+    {
+        if let Some(authority) = request.uri().authority() {
+            if let Ok(value) = HeaderValue::from_str(authority.as_str()) {
+                request.headers_mut().insert(HOST, value);
+            }
+        }
+    }
+    next.run(request).await
+}
+
 async fn authenticate_request(
     state: crate::AppState,
     request: axum::extract::Request,

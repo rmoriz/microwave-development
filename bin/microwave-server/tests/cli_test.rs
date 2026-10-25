@@ -1,9 +1,16 @@
 use assert_cmd::Command;
+use base64::{engine::general_purpose::STANDARD, Engine};
+use microwave_crypto::{sign_request, CanonicalRequest, SignVersion};
 use microwave_store::{
-    BOOKSHELF_ACCESS_KEY_ID, BOOKSHELF_SECRET_ACCESS_KEY, BOOKSHELF_SECRET_GROUP,
+    ActorType, BOOKSHELF_ACCESS_KEY_ID, BOOKSHELF_SECRET_ACCESS_KEY, BOOKSHELF_SECRET_GROUP,
 };
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+const PRIVATE_KEY: &str =
+    include_str!("../../../crates/microwave-crypto/tests/fixtures/test_key.pem");
+const PUBLIC_KEY: &str =
+    include_str!("../../../crates/microwave-crypto/tests/fixtures/test_key_pub.pem");
 
 /// Generate a throwaway self-signed certificate. Nothing is committed: tests
 /// write the PEM pair into their own temporary directory and the child process
@@ -320,9 +327,124 @@ fn wait_for_tcp(bind: &str) {
     panic!("listener never bound {bind}");
 }
 
+/// Create the bootstrap superuser and its key before the server starts so the
+/// test can sign requests without waiting for and reading generated key files.
+fn seed_pivotal(data_dir: &Path) {
+    let store = microwave_store::SqliteStore::open(&data_dir.join("microwave.db")).unwrap();
+    let user = store
+        .create_user("pivotal", "pivotal@localhost", "bcrypt", "h", "s", true)
+        .unwrap();
+    store
+        .add_actor_key(&user.id, ActorType::User, "default", PUBLIC_KEY)
+        .unwrap();
+}
+
+fn signed_headers(method: &str, path: &str, body: &[u8]) -> Vec<(String, String)> {
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let canonical = CanonicalRequest {
+        method,
+        path,
+        body,
+        user_id: "pivotal",
+        timestamp: &timestamp,
+        api_version: Some("2"),
+        version: SignVersion::V1_3,
+    };
+    let signed = sign_request(PRIVATE_KEY, &canonical).unwrap();
+    let encoded = STANDARD.encode(signed.signature);
+    let mut headers = vec![
+        (
+            "x-ops-sign".to_string(),
+            "algorithm=sha256;version=1.3;".to_string(),
+        ),
+        ("x-ops-userid".to_string(), "pivotal".to_string()),
+        ("x-ops-timestamp".to_string(), signed.timestamp),
+        ("x-ops-content-hash".to_string(), signed.content_hash),
+        ("x-ops-server-api-version".to_string(), "2".to_string()),
+    ];
+    for (index, chunk) in encoded.as_bytes().chunks(60).enumerate() {
+        headers.push((
+            format!("x-ops-authorization-{}", index + 1),
+            String::from_utf8(chunk.to_vec()).unwrap(),
+        ));
+    }
+    headers
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http2_tls_urls_use_the_request_authority() {
+    let port_guard = PORT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    seed_pivotal(dir.path());
+    let (cert, key) = write_tls_pair(dir.path());
+    let bind = ephemeral_addr();
+    let port = bind.rsplit_once(':').unwrap().1.parse::<u16>().unwrap();
+
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_microwave-server"))
+        .args(["serve"])
+        .env("MW_PATHS__DATA_DIR", dir.path())
+        .env("MW_SERVER__BIND", &bind)
+        .env("MW_SERVER__TLS__CERT_PATH", &cert)
+        .env("MW_SERVER__TLS__KEY_PATH", &key)
+        .env_remove("MW_CONFIG")
+        .env_remove("MW_SERVER__TLS__ENABLED")
+        .env("RUST_LOG", "info")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .expect("spawn microwave-server");
+    let _guard = ServerProcess(Some(child));
+    wait_for_tcp(&bind);
+    drop(port_guard);
+
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .resolve("chef.example.com", ([127, 0, 0, 1], port).into())
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let headers = signed_headers("GET", "/users", b"");
+    let mut request = client.get(format!("https://chef.example.com:{port}/users"));
+    for (name, value) in &headers {
+        request = request.header(name, value);
+    }
+    let response = request.send().await.unwrap();
+    assert_eq!(
+        response.version(),
+        reqwest::Version::HTTP_2,
+        "the client must negotiate HTTP/2 over TLS"
+    );
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(
+        body["pivotal"],
+        format!("https://chef.example.com:{port}/users/pivotal"),
+        "generated URL must use the HTTP/2 authority, not the bind address"
+    );
+
+    // A proxy header must still override the HTTP/2 authority.
+    let mut request = client.get(format!("https://chef.example.com:{port}/users"));
+    for (name, value) in &headers {
+        request = request.header(name, value);
+    }
+    let response = request
+        .header("x-forwarded-host", "proxy.example.com")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.version(), reqwest::Version::HTTP_2);
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["pivotal"], "https://proxy.example.com/users/pivotal");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn plain_http_listener_serves_status_and_does_not_serve_https() {
-    let port_guard = PORT_LOCK.lock().unwrap();
+    let port_guard = PORT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let bind = ephemeral_addr();
 
@@ -330,6 +452,7 @@ async fn plain_http_listener_serves_status_and_does_not_serve_https() {
         .args(["serve"])
         .env("MW_PATHS__DATA_DIR", dir.path())
         .env("MW_SERVER__BIND", &bind)
+        .env_remove("MW_CONFIG")
         .env_remove("MW_SERVER__TLS__CERT_PATH")
         .env_remove("MW_SERVER__TLS__KEY_PATH")
         .env_remove("MW_SERVER__TLS__ENABLED")
@@ -366,7 +489,9 @@ async fn plain_http_listener_serves_status_and_does_not_serve_https() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tls_listener_serves_https_and_rejects_plain_http() {
-    let port_guard = PORT_LOCK.lock().unwrap();
+    let port_guard = PORT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let (cert, key) = write_tls_pair(dir.path());
     let bind = ephemeral_addr();
@@ -377,6 +502,8 @@ async fn tls_listener_serves_https_and_rejects_plain_http() {
         .env("MW_SERVER__BIND", &bind)
         .env("MW_SERVER__TLS__CERT_PATH", &cert)
         .env("MW_SERVER__TLS__KEY_PATH", &key)
+        .env_remove("MW_CONFIG")
+        .env_remove("MW_SERVER__TLS__ENABLED")
         .env("RUST_LOG", "info")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::inherit())

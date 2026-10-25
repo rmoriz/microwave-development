@@ -80,6 +80,9 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             middleware::authenticate,
         ))
+        // HTTP/2 carries the request authority in the URI rather than a
+        // `Host` header. Normalize it before handlers generate absolute URLs.
+        .layer(axum::middleware::from_fn(middleware::ensure_host_header))
         .with_state(state);
 
     // Axum adds the `Allow` header for method-not-allowed responses in its
