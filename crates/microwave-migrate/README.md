@@ -70,6 +70,14 @@ microwave-migrate import-knife-backup \
   --secrets-archive /root/chef-server-secrets.tar.gz \
   --yes
 
+# Reuse a bootstrapped pivotal user and replace ACLs/membership from the backup
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --data-dir ./new-data \
+  --merge-users \
+  --replace-acls \
+  --yes
+
 # Parse and count without touching the database, object store, or secrets
 microwave-migrate import-knife-backup \
   --input /var/backups/chef-knife \
@@ -305,6 +313,24 @@ Cookbooks are ChefFS directories, not server manifests. The importer:
 Environment `cookbook_versions` constraints are preserved in the environment
 body, so the existing dependency solver applies them unchanged.
 
+The importer canonicalizes collection paths and rejects symlinked collection
+or intermediate directories. `long_description IO.read(...)` only accepts a
+single normal `README*` filename inside the canonical cookbook directory;
+absolute paths, `..`, prefixes, and symlinks are rejected.
+
+Legacy `expires_at` values (`YYYY-MM-DD HH:MM:SS UTC`, offset timestamps, and
+RFC 3339) are normalized to RFC 3339 so expired keys remain expired. An
+unparseable non-infinity expiry skips that key with a warning instead of
+turning it into a non-expiring key. Missing `key_dump.json` or
+`key_table_dump.json` also produces a warning.
+
+Imports are additive by default: existing users with the same username cause a
+clear error, and existing ACL grants/group members survive. Use
+`--merge-users` to reuse an existing user id/authz id (for example a
+bootstrapped `pivotal`) and update it, and `--replace-acls` to replace ACLs and
+group membership for targets present in the backup. Both flags affect only the
+selected import.
+
 ### Server-side private material
 
 Chef Infra Server (Erlang) stores only public keys for users and clients. A
@@ -327,29 +353,46 @@ those flags no private server file is read or written. The importer maps:
 | `private-chef-secrets.json` or `private_chef_secrets.json` | `<data>/private-chef-secrets.json` | `0600` |
 | `ssl/cert.pem` (preferred) or `cert.pem` | configured `server.tls.cert_path`, `--tls-cert`, or the same relative path under `<data>` | `0644` |
 | `ssl/key.pem` (preferred) or `key.pem` | configured `server.tls.key_path`, `--tls-key`, or the same relative path under `<data>` | `0600` |
-| `ca/**`, `nginx/ca/**` | `<data>/<same relative path>` | `0644` |
+| `nginx/ca/<fqdn>.crt` | configured TLS certificate path, `--tls-cert`, or the same relative path under `<data>` | `0644` |
+| `nginx/ca/<fqdn>.key` | configured TLS key path, `--tls-key`, or the same relative path under `<data>` | `0600` |
+| `ca/**`, other `nginx/ca/**` certificates | `<data>/<same relative path>` | `0644` |
+| `ca/**/*.key`, CA-tree PEM private keys | `<data>/<same relative path>` | `0600` |
 
 `<data>` is `--data-dir` for SQLite, or `--secrets-target-dir` when supplied.
 With `--database-url`, the default is `paths.data_dir` from `--config`
 (otherwise the configured default, normally `./data`). Newly created parent
-directories are mode `0700`; existing directories are left unchanged.
+directories are mode `0700`; existing directories are left unchanged. When
+more than one TLS candidate exists, selection order is `ssl/cert.pem`/
+`ssl/key.pem`, then `cert.pem`/`key.pem`, then the first sorted
+`nginx/ca/*.crt`/`*.key` pair; other candidates are not copied.
 
 Existing target files are refused unless `--force` is supplied. Symlink
-targets are always refused, and writes use a temporary file plus rename so a
-failed write never leaves a partial secret file. The command prints counts,
-target paths, and modes only; it never prints file contents, password hashes,
-or key bytes.
+targets are always refused. All secret files are staged before any target is
+replaced; commit then renames the staged set, keeping backups of overwritten
+files and rolling the set back if a commit fails. A process crash during the
+commit window can still leave a partial set, so keep an operator backup and
+re-run with `--force` after recovery. The command prints counts, target paths,
+and modes only; it never prints file contents, password hashes, or key bytes.
 
 `--secrets-archive` accepts `.tar`, `.tar.gz`, and `.tgz`. Only regular files
 and directories are allowed. Paths must be relative with no `..` component,
 the archive must contain only the names in the table above (plus safe `ca/`
 and `nginx/ca/` trees), and symlinks, hardlinks, devices, and FIFOs are
 rejected. Directory entries outside those allowlisted prefixes are rejected.
+A single legacy top-level directory wrapping the allowlisted tree (for example
+`chef-secrets/pivotal.pem`) is accepted. Individual files are limited to
+16 MiB, the archive to 128 MiB, and the expanded set to 64 MiB.
+
+`webui_priv.pem`/`webui_pub.pem` and `private-chef-secrets.json` are preserved
+for external tooling and operator reference. Microwave does not consume the
+web-UI keypair or parse/merge the private-chef secret document at runtime.
 
 ### Intentional gaps
 
 - No HTTP, `--purge`, or deletion sync. Import merges/upserts; objects removed
-  from the backup remain in an existing target store.
+  from the backup remain in an existing target store. `--replace-acls` only
+  replaces ACLs and group membership for targets present in the backup and is
+  not one cross-target transaction.
 - The `metadata.rb` parser is not a Ruby interpreter. It does not evaluate
   arbitrary Ruby, conditionals, string interpolation, `eval`, or custom
   helper methods. Prefer a `metadata.json` when the source provides one.
@@ -362,7 +405,13 @@ rejected. Directory entries outside those allowlisted prefixes are rejected.
 - Server-secret import is a validated file copy. It does not verify that a TLS
   certificate/key pair matches, rotate or generate keys, or restart a running
   server. Archives are not decrypted; wrapper tooling must protect the
-  operator-supplied archive at rest.
+  operator-supplied archive at rest. The staged set is rolled back on an
+  ordinary commit error, but a crash during commit can still leave a partial
+  set; recovery is to restore the operator's secret backup and re-run with
+  `--force`.
+- User/key timestamps are preserved where the backup/export exposes them
+  (organization records, key dumps, user and client JSON). API object bodies
+  normally carry no timestamps, so those rows use the import time.
 - Cookbook files are buffered in memory while the directory is parsed. Very
   large multi-gigabyte backups should be split by organization or handled with
   a streaming importer in a future pass.

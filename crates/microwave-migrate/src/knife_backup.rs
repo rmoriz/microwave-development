@@ -12,19 +12,19 @@
 //! `bookshelf/` root before the metadata transaction starts.
 
 use crate::{runtime, validate_postgres_url, Compression, MigrateError, DATABASE_FILE};
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, NaiveDateTime, SecondsFormat, TimeZone, Utc};
 use microwave_objectstore::{md5_hex, LocalObjectStore, ObjectStore};
 use microwave_store::{
     parse_version, ActorKeyRow, AuthzAclActorRow, AuthzAclGroupRow, AuthzEntityRow,
     AuthzGroupActorRow, AuthzGroupGroupRow, AuthzRepository, ChecksumRow, ClientRow, ContainerRow,
     CookbookRow, CookbookVersionChecksumRow, CookbookVersionRow, DataBagItemRow, GlobalGroupRow,
-    GroupRow, NamedObjectRow, NodeRow, OrgRow, OrgUserAssociationRow, OrgUserInviteRow,
-    StoreSnapshot, UserRow,
+    GroupRow, IdentityRepository, NamedObjectRow, NodeRow, OrgRow, OrgUserAssociationRow,
+    OrgUserInviteRow, Permission, StoreError, StoreSnapshot, User, UserRow,
 };
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 const IMPORTER_SCOPE: &str = "microwave-migrate/knife-ec-backup/v1";
 const DEFAULT_CONTAINERS: [&str; 12] = [
@@ -125,6 +125,22 @@ pub struct KnifeBackupPlan {
     pub snapshot: StoreSnapshot,
     pub blobs: Vec<BackupBlob>,
     pub summary: KnifeBackupSummary,
+    /// ACL targets present in the backup, including targets whose ACEs are
+    /// empty. Used by `--replace-acls`.
+    pub acl_targets: Vec<String>,
+    /// Organization and global groups present in the backup. Used by
+    /// `--replace-acls` to replace group membership.
+    pub group_authz_ids: Vec<String>,
+}
+
+/// Apply-time behavior for a parsed knife backup.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KnifeBackupApplyOptions {
+    /// Reuse an existing target user with the same username instead of failing
+    /// on the unique username constraint.
+    pub merge_users: bool,
+    /// Replace ACLs and group membership for targets present in the backup.
+    pub replace_acls: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +159,8 @@ struct KeyDumpUser {
     hash_type: String,
     admin: Option<bool>,
     public_key: Option<String>,
+    created_at: Option<String>,
+    updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +172,8 @@ struct KeyTableRow {
     public_key: String,
     key_version: i64,
     expires_at: String,
+    created_at: String,
+    updated_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -257,34 +277,74 @@ pub fn import_knife_backup_postgres_with_compression(
     apply_knife_backup_plan_postgres(database_url, &plan, bookshelf_dir, compression)
 }
 
-/// Apply an already-parsed backup to SQLite.
+/// Apply an already-parsed backup to SQLite with default merge behavior.
 pub fn apply_knife_backup_plan_sqlite(
     data_dir: &Path,
     plan: &KnifeBackupPlan,
     bookshelf_dir: &Path,
     compression: Compression,
 ) -> Result<KnifeBackupSummary, MigrateError> {
+    apply_knife_backup_plan_sqlite_with_options(
+        data_dir,
+        plan,
+        bookshelf_dir,
+        compression,
+        &KnifeBackupApplyOptions::default(),
+    )
+}
+
+/// Apply an already-parsed backup to SQLite with explicit merge behavior.
+pub fn apply_knife_backup_plan_sqlite_with_options(
+    data_dir: &Path,
+    plan: &KnifeBackupPlan,
+    bookshelf_dir: &Path,
+    compression: Compression,
+    options: &KnifeBackupApplyOptions,
+) -> Result<KnifeBackupSummary, MigrateError> {
     let store = microwave_store::SqliteStore::open_with_compression(
         &data_dir.join(DATABASE_FILE),
         compression,
     )?;
-    let existing: Vec<(String, String)> = store
+    let existing_groups: Vec<(String, String)> = store
         .list_global_groups()?
         .into_iter()
         .map(|group| (group.name, group.authz_id))
         .collect();
-    let plan = reconcile_global_groups(plan, &existing);
+    let existing_users = store.list_users()?;
+    let plan = reconcile_global_groups(plan, &existing_groups);
+    let plan = reconcile_users(&plan, &existing_users, options.merge_users)?;
     write_blobs(bookshelf_dir, &plan.blobs)?;
+    if options.replace_acls {
+        let runtime = runtime()?;
+        runtime.block_on(clear_existing_acl_state(&store, &plan))?;
+    }
     store.import_snapshot(&plan.snapshot)?;
     Ok(plan.summary)
 }
 
-/// Apply an already-parsed backup to PostgreSQL.
+/// Apply an already-parsed backup to PostgreSQL with default merge behavior.
 pub fn apply_knife_backup_plan_postgres(
     database_url: &str,
     plan: &KnifeBackupPlan,
     bookshelf_dir: &Path,
     compression: Compression,
+) -> Result<KnifeBackupSummary, MigrateError> {
+    apply_knife_backup_plan_postgres_with_options(
+        database_url,
+        plan,
+        bookshelf_dir,
+        compression,
+        &KnifeBackupApplyOptions::default(),
+    )
+}
+
+/// Apply an already-parsed backup to PostgreSQL with explicit merge behavior.
+pub fn apply_knife_backup_plan_postgres_with_options(
+    database_url: &str,
+    plan: &KnifeBackupPlan,
+    bookshelf_dir: &Path,
+    compression: Compression,
+    options: &KnifeBackupApplyOptions,
 ) -> Result<KnifeBackupSummary, MigrateError> {
     validate_postgres_url(database_url)?;
     let runtime = runtime()?;
@@ -294,13 +354,18 @@ pub fn apply_knife_backup_plan_postgres(
             compression,
         ),
     )?;
-    let existing: Vec<(String, String)> = runtime
+    let existing_groups: Vec<(String, String)> = runtime
         .block_on(store.list_global_groups())?
         .into_iter()
         .map(|group| (group.name, group.authz_id))
         .collect();
-    let plan = reconcile_global_groups(plan, &existing);
+    let existing_users = runtime.block_on(store.list_users())?;
+    let plan = reconcile_global_groups(plan, &existing_groups);
+    let plan = reconcile_users(&plan, &existing_users, options.merge_users)?;
     write_blobs(bookshelf_dir, &plan.blobs)?;
+    if options.replace_acls {
+        runtime.block_on(clear_existing_acl_state(&store, &plan))?;
+    }
     runtime.block_on(store.import_snapshot(&plan.snapshot))?;
     Ok(plan.summary)
 }
@@ -329,11 +394,15 @@ fn reconcile_global_groups(
     snapshot
         .global_groups
         .retain(|group| !existing_names.contains(group.name.as_str()));
+    let mut acl_targets = plan.acl_targets.clone();
+    let mut group_authz_ids = plan.group_authz_ids.clone();
     if replacements.is_empty() {
         return KnifeBackupPlan {
             snapshot,
             blobs: plan.blobs.clone(),
             summary: plan.summary.clone(),
+            acl_targets,
+            group_authz_ids,
         };
     }
 
@@ -342,6 +411,12 @@ fn reconcile_global_groups(
             *value = replacement.clone();
         }
     };
+    for target in &mut acl_targets {
+        rewrite(target);
+    }
+    for group in &mut group_authz_ids {
+        rewrite(group);
+    }
     snapshot
         .authz_entities
         .retain(|entity| !replacements.contains_key(&entity.authz_id));
@@ -366,7 +441,126 @@ fn reconcile_global_groups(
         snapshot,
         blobs: plan.blobs.clone(),
         summary: plan.summary.clone(),
+        acl_targets,
+        group_authz_ids,
     }
+}
+
+/// Reuse existing users with the same username.
+///
+/// This rewrites the source user's id/authz id and every reference to them so
+/// snapshot import updates the existing row instead of colliding on the unique
+/// username. Without `merge`, a collision is an explicit error.
+fn reconcile_users(
+    plan: &KnifeBackupPlan,
+    existing: &[User],
+    merge: bool,
+) -> Result<KnifeBackupPlan, MigrateError> {
+    let mut id_replacements: HashMap<String, String> = HashMap::new();
+    let mut authz_replacements: HashMap<String, String> = HashMap::new();
+    for planned in &plan.snapshot.users {
+        let Some(existing) = existing
+            .iter()
+            .find(|user| user.username == planned.username)
+        else {
+            continue;
+        };
+        if existing.id == planned.id && existing.authz_id == planned.authz_id {
+            continue;
+        }
+        if !merge {
+            return Err(MigrateError::ExistingUser {
+                username: planned.username.clone(),
+            });
+        }
+        if existing.id != planned.id {
+            id_replacements.insert(planned.id.clone(), existing.id.clone());
+        }
+        if existing.authz_id != planned.authz_id {
+            authz_replacements.insert(planned.authz_id.clone(), existing.authz_id.clone());
+        }
+    }
+    if id_replacements.is_empty() && authz_replacements.is_empty() {
+        return Ok(plan.clone());
+    }
+
+    let mut snapshot = plan.snapshot.clone();
+    let mut acl_targets = plan.acl_targets.clone();
+    let replace_id = |value: &mut String| {
+        if let Some(replacement) = id_replacements.get(value) {
+            *value = replacement.clone();
+        }
+    };
+    let replace_authz = |value: &mut String| {
+        if let Some(replacement) = authz_replacements.get(value) {
+            *value = replacement.clone();
+        }
+    };
+
+    for user in &mut snapshot.users {
+        replace_id(&mut user.id);
+        replace_authz(&mut user.authz_id);
+    }
+    for key in &mut snapshot.actor_keys {
+        if key.actor_type == "user" {
+            replace_id(&mut key.actor_id);
+        }
+    }
+    for association in &mut snapshot.org_user_associations {
+        replace_id(&mut association.user_id);
+    }
+    for invite in &mut snapshot.org_user_invites {
+        replace_id(&mut invite.user_id);
+    }
+    snapshot
+        .authz_entities
+        .retain(|entity| !authz_replacements.contains_key(&entity.authz_id));
+    for row in &mut snapshot.authz_acl_actor {
+        replace_authz(&mut row.target_authz_id);
+        replace_authz(&mut row.actor_authz_id);
+    }
+    for row in &mut snapshot.authz_acl_group {
+        replace_authz(&mut row.target_authz_id);
+    }
+    for row in &mut snapshot.authz_group_actors {
+        replace_authz(&mut row.actor_authz_id);
+    }
+    for target in &mut acl_targets {
+        replace_authz(target);
+    }
+
+    Ok(KnifeBackupPlan {
+        snapshot,
+        blobs: plan.blobs.clone(),
+        summary: plan.summary.clone(),
+        acl_targets,
+        group_authz_ids: plan.group_authz_ids.clone(),
+    })
+}
+
+async fn clear_existing_acl_state<S: AuthzRepository + ?Sized>(
+    store: &S,
+    plan: &KnifeBackupPlan,
+) -> Result<(), MigrateError> {
+    for target in &plan.acl_targets {
+        match store.get_acl_entries(target).await {
+            Ok(_) => {
+                for permission in Permission::ALL {
+                    store
+                        .set_acl_for_permission_split(target, permission, &[], &[], &[])
+                        .await?;
+                }
+            }
+            Err(StoreError::NotFound(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    for group_authz_id in &plan.group_authz_ids {
+        store
+            .replace_group_members("", group_authz_id, Some(&[]), Some(&[]), Some(&[]))
+            .await?;
+    }
+    Ok(())
 }
 
 fn write_blobs(root: &Path, blobs: &[BackupBlob]) -> Result<(), MigrateError> {
@@ -399,6 +593,7 @@ struct Builder {
     cookbook_ids: HashMap<(String, String), i64>,
     cookbook_authz: HashMap<(String, String), String>,
     pending_acls: Vec<PendingAcl>,
+    acl_targets: HashSet<String>,
     inline_keys: Vec<InlineKey>,
     seen_users: HashSet<String>,
     seen_orgs: HashSet<String>,
@@ -438,6 +633,7 @@ impl Builder {
             cookbook_ids: HashMap::new(),
             cookbook_authz: HashMap::new(),
             pending_acls: Vec::new(),
+            acl_targets: HashSet::new(),
             inline_keys: Vec::new(),
             seen_users: HashSet::new(),
             seen_orgs: HashSet::new(),
@@ -470,10 +666,28 @@ impl Builder {
                 data,
             })
             .collect();
+        let mut acl_targets: Vec<String> = self.acl_targets.into_iter().collect();
+        acl_targets.sort();
+        let mut group_authz_ids: Vec<String> = self
+            .data
+            .groups
+            .iter()
+            .map(|group| group.authz_id.clone())
+            .collect();
+        group_authz_ids.extend(
+            self.data
+                .global_groups
+                .iter()
+                .map(|group| group.authz_id.clone()),
+        );
+        group_authz_ids.sort();
+        group_authz_ids.dedup();
         KnifeBackupPlan {
             snapshot: self.data,
             blobs,
             summary: self.summary,
+            acl_targets,
+            group_authz_ids,
         }
     }
 
@@ -499,6 +713,7 @@ impl Builder {
     fn read_key_dump(&mut self) -> Result<(), MigrateError> {
         let path = self.input.join("key_dump.json");
         if !path.is_file() {
+            self.warn("key_dump.json is absent; legacy user password hashes cannot be imported");
             return Ok(());
         }
         let rows = json_rows(read_json(&path)?);
@@ -521,6 +736,8 @@ impl Builder {
                 hash_type: string_field(&row, "hash_type").unwrap_or_default(),
                 admin: bool_field(&row, "admin"),
                 public_key: non_empty_string(&row, "public_key"),
+                created_at: timestamp_field(&row, "created_at"),
+                updated_at: timestamp_field(&row, "updated_at"),
             };
             if self.key_dump.insert(username.clone(), entry).is_some() {
                 self.warn(format!(
@@ -533,7 +750,7 @@ impl Builder {
 
     fn read_users(&mut self) -> Result<(), MigrateError> {
         let dir = self.input.join("users");
-        for path in json_files(&dir)? {
+        for path in json_files_within(&self.input, &dir)? {
             let value = read_json(&path)?;
             let fallback = file_stem(&path);
             let Some(username) = string_field(&value, "username").or(fallback) else {
@@ -581,6 +798,17 @@ impl Builder {
                 ),
             };
 
+            let created_at = dump
+                .as_ref()
+                .and_then(|dump| dump.created_at.clone())
+                .or_else(|| timestamp_field(&value, "created_at"))
+                .unwrap_or_else(|| self.generated_at.clone());
+            let updated_at = dump
+                .as_ref()
+                .and_then(|dump| dump.updated_at.clone())
+                .or_else(|| timestamp_field(&value, "updated_at"))
+                .unwrap_or_else(|| created_at.clone());
+
             self.ensure_authz(&authz_id, "actor", None);
             self.user_authz.insert(username.clone(), authz_id.clone());
             self.data.users.push(UserRow {
@@ -610,8 +838,8 @@ impl Builder {
                 middle_name: non_empty_string(&value, "middle_name"),
                 last_name: non_empty_string(&value, "last_name"),
                 last_updated_by: String::new(),
-                created_at: self.generated_at.clone(),
-                updated_at: self.generated_at.clone(),
+                created_at,
+                updated_at,
             });
             self.summary.users += 1;
 
@@ -632,7 +860,7 @@ impl Builder {
 
     fn read_user_acls(&mut self) -> Result<(), MigrateError> {
         let dir = self.input.join("user_acls");
-        for path in json_files(&dir)? {
+        for path in json_files_within(&self.input, &dir)? {
             let Some(username) = file_stem(&path) else {
                 continue;
             };
@@ -649,6 +877,9 @@ impl Builder {
     fn read_key_table(&mut self) -> Result<(), MigrateError> {
         let path = self.input.join("key_table_dump.json");
         if !path.is_file() {
+            self.warn(
+                "key_table_dump.json is absent; only inline default public keys can be imported",
+            );
             return Ok(());
         }
         for row in json_rows(read_json(&path)?) {
@@ -663,6 +894,19 @@ impl Builder {
                 ));
                 continue;
             };
+            let expires_at = match normalize_expires_at(row.get("expires_at")) {
+                Ok(expires_at) => expires_at,
+                Err(message) => {
+                    self.warn(format!(
+                        "key_table_dump.json entry for {name:?} has invalid expires_at {message}; skipping"
+                    ));
+                    continue;
+                }
+            };
+            let created_at =
+                timestamp_field(&row, "created_at").unwrap_or_else(|| self.generated_at.clone());
+            let updated_at =
+                timestamp_field(&row, "updated_at").unwrap_or_else(|| created_at.clone());
             let key = KeyTableRow {
                 name,
                 actor_type,
@@ -670,8 +914,9 @@ impl Builder {
                 key_name: non_empty_string(&row, "key_name").unwrap_or_else(|| "default".into()),
                 public_key,
                 key_version: integer_field(&row, "key_version").unwrap_or(1),
-                expires_at: non_empty_string(&row, "expires_at")
-                    .unwrap_or_else(|| "infinity".into()),
+                expires_at,
+                created_at,
+                updated_at,
             };
             self.append_key_table_row(key);
         }
@@ -734,8 +979,8 @@ impl Builder {
             key_version: key.key_version,
             expires_at: key.expires_at,
             last_updated_by: String::new(),
-            created_at: self.generated_at.clone(),
-            updated_at: self.generated_at.clone(),
+            created_at: key.created_at,
+            updated_at: key.updated_at,
         });
         self.summary.actor_keys += 1;
     }
@@ -771,7 +1016,7 @@ impl Builder {
 
     fn read_organizations(&mut self) -> Result<(), MigrateError> {
         let dir = self.input.join("organizations");
-        for path in sorted_entries(&dir)? {
+        for path in sorted_entries_within(&self.input, &dir)? {
             reject_symlink(&path)?;
             if !path.is_dir() {
                 continue;
@@ -808,8 +1053,12 @@ impl Builder {
         };
         let authz_id = stable_id(&format!("org:authz:{name}"));
         let full_name = string_field(&value, "full_name").unwrap_or_else(|| name.clone());
-        let assigned_at = non_empty_string(&value, "assigned_at")
-            .or_else(|| non_empty_string(&value, "created_at"))
+        let created_at =
+            timestamp_field(&value, "created_at").unwrap_or_else(|| self.generated_at.clone());
+        let updated_at =
+            timestamp_field(&value, "updated_at").unwrap_or_else(|| created_at.clone());
+        let assigned_at = timestamp_field(&value, "assigned_at")
+            .or_else(|| timestamp_field(&value, "created_at"))
             .unwrap_or_else(|| self.generated_at.clone());
 
         self.ensure_authz(&authz_id, "actor", Some(&id));
@@ -822,8 +1071,8 @@ impl Builder {
             full_name,
             assigned_at,
             last_updated_by: String::new(),
-            created_at: self.generated_at.clone(),
-            updated_at: self.generated_at.clone(),
+            created_at,
+            updated_at,
         });
         self.summary.organizations += 1;
 
@@ -845,7 +1094,7 @@ impl Builder {
         let Some(org_id) = self.org_ids.get(org_name).cloned() else {
             return Ok(());
         };
-        for path in json_files(&dir.join("clients"))? {
+        for path in json_files_within(dir, &dir.join("clients"))? {
             let value = read_json(&path)?;
             let Some(name) = string_field(&value, "name")
                 .or_else(|| string_field(&value, "clientname"))
@@ -873,6 +1122,10 @@ impl Builder {
                 .insert((org_name.to_string(), name.clone()), id.clone());
             self.client_authz
                 .insert((org_name.to_string(), name.clone()), authz_id.clone());
+            let created_at =
+                timestamp_field(&value, "created_at").unwrap_or_else(|| self.generated_at.clone());
+            let updated_at =
+                timestamp_field(&value, "updated_at").unwrap_or_else(|| created_at.clone());
             self.data.clients.push(ClientRow {
                 id: id.clone(),
                 org_id: org_id.clone(),
@@ -880,8 +1133,8 @@ impl Builder {
                 name: name.clone(),
                 validator: bool_field(&value, "validator").unwrap_or(false),
                 admin: bool_field(&value, "admin").unwrap_or(false),
-                created_at: self.generated_at.clone(),
-                updated_at: self.generated_at.clone(),
+                created_at,
+                updated_at,
             });
             self.summary.clients += 1;
             if let Some(public_key) = non_empty_string(&value, "public_key") {
@@ -899,7 +1152,7 @@ impl Builder {
         let Some(org_id) = self.org_ids.get(org_name).cloned() else {
             return Ok(());
         };
-        for path in json_files(&dir.join("containers"))? {
+        for path in json_files_within(dir, &dir.join("containers"))? {
             let value = read_json(&path)?;
             let Some(name) = string_field(&value, "containername")
                 .or_else(|| string_field(&value, "name"))
@@ -940,7 +1193,7 @@ impl Builder {
             return Ok(());
         };
         let mut parsed = Vec::new();
-        for path in json_files(&dir.join("groups"))? {
+        for path in json_files_within(dir, &dir.join("groups"))? {
             let value = read_json(&path)?;
             let Some(name) = string_field(&value, "groupname")
                 .or_else(|| string_field(&value, "name"))
@@ -1098,7 +1351,7 @@ impl Builder {
         let Some(org_id) = self.org_ids.get(org_name).cloned() else {
             return Ok(());
         };
-        for path in json_files(&dir.join("nodes"))? {
+        for path in json_files_within(dir, &dir.join("nodes"))? {
             let (value, body) = read_object(&path)?;
             let Some(name) = string_field(&value, "name").or_else(|| file_stem(&path)) else {
                 continue;
@@ -1143,7 +1396,7 @@ impl Builder {
             return Ok(());
         };
         for (kind, collection) in [("role", "roles"), ("environment", "environments")] {
-            for path in json_files(&dir.join(collection))? {
+            for path in json_files_within(dir, &dir.join(collection))? {
                 let (value, body) = read_object(&path)?;
                 let Some(name) = string_field(&value, "name").or_else(|| file_stem(&path)) else {
                     continue;
@@ -1194,7 +1447,8 @@ impl Builder {
         let Some(org_id) = self.org_ids.get(org_name).cloned() else {
             return Ok(());
         };
-        for bag_dir in sorted_entries(&dir.join("data_bags"))? {
+        let data_bags_root = dir.join("data_bags");
+        for bag_dir in sorted_entries_within(dir, &data_bags_root)? {
             reject_symlink(&bag_dir)?;
             if !bag_dir.is_dir() {
                 continue;
@@ -1228,7 +1482,7 @@ impl Builder {
             });
             self.summary.data_bags += 1;
 
-            for path in sorted_entries(&bag_dir)? {
+            for path in sorted_entries_within(&data_bags_root, &bag_dir)? {
                 if !path.is_file() {
                     continue;
                 }
@@ -1272,7 +1526,7 @@ impl Builder {
     // ------------------------------------------------------------------
 
     fn read_cookbooks(&mut self, org_name: &str, dir: &Path) -> Result<(), MigrateError> {
-        for cookbook_dir in sorted_entries(&dir.join("cookbooks"))? {
+        for cookbook_dir in sorted_entries_within(dir, &dir.join("cookbooks"))? {
             reject_symlink(&cookbook_dir)?;
             if !cookbook_dir.is_dir() {
                 continue;
@@ -1609,6 +1863,19 @@ impl Builder {
     /// contains neither global group nor global membership rows, so recreate
     /// that standard graph. User and organization ACLs supply the rest.
     fn ensure_global_defaults(&mut self) {
+        let user_ids: Vec<String> = self
+            .data
+            .users
+            .iter()
+            .map(|user| user.authz_id.clone())
+            .collect();
+        if !user_ids.is_empty() {
+            if let Some(users_group) = self.resolve_global_group("users") {
+                for authz_id in &user_ids {
+                    self.add_group_actor(&users_group, authz_id);
+                }
+            }
+        }
         let admin_ids: Vec<String> = self
             .data
             .users
@@ -1617,15 +1884,20 @@ impl Builder {
             .map(|user| user.authz_id.clone())
             .collect();
         if !admin_ids.is_empty() {
-            let server_admins = self.resolve_global_group("server-admins");
-            for authz_id in admin_ids {
-                self.add_group_actor(&server_admins, &authz_id);
+            if let Some(server_admins) = self.resolve_global_group("server-admins") {
+                for authz_id in admin_ids {
+                    self.add_group_actor(&server_admins, &authz_id);
+                }
             }
         }
 
         let orgs: Vec<String> = self.data.orgs.iter().map(|org| org.name.clone()).collect();
         for org_name in orgs {
-            let read_access = self.resolve_global_group(&format!("{org_name}_read_access_group"));
+            let Some(read_access) =
+                self.resolve_global_group(&format!("{org_name}_read_access_group"))
+            else {
+                continue;
+            };
             for group_name in ["admins", "users"] {
                 let child = self
                     .group_authz
@@ -1652,10 +1924,7 @@ impl Builder {
 
     fn collect_org_acls(&mut self, org_name: &str, dir: &Path) -> Result<(), MigrateError> {
         let acl_root = dir.join("acls");
-        if !acl_root.is_dir() {
-            return Ok(());
-        }
-        for entry in sorted_entries(&acl_root)? {
+        for entry in sorted_entries_within(dir, &acl_root)? {
             if entry.is_file() && entry.extension().and_then(|ext| ext.to_str()) == Some("json") {
                 let Some(kind) = file_stem(&entry) else {
                     continue;
@@ -1674,7 +1943,7 @@ impl Builder {
             let Some(kind) = dir_name(&entry) else {
                 continue;
             };
-            for path in json_files(&entry)? {
+            for path in json_files_within(&acl_root, &entry)? {
                 let Some(name) = file_stem(&path) else {
                     continue;
                 };
@@ -1773,6 +2042,7 @@ impl Builder {
                 message: "ACL body is not an object".into(),
             });
         };
+        self.acl_targets.insert(target_authz.to_string());
         for permission in PERMISSIONS {
             let Some(entries) = permissions.get(permission) else {
                 continue;
@@ -1825,8 +2095,11 @@ impl Builder {
             }
 
             for group in groups {
+                if group.trim().is_empty() {
+                    continue;
+                }
                 if let Some(group_authz) = if user_acl {
-                    Some(self.resolve_global_group(&group))
+                    self.resolve_global_group(&group)
                 } else {
                     self.resolve_group_authz(org_name, &group)
                 } {
@@ -1879,7 +2152,7 @@ impl Builder {
 
     fn resolve_group_authz(&mut self, org_name: Option<&str>, name: &str) -> Option<String> {
         if let Some(global) = name.strip_prefix("::") {
-            return Some(self.resolve_global_group(global));
+            return self.resolve_global_group(global);
         }
         if let Some((scope, group)) = name.split_once("::") {
             return self
@@ -1893,19 +2166,23 @@ impl Builder {
                 .get(&(org_name.to_string(), name.to_string()))
                 .cloned();
         }
-        Some(self.resolve_global_group(name))
+        self.resolve_global_group(name)
     }
 
-    fn resolve_global_group(&mut self, name: &str) -> String {
+    fn resolve_global_group(&mut self, name: &str) -> Option<String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return None;
+        }
         // Upstream's global admins group maps to Microwave's server-admins
-        // flag/group. Preserve every other global group by name.
-        let normalized = if name == "admins" || name.is_empty() {
+        // flag/group. Preserve every other non-empty global group by name.
+        let normalized = if name == "admins" {
             "server-admins"
         } else {
             name
         };
         if let Some(authz_id) = self.global_group_authz.get(normalized) {
-            return authz_id.clone();
+            return Some(authz_id.clone());
         }
         let id = stable_id(&format!("global_group:id:{normalized}"));
         let authz_id = stable_id(&format!("global_group:authz:{normalized}"));
@@ -1919,7 +2196,7 @@ impl Builder {
         });
         self.global_group_authz
             .insert(normalized.to_string(), authz_id.clone());
-        authz_id
+        Some(authz_id)
     }
 }
 
@@ -1982,8 +2259,22 @@ fn read_text_file(path: &Path) -> Result<String, MigrateError> {
 }
 
 fn sorted_entries(dir: &Path) -> Result<Vec<PathBuf>, MigrateError> {
-    if !dir.is_dir() {
-        return Ok(Vec::new());
+    match std::fs::symlink_metadata(dir) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(MigrateError::InvalidBackup {
+                path: dir.to_path_buf(),
+                message: "backup directory is a symlink; refusing to follow it".into(),
+            })
+        }
+        Ok(metadata) if !metadata.is_dir() => return Ok(Vec::new()),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(MigrateError::Read {
+                path: dir.to_path_buf(),
+                source,
+            })
+        }
     }
     let mut entries = std::fs::read_dir(dir)
         .map_err(|source| MigrateError::Read {
@@ -2000,6 +2291,9 @@ fn sorted_entries(dir: &Path) -> Result<Vec<PathBuf>, MigrateError> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     entries.sort();
+    for path in &entries {
+        reject_symlink(path)?;
+    }
     Ok(entries)
 }
 
@@ -2011,6 +2305,50 @@ fn json_files(dir: &Path) -> Result<Vec<PathBuf>, MigrateError> {
                 && path.extension().and_then(|extension| extension.to_str()) == Some("json")
         })
         .collect())
+}
+
+fn ensure_existing_within(root: &Path, path: &Path) -> Result<(), MigrateError> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(MigrateError::Read {
+                path: path.to_path_buf(),
+                source,
+            })
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(MigrateError::InvalidBackup {
+            path: path.to_path_buf(),
+            message: "backup path is a symlink; refusing to follow it".into(),
+        });
+    }
+    let root = std::fs::canonicalize(root).map_err(|source| MigrateError::Read {
+        path: root.to_path_buf(),
+        source,
+    })?;
+    let resolved = std::fs::canonicalize(path).map_err(|source| MigrateError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !resolved.starts_with(&root) {
+        return Err(MigrateError::InvalidBackup {
+            path: path.to_path_buf(),
+            message: "backup path resolves outside its repository root".into(),
+        });
+    }
+    Ok(())
+}
+
+fn sorted_entries_within(root: &Path, dir: &Path) -> Result<Vec<PathBuf>, MigrateError> {
+    ensure_existing_within(root, dir)?;
+    sorted_entries(dir)
+}
+
+fn json_files_within(root: &Path, dir: &Path) -> Result<Vec<PathBuf>, MigrateError> {
+    ensure_existing_within(root, dir)?;
+    json_files(dir)
 }
 
 fn json_rows(value: Value) -> Vec<Value> {
@@ -2092,6 +2430,73 @@ fn integer_field(value: &Value, key: &str) -> Option<i64> {
 
 fn email_field(value: &Value) -> Option<String> {
     non_empty_string(value, "email")
+}
+
+fn timestamp_field(value: &Value, key: &str) -> Option<String> {
+    value.get(key).and_then(|value| match value {
+        Value::String(text) => normalize_time(text),
+        Value::Number(number) => number
+            .as_i64()
+            .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
+            .map(|time| time.to_rfc3339_opts(SecondsFormat::Secs, true)),
+        _ => None,
+    })
+}
+
+fn normalize_expires_at(value: Option<&Value>) -> Result<String, String> {
+    match value {
+        None | Some(Value::Null) => Ok("infinity".into()),
+        Some(Value::String(text)) if text.trim().is_empty() => Ok("infinity".into()),
+        Some(Value::String(text)) if text.trim().eq_ignore_ascii_case("infinity") => {
+            Ok("infinity".into())
+        }
+        Some(Value::String(text)) => {
+            normalize_time(text).ok_or_else(|| format!("{text:?} is not a recognized timestamp"))
+        }
+        Some(Value::Number(number)) => number
+            .as_i64()
+            .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
+            .map(|time| time.to_rfc3339_opts(SecondsFormat::Secs, true))
+            .ok_or_else(|| "numeric timestamp is out of range".to_string()),
+        Some(other) => Err(format!("{other} is not a timestamp")),
+    }
+}
+
+fn normalize_time(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if value.eq_ignore_ascii_case("infinity") {
+        return Some("infinity".into());
+    }
+    if let Ok(time) = DateTime::parse_from_rfc3339(value) {
+        return Some(time.to_rfc3339_opts(SecondsFormat::Secs, true));
+    }
+    for format in ["%Y-%m-%d %H:%M:%S%.f %z", "%Y-%m-%d %H:%M:%S %z"] {
+        if let Ok(time) = DateTime::parse_from_str(value, format) {
+            return Some(
+                time.with_timezone(&Utc)
+                    .to_rfc3339_opts(SecondsFormat::Secs, true),
+            );
+        }
+    }
+    for format in [
+        "%Y-%m-%d %H:%M:%S%.f UTC",
+        "%Y-%m-%d %H:%M:%S UTC",
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S",
+    ] {
+        if let Ok(time) = NaiveDateTime::parse_from_str(value, format) {
+            return Some(
+                Utc.from_utc_datetime(&time)
+                    .to_rfc3339_opts(SecondsFormat::Secs, true),
+            );
+        }
+    }
+    None
 }
 
 fn string_array(value: &Value, key: &str) -> Vec<String> {
@@ -2230,6 +2635,7 @@ fn collect_cookbook_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>, MigrateE
         dir: &Path,
         output: &mut Vec<(String, Vec<u8>)>,
     ) -> Result<(), MigrateError> {
+        ensure_existing_within(root, dir)?;
         for path in sorted_entries(dir)? {
             let metadata =
                 std::fs::symlink_metadata(&path).map_err(|source| MigrateError::Read {
@@ -2292,11 +2698,12 @@ fn collect_cookbook_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>, MigrateE
 /// form. Arbitrary Ruby, interpolation, conditionals, and custom methods are
 /// left for a future pass; a missing value is simply omitted.
 fn parse_metadata_rb(path: &Path) -> Result<Value, MigrateError> {
-    let text = std::fs::read_to_string(path).map_err(|source| MigrateError::Read {
-        path: path.to_path_buf(),
+    let text = read_text_file(path)?;
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    let base = std::fs::canonicalize(base).map_err(|source| MigrateError::Read {
+        path: base.to_path_buf(),
         source,
     })?;
-    let base = path.parent().unwrap_or_else(|| Path::new("."));
     let mut metadata = Map::new();
     let mut dependencies = Map::new();
     let mut platforms = Map::new();
@@ -2325,11 +2732,8 @@ fn parse_metadata_rb(path: &Path) -> Result<Value, MigrateError> {
                     metadata.insert("long_description".into(), json!(value));
                 } else if args.contains("README") {
                     if let Some(filename) = first_ruby_string_containing(args, "README") {
-                        let candidate = base.join(filename);
-                        if candidate.is_file() {
-                            if let Ok(value) = std::fs::read_to_string(&candidate) {
-                                metadata.insert("long_description".into(), json!(value));
-                            }
+                        if let Some(value) = read_cookbook_readme(&base, &filename, path)? {
+                            metadata.insert("long_description".into(), json!(value));
                         }
                     }
                 }
@@ -2375,6 +2779,65 @@ fn parse_metadata_rb(path: &Path) -> Result<Value, MigrateError> {
         }
     }
     Ok(Value::Object(metadata))
+}
+
+fn read_cookbook_readme(
+    cookbook_root: &Path,
+    filename: &str,
+    metadata_path: &Path,
+) -> Result<Option<String>, MigrateError> {
+    let mut components = Path::new(filename).components();
+    let Some(Component::Normal(name)) = components.next() else {
+        return Err(MigrateError::InvalidBackup {
+            path: metadata_path.to_path_buf(),
+            message: format!("long_description filename {filename:?} is not a single normal file"),
+        });
+    };
+    if components.next().is_some() {
+        return Err(MigrateError::InvalidBackup {
+            path: metadata_path.to_path_buf(),
+            message: format!("long_description filename {filename:?} contains a path prefix"),
+        });
+    }
+    let candidate = cookbook_root.join(name);
+    let metadata = match std::fs::symlink_metadata(&candidate) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(MigrateError::Read {
+                path: candidate,
+                source,
+            })
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(MigrateError::InvalidBackup {
+            path: metadata_path.to_path_buf(),
+            message: format!("long_description file {filename:?} is a symlink"),
+        });
+    }
+    if !metadata.is_file() {
+        return Err(MigrateError::InvalidBackup {
+            path: metadata_path.to_path_buf(),
+            message: format!("long_description file {filename:?} is not a regular file"),
+        });
+    }
+    let resolved = std::fs::canonicalize(&candidate).map_err(|source| MigrateError::Read {
+        path: candidate.clone(),
+        source,
+    })?;
+    if resolved.parent() != Some(cookbook_root) {
+        return Err(MigrateError::InvalidBackup {
+            path: metadata_path.to_path_buf(),
+            message: format!("long_description file {filename:?} resolves outside the cookbook"),
+        });
+    }
+    std::fs::read_to_string(&resolved)
+        .map(Some)
+        .map_err(|source| MigrateError::Read {
+            path: resolved,
+            source,
+        })
 }
 
 fn split_ruby_call(line: &str) -> Option<(&str, &str)> {

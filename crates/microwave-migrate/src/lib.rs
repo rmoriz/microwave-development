@@ -32,9 +32,11 @@ mod server_secrets;
 
 pub use from_api::{crawl_from_api, from_api_with_options, read_private_key, FromApiOptions};
 pub use knife_backup::{
-    apply_knife_backup_plan_postgres, apply_knife_backup_plan_sqlite, import_knife_backup,
-    import_knife_backup_postgres, import_knife_backup_postgres_with_compression,
-    import_knife_backup_to, prepare_knife_backup, KnifeBackupPlan, KnifeBackupSummary,
+    apply_knife_backup_plan_postgres, apply_knife_backup_plan_postgres_with_options,
+    apply_knife_backup_plan_sqlite, apply_knife_backup_plan_sqlite_with_options,
+    import_knife_backup, import_knife_backup_postgres,
+    import_knife_backup_postgres_with_compression, import_knife_backup_to, prepare_knife_backup,
+    KnifeBackupApplyOptions, KnifeBackupPlan, KnifeBackupSummary,
 };
 pub use server_secrets::{
     apply_server_secrets, prepare_server_secrets, ServerSecretWrite, ServerSecretsOptions,
@@ -129,6 +131,10 @@ pub enum MigrateError {
     ObjectStore(#[from] microwave_objectstore::ObjectStoreError),
     #[error("server secrets import: {0}")]
     ServerSecrets(String),
+    #[error(
+        "target store already has user {username:?} with a different id; re-run with --merge-users to reuse it"
+    )]
+    ExistingUser { username: String },
     #[error("crypto error: {0}")]
     Crypto(#[from] microwave_crypto::CryptoError),
     #[error("failed to build tokio runtime: {0}")]

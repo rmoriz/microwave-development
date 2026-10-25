@@ -1,11 +1,12 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use microwave_config::{Config, StorageCompression};
 use microwave_migrate::{
-    apply_knife_backup_plan_postgres, apply_knife_backup_plan_sqlite, apply_server_secrets, export,
-    export_postgres, from_api_with_options, import_postgres_with_compression,
-    import_with_compression, prepare_knife_backup, prepare_server_secrets, redacted_postgres_url,
-    validate_postgres_url, Compression, FromApiOptions, KnifeBackupPlan, MigrateError,
-    ServerSecretsOptions, ServerSecretsPlan, DATABASE_FILE,
+    apply_knife_backup_plan_postgres_with_options, apply_knife_backup_plan_sqlite_with_options,
+    apply_server_secrets, export, export_postgres, from_api_with_options,
+    import_postgres_with_compression, import_with_compression, prepare_knife_backup,
+    prepare_server_secrets, redacted_postgres_url, validate_postgres_url, Compression,
+    FromApiOptions, KnifeBackupApplyOptions, KnifeBackupPlan, MigrateError, ServerSecretsOptions,
+    ServerSecretsPlan, DATABASE_FILE,
 };
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -134,6 +135,17 @@ enum Command {
         /// Overwrite existing server-secret target files.
         #[arg(long)]
         force: bool,
+        /// Reuse existing target users with the same username.
+        ///
+        /// Without this flag a username collision (for example a bootstrapped
+        /// pivotal user) fails with a clear error.
+        #[arg(long)]
+        merge_users: bool,
+        /// Replace ACLs and group membership for targets present in the backup.
+        ///
+        /// Without this flag imports are additive and revoked grants survive.
+        #[arg(long)]
+        replace_acls: bool,
         /// Skip the interactive confirmation. Required when stdin is not a
         /// terminal.
         #[arg(long)]
@@ -208,6 +220,8 @@ fn main() -> ExitCode {
             tls_cert,
             tls_key,
             force,
+            merge_users,
+            replace_acls,
             yes,
             dry_run,
             compression,
@@ -223,6 +237,8 @@ fn main() -> ExitCode {
             tls_cert,
             tls_key,
             force,
+            merge_users,
+            replace_acls,
             yes,
             dry_run,
             compression,
@@ -309,6 +325,8 @@ fn import_knife_backup_command(
     tls_cert: Option<PathBuf>,
     tls_key: Option<PathBuf>,
     force: bool,
+    merge_users: bool,
+    replace_acls: bool,
     yes: bool,
     dry_run: bool,
     compression: Option<CompressionArg>,
@@ -380,7 +398,16 @@ fn import_knife_backup_command(
                 return Ok(());
             }
             confirm_import(yes)?;
-            apply_knife_backup_plan_sqlite(&data_dir, &plan, &bookshelf, compression)?;
+            apply_knife_backup_plan_sqlite_with_options(
+                &data_dir,
+                &plan,
+                &bookshelf,
+                compression,
+                &KnifeBackupApplyOptions {
+                    merge_users,
+                    replace_acls,
+                },
+            )?;
             apply_secrets_if_present(secrets_plan.as_ref())?;
             println!("Imported knife backup from {}", input.display());
             Ok(())
@@ -411,7 +438,16 @@ fn import_knife_backup_command(
                 ));
             };
             confirm_import(yes)?;
-            apply_knife_backup_plan_postgres(&database_url, &plan, &bookshelf, compression)?;
+            apply_knife_backup_plan_postgres_with_options(
+                &database_url,
+                &plan,
+                &bookshelf,
+                compression,
+                &KnifeBackupApplyOptions {
+                    merge_users,
+                    replace_acls,
+                },
+            )?;
             apply_secrets_if_present(secrets_plan.as_ref())?;
             println!("Imported knife backup from {}", input.display());
             Ok(())

@@ -35,6 +35,11 @@ fn secret_directory(root: &Path) -> PathBuf {
     write(&source.join("ssl/cert.pem"), b"TLS CERT\n");
     write(&source.join("ssl/key.pem"), b"TLS KEY\n");
     write(&source.join("ca/root.pem"), b"CA ROOT\n");
+    write(&source.join("ca/root.key"), b"CA ROOT KEY\n");
+    write(
+        &source.join("ca/private.pem"),
+        b"-----BEGIN PRIVATE KEY-----\nCA PRIVATE\n-----END PRIVATE KEY-----\n",
+    );
     write(
         &source.join("nginx/ca/intermediate.pem"),
         b"CA INTERMEDIATE\n",
@@ -92,10 +97,10 @@ fn imports_a_secrets_directory_with_modes_and_default_targets() {
     let debug = format!("{plan:?}");
     assert!(!debug.contains("PIVOTAL PRIVATE"));
     assert!(!debug.contains("TLS KEY"));
-    assert_eq!(plan.writes.len(), 10);
-    assert_eq!(plan.private_count(), 6);
+    assert_eq!(plan.writes.len(), 12);
+    assert_eq!(plan.private_count(), 8);
     assert_eq!(plan.public_count(), 4);
-    assert_eq!(apply_server_secrets(&plan).unwrap(), 10);
+    assert_eq!(apply_server_secrets(&plan).unwrap(), 12);
 
     for (relative, contents) in [
         ("pivotal.pem", b"PIVOTAL PRIVATE\n".as_slice()),
@@ -110,6 +115,11 @@ fn imports_a_secrets_directory_with_modes_and_default_targets() {
         ("ssl/cert.pem", b"TLS CERT\n"),
         ("ssl/key.pem", b"TLS KEY\n"),
         ("ca/root.pem", b"CA ROOT\n"),
+        ("ca/root.key", b"CA ROOT KEY\n"),
+        (
+            "ca/private.pem",
+            b"-----BEGIN PRIVATE KEY-----\nCA PRIVATE\n-----END PRIVATE KEY-----\n",
+        ),
         ("nginx/ca/intermediate.pem", b"CA INTERMEDIATE\n"),
     ] {
         assert_eq!(
@@ -128,6 +138,8 @@ fn imports_a_secrets_directory_with_modes_and_default_targets() {
             "objectstore.secret",
             "private-chef-secrets.json",
             "ssl/key.pem",
+            "ca/root.key",
+            "ca/private.pem",
         ] {
             assert_eq!(mode(&target.join(relative)), 0o600, "{relative}");
         }
@@ -157,6 +169,7 @@ fn imports_a_gzip_tar_archive_and_uses_root_tls_candidates() {
             ("cert.pem", b"ROOT CERT\n"),
             ("key.pem", b"ROOT KEY\n"),
             ("ca/root.pem", b"ARCHIVE CA\n"),
+            ("ca/private.key", b"ARCHIVE CA KEY\n"),
             ("nginx/ca/intermediate.pem", b"ARCHIVE NGINX CA\n"),
         ],
     );
@@ -165,7 +178,7 @@ fn imports_a_gzip_tar_archive_and_uses_root_tls_candidates() {
     options.source_dir = None;
     options.source_archive = Some(archive);
     let plan = prepare_server_secrets(&options).unwrap();
-    assert_eq!(plan.writes.len(), 6);
+    assert_eq!(plan.writes.len(), 7);
     apply_server_secrets(&plan).unwrap();
 
     assert_eq!(
@@ -188,6 +201,46 @@ fn imports_a_gzip_tar_archive_and_uses_root_tls_candidates() {
         std::fs::read(target.join("nginx/ca/intermediate.pem")).unwrap(),
         b"ARCHIVE NGINX CA\n"
     );
+    assert_eq!(
+        std::fs::read(target.join("ca/private.key")).unwrap(),
+        b"ARCHIVE CA KEY\n"
+    );
+    #[cfg(unix)]
+    assert_eq!(mode(&target.join("ca/private.key")), 0o600);
+}
+
+#[test]
+fn nginx_ca_certificate_and_key_map_to_tls_targets() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("secrets");
+    write(
+        &source.join("nginx/ca/chef.example.test.crt"),
+        b"nginx cert\n",
+    );
+    write(
+        &source.join("nginx/ca/chef.example.test.key"),
+        b"nginx key\n",
+    );
+    let target = root.path().join("data");
+    let cert_target = root.path().join("tls/server.crt");
+    let key_target = root.path().join("tls/server.key");
+    let mut options = make_options(&source, &target);
+    options.tls_cert_target = Some(cert_target.clone());
+    options.tls_key_target = Some(key_target.clone());
+    let plan = prepare_server_secrets(&options).unwrap();
+    assert_eq!(plan.private_count(), 1);
+    assert_eq!(plan.public_count(), 1);
+    apply_server_secrets(&plan).unwrap();
+
+    assert_eq!(std::fs::read(&cert_target).unwrap(), b"nginx cert\n");
+    assert_eq!(std::fs::read(&key_target).unwrap(), b"nginx key\n");
+    assert!(!target.join("nginx/ca/chef.example.test.crt").exists());
+    assert!(!target.join("nginx/ca/chef.example.test.key").exists());
+    #[cfg(unix)]
+    {
+        assert_eq!(mode(&cert_target), 0o644);
+        assert_eq!(mode(&key_target), 0o600);
+    }
 }
 
 #[test]
@@ -204,6 +257,63 @@ fn accepts_the_underscore_private_chef_secrets_name() {
     assert_eq!(
         std::fs::read(target.join("private-chef-secrets.json")).unwrap(),
         br#"{"secret":"underscore"}"#
+    );
+}
+
+#[test]
+fn imports_a_tar_with_one_legacy_top_level_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let archive = root.path().join("secrets.tar.gz");
+    gzip_archive(
+        &archive,
+        &[
+            ("chef-secrets/pivotal.pem", b"prefixed pivotal\n"),
+            ("chef-secrets/ssl/cert.pem", b"prefixed cert\n"),
+            ("chef-secrets/ssl/key.pem", b"prefixed key\n"),
+            ("chef-secrets/ca/root.pem", b"prefixed ca\n"),
+        ],
+    );
+    let target = root.path().join("data");
+    let mut options = make_options(&archive, &target);
+    options.source_dir = None;
+    options.source_archive = Some(archive);
+    let plan = prepare_server_secrets(&options).unwrap();
+    apply_server_secrets(&plan).unwrap();
+    assert_eq!(
+        std::fs::read(target.join("pivotal.pem")).unwrap(),
+        b"prefixed pivotal\n"
+    );
+    assert_eq!(
+        std::fs::read(target.join("ssl/cert.pem")).unwrap(),
+        b"prefixed cert\n"
+    );
+    assert_eq!(
+        std::fs::read(target.join("ca/root.pem")).unwrap(),
+        b"prefixed ca\n"
+    );
+}
+
+#[test]
+fn staging_failure_does_not_publish_any_secret_file() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("secrets");
+    write(&source.join("pivotal.pem"), b"private\n");
+    write(&source.join("ssl/cert.pem"), b"public\n");
+    let target = root.path().join("data");
+    let plan = prepare_server_secrets(&make_options(&source, &target)).unwrap();
+
+    // Make one target parent impossible after validation. Staging must fail
+    // before any other secret is renamed into place.
+    write(&target.join("ssl"), b"not a directory\n");
+    let error = apply_server_secrets(&plan).unwrap_err().to_string();
+    assert!(
+        error.to_ascii_lowercase().contains("not a directory"),
+        "{error}"
+    );
+    assert!(!target.join("pivotal.pem").exists());
+    assert_eq!(
+        std::fs::read(target.join("ssl")).unwrap(),
+        b"not a directory\n"
     );
 }
 
@@ -357,6 +467,28 @@ fn rejects_archive_links_and_unknown_entries() {
     options.source_archive = Some(unknown);
     let error = prepare_server_secrets(&options).unwrap_err().to_string();
     assert!(error.contains("outside the allowlist"), "{error}");
+}
+
+#[test]
+fn bounds_individual_and_archive_sizes() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("secrets");
+    std::fs::create_dir_all(&source).unwrap();
+    let large = std::fs::File::create(source.join("pivotal.pem")).unwrap();
+    large.set_len(16 * 1024 * 1024 + 1).unwrap();
+    let error = prepare_server_secrets(&make_options(&source, &root.path().join("data")))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("file limit"), "{error}");
+
+    let archive = root.path().join("large.tar.gz");
+    let file = std::fs::File::create(&archive).unwrap();
+    file.set_len(128 * 1024 * 1024 + 1).unwrap();
+    let mut options = make_options(&archive, &root.path().join("data"));
+    options.source_dir = None;
+    options.source_archive = Some(archive);
+    let error = prepare_server_secrets(&options).unwrap_err().to_string();
+    assert!(error.contains("archive limit"), "{error}");
 }
 
 #[test]

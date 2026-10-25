@@ -85,6 +85,8 @@ fn help_lists_the_knife_backup_options() {
     assert!(message.contains("--tls-cert"));
     assert!(message.contains("--tls-key"));
     assert!(message.contains("--force"));
+    assert!(message.contains("--merge-users"));
+    assert!(message.contains("--replace-acls"));
     assert!(message.contains("--yes"));
 }
 
@@ -250,6 +252,53 @@ fn secrets_refuse_overwrite_without_force_before_importing_metadata() {
     ]);
     assert!(imported.status.success(), "{}", stderr(&imported));
     assert_eq!(std::fs::read(target.join("pivotal.pem")).unwrap(), b"new\n");
+}
+
+#[test]
+fn merge_users_flag_reuses_a_bootstrapped_target_user() {
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path());
+    let target = root.path().join("target");
+    let store = microwave_store::SqliteStore::open(&database(&target)).unwrap();
+    let existing = store
+        .create_user(
+            "alice",
+            "existing@example.com",
+            "bcrypt",
+            "existing-hash",
+            "existing-salt",
+            false,
+        )
+        .unwrap();
+    drop(store);
+
+    let refused = run(&[
+        "import-knife-backup",
+        "--input",
+        backup.to_str().unwrap(),
+        "--data-dir",
+        target.to_str().unwrap(),
+        "--yes",
+    ]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("--merge-users"));
+
+    let imported = run(&[
+        "import-knife-backup",
+        "--input",
+        backup.to_str().unwrap(),
+        "--data-dir",
+        target.to_str().unwrap(),
+        "--merge-users",
+        "--replace-acls",
+        "--yes",
+    ]);
+    assert!(imported.status.success(), "{}", stderr(&imported));
+    let store = microwave_store::SqliteStore::open(&database(&target)).unwrap();
+    let user = store.find_user("alice").unwrap().unwrap();
+    assert_eq!(user.id, existing.id);
+    assert_eq!(user.authz_id, existing.authz_id);
+    assert_eq!(user.password_hash, "alice-hash");
 }
 
 #[test]

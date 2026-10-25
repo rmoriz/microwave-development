@@ -80,7 +80,7 @@ The data directory contains:
 | `objectstore.secret` | Local `/bookshelf` HMAC secret, created on first start, mode `0600`. |
 | `webui_priv.pem` / `webui_pub.pem` | Optional legacy web-UI keypair migrated by `import-knife-backup --secrets-dir`; `0600` / `0644`. |
 | `private-chef-secrets.json` | Optional migrated upstream secret document, mode `0600`. |
-| `ssl/cert.pem`, `ssl/key.pem`, `ca/**` | Optional migrated TLS/CA material; copied to configured TLS paths or this data directory. |
+| `ssl/cert.pem`, `ssl/key.pem`, `ca/**` | Optional migrated TLS/CA material; keys are `0600`, certificates `0644`, copied to configured TLS paths or this data directory. |
 
 Nothing outside the data directory is written at runtime. The process does not
 need root, a home directory, or a local search service, Java, or Erlang stack.
@@ -976,11 +976,20 @@ microwave-migrate import-knife-backup \
 ```
 
 Private files are written `0600`, public certificates/keys `0644`, and newly
-created parent directories `0700`. Existing targets are refused unless
-`--force` is supplied. `.tar`/`.tar.gz` archives are allowlisted and reject
-absolute paths, `..`, symlinks, hardlinks, devices, and FIFOs. No file
-contents are printed. Without a secrets source the importer reads and writes
-no private files.
+created parent directories `0700`. CA-tree `.key` files and PEM private keys
+are private; `nginx/ca/<fqdn>.crt`/`.key` map to the TLS certificate/key
+targets. Existing targets are refused unless `--force` is supplied.
+`.tar`/`.tar.gz` archives are allowlisted and reject absolute paths, `..`,
+symlinks, hardlinks, devices, and FIFOs; a single legacy top-level directory
+wrapper is accepted. Expanded size is bounded. No file contents are printed.
+Without a secrets source the importer reads and writes no private files.
+
+Secret files are staged before any target is replaced and rolled back as a set
+on an ordinary commit error. A process crash during commit can still leave a
+partial set; keep an operator backup and re-run with `--force` after recovery.
+`webui_priv.pem`/`webui_pub.pem` and `private-chef-secrets.json` are preserved
+for external tooling; Microwave does not consume the web-UI keypair or merge
+the private-chef secret document at runtime.
 
 **Client/user private keys remain client-owned.** Chef Infra Server stores
 only public keys for clients and users, so no migration tool can recover their
@@ -1004,6 +1013,13 @@ The command merges/upserts into an existing store, so it asks for an
 interactive `yes` or `--yes`. Re-importing the same backup is idempotent.
 Objects that were deleted from the backup but still exist in the target are
 not removed.
+
+A bootstrapped target normally already has a `pivotal` user with a different
+id. The importer fails with a clear error by default; pass `--merge-users` to
+reuse the existing id/authz id and update that user. ACL and group-membership
+import is additive by default; pass `--replace-acls` to replace ACLs and group
+membership for targets present in the backup, which is required to remove
+revoked grants. Neither flag makes the whole metadata/secret operation atomic.
 
 ### Importing a snapshot
 

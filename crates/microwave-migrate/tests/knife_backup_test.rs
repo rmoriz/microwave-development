@@ -6,8 +6,9 @@
 //! cookbook directories with `status.json`, and per-object ACL directories.
 
 use microwave_migrate::{
-    import_knife_backup_postgres_with_compression, import_knife_backup_to, prepare_knife_backup,
-    Compression,
+    apply_knife_backup_plan_postgres_with_options, apply_knife_backup_plan_sqlite,
+    apply_knife_backup_plan_sqlite_with_options, import_knife_backup_to, prepare_knife_backup,
+    Compression, KnifeBackupApplyOptions,
 };
 use microwave_objectstore::{object_path, LocalObjectStore, ObjectStore};
 use microwave_store::{ActorType, Permission, SqliteStore};
@@ -127,6 +128,8 @@ fn fixture(root: &Path, suffix: &str) -> PathBuf {
                 "salt": "alice-salt",
                 "hash_type": "sha1+bcrypt",
                 "admin": false,
+                "created_at": "2020-01-02 03:04:05 UTC",
+                "updated_at": "2020-02-03 04:05:06 UTC",
             },
             {
                 "username": bob.clone(),
@@ -343,6 +346,8 @@ fn imports_users_keys_orgs_objects_cookbooks_and_acls() {
         alice.external_authentication_uid.as_deref(),
         Some("ldap-alice-roundtrip")
     );
+    assert_eq!(alice.created_at, "2020-01-02T03:04:05Z");
+    assert_eq!(alice.updated_at, "2020-02-03T04:05:06Z");
     let pivotal = store.find_user(pivotal_name).unwrap().unwrap();
     assert!(pivotal.admin);
     assert_eq!(pivotal.password_hash, "pivotal-hash");
@@ -450,6 +455,14 @@ fn imports_users_keys_orgs_objects_cookbooks_and_acls() {
         .unwrap();
     assert!(user_read.groups.contains(&"::server-admins".to_string()));
     assert!(user_read.groups.contains(&"::users".to_string()));
+    let global_users = store.find_global_group("users").unwrap().unwrap();
+    let global_user_members = store
+        .list_group_members("", &global_users.authz_id)
+        .unwrap();
+    assert_eq!(
+        global_user_members.users,
+        vec![alice_name, bob_name, pivotal_name]
+    );
 
     let cookbook = store
         .find_cookbook_version(&org.id, "app", "1.2.3")
@@ -539,6 +552,313 @@ fn reuses_an_existing_global_server_admins_group() {
 }
 
 #[test]
+fn rejects_metadata_long_description_paths_outside_the_cookbook() {
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "metadata-traversal");
+    write_text(
+        &root.path().join("outside-README.txt"),
+        "outside the cookbook\n",
+    );
+    let cookbook = backup.join("organizations/acme-metadata-traversal/cookbooks/app-1.2.3");
+    write_text(
+        &cookbook.join("metadata.rb"),
+        "name 'app'\nversion '1.2.3'\nlong_description IO.read(File.join(File.dirname(__FILE__), '../outside-README.txt'))\n",
+    );
+    let error = prepare_knife_backup(&backup).unwrap_err().to_string();
+    assert!(error.contains("single normal file"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_a_symlinked_metadata_long_description_file() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "metadata-symlink");
+    let outside = root.path().join("outside-readme.md");
+    write_text(&outside, "outside the cookbook\n");
+    let cookbook = backup.join("organizations/acme-metadata-symlink/cookbooks/app-1.2.3");
+    write_text(
+        &cookbook.join("metadata.rb"),
+        "name 'app'\nversion '1.2.3'\nlong_description IO.read(File.join(File.dirname(__FILE__), 'README.md'))\n",
+    );
+    symlink(&outside, cookbook.join("README.md")).unwrap();
+    let error = prepare_knife_backup(&backup).unwrap_err().to_string();
+    assert!(error.contains("symlink"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_a_symlinked_cookbooks_collection() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "symlink-cookbooks");
+    let org_dir = backup.join("organizations/acme-symlink-cookbooks");
+    std::fs::remove_dir_all(org_dir.join("cookbooks")).unwrap();
+    let outside = root.path().join("outside-cookbooks");
+    std::fs::create_dir_all(&outside).unwrap();
+    symlink(&outside, org_dir.join("cookbooks")).unwrap();
+    let error = prepare_knife_backup(&backup).unwrap_err().to_string();
+    assert!(error.contains("symlink"), "{error}");
+}
+
+#[test]
+fn normalizes_legacy_key_expirations_and_skips_invalid_rows() {
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "expiry");
+    write_json(
+        &backup.join("key_table_dump.json"),
+        &json!([
+            {
+                "name": "alice-expiry",
+                "type": "user",
+                "key_name": "legacy",
+                "public_key": PUBLIC_KEY,
+                "key_version": 1,
+                "expires_at": "2030-01-02 03:04:05 UTC"
+            },
+            {
+                "name": "alice-expiry",
+                "type": "user",
+                "key_name": "offset",
+                "public_key": PUBLIC_KEY,
+                "key_version": 1,
+                "expires_at": "2030-01-02 03:04:05 +0000"
+            },
+            {
+                "name": "alice-expiry",
+                "type": "user",
+                "key_name": "rfc",
+                "public_key": PUBLIC_KEY,
+                "key_version": 1,
+                "expires_at": "2031-04-05T06:07:08Z"
+            },
+            {
+                "name": "alice-expiry",
+                "type": "user",
+                "key_name": "bad",
+                "public_key": PUBLIC_KEY,
+                "key_version": 1,
+                "expires_at": "not-a-time"
+            }
+        ]),
+    );
+    let data = tempfile::tempdir().unwrap();
+    let summary = import_knife_backup_to(
+        data.path(),
+        &backup,
+        &data.path().join("bookshelf"),
+        Compression::None,
+    )
+    .unwrap();
+    assert!(summary
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("invalid expires_at")));
+
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let alice = store.find_user("alice-expiry").unwrap().unwrap();
+    for (key_name, expected) in [
+        ("legacy", "2030-01-02T03:04:05Z"),
+        ("offset", "2030-01-02T03:04:05Z"),
+        ("rfc", "2031-04-05T06:07:08Z"),
+    ] {
+        let key = store
+            .find_actor_key(&alice.id, ActorType::User, key_name)
+            .unwrap()
+            .unwrap_or_else(|| panic!("missing key {key_name}"));
+        assert_eq!(key.expires_at, expected);
+    }
+    assert!(store
+        .find_actor_key(&alice.id, ActorType::User, "bad")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn refuses_a_bootstrapped_user_without_merge_users_and_reuses_it_with_merge() {
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "merge-user");
+    let data = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let existing = store
+        .create_user(
+            "pivotal-merge-user",
+            "existing@example.com",
+            "bcrypt",
+            "existing-hash",
+            "existing-salt",
+            false,
+        )
+        .unwrap();
+    drop(store);
+
+    let plan = prepare_knife_backup(&backup).unwrap();
+    let error = apply_knife_backup_plan_sqlite(
+        data.path(),
+        &plan,
+        &data.path().join("bookshelf"),
+        Compression::None,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("--merge-users"), "{error}");
+
+    apply_knife_backup_plan_sqlite_with_options(
+        data.path(),
+        &plan,
+        &data.path().join("bookshelf"),
+        Compression::None,
+        &KnifeBackupApplyOptions {
+            merge_users: true,
+            replace_acls: false,
+        },
+    )
+    .unwrap();
+
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let imported = store.find_user("pivotal-merge-user").unwrap().unwrap();
+    assert_eq!(imported.id, existing.id);
+    assert_eq!(imported.authz_id, existing.authz_id);
+    assert_eq!(imported.password_hash, "pivotal-hash");
+    let key = store
+        .find_actor_key(&existing.id, ActorType::User, "default")
+        .unwrap()
+        .expect("merged user key");
+    assert_eq!(key.actor_id, existing.id);
+    let org = store.find_org("acme-merge-user").unwrap().unwrap();
+    assert!(store
+        .list_org_users(&org.id)
+        .unwrap()
+        .iter()
+        .any(|user| user.id == existing.id));
+}
+
+#[test]
+fn replace_acls_removes_revoked_grants_and_group_members() {
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "replace");
+    let data = tempfile::tempdir().unwrap();
+    let bookshelf = data.path().join("bookshelf");
+    import_knife_backup_to(data.path(), &backup, &bookshelf, Compression::None).unwrap();
+
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let org = store.find_org("acme-replace").unwrap().unwrap();
+    let alice = store.find_user("alice-replace").unwrap().unwrap();
+    let bob = store.find_user("bob-replace").unwrap().unwrap();
+    let node = store.find_node(&org.id, "web1").unwrap().unwrap();
+    let ops = store.find_group(&org.id, "ops").unwrap().unwrap();
+    store
+        .set_acl(
+            &node.authz_id,
+            Permission::Create,
+            Some(&bob.authz_id),
+            None,
+        )
+        .unwrap();
+    store
+        .add_group_member(&ops.authz_id, &bob.authz_id)
+        .unwrap();
+    drop(store);
+
+    let plan = prepare_knife_backup(&backup).unwrap();
+    apply_knife_backup_plan_sqlite(data.path(), &plan, &bookshelf, Compression::None).unwrap();
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let node = store.find_node(&org.id, "web1").unwrap().unwrap();
+    let create = store
+        .get_acl_entries(&node.authz_id)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.permission == Permission::Create)
+        .unwrap();
+    assert!(create.users.contains(&bob.username) || create.clients.contains(&bob.username));
+    let ops = store.find_group(&org.id, "ops").unwrap().unwrap();
+    assert!(store
+        .list_group_members(&org.id, &ops.authz_id)
+        .unwrap()
+        .users
+        .contains(&bob.username));
+    drop(store);
+
+    apply_knife_backup_plan_sqlite_with_options(
+        data.path(),
+        &plan,
+        &bookshelf,
+        Compression::None,
+        &KnifeBackupApplyOptions {
+            merge_users: false,
+            replace_acls: true,
+        },
+    )
+    .unwrap();
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let node = store.find_node(&org.id, "web1").unwrap().unwrap();
+    let create = store
+        .get_acl_entries(&node.authz_id)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.permission == Permission::Create)
+        .unwrap();
+    assert!(!create.users.contains(&bob.username));
+    assert!(!create.clients.contains(&bob.username));
+    let ops = store.find_group(&org.id, "ops").unwrap().unwrap();
+    assert_eq!(
+        store
+            .list_group_members(&org.id, &ops.authz_id)
+            .unwrap()
+            .users,
+        vec![alice.username]
+    );
+}
+
+#[test]
+fn skips_empty_global_group_names() {
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "empty-group");
+    write_json(
+        &backup.join("user_acls/pivotal-empty-group.json"),
+        &json!({
+            "read": { "actors": ["pivotal-empty-group"], "groups": ["", "::", "admins"] },
+            "create": { "actors": [], "groups": [] },
+            "update": { "actors": [], "groups": [] },
+            "delete": { "actors": [], "groups": [] },
+            "grant": { "actors": [], "groups": [] }
+        }),
+    );
+    let plan = prepare_knife_backup(&backup).unwrap();
+    assert!(plan
+        .snapshot
+        .global_groups
+        .iter()
+        .all(|group| !group.name.is_empty()));
+    assert!(plan
+        .snapshot
+        .global_groups
+        .iter()
+        .any(|group| group.name == "server-admins"));
+}
+
+#[test]
+fn warns_when_key_dumps_are_absent() {
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "no-key-dumps");
+    std::fs::remove_file(backup.join("key_dump.json")).unwrap();
+    std::fs::remove_file(backup.join("key_table_dump.json")).unwrap();
+    let plan = prepare_knife_backup(&backup).unwrap();
+    assert!(plan
+        .summary
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("key_dump.json is absent")));
+    assert!(plan
+        .summary
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("key_table_dump.json is absent")));
+}
+
+#[test]
 fn dry_run_parsing_writes_nothing() {
     let root = tempfile::tempdir().unwrap();
     let backup = fixture(root.path(), "dryrun");
@@ -591,11 +911,30 @@ fn postgres_import_round_trip() {
     let existing_server_admins = runtime
         .block_on(seeding.ensure_global_group("server-admins"))
         .expect("ensure server-admins");
+    let existing_pivotal = runtime
+        .block_on(seeding.create_user(
+            &format!("pivotal-{suffix}"),
+            &format!("existing-pivotal-{suffix}@example.com"),
+            "bcrypt",
+            "existing-hash",
+            "existing-salt",
+            false,
+        ))
+        .expect("create existing pivotal");
     drop(seeding);
 
-    let summary =
-        import_knife_backup_postgres_with_compression(&url, &backup, &bookshelf, Compression::None)
-            .unwrap();
+    let plan = prepare_knife_backup(&backup).unwrap();
+    let summary = apply_knife_backup_plan_postgres_with_options(
+        &url,
+        &plan,
+        &bookshelf,
+        Compression::None,
+        &KnifeBackupApplyOptions {
+            merge_users: true,
+            replace_acls: true,
+        },
+    )
+    .unwrap();
     assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
 
     let store = runtime
@@ -608,6 +947,18 @@ fn postgres_import_round_trip() {
     assert_eq!(server_admins.authz_id, existing_server_admins.authz_id);
     let org_name = format!("acme-{suffix}");
     let alice_name = format!("alice-{suffix}");
+    let pivotal = runtime
+        .block_on(store.find_user(&format!("pivotal-{suffix}")))
+        .unwrap()
+        .expect("merged pivotal");
+    assert_eq!(pivotal.id, existing_pivotal.id);
+    assert_eq!(pivotal.authz_id, existing_pivotal.authz_id);
+    assert_eq!(pivotal.password_hash, "pivotal-hash");
+    let pivotal_key = runtime
+        .block_on(store.find_actor_key(&existing_pivotal.id, ActorType::User, "default"))
+        .unwrap()
+        .expect("merged pivotal key");
+    assert_eq!(pivotal_key.actor_id, existing_pivotal.id);
     let user = runtime
         .block_on(store.find_user(&alice_name))
         .unwrap()

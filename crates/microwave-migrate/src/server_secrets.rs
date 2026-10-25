@@ -22,6 +22,9 @@ use tar::Archive;
 const PRIVATE_MODE: u32 = 0o600;
 const PUBLIC_MODE: u32 = 0o644;
 const DIRECTORY_MODE: u32 = 0o700;
+const MAX_SECRET_FILE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_SECRET_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_SECRET_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
 
 const BASE_FILES: [&str; 6] = [
     "pivotal.pem",
@@ -156,6 +159,15 @@ pub fn prepare_server_secrets(
     if let Some(archive) = &options.source_archive {
         read_archive(archive, &mut sources)?;
     }
+    let total: u64 = sources
+        .values()
+        .map(|source| u64::try_from(source.data.len()).unwrap_or(u64::MAX))
+        .sum();
+    if total > MAX_SECRET_TOTAL_BYTES {
+        return Err(MigrateError::ServerSecrets(format!(
+            "server secrets exceed the {MAX_SECRET_TOTAL_BYTES}-byte total limit"
+        )));
+    }
 
     let mut target_sources: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut plans: Vec<(PathBuf, u32, bool, String)> = Vec::new();
@@ -188,6 +200,7 @@ pub fn prepare_server_secrets(
 
     add_tls_plan(
         &sources,
+        SecretKind::TlsCert,
         &TLS_CERT_CANDIDATES,
         options.tls_cert_target.as_deref(),
         &options.target_data_dir,
@@ -196,6 +209,7 @@ pub fn prepare_server_secrets(
     );
     add_tls_plan(
         &sources,
+        SecretKind::TlsKey,
         &TLS_KEY_CANDIDATES,
         options.tls_key_target.as_deref(),
         &options.target_data_dir,
@@ -213,10 +227,11 @@ pub fn prepare_server_secrets(
                 source.relative
             ))
         })?;
+        let private = ca_file_is_private(&source.relative, &source.data);
         plans.push((
             options.target_data_dir.join(relative),
-            PUBLIC_MODE,
-            false,
+            if private { PRIVATE_MODE } else { PUBLIC_MODE },
+            private,
             source.relative.clone(),
         ));
     }
@@ -279,25 +294,206 @@ pub fn prepare_server_secrets(
 /// Apply a prepared plan atomically per file. Parent directories are created
 /// with mode 0700; private files are 0600 and public material is 0644.
 pub fn apply_server_secrets(plan: &ServerSecretsPlan) -> Result<usize, MigrateError> {
+    let mut staged = Vec::with_capacity(plan.writes.len());
     for write in &plan.writes {
-        write_secret(write, plan.force)?;
+        match stage_secret(write, plan.force) {
+            Ok(staged_write) => staged.push(staged_write),
+            Err(error) => {
+                cleanup_staged(&staged);
+                return Err(error);
+            }
+        }
     }
-    Ok(plan.writes.len())
+
+    let mut committed = Vec::with_capacity(staged.len());
+    for staged_write in staged {
+        match commit_staged(&staged_write) {
+            Ok(()) => committed.push(staged_write),
+            Err(error) => {
+                let rollback = rollback_committed(&committed);
+                cleanup_staged(&[staged_write]);
+                if let Err(rollback_error) = rollback {
+                    return Err(MigrateError::ServerSecrets(format!(
+                        "secret commit failed: {error}; rollback also failed: {rollback_error}"
+                    )));
+                }
+                return Err(error);
+            }
+        }
+    }
+
+    for staged_write in &committed {
+        if let Some(backup) = &staged_write.backup {
+            let _ = std::fs::remove_file(backup);
+        }
+    }
+    Ok(committed.len())
+}
+
+struct StagedSecret {
+    target: PathBuf,
+    temporary: PathBuf,
+    backup: Option<PathBuf>,
+}
+
+fn stage_secret(write: &ServerSecretWrite, force: bool) -> Result<StagedSecret, MigrateError> {
+    validate_secret_target(&write.target, force)?;
+    let parent = write
+        .target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    ensure_private_directory(parent)?;
+    let temporary = temporary_path(&write.target, "tmp");
+    if let Err(error) = write_staged_contents(&temporary, write.mode, &write.data) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
+    }
+    let backup = if write.target.is_file() {
+        let backup = temporary_path(&write.target, "bak");
+        match std::fs::copy(&write.target, &backup) {
+            Ok(_) => Some(backup),
+            Err(source) => {
+                let _ = std::fs::remove_file(&temporary);
+                return Err(MigrateError::Write {
+                    path: backup,
+                    source,
+                });
+            }
+        }
+    } else {
+        None
+    };
+    Ok(StagedSecret {
+        target: write.target.clone(),
+        temporary,
+        backup,
+    })
+}
+
+fn write_staged_contents(path: &Path, mode: u32, data: &[u8]) -> Result<(), MigrateError> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(mode);
+    }
+    let mut file = options.open(path).map_err(|source| MigrateError::Write {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    file.write_all(data).map_err(|source| MigrateError::Write {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    file.sync_all().map_err(|source| MigrateError::Write {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(
+            |source| MigrateError::Write {
+                path: path.to_path_buf(),
+                source,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn commit_staged(staged: &StagedSecret) -> Result<(), MigrateError> {
+    #[cfg(windows)]
+    if staged.target.exists() {
+        std::fs::remove_file(&staged.target).map_err(|source| MigrateError::Write {
+            path: staged.target.clone(),
+            source,
+        })?;
+    }
+    std::fs::rename(&staged.temporary, &staged.target).map_err(|source| MigrateError::Write {
+        path: staged.target.clone(),
+        source,
+    })
+}
+
+fn rollback_committed(committed: &[StagedSecret]) -> Result<(), MigrateError> {
+    for staged in committed.iter().rev() {
+        match &staged.backup {
+            Some(backup) => {
+                let _ = std::fs::remove_file(&staged.target);
+                std::fs::rename(backup, &staged.target).map_err(|source| MigrateError::Write {
+                    path: staged.target.clone(),
+                    source,
+                })?;
+            }
+            None => {
+                let _ = std::fs::remove_file(&staged.target);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_staged(staged: &[StagedSecret]) {
+    for staged in staged {
+        let _ = std::fs::remove_file(&staged.temporary);
+        if let Some(backup) = &staged.backup {
+            let _ = std::fs::remove_file(backup);
+        }
+    }
+}
+
+fn validate_secret_target(target: &Path, force: bool) -> Result<(), MigrateError> {
+    match std::fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(MigrateError::ServerSecrets(format!(
+                "secret target {} is a symlink; refusing to replace it",
+                target.display()
+            )))
+        }
+        Ok(metadata) if metadata.is_file() && !force => Err(MigrateError::ServerSecrets(format!(
+            "secret target {} already exists; re-run with --force to overwrite",
+            target.display()
+        ))),
+        Ok(metadata) if !metadata.is_file() => Err(MigrateError::ServerSecrets(format!(
+            "secret target {} exists and is not a regular file",
+            target.display()
+        ))),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(MigrateError::Read {
+            path: target.to_path_buf(),
+            source,
+        }),
+    }
 }
 
 fn add_tls_plan(
     sources: &BTreeMap<String, SourceSecret>,
-    candidates: &[&str],
+    kind: SecretKind,
+    preferred: &[&str],
     explicit_target: Option<&Path>,
     target_data_dir: &Path,
     private: bool,
     plans: &mut Vec<(PathBuf, u32, bool, String)>,
 ) {
-    let Some(relative) = candidates
+    let relative = preferred
         .iter()
         .copied()
-        .find(|candidate| sources.contains_key(*candidate))
-    else {
+        .find(|candidate| {
+            sources
+                .get(*candidate)
+                .is_some_and(|source| source.kind == kind)
+        })
+        .or_else(|| {
+            sources
+                .values()
+                .find(|source| source.kind == kind)
+                .map(|source| source.relative.as_str())
+        });
+    let Some(relative) = relative else {
         return;
     };
     let target = explicit_target
@@ -411,6 +607,12 @@ fn add_root_file(
             )))
         }
         Ok(metadata) if metadata.is_file() => {
+            if metadata.len() > MAX_SECRET_FILE_BYTES {
+                return Err(MigrateError::ServerSecrets(format!(
+                    "secret source {} exceeds the {MAX_SECRET_FILE_BYTES}-byte file limit",
+                    path.display()
+                )));
+            }
             let data = std::fs::read(&path).map_err(|source| MigrateError::Read {
                 path: path.clone(),
                 source,
@@ -480,6 +682,12 @@ fn scan_ca_directory(
                 path.display()
             )));
         }
+        if metadata.len() > MAX_SECRET_FILE_BYTES {
+            return Err(MigrateError::ServerSecrets(format!(
+                "CA source {} exceeds the {MAX_SECRET_FILE_BYTES}-byte file limit",
+                path.display()
+            )));
+        }
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -489,11 +697,12 @@ fn scan_ca_directory(
             path: path.clone(),
             source,
         })?;
+        let kind = classify_ca_file(relative_prefix, &name);
         sources.insert(
             relative.clone(),
             SourceSecret {
                 relative,
-                kind: SecretKind::Ca,
+                kind,
                 data,
             },
         );
@@ -518,6 +727,12 @@ fn read_archive(
     if !metadata.is_file() {
         return Err(MigrateError::ServerSecrets(format!(
             "secrets archive {} is not a regular file",
+            archive.display()
+        )));
+    }
+    if metadata.len() > MAX_SECRET_ARCHIVE_BYTES {
+        return Err(MigrateError::ServerSecrets(format!(
+            "secrets archive {} exceeds the {MAX_SECRET_ARCHIVE_BYTES}-byte archive limit",
             archive.display()
         )));
     }
@@ -556,6 +771,7 @@ fn read_archive(
             ))
         })?;
         let entry_type = entry.header().entry_type();
+        let relative = strip_legacy_archive_prefix(&relative, entry_type.is_dir());
         if relative.is_empty() {
             if entry_type.is_dir() {
                 // Archives created with `tar -C DIR .` commonly contain a
@@ -589,6 +805,11 @@ fn read_archive(
                 "secrets archive contains an entry outside the allowlist: {relative:?}"
             )));
         };
+        if entry.size() > MAX_SECRET_FILE_BYTES {
+            return Err(MigrateError::ServerSecrets(format!(
+                "secrets archive entry {relative:?} exceeds the {MAX_SECRET_FILE_BYTES}-byte file limit"
+            )));
+        }
         let mut data = Vec::new();
         entry
             .read_to_end(&mut data)
@@ -628,6 +849,39 @@ fn safe_relative_path(path: &Path) -> Result<String, String> {
     Ok(parts.join("/"))
 }
 
+fn strip_legacy_archive_prefix(relative: &str, is_dir: bool) -> String {
+    if archive_root_allowed(relative) {
+        return relative.to_string();
+    }
+    if let Some((_prefix, rest)) = relative.split_once('/') {
+        if archive_root_allowed(rest) {
+            return rest.to_string();
+        }
+        return relative.to_string();
+    }
+    // A single non-allowlisted component is a legacy top-level directory
+    // entry. Its files are stripped when they are visited.
+    if is_dir {
+        String::new()
+    } else {
+        relative.to_string()
+    }
+}
+
+fn archive_root_allowed(relative: &str) -> bool {
+    if BASE_FILES.contains(&relative)
+        || relative == "private_chef_secrets.json"
+        || TLS_CERT_CANDIDATES.contains(&relative)
+        || TLS_KEY_CANDIDATES.contains(&relative)
+    {
+        return true;
+    }
+    matches!(
+        relative.split('/').next().unwrap_or_default(),
+        "ca" | "nginx" | "ssl"
+    )
+}
+
 fn allowed_archive_directory(relative: &str) -> bool {
     matches!(relative, "ca" | "nginx" | "nginx/ca" | "ssl")
         || relative.starts_with("ca/")
@@ -644,6 +898,17 @@ fn classify_archive_file(relative: &str) -> Option<SecretKind> {
     if TLS_KEY_CANDIDATES.contains(&relative) {
         return Some(SecretKind::TlsKey);
     }
+    if let Some(rest) = relative.strip_prefix("nginx/ca/") {
+        if !rest.contains('/') {
+            let name = rest;
+            if has_extension(name, "crt") {
+                return Some(SecretKind::TlsCert);
+            }
+            if has_extension(name, "key") {
+                return Some(SecretKind::TlsKey);
+            }
+        }
+    }
     let ca_relative = relative
         .strip_prefix("ca/")
         .or_else(|| relative.strip_prefix("nginx/ca/"));
@@ -651,6 +916,34 @@ fn classify_archive_file(relative: &str) -> Option<SecretKind> {
         return Some(SecretKind::Ca);
     }
     None
+}
+
+fn classify_ca_file(relative_prefix: &str, name: &str) -> SecretKind {
+    if relative_prefix == "nginx/ca" {
+        if has_extension(name, "crt") {
+            return SecretKind::TlsCert;
+        }
+        if has_extension(name, "key") {
+            return SecretKind::TlsKey;
+        }
+    }
+    SecretKind::Ca
+}
+
+fn has_extension(name: &str, extension: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case(extension))
+}
+
+fn ca_file_is_private(relative: &str, data: &[u8]) -> bool {
+    let name = relative.rsplit('/').next().unwrap_or(relative);
+    if has_extension(name, "key") {
+        return true;
+    }
+    let text = String::from_utf8_lossy(data);
+    text.contains("PRIVATE KEY-----") || text.contains("BEGIN RSA PRIVATE KEY")
 }
 
 fn validate_source_ancestors(source_root: &Path, path: &Path) -> Result<(), MigrateError> {
@@ -761,93 +1054,6 @@ fn validate_parent_chain(target: &Path) -> Result<(), MigrateError> {
     Ok(())
 }
 
-fn write_secret(write: &ServerSecretWrite, force: bool) -> Result<(), MigrateError> {
-    match std::fs::symlink_metadata(&write.target) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            return Err(MigrateError::ServerSecrets(format!(
-                "secret target {} is a symlink; refusing to replace it",
-                write.target.display()
-            )))
-        }
-        Ok(metadata) if metadata.is_file() && !force => {
-            return Err(MigrateError::ServerSecrets(format!(
-                "secret target {} already exists; re-run with --force to overwrite",
-                write.target.display()
-            )))
-        }
-        Ok(metadata) if !metadata.is_file() => {
-            return Err(MigrateError::ServerSecrets(format!(
-                "secret target {} exists and is not a regular file",
-                write.target.display()
-            )))
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(source) => {
-            return Err(MigrateError::Read {
-                path: write.target.clone(),
-                source,
-            })
-        }
-    }
-
-    let parent = write
-        .target
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    ensure_private_directory(parent)?;
-    let temporary = temporary_path(&write.target);
-    let result = (|| -> Result<(), MigrateError> {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(write.mode);
-        }
-        let mut file = options
-            .open(&temporary)
-            .map_err(|source| MigrateError::Write {
-                path: temporary.clone(),
-                source,
-            })?;
-        file.write_all(&write.data)
-            .map_err(|source| MigrateError::Write {
-                path: temporary.clone(),
-                source,
-            })?;
-        file.sync_all().map_err(|source| MigrateError::Write {
-            path: temporary.clone(),
-            source,
-        })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(write.mode))
-                .map_err(|source| MigrateError::Write {
-                    path: temporary.clone(),
-                    source,
-                })?;
-        }
-        #[cfg(windows)]
-        {
-            if write.target.exists() {
-                let _ = std::fs::remove_file(&write.target);
-            }
-        }
-        std::fs::rename(&temporary, &write.target).map_err(|source| MigrateError::Write {
-            path: write.target.clone(),
-            source,
-        })?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result
-}
-
 fn ensure_private_directory(path: &Path) -> Result<(), MigrateError> {
     if path.as_os_str().is_empty() {
         return Ok(());
@@ -892,7 +1098,7 @@ fn ensure_private_directory(path: &Path) -> Result<(), MigrateError> {
     }
 }
 
-fn temporary_path(target: &Path) -> PathBuf {
+fn temporary_path(target: &Path, kind: &str) -> PathBuf {
     let name = target
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -901,7 +1107,7 @@ fn temporary_path(target: &Path) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
-    target.with_file_name(format!(".{name}.tmp-{}-{suffix}", std::process::id()))
+    target.with_file_name(format!(".{name}.{kind}-{}-{suffix}", std::process::id()))
 }
 
 #[cfg(test)]
@@ -924,6 +1130,34 @@ mod tests {
         assert!(safe_relative_path(Path::new("/etc/passwd")).is_err());
         assert_eq!(safe_relative_path(Path::new("")).unwrap(), "");
         assert_eq!(safe_relative_path(Path::new(".")).unwrap(), "");
+    }
+
+    #[test]
+    fn rollback_restores_overwritten_files_and_removes_new_ones() {
+        use super::{rollback_committed, StagedSecret};
+
+        let directory = tempfile::tempdir().unwrap();
+        let overwritten = directory.path().join("overwritten.pem");
+        let backup = directory.path().join("overwritten.bak");
+        std::fs::write(&overwritten, b"new").unwrap();
+        std::fs::write(&backup, b"old").unwrap();
+        let created = directory.path().join("created.pem");
+        std::fs::write(&created, b"created").unwrap();
+        let staged = vec![
+            StagedSecret {
+                target: overwritten.clone(),
+                temporary: directory.path().join("ignored.tmp"),
+                backup: Some(backup),
+            },
+            StagedSecret {
+                target: created.clone(),
+                temporary: directory.path().join("ignored2.tmp"),
+                backup: None,
+            },
+        ];
+        rollback_committed(&staged).unwrap();
+        assert_eq!(std::fs::read(&overwritten).unwrap(), b"old");
+        assert!(!created.exists());
     }
 
     #[test]
