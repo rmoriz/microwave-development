@@ -11,12 +11,14 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+microwave-config = { path = "../../crates/microwave-config" }
 microwave-migrate = { path = "../../crates/microwave-migrate" }
 
 [dev-dependencies]
 assert_cmd.workspace = true
 microwave-store = { path = "../../crates/microwave-store" }
 microwave-store-postgres = { path = "../../crates/microwave-store-postgres" }
+rusqlite.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

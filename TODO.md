@@ -54,7 +54,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
   - [ ] `oauth_applications`, `oauth_access_grants`, `oauth_access_tokens`, `kvpair`, `telemetry`.
 - [ ] Implement SQLite backend (`WAL` journal mode, `foreign_keys = ON`, `busy_timeout = 5000`, serialized write connection + read pool).
 - [ ] Implement PostgreSQL backend (`sqlx::PgPool`, advisory lock helper for HA background tasks).
-- [x] Implement transparent zlib compression and decompression for `serialized_object` columns (`chef_db_compression.erl` parity). New rows use `mwz1:` + base64(zlib(JSON)); legacy plain JSON is still read. Configure with `storage.compression = "zlib" | "none"` / `MW_STORAGE__COMPRESSION`, default `zlib`.
+- [x] Implement transparent compression for `serialized_object` columns using the custom MWZ1 envelope (`mwz1:` + base64(zlib(JSON))). This is not byte-level upstream compatibility; legacy plain JSON remains readable. Configure with `storage.compression = "zlib" | "none"` / `MW_STORAGE__COMPRESSION`, default `zlib`.
 - [ ] Write dual-backend integration test macro running every repository test against both SQLite and PostgreSQL.
 
 ### 1.4 Authorization & ACL Engine (`microwave-authz`)

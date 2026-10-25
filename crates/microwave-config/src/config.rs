@@ -314,7 +314,9 @@ impl Default for StorageConfig {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum StorageCompression {
-    /// `mwz1:` + base64(zlib(JSON)), the upstream-compatible compact form.
+    /// Custom MWZ1 envelope: `mwz1:` + base64(zlib(JSON)). This is not
+    /// byte-compatible with upstream storage; legacy plain JSON remains
+    /// readable.
     #[default]
     Zlib,
     /// Plain JSON text, for operators who need raw database visibility.

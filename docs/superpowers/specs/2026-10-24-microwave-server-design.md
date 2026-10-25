@@ -252,8 +252,9 @@ Instead of separate `opscode_chef`, `bifrost`, `bookshelf`, and `oc_id` database
    - `kvpair (key TEXT PK, value TEXT, updated_at TIMESTAMP)`
    - `telemetry (property TEXT, event_timestamp TIMESTAMP)`
 
-#### Payload Compression (upstream `chef_db_compression.erl` compatibility)
-- `nodes`, `roles`, `environments`, `data_bag_items`, and `cookbook_versions` store `serialized_object` compressed with `zlib`/gzip (or raw JSON bytes—transparently detected on read via header magic bytes so both compressed and uncompressed blobs work).
+#### Payload Compression (custom MWZ1 envelope)
+- `nodes`, `roles`, `environments`, `data_bags`, `data_bag_items`, `cookbook_versions`, `cookbook_artifact_versions`, `policy_groups`, and `policy_revisions` store `serialized_object` in a custom transparent envelope: `mwz1:` + base64(zlib(JSON)).
+- This is not byte-level compatibility with upstream `chef_db_compression.erl`. Reads transparently accept legacy plain JSON, and `storage.compression = "none"` disables new compression without invalidating existing rows. Decompression is bounded to 64 MiB.
 
 ---
 

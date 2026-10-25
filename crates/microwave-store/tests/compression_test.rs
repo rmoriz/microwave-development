@@ -114,6 +114,7 @@ fn sqlite_writes_compressed_values_and_reads_plain_json() {
         ("nodes", "name", "node-1"),
         ("roles", "name", "web"),
         ("environments", "name", "prod"),
+        ("data_bags", "name", "secrets"),
         ("data_bag_items", "item_name", "db"),
         ("cookbook_versions", "name", "apt"),
         ("cookbook_artifact_versions", "identifier", "id-1"),
@@ -206,6 +207,27 @@ fn legacy_plain_json_remains_readable() {
     assert_eq!(raw_serialized(&path, "nodes", "name", "node-1"), NODE_BODY);
 
     let store = SqliteStore::open(&path).unwrap();
+    assert_eq!(
+        store
+            .find_node(&org_id, "node-1")
+            .unwrap()
+            .unwrap()
+            .serialized_object,
+        NODE_BODY
+    );
+}
+
+#[test]
+fn compression_none_still_reads_preexisting_compressed_rows() {
+    let dir = TempDir::new().unwrap();
+    let path = database(&dir);
+    let store = SqliteStore::open(&path).unwrap();
+    let (org_id, _) = seed(&store);
+    drop(store);
+
+    assert!(raw_serialized(&path, "nodes", "name", "node-1").starts_with(COMPRESSED_PREFIX));
+
+    let store = SqliteStore::open_with_compression(&path, Compression::None).unwrap();
     assert_eq!(
         store
             .find_node(&org_id, "node-1")

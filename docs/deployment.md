@@ -125,6 +125,13 @@ A complete annotated example is
 | `telemetry.reporting_url` | `MW_TELEMETRY__REPORTING_URL` | unset | Reserved reporting destination for a future opt-in exporter. |
 | `telemetry.interval_seconds` | `MW_TELEMETRY__INTERVAL_SECONDS` | `86400` | Reserved exporter interval. |
 
+`storage.compression` applies to new writes. Decompression is capped at 64 MiB
+per value; corrupt or oversized compressed values fail with a storage error
+instead of panicking. Imports through `microwave-ctl` inherit the server
+configuration; the standalone `microwave-migrate import` accepts
+`--compression zlib|none` or `--config <path>` (with
+`MW_STORAGE__COMPRESSION` as an environment override).
+
 Validate a configuration file without starting the server:
 
 ```sh
@@ -557,6 +564,11 @@ objects. Restore those from your separate copies.
 microwave-migrate export --data-dir /var/lib/microwave --output /var/backups/snapshot.json
 microwave-migrate import --data-dir /var/lib/microwave-new --input /var/backups/snapshot.json --yes
 
+# Store imported serialized objects as plain JSON instead of the default MWZ1
+# envelope (or point --config at the target server's microwave.toml):
+microwave-migrate import --data-dir /var/lib/microwave-new \
+  --input /var/backups/snapshot.json --compression none --yes
+
 # PostgreSQL source and target
 microwave-migrate export \
   --database-url postgres://microwave:secret@db/microwave \
@@ -622,10 +634,12 @@ snapshot or need to stage the copy yourself:
    microwave-ctl --config /etc/microwave/microwave.toml \
      migrate-from-legacy --input /var/backups/acme-snapshot.json --yes
    ```
-   `microwave-migrate import --data-dir ... --input ... --yes` is equivalent
-   for SQLite. For PostgreSQL without a config file, use
-   `microwave-migrate import --database-url postgres://... --input ... --yes`.
-   Both import paths ask for confirmation unless `--yes` is given.
+   `microwave-migrate import` is the standalone equivalent for SQLite when
+   given the same storage compression (`--config` or `--compression`); it does
+   not implicitly read the server's configuration file. For PostgreSQL use
+   `microwave-migrate import --database-url postgres://... --input ... --yes`
+   with the same compression flags. Both import paths ask for confirmation
+   unless `--yes` is given.
 4. **Copy cookbook blobs.** The snapshot is metadata only. Place files under
    the object key layout `organization-<org_id>/checksum-<md5>` in
    `/var/lib/microwave/bookshelf/` for the local backend, or upload them to the

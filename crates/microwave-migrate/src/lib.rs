@@ -17,7 +17,8 @@
 //! and writes the same snapshot envelope as a local export.
 
 use chrono::{SecondsFormat, Utc};
-use microwave_store::{Compression, SqliteStore, StoreError, StoreSnapshot};
+pub use microwave_store::Compression;
+use microwave_store::{SqliteStore, StoreError, StoreSnapshot};
 use microwave_store_postgres::PostgresStore;
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter, Write};
@@ -97,6 +98,8 @@ pub enum MigrateError {
     UnsupportedVersion { found: u32, supported: u32 },
     #[error("storage error: {0}")]
     Store(#[from] StoreError),
+    #[error("configuration error: {0}")]
+    Config(String),
     #[error("invalid legacy API URL {0:?}; expected an http:// or https:// URL")]
     InvalidUrl(String),
     #[error("legacy API request to {url} failed with HTTP {status}: {message}")]
@@ -149,7 +152,17 @@ pub fn export_database(database: &Path, output: &Path) -> Result<(), MigrateErro
 /// Import a JSON snapshot into the store under `data_dir`, creating the
 /// database when needed.
 pub fn import(data_dir: &Path, input: &Path) -> Result<(), MigrateError> {
-    import_database(&data_dir.join(DATABASE_FILE), input)
+    import_with_compression(data_dir, input, Compression::default())
+}
+
+/// Import a JSON snapshot into the store under `data_dir` with an explicit
+/// serialized-object compression mode.
+pub fn import_with_compression(
+    data_dir: &Path,
+    input: &Path,
+    compression: Compression,
+) -> Result<(), MigrateError> {
+    import_database_with_compression(&data_dir.join(DATABASE_FILE), input, compression)
 }
 
 /// Import a JSON snapshot into a specific SQLite database.

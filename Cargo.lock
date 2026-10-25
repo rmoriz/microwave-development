@@ -1471,9 +1471,11 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
+ "microwave-config",
  "microwave-migrate",
  "microwave-store",
  "microwave-store-postgres",
+ "rusqlite",
  "sqlx",
  "tempfile",
  "tokio",
