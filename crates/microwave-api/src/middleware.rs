@@ -708,8 +708,10 @@ fn is_principal_path(path: &str) -> bool {
     parts.next() == Some("organizations")
         && parts.next().is_some_and(|part| !part.is_empty())
         && parts.next() == Some("principals")
-        && parts.next().is_some_and(|part| !part.is_empty())
-        && parts.next().is_none()
+        && match parts.next() {
+            None => true,
+            Some(name) => !name.is_empty() && parts.next().is_none(),
+        }
 }
 
 /// Match `routes.is_client_version_valid/2`: a version is accepted when its
