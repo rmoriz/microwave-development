@@ -36,6 +36,8 @@ use url::Url;
 
 mod archive;
 mod from_api;
+mod knife_backup;
+mod server_secrets;
 
 pub use archive::{
     archive_secrets_included, export_archive, export_archive_postgres,
@@ -48,6 +50,17 @@ pub use archive::{
     ARCHIVE_SECRETS_PREFIX, ARCHIVE_SNAPSHOT_ENTRY,
 };
 pub use from_api::{crawl_from_api, from_api_with_options, read_private_key, FromApiOptions};
+pub use knife_backup::{
+    apply_knife_backup_plan_postgres, apply_knife_backup_plan_postgres_with_options,
+    apply_knife_backup_plan_sqlite, apply_knife_backup_plan_sqlite_with_options,
+    import_knife_backup, import_knife_backup_postgres,
+    import_knife_backup_postgres_with_compression, import_knife_backup_to, prepare_knife_backup,
+    KnifeBackupApplyOptions, KnifeBackupPlan, KnifeBackupSummary,
+};
+pub use server_secrets::{
+    apply_server_secrets, prepare_server_secrets, ServerSecretWrite, ServerSecretsOptions,
+    ServerSecretsPlan,
+};
 
 /// Value of the snapshot envelope's `format` field.
 pub const SNAPSHOT_FORMAT: &str = "microwave-server-snapshot";
@@ -137,6 +150,20 @@ pub enum MigrateError {
     Transport { url: String, message: String },
     #[error("invalid response from {url}: {message}")]
     InvalidApiResponse { url: String, message: String },
+    #[error("invalid knife-ec-backup directory {path}: {message}")]
+    InvalidBackup { path: PathBuf, message: String },
+    #[error("object store error: {0}")]
+    ObjectStore(#[from] microwave_objectstore::ObjectStoreError),
+    #[error("server secrets import: {0}")]
+    ServerSecrets(String),
+    #[error("ACL rollback failed: {0}")]
+    AclRollback(String),
+    #[error("server-admins membership rollback failed: {0}")]
+    AdminRollback(String),
+    #[error(
+        "target store already has user {username:?} with a different id; re-run with --merge-users to reuse it"
+    )]
+    ExistingUser { username: String },
     #[error("crypto error: {0}")]
     Crypto(#[from] microwave_crypto::CryptoError),
     #[error("failed to build tokio runtime: {0}")]

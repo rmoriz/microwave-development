@@ -3,8 +3,9 @@
 Migration support for Microwave Server. This crate owns the versioned JSON
 snapshot format and the `microwave-migrate` binary. It can export a local
 SQLite store or a PostgreSQL metadata store, import a snapshot into either
-backend, or crawl a live legacy Chef Infra Server into the same snapshot
-envelope.
+backend, crawl a live legacy Chef Infra Server into the same snapshot
+envelope, or import a `knife ec backup` repository directly without an HTTP
+server.
 
 ## Commands
 
@@ -71,12 +72,54 @@ microwave-migrate from-api \
   --api-version 2 \
   --output acme.json
 
+# Import a knife ec backup directory into SQLite and ./data/bookshelf
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --data-dir ./new-data \
+  --yes
+
+# Import the same layout into PostgreSQL (the local bookshelf root is explicit)
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --database-url postgres://microwave:secret@db/microwave \
+  --bookshelf-dir /var/lib/microwave-new/bookshelf \
+  --yes
+
+# Also import server-owned private material from an operator-managed directory
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --data-dir ./new-data \
+  --secrets-dir /root/chef-server-secrets \
+  --yes
+
+# The same material can be supplied as a bounded .tar/.tar.gz
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --data-dir ./new-data \
+  --secrets-archive /root/chef-server-secrets.tar.gz \
+  --yes
+
+# Reuse a bootstrapped pivotal user and replace ACLs/membership from the backup
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --data-dir ./new-data \
+  --merge-users \
+  --replace-acls \
+  --yes
+
+# Parse, validate, and count without writing metadata, blobs, or secrets
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --data-dir ./new-data \
+  --dry-run
+
 # Import through the operational CLI (uses the configured database path)
 microwave-ctl migrate-from-legacy --input migration.json --yes
 ```
 
-`import` merges into live metadata and asks for confirmation; `--yes` is
-required in scripts and other non-interactive environments.
+`import` and `import-knife-backup` merge into live metadata and ask for
+confirmation; `--yes` is required in scripts and other non-interactive
+environments. `--dry-run` never confirms and never writes.
 
 `import` validates the envelope before touching the database. Invalid JSON,
 an unexpected `format`, or an unsupported `version` exit non-zero and do not
@@ -378,6 +421,213 @@ PostgreSQL's sequence-backed identifiers (`cookbooks`, `cookbook_artifacts`,
 `oauth_access_tokens`) are inserted with the snapshot ids, then their sequences
 are advanced to the highest imported id. Later inserts cannot collide with the
 restored rows.
+
+## `knife ec backup` directory import
+
+`import-knife-backup` reads the repository written by
+[`knife-ec-backup`](https://github.com/chef/knife-ec-backup) directly. It does
+not start a server and never sends HTTP requests. The importer builds the same
+`StoreSnapshot` used by `import`, writes cookbook blobs through the local
+object store, and then imports metadata in one store transaction. Its output
+contains counts and file paths only; password hashes, public keys, and file
+contents are never printed.
+
+### Supported layout
+
+```text
+users/<name>.json
+user_acls/<name>.json
+key_dump.json                  # optional, from --with-user-sql
+key_table_dump.json            # optional, from --with-key-sql
+organizations/<org>/org.json
+organizations/<org>/members.json
+organizations/<org>/invitations.json
+organizations/<org>/clients/<name>.json
+organizations/<org>/containers/<name>.json
+organizations/<org>/groups/<name>.json
+organizations/<org>/nodes/<name>.json
+organizations/<org>/roles/<name>.json
+organizations/<org>/environments/<name>.json
+organizations/<org>/data_bags/<bag>/<item>
+organizations/<org>/cookbooks/<name>-<version>/...
+organizations/<org>/acls/<type>/<name>.json
+organizations/<org>/acls/organization.json
+```
+
+The importer preserves organization `guid`s, user and client public keys,
+multi-key rows (`key_name`, `key_version`, `expires_at`), API object bodies,
+data bag item bodies, group membership/nesting, and cookbook frozen status.
+Internal ids and authz ids are generated deterministically from the backup
+scope when the repository has none, so importing the same directory twice is
+idempotent. When `key_dump.json` or a user object contains source ids, those
+ids are reused.
+
+`key_dump.json` is read as the JSON array exported by `ec_key_export.rb`:
+`username`, `hashed_password`, `salt`, `hash_type`, `admin`, and optional
+`id`/`authz_id`/`public_key`. `key_table_dump.json` is read as the `keys_by_name`
+rows: `type` (`user`/`client`), `name`, `org_name`, `key_name`, `public_key`,
+`key_version`, and `expires_at`. Inline `public_key` fields in user/client
+JSON become the `default` key only when the key table does not already define
+one.
+
+ACLs accept both API shapes: legacy `actors`/`groups` and granular
+`users`/`clients`/`groups`. Global `admins` on a user ACL maps to Microwave's
+`server-admins` group. Because the backup does not contain global groups,
+the importer recreates the standard graph: administrators join `server-admins`
+and each organization's `admins`/`users` groups are children of its
+`<org>_read_access_group`.
+
+Cookbooks are ChefFS directories, not server manifests. The importer:
+
+- reads `metadata.json`, or a practical subset of `metadata.rb`
+  (`name`, `version`, scalar metadata, `depends`, `supports`, related
+  constraint maps, and the common `long_description IO.read(README...)` form;
+  `attribute`, `recipe`, and `provides` declarations are not reconstructed
+  from the Ruby DSL);
+- reads `status.json` (`frozen`/`frozen?`) and preserves the frozen flag;
+- hashes every regular cookbook file with MD5, excluding `status.json`;
+- builds a segmented Chef cookbook manifest and the matching `checksums`,
+  `cookbooks`, `cookbook_versions`, and `cookbook_version_checksums` rows;
+- copies each blob to `<bookshelf-dir>/organization-<org_id>/checksum-<md5>`;
+- refuses symlinks and other non-regular files in cookbook directories.
+
+Environment `cookbook_versions` constraints are preserved in the environment
+body, so the existing dependency solver applies them unchanged.
+
+The importer canonicalizes collection paths and rejects symlinked collection
+or intermediate directories. `long_description IO.read(...)` only accepts a
+contained relative path inside the canonical cookbook directory (for example
+`docs/README.md`); absolute paths, `..`, prefixes, and symlinks are rejected.
+
+Legacy `expires_at` values (`YYYY-MM-DD HH:MM:SS UTC`, offset timestamps, and
+RFC 3339) are normalized to RFC 3339 so expired keys remain expired. An
+unparseable non-infinity expiry skips that key with a warning instead of
+turning it into a non-expiring key. Missing `key_dump.json` or
+`key_table_dump.json` also produces a warning.
+
+Imports are additive by default: existing users with the same username cause a
+clear error, and existing ACL grants/group members survive. Use
+`--merge-users` to reuse an existing user id/authz id (for example a
+bootstrapped `pivotal`). By default a merged user keeps non-empty target
+credentials, admin/recovery state, profile fields, and an existing target
+default key; the importer warns when the backup has no key material for that
+user and then reconciles the effective `server-admins` membership to the final
+admin flag (excluding a non-admin target user and demoting a target admin).
+Pass `--replace-user-credentials` to apply credentials/admin/profile and the
+default key from the backup instead; if the backup supplies no default key for
+a merged user, the target default key is removed so revocation actually
+revokes. That flag requires `--merge-users`. `--replace-acls` replaces ACLs for
+targets present in the backup and membership only for groups read from group
+files, so target-only/synthesized groups such as global `users` are not
+cleared. Failed imports restore the captured previous ACL/group state. All
+flags affect only the selected import and are echoed in the confirmation
+prompt.
+
+### Server-side private material
+
+Chef Infra Server (Erlang) stores only public keys for users and clients. A
+user's or client's private key is owned by that user/client and is not in a
+`knife ec backup` repository. This importer therefore cannot migrate client
+private keys; clients keep or regenerate their own keys and must be configured
+with the new server URL separately. Only server-owned private material can be
+migrated, and only when the operator explicitly supplies it.
+
+Use `--secrets-dir DIR` or `--secrets-archive FILE.tar[.gz]`. Without one of
+those flags no private server file is read or written. The importer maps:
+
+| Source | Default target | Mode |
+|---|---|---|
+| `pivotal.pem` | `<data>/pivotal.pem` | `0600` |
+| `pivotal.password` | `<data>/pivotal.password` | `0600` |
+| `webui_priv.pem` | `<data>/webui_priv.pem` | `0600` |
+| `webui_pub.pem` | `<data>/webui_pub.pem` | `0644` |
+| `objectstore.secret` | `<data>/objectstore.secret` | `0600` |
+| `private-chef-secrets.json` or `private_chef_secrets.json` | `<data>/private-chef-secrets.json` | `0600` |
+| `ssl/cert.pem` (preferred) or `cert.pem` | configured `server.tls.cert_path`, `--tls-cert`, or the same relative path under `<data>` | `0644` |
+| `ssl/key.pem` (preferred) or `key.pem` | configured `server.tls.key_path`, `--tls-key`, or the same relative path under `<data>` | `0600` |
+| `nginx/ca/<fqdn>.crt` | configured TLS certificate path, `--tls-cert`, or the same relative path under `<data>` | `0644` |
+| `nginx/ca/<fqdn>.key` | configured TLS key path, `--tls-key`, or the same relative path under `<data>` | `0600` |
+| `ca/**`, other `nginx/ca/**` certificates | `<data>/<same relative path>` | `0644` |
+| `ca/**/*.key`, CA-tree PEM private keys | `<data>/<same relative path>` | `0600` |
+
+`<data>` is `--data-dir` for SQLite, or `--secrets-target-dir` when supplied.
+With `--database-url`, the default is `paths.data_dir` from `--config`
+(otherwise the configured default, normally `./data`). Newly created parent
+directories are mode `0700`; existing directories are left unchanged. When
+more than one TLS candidate exists, selection order is `ssl/cert.pem`/
+`ssl/key.pem`, then `cert.pem`/`key.pem`, then the first sorted
+`nginx/ca/*.crt`/`*.key` pair. Additional `nginx/ca/*.crt|*.key` pairs are
+kept as CA material at their relative paths instead of being dropped. Private
+CA detection uses a `.key` extension or a PEM private-key marker; DER-encoded
+keys without either marker are not inferred.
+
+Existing target files are refused unless `--force` is supplied. Symlink
+targets are always refused. All secret files are staged before any target is
+replaced; commit then renames the staged set, keeping backups of overwritten
+files and rolling the set back if a commit fails. A process crash during the
+commit window can still leave a partial set, so keep an operator backup and
+re-run with `--force` after recovery. The command prints counts, target paths,
+and modes only; it never prints file contents, password hashes, or key bytes.
+
+`--secrets-archive` accepts `.tar`, `.tar.gz`, and `.tgz`. Only regular files
+and directories are allowed. Paths must be relative with no `..` component,
+the archive must contain only the names in the table above (plus safe `ca/`
+and `nginx/ca/` trees), and symlinks, hardlinks, devices, and FIFOs are
+rejected. Directory entries outside those allowlisted prefixes are rejected.
+A single legacy top-level directory wrapping the allowlisted tree (for example
+`chef-secrets/pivotal.pem`) is accepted. Individual files are limited to
+16 MiB, the archive to 128 MiB, the expanded set to 64 MiB, and the source to
+at most 4096 files; limits are enforced while reading, before each file is
+buffered.
+
+`webui_priv.pem`/`webui_pub.pem` and `private-chef-secrets.json` are preserved
+for external tooling and operator reference. Microwave does not consume the
+web-UI keypair or parse/merge the private-chef secret document at runtime.
+
+### Intentional gaps
+
+- No HTTP, `--purge`, or deletion sync. Import merges/upserts; objects removed
+  from the backup remain in an existing target store. `--replace-acls` only
+  replaces ACLs and membership for ACL targets and groups read from the
+  backup; inferred/target-only groups are left alone. It captures and restores
+  previous ACL/group state when the import fails, but is not one cross-target
+  transaction (a crash during the operation can still require operator
+  recovery). Merged-user `server-admins` reconciliation and default-key
+  removal also run after the metadata transaction; a failure restores the
+  captured membership/admin state, but a partial key removal is completed by
+  re-running the same command.
+- The `metadata.rb` parser is not a Ruby interpreter. It does not evaluate
+  arbitrary Ruby, conditionals, string interpolation, `eval`, or custom
+  helper methods. Prefer a `metadata.json` when the source provides one.
+- Cookbook artifacts, policies/policy groups, sandboxes, OAuth applications,
+  search indexes, and `kvpair` secrets are not in a knife backup and are not
+  imported by this command. Snapshot import still carries policies, artifacts,
+  and OAuth registrations when the snapshot contains them.
+- Only the local object store is supported for blobs in this pass. Importing
+  into an S3/Garage-backed deployment requires a separate blob upload.
+- Server-secret import is a validated file copy. It does not verify that a TLS
+  certificate/key pair matches, rotate or generate keys, or restart a running
+  server. Archives are not decrypted; wrapper tooling must protect the
+  operator-supplied archive at rest. The staged set is rolled back on an
+  ordinary commit error, but a crash during commit can still leave a partial
+  set; recovery is to restore the operator's secret backup and re-run with
+  `--force`.
+- User/key timestamps are preserved where the backup/export exposes them
+  (organization records, key dumps, user and client JSON). API object bodies
+  normally carry no timestamps, so those rows use the import time.
+- Cookbook files are buffered in memory while the directory is parsed. Very
+  large multi-gigabyte backups should be split by organization or handled with
+  a streaming importer in a future pass.
+- Old `key_dump.json` rows whose password exists only inside the serialized
+  user object and that have no `hash_type` are imported with an empty or
+  default-typed hash. Modern `hashed_password`/`salt`/`hash_type` rows are
+  preserved and upgraded on login like snapshot imports.
+- Invalid `status.json`, malformed JSON, and unknown required references abort
+  before the metadata transaction. Unknown ACL actors/groups and unsupported
+  object ACL types are reported as warnings and skipped.
+- `knife-ec-backup` does not include global group membership. The standard
+  admin/read-access graph described above is inferred; custom global-group
+  membership must be reconciled separately.
 
 ## Live legacy API crawler
 

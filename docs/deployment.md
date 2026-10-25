@@ -45,7 +45,7 @@ The workspace builds four binaries:
 | `microwave-server` | HTTP daemon. `serve` (with `--check` for a preflight) and `config` (print resolved config). |
 | `microwave-ctl` | Operational CLI. |
 | `chef-server-ctl` | Compatibility alias built from the same CLI crate; identical command surface. |
-| `microwave-migrate` | Versioned JSON snapshot export/import. |
+| `microwave-migrate` | Versioned JSON snapshot export/import, live crawler, and offline `knife ec backup` directory import. |
 
 Build them from source:
 
@@ -78,6 +78,9 @@ The data directory contains:
 | `pivotal.pem` | Superuser private key, created on first start, mode `0600`. |
 | `pivotal.password` | Generated superuser password, created on first start, mode `0600`. |
 | `objectstore.secret` | Local `/bookshelf` HMAC secret, created on first start, mode `0600`. |
+| `webui_priv.pem` / `webui_pub.pem` | Optional legacy web-UI keypair migrated by `import-knife-backup --secrets-dir`; `0600` / `0644`. |
+| `private-chef-secrets.json` | Optional migrated upstream secret document, mode `0600`. |
+| `ssl/cert.pem`, `ssl/key.pem`, `ca/**` | Optional migrated TLS/CA material; keys are `0600`, certificates `0644`, copied to configured TLS paths or this data directory. |
 
 Nothing outside the data directory is written at runtime. The process does not
 need root, a home directory, or a local search service, Java, or Erlang stack.
@@ -150,9 +153,9 @@ A complete annotated example is
 `storage.compression` applies to new writes. Decompression is capped at 64 MiB
 per value; corrupt or oversized compressed values fail with a storage error
 instead of panicking. Imports through `microwave-ctl` inherit the server
-configuration; the standalone `microwave-migrate import` accepts
-`--compression zlib|none` or `--config <path>` (with
-`MW_STORAGE__COMPRESSION` as an environment override).
+configuration; the standalone `microwave-migrate import` and
+`import-knife-backup` accept `--compression zlib|none` or `--config <path>`
+(with `MW_STORAGE__COMPRESSION` as an environment override).
 
 Validate a configuration file without starting the server, or validate it and
 initialize/migrate the configured metadata backend:
@@ -1031,7 +1034,118 @@ the legacy API never returns). `microwave-ctl migrate-from-legacy --input
 <snapshot>` imports that snapshot into the configured SQLite or PostgreSQL
 database.
 
-For a full export/import workflow, use `from-api` to produce the snapshot and
+### Importing a `knife ec backup` repository
+
+If the legacy server was backed up with `knife ec backup`, import that
+directory directly. The importer needs no HTTP server, writes cookbook blobs
+through the local object store, and imports metadata in one store transaction:
+
+```sh
+# SQLite; cookbook blobs default to <data-dir>/bookshelf
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --data-dir /var/lib/microwave \
+  --yes
+
+# PostgreSQL
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --database-url postgres://microwave:secret@db/microwave \
+  --bookshelf-dir /var/lib/microwave/bookshelf \
+  --yes
+
+# Validate and count first; writes nothing and does not ask for confirmation
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --data-dir /var/lib/microwave \
+  --dry-run
+```
+
+Server-owned private material is not part of a knife backup. Supply it
+explicitly with `--secrets-dir` or `--secrets-archive` when migrating an
+existing installation's `pivotal.pem`, `pivotal.password`, web UI keys,
+`objectstore.secret`, `private-chef-secrets.json`, TLS certificate/key, and CA
+files:
+
+```sh
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --data-dir /var/lib/microwave \
+  --secrets-dir /root/chef-server-secrets \
+  --yes
+
+# target paths for TLS normally come from --config server.tls.cert_path/key_path
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --database-url postgres://microwave:secret@db/microwave \
+  --bookshelf-dir /var/lib/microwave/bookshelf \
+  --secrets-target-dir /var/lib/microwave \
+  --secrets-archive /root/chef-server-secrets.tar.gz \
+  --config /etc/microwave/microwave.toml \
+  --yes
+```
+
+Private files are written `0600`, public certificates/keys `0644`, and newly
+created parent directories `0700`. CA-tree `.key` files and PEM private keys
+are private; `nginx/ca/<fqdn>.crt`/`.key` map to the TLS certificate/key
+targets, while additional `nginx/ca` pairs are preserved as CA material.
+Private detection is extension/PEM-marker based, not DER inference. Existing
+targets are refused unless `--force` is supplied. `.tar`/`.tar.gz` archives are
+allowlisted and reject absolute paths, `..`, symlinks, hardlinks, devices, and
+FIFOs; a single legacy top-level directory wrapper is accepted. File, archive,
+expanded-total size, and file-count (4096) limits are enforced while reading.
+No file contents are printed. Without a secrets source the importer reads and
+writes no private files.
+
+Secret files are staged before any target is replaced and rolled back as a set
+on an ordinary commit error. A process crash during commit can still leave a
+partial set; keep an operator backup and re-run with `--force` after recovery.
+`webui_priv.pem`/`webui_pub.pem` and `private-chef-secrets.json` are preserved
+for external tooling; Microwave does not consume the web-UI keypair or merge
+the private-chef secret document at runtime.
+
+**Client/user private keys remain client-owned.** Chef Infra Server stores
+only public keys for clients and users, so no migration tool can recover their
+private keys from the server. Clients keep their existing keys or generate new
+ones, then point at the new server URL; update their local client configuration
+separately.
+
+The supported layout covers users and user ACLs, optional
+`key_dump.json`/`key_table_dump.json`, organizations, members/invitations,
+clients, containers, groups, nodes, roles, environments, data bags/items,
+per-object ACLs, and ChefFS cookbook directories (`metadata.rb`/`metadata.json`,
+`status.json`, MD5-addressed files). See the
+[`microwave-migrate` README](../crates/microwave-migrate/README.md#knife-ec-backup-directory-import)
+for the exact supported subset and remaining gaps (arbitrary Ruby in
+`metadata.rb`, cookbook artifacts/policies/policy groups, OAuth applications,
+S3/Garage blobs, purge semantics, and the absence of client/user private keys).
+Server-secret import copies explicitly supplied files; it does not validate a
+TLS certificate/key pairing or restart a running server.
+
+The command merges/upserts into an existing store, so it asks for an
+interactive `yes` or `--yes`. Re-importing the same backup is idempotent.
+Objects that were deleted from the backup but still exist in the target are
+not removed.
+
+A bootstrapped target normally already has a `pivotal` user with a different
+id. The importer fails with a clear error by default; pass `--merge-users` to
+reuse the existing id/authz id. Merged users keep non-empty target
+credentials, admin/recovery state, profile fields, and an existing default key
+unless `--replace-user-credentials` is also passed; a warning reports merged
+users with no backup key material. The importer then reconciles the effective
+`server-admins` membership to each merged user's final admin flag. With
+`--replace-user-credentials`, a merged user for whom the backup supplies no
+default key loses the target default key so revocation is complete; that flag
+requires `--merge-users`. ACL and group-membership import is
+additive by default; pass `--replace-acls` to replace ACLs and membership for
+targets/groups present in the backup, which is required to remove revoked
+grants. Groups inferred by the importer, such as global `users`, are not
+cleared; a failed import restores the previous ACL/group state. Neither flag
+makes the whole metadata/secret operation atomic.
+
+### Importing a snapshot
+
+For a snapshot-based workflow, use `from-api` to produce the snapshot and
 then import it. The manual path below remains useful when you already have a
 snapshot or need to stage the copy yourself:
 
@@ -1058,9 +1172,14 @@ snapshot or need to stage the copy yourself:
    unless `--yes` is given.
 4. **Copy cookbook blobs.** If the source is a local-bookshelf Microwave
    installation, use `microwave-migrate export --archive` / `import --archive`
-   to carry `snapshot.json` plus `bookshelf/` in one validated archive. The
-   legacy Chef Server bookshelf layout is not converted automatically; for an
-   external S3/Garage bucket, replicate the bucket and keep the object keys
+   to carry `snapshot.json` plus `bookshelf/` in one validated archive. For a
+   `knife ec backup` source, `import-knife-backup` copies cookbook blobs into
+   the local object store itself. For other snapshot sources, place files under
+   the object key layout `organization-<org_id>/checksum-<md5>` in
+   `/var/lib/microwave/bookshelf/` for the local backend, or upload them to the
+   configured S3 bucket under the same keys. The legacy Chef Server bookshelf
+   layout is not converted automatically by the snapshot tools; for an external
+   S3/Garage bucket, replicate the bucket and keep the object keys
    `organization-<org_id>/checksum-<md5>`.
 5. **Verify** with `microwave-ctl status`, `user-list`, `org-list`,
    `org-show <org>`, and a `knife` or `chef-client` read against a test org.
@@ -1076,7 +1195,8 @@ client reconfiguration is needed if the endpoint stays the same.
 For a legacy Chef Server source whose bookshelf layout is not the Microwave
 `organization-<org_id>/checksum-<md5>` tree, keep the legacy server
 authoritative, move one organization at a time, and keep the legacy server
-read-only until the new one is verified.
+read-only until the new one is verified. For large or S3/Garage-backed
+deployments, the same parallel-run approach applies.
 
 ## 11. Health, status, and logs
 
