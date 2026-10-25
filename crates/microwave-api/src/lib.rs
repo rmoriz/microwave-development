@@ -14,6 +14,7 @@ pub mod groups;
 pub mod helpers;
 pub mod keys;
 pub mod membership;
+pub mod metrics;
 pub mod middleware;
 pub mod nodes;
 pub mod organizations;
@@ -25,17 +26,20 @@ pub mod state;
 pub mod users;
 
 use axum::extract::State;
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
 pub use error::ApiError;
+pub use metrics::{Metrics, MetricsSnapshot};
 pub use microwave_oauth as oauth;
 pub use state::{ApiVersion, AppState, AuthContext};
 
 pub fn router(state: AppState) -> Router {
     let inner = Router::new()
         .route("/_status", get(status))
+        .route("/_stats", get(stats))
         .route("/server_api_version", get(server_api_version))
         .route("/license", get(license))
         .merge(users::routes())
@@ -88,6 +92,117 @@ async fn status(State(state): State<AppState>) -> Json<Value> {
         "keygen": { "status": "ok" },
         "indexing": { "mode": state.search.name() }
     }))
+}
+
+#[derive(serde::Deserialize)]
+struct StatsQuery {
+    format: Option<String>,
+}
+
+async fn stats(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<StatsQuery>,
+) -> Result<axum::response::Response, ApiError> {
+    let snapshot = state.metrics.snapshot();
+    let maintenance = state
+        .store
+        .maintenance_enabled()
+        .await
+        .map_err(ApiError::from)?;
+    let node_count = state.store.count_nodes().await.map_err(ApiError::from)?;
+
+    let prometheus = match query.format.as_deref() {
+        Some("prometheus") => true,
+        Some("json") => false,
+        Some(_) => false,
+        None => headers
+            .get(axum::http::header::ACCEPT)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.contains("text/plain")),
+    };
+
+    if prometheus {
+        let mut body = String::new();
+        body.push_str(
+            "# HELP microwave_server_requests_total Total HTTP requests received.\n\
+             # TYPE microwave_server_requests_total counter\n",
+        );
+        body.push_str(&format!(
+            "microwave_server_requests_total {}\n",
+            snapshot.total_requests
+        ));
+        body.push_str(
+            "# HELP microwave_server_responses_total HTTP responses by status class.\n\
+             # TYPE microwave_server_responses_total counter\n",
+        );
+        body.push_str(&format!(
+            "microwave_server_responses_total{{class=\"2xx\"}} {}\n",
+            snapshot.responses_2xx
+        ));
+        body.push_str(&format!(
+            "microwave_server_responses_total{{class=\"4xx\"}} {}\n",
+            snapshot.responses_4xx
+        ));
+        body.push_str(&format!(
+            "microwave_server_responses_total{{class=\"5xx\"}} {}\n",
+            snapshot.responses_5xx
+        ));
+        body.push_str(
+            "# HELP microwave_server_authentication_failures_total Requests rejected with 401.\n\
+             # TYPE microwave_server_authentication_failures_total counter\n",
+        );
+        body.push_str(&format!(
+            "microwave_server_authentication_failures_total {}\n",
+            snapshot.authentication_failures
+        ));
+        body.push_str(
+            "# HELP microwave_server_uptime_seconds Seconds since process start.\n\
+             # TYPE microwave_server_uptime_seconds gauge\n",
+        );
+        body.push_str(&format!(
+            "microwave_server_uptime_seconds {}\n",
+            snapshot.uptime_seconds
+        ));
+        body.push_str(
+            "# HELP microwave_server_maintenance Maintenance mode enabled (1) or disabled (0).\n\
+             # TYPE microwave_server_maintenance gauge\n",
+        );
+        body.push_str(&format!(
+            "microwave_server_maintenance {}\n",
+            u8::from(maintenance)
+        ));
+        body.push_str(
+            "# HELP microwave_server_nodes Number of nodes in the metadata store.\n\
+             # TYPE microwave_server_nodes gauge\n",
+        );
+        body.push_str(&format!("microwave_server_nodes {node_count}\n"));
+
+        return Ok((
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; version=0.0.4; charset=utf-8",
+            )],
+            body,
+        )
+            .into_response());
+    }
+
+    Ok(Json(json!({
+        "uptime_seconds": snapshot.uptime_seconds,
+        "requests": {
+            "total": snapshot.total_requests,
+            "responses": {
+                "2xx": snapshot.responses_2xx,
+                "4xx": snapshot.responses_4xx,
+                "5xx": snapshot.responses_5xx,
+            },
+            "authentication_failures": snapshot.authentication_failures,
+        },
+        "maintenance": maintenance,
+        "nodes": node_count,
+    }))
+    .into_response())
 }
 
 async fn server_api_version() -> Json<Value> {

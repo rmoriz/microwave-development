@@ -582,6 +582,7 @@ time, and keep the legacy server read-only until the new one is verified.
 | Endpoint | Auth | Purpose |
 |---|---|---|
 | `GET /_status` | none | `{"status":"pong","upstreams":[],"keygen":{"status":"ok"},"indexing":{"mode":"embedded"}}`. |
+| `GET /_stats` | none | Request counters, authentication failures, uptime, maintenance state, and node count. JSON by default, Prometheus text with `Accept: text/plain` or `?format=prometheus`. |
 | `GET /server_api_version` | none | `min_api_version` / `max_api_version` (`0`/`2`). |
 | `GET /license` | signed | Static license payload; telemetry is disabled. |
 
@@ -595,8 +596,15 @@ curl -fsS http://opensearch:9200/_cluster/health?wait_for_status=yellow
 microwave-ctl --config /etc/microwave/microwave.toml check-config
 ```
 
-`/_stats` is not implemented, so there is no Prometheus endpoint yet. Do not
-wire one into monitoring dashboards on the assumption that it exists.
+`/_stats` exposes process-local counters for requests, response classes,
+authentication failures, and uptime, plus the maintenance flag and node count.
+It does not require authentication and remains reachable during maintenance:
+
+```sh
+curl -fsS http://127.0.0.1:8000/_stats
+curl -fsS -H 'Accept: text/plain' http://127.0.0.1:8000/_stats
+curl -fsS 'http://127.0.0.1:8000/_stats?format=prometheus'
+```
 
 ### CLI
 
@@ -633,11 +641,12 @@ dropped — drain traffic at the load balancer before stopping or restarting.
 
 ## 12. Maintenance caveats
 
-- **Maintenance mode is not enforced.** `microwave-ctl maintenance on`
-  persists `maintenance:enabled` in the `kvpair` table, and `maintenance
-  status` reads it back, but the HTTP middleware does not return `503`.
-  Do not rely on it to fence writes. Remove the server from the load balancer
-  or stop the service instead.
+- **Maintenance mode rejects API traffic.** `microwave-ctl maintenance on`
+  persists `maintenance:enabled` in the `kvpair` table. While it is set, the
+  HTTP middleware returns `503 Service Unavailable` with a JSON error before
+  authentication runs, so unsigned requests cannot mutate the store either.
+  `/_status` and `/_stats` remain reachable for health checks and monitoring.
+  Turning the flag off takes effect on the next request; no restart is needed.
 - **Reindex is a no-op.** `microwave-ctl reindex` prints that it is not
   implemented. The embedded backend always reads the store, so it needs no
   index; a remote OpenSearch backend has no backfill path yet.
@@ -686,6 +695,6 @@ requires restoring that backup.
 | Cookbook download URLs point at `0.0.0.0` or an internal name | Local object store uses `server.bind`; switch to S3/Garage or bind a client-reachable address. |
 | `401` from `chef-client` after migration | Client/server clock skew beyond `auth.skew_seconds`, or the client key was not imported. Check `microwave-ctl list-user-keys` / `list-client-keys`. |
 | Search returns no rows after switching backends | Remote search has no backfill; `reindex` is not implemented. Re-save objects or start from an empty install. |
-| `maintenance on` still serves requests | Known limitation: the flag is persisted but not enforced. Drain at the proxy. |
+| `maintenance on` still serves requests | Check `microwave-ctl maintenance status` and that all replicas share the same database; `/_status` and `/_stats` are intentionally exempt. |
 | `psql` fails with `failed to run sqlite3` | Install `sqlite3` on the host (present in the container image). |
 | Server stops instantly on `SIGTERM` | Expected: no graceful-shutdown handler. Drain traffic before stopping. |

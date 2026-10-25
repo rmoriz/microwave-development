@@ -20,6 +20,17 @@ pub async fn authenticate(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
+    state.metrics.record_request();
+    let response = authenticate_request(state.clone(), request, next).await;
+    state.metrics.record_response(response.status());
+    response
+}
+
+async fn authenticate_request(
+    state: crate::AppState,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
     let path = request.uri().path().to_string();
     let requested_version = match parse_api_version(request.headers()) {
         Ok(version) => version,
@@ -37,6 +48,30 @@ pub async fn authenticate(
                 &requested_version.to_string(),
                 &requested_version.to_string(),
             );
+        }
+    }
+
+    // Maintenance mode rejects normal API traffic before authentication runs,
+    // so an unauthenticated request during a drain cannot mutate the store.
+    // Health checks stay reachable.
+    if !is_maintenance_exempt(&path) {
+        match state.store.maintenance_enabled().await {
+            Ok(true) => {
+                return with_version_header(
+                    ApiError::service_unavailable("Server is in maintenance mode.").into_response(),
+                    &requested_version.to_string(),
+                    &requested_version.to_string(),
+                );
+            }
+            Ok(false) => {}
+            Err(error) => {
+                tracing::error!(error = %error, "failed to read maintenance state");
+                return with_version_header(
+                    ApiError::from(error).into_response(),
+                    &requested_version.to_string(),
+                    &requested_version.to_string(),
+                );
+            }
         }
     }
 
@@ -82,6 +117,7 @@ pub async fn authenticate(
     }
 
     if path == "/_status"
+        || path == "/_stats"
         || path == "/server_api_version"
         || path == "/id"
         || path.starts_with("/id/")
@@ -341,6 +377,12 @@ fn authorization_lines(headers: &HeaderMap) -> Result<Vec<&str>, ApiError> {
     }
     lines.sort_by_key(|(index, _)| *index);
     Ok(lines.into_iter().map(|(_, value)| value).collect())
+}
+
+/// Liveness and metrics endpoints remain available while the API is drained
+/// for maintenance.
+fn is_maintenance_exempt(path: &str) -> bool {
+    path == "/_status" || path == "/_stats"
 }
 
 /// `/organizations/:org/users/:user/keys` exposes only GET handlers.
