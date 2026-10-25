@@ -139,6 +139,14 @@ impl StoreHandle {
         self.store.as_ref()
     }
 
+    /// A cloneable handle to the underlying store.
+    ///
+    /// Needed by helpers that take `Arc<dyn MetadataStore>`, such as the
+    /// search backend constructor.
+    pub fn store_arc(&self) -> Arc<dyn MetadataStore> {
+        self.store.clone()
+    }
+
     /// Run one repository future on the handle's current-thread runtime.
     ///
     /// Safety/usage: the CLI is synchronous, so this must only be called from

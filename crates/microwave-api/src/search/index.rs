@@ -112,7 +112,7 @@ pub(crate) fn data_bag_item_document(
     ))
 }
 
-fn document_for_entry(
+pub(crate) fn document_for_entry(
     org_id: &str,
     kind: &IndexKind,
     object_type: &str,

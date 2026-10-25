@@ -5,6 +5,7 @@ mod expand;
 pub(crate) mod index;
 mod opensearch;
 mod query;
+mod reindex;
 
 use crate::helpers::{base_url, container_authz, is_superuser, organization, require_permission};
 use crate::{ApiError, ApiVersion, AppState, AuthContext};
@@ -26,6 +27,7 @@ pub use backend::{
     SearchHits, SearchRequest,
 };
 pub use opensearch::{OpenSearchBackend, SearchProvider};
+pub use reindex::{reindex, ReindexReport};
 
 const BUILTIN_INDEXES: [&str; 4] = ["client", "environment", "node", "role"];
 

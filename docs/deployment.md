@@ -63,6 +63,12 @@ Recommended installation paths:
 | `/etc/microwave/tls/` | Optional TLS certificate chain and private key; provisioned by the operator. |
 | `/var/lib/microwave/` | Data directory (mode `0750`, owner `microwave`). |
 
+`microwave-ctl pedant` runs the repository harness `scripts/run-pedant.sh`. It
+is a development and verification tool rather than a server component: run it
+from a checkout, install the script at
+`/usr/local/share/microwave/run-pedant.sh`, or point `MW_PEDANT_SCRIPT` at it.
+The harness itself needs Ruby, bundler, and the vendored pedant tree.
+
 The data directory contains:
 
 | Entry | Notes |
@@ -139,16 +145,23 @@ configuration; the standalone `microwave-migrate import` accepts
 `--compression zlib|none` or `--config <path>` (with
 `MW_STORAGE__COMPRESSION` as an environment override).
 
-Validate a configuration file without starting the server:
+Validate a configuration file without starting the server, or validate it and
+initialize/migrate the configured metadata backend:
 
 ```sh
 microwave-ctl --config /etc/microwave/microwave.toml check-config
+microwave-ctl --config /etc/microwave/microwave.toml reconfigure
 microwave-server config --config /etc/microwave/microwave.toml
 ```
 
 `check-config` validates paths, the database URL/driver, the bind address, the
 search backend and URL, object-store credentials, the TLS certificate/key pair,
 and the superuser name.
+`reconfigure` performs the same checks, opens the configured store so the
+schema is initialized or migrated, and reports the resolved SQLite/PostgreSQL,
+search, and object-store backends plus user and organization counts. It does
+**not** restart a running server and does not delete data; restart the service
+yourself to apply configuration changes. It is safe to run repeatedly.
 `microwave-server config` prints the **resolved configuration as JSON,
 including object-store credentials** — treat its output as a secret.
 
@@ -420,6 +433,25 @@ journalctl -u microwave-server -f
 sudo -u microwave microwave-ctl --config /etc/microwave/microwave.toml status
 ```
 
+The CLI can drive the same unit when `systemctl` is available:
+
+```sh
+sudo microwave-ctl service start
+sudo microwave-ctl service stop
+sudo microwave-ctl service restart
+microwave-ctl service status
+microwave-ctl service tail --lines 100 --follow
+```
+
+`service` delegates to `systemctl` and, for `tail`, `journalctl`, using the
+`microwave-server` unit. Override the unit with `--unit` or
+`MW_SERVICE_UNIT`, and the tool paths with `MW_SYSTEMCTL` and `MW_JOURNALCTL`.
+The systemd exit status is preserved. If `systemctl` is not installed, the
+command fails with an actionable error; it does not attempt to track or signal
+a process started elsewhere. Use your container runtime (for example
+`docker compose stop microwave`) or run `microwave-server serve` under your
+platform's supervisor in that case.
+
 If you bind a privileged port inside the unit, add a drop-in with
 `AmbientCapabilities=CAP_NET_BIND_SERVICE` and
 `CapabilityBoundingSet=CAP_NET_BIND_SERVICE`. Environment overrides go in a
@@ -447,12 +479,30 @@ The backend uses the upstream `chef` index, `_bulk` for writes and
 query. Anonymous access is assumed; put the cluster behind your normal network
 controls.
 
-**Switching an existing installation does not backfill.** `microwave-ctl
-reindex` reports that reindexing is not implemented and changes nothing. After
-switching from `embedded` to OpenSearch, only objects written from then on are
-searchable. Plan the switch for an empty installation, or re-upload cookbooks
-and re-save nodes/roles/environments while the backend is active, until a
-reindex command exists.
+**Backfilling after a switch or cluster loss.** `microwave-ctl reindex`
+rebuilds remote documents from the relational store, which remains the source
+of truth:
+
+```sh
+microwave-ctl --config /etc/microwave/microwave.toml reindex
+microwave-ctl --config /etc/microwave/microwave.toml reindex --org acme
+```
+
+It indexes nodes, roles, environments, clients, and every data bag item for
+all organizations (or the selected one) and prints per-type counts. A remote
+write failure aborts the command with a non-zero exit status, so it cannot
+silently report success against an unreachable cluster. Indexing uses one
+bulk write per document, so very large installations take time; run it during a
+maintenance window. With `search.backend = "embedded"` it verifies the
+relational document counts and reports that relational search is authoritative
+instead of doing wasted work.
+
+The reindex adds or replaces documents by store id. It does **not** delete
+documents for objects that were removed while the remote backend was inactive.
+To purge those, stop the server, delete the remote `chef` index, and run the
+reindex before resuming traffic. Running a reindex while the server is serving
+is safe but concurrent writes may be indexed by the server as well; both paths
+converge on the same document id.
 
 ### Object store
 
@@ -571,15 +621,29 @@ sudo -u microwave microwave-ctl --config /etc/microwave/microwave.toml \
   backup /var/backups/microwave/2026-10-24
 ```
 
-The destination must be a directory (created if missing). For SQLite it must
-not already contain `microwave.db`; for PostgreSQL it must not already contain
-`microwave.dump`. The command writes:
+With the default directory format, the destination must be a directory
+(created if missing). For SQLite it must not already contain `microwave.db`;
+for PostgreSQL it must not already contain `microwave.dump`. The command
+writes:
 
 - `microwave.db` for SQLite — a `VACUUM INTO` snapshot, consistent including
   committed WAL contents, safe to take while the server is running;
 - `microwave.dump` for PostgreSQL — a custom-format `pg_dump` archive, taken
   from a consistent database snapshot, safe while the server is running;
 - `bookshelf/` — a recursive copy of the local blob store, if present.
+
+For a single-file archive with the same payload, use the tar format:
+
+```sh
+sudo -u microwave microwave-ctl --config /etc/microwave/microwave.toml \
+  backup /var/backups/microwave/2026-10-24.tar --format tar
+# `--tar` is equivalent shorthand
+```
+
+The archive is written atomically to the requested file and refuses to replace
+an existing file. It is uncompressed, so it is large but inspectable with
+`tar tf`; compress it with your backup tooling if needed. It contains exactly
+the same database snapshot/dump and `bookshelf/` tree as the directory format.
 
 PostgreSQL backup requires `pg_dump` to be installed and on `PATH`. The
 password is removed from the child process command line. A `password` query
@@ -624,10 +688,15 @@ sudo systemctl start microwave-server
 ```
 
 `restore` prints the target (without credentials) and asks for confirmation.
-In scripts and other non-interactive environments, pass `--yes`. For
-PostgreSQL it reads the archive TOC first and reports the database the dump was
-created from; a mismatch with the configured target is refused unless `--yes`
-is given.
+In scripts and other non-interactive environments, pass `--yes`. A directory
+and a tar archive are accepted; the format is detected from the path, or can be
+forced with `--format directory|tar` (`--tar` is shorthand). Tar entries are
+validated before extraction: only `microwave.db`, `microwave.dump`, and
+`bookshelf/` are allowed, and absolute paths, `..`, symlinks, and special files
+are rejected. Extraction happens in a temporary directory, so refusing
+confirmation never touches live data. For PostgreSQL it reads the archive TOC
+first and reports the database the dump was created from; a mismatch with the
+configured target is refused unless `--yes` is given.
 
 `restore`:
 
@@ -832,20 +901,32 @@ curl -fsS 'http://127.0.0.1:8000/_stats?format=prometheus'
 ```sh
 microwave-ctl --config /etc/microwave/microwave.toml status
 microwave-ctl --config /etc/microwave/microwave.toml check-config
+microwave-ctl --config /etc/microwave/microwave.toml reconfigure
+microwave-ctl --config /etc/microwave/microwave.toml reindex --org acme
 microwave-ctl --config /etc/microwave/microwave.toml ha-status
 microwave-ctl --config /etc/microwave/microwave.toml psql 'select count(*) from nodes;'
+microwave-ctl --config /etc/microwave/microwave.toml pedant users nodes
+microwave-ctl service status
 ```
 
 `status` reports the data directory, driver, database path, whether the
 database is readable, and whether the superuser exists. For PostgreSQL it
 connects without changing the schema and reports `database_readable: true`
 when the schema already exists and the superuser query succeeds; an empty or
-unreachable database reports `false` without failing the command. `ha-status` always reports a single standalone node.
+unreachable database reports `false` without failing the command. `reconfigure`
+validates and migrates the backend, then reports the resolved backends without
+restarting a server. `ha-status` always reports a single standalone node.
 `psql` execs `sqlite3` for a SQLite database (install `sqlite3` on the host;
 the container image includes it), or `psql` for a configured PostgreSQL URL,
-and passes trailing arguments through. `backup`/`restore` use `VACUUM INTO` for
-SQLite and `pg_dump`/`pg_restore` for PostgreSQL. `microwave-migrate` exports
-and imports both backends; see
+and passes trailing arguments through. `reindex` validates the embedded
+relational counts or backfills a remote search cluster; see
+[Search](#search). `pedant` runs `scripts/run-pedant.sh` with the supplied tags
+(tags are passed as separate arguments, output is streamed, and the harness exit
+status is preserved; set `MW_PEDANT_SCRIPT` when the script is not in the
+current tree or beside the binary). `service` controls the systemd unit, or
+fails clearly when systemd is unavailable. `backup`/`restore` use `VACUUM INTO`
+for SQLite and `pg_dump`/`pg_restore` for PostgreSQL, in directory or tar
+format. `microwave-migrate` exports and imports both backends; see
 [Backup and restore](#9-backup-and-restore).
 
 ### Logs
@@ -873,9 +954,13 @@ dropped — drain traffic at the load balancer before stopping or restarting.
   authentication runs, so unsigned requests cannot mutate the store either.
   `/_status` and `/_stats` remain reachable for health checks and monitoring.
   Turning the flag off takes effect on the next request; no restart is needed.
-- **Reindex is a no-op.** `microwave-ctl reindex` prints that it is not
-  implemented. The embedded backend always reads the store, so it needs no
-  index; a remote OpenSearch backend has no backfill path yet.
+- **Reindex semantics.** `microwave-ctl reindex` backfills a remote
+  OpenSearch/Elasticsearch cluster from the relational store and reports
+  per-type counts; it fails loudly on the first backend write error. It does
+  not delete documents for objects removed while the remote backend was
+  inactive. To purge stale documents, stop the server, delete the remote
+  `chef` index, and reindex before resuming traffic. With the embedded
+  backend it only verifies relational counts, because the store is the index.
 - **PostgreSQL client tools.** `microwave-ctl backup`/`restore` shell out to
   `pg_dump`/`pg_restore`; install the matching major version on the host or run
   them from a maintenance container. `psql` likewise needs the client tool.
@@ -884,7 +969,11 @@ dropped — drain traffic at the load balancer before stopping or restarting.
   heavy `microwave-ctl` write (import, key rotation, user creation) can
   contend with request writes; run bulk operations in a window.
 - **Backup consistency.** The database snapshot is consistent; the bookshelf
-  copy is not atomic with it. S3 blobs are not in the backup.
+  copy is not atomic with it. S3 blobs are not in the backup. The tar format
+  wraps the same payload and does not add atomicity.
+- **Service management is systemd-only.** `microwave-ctl service` delegates to
+  `systemctl`/`journalctl` and fails clearly when they are missing. It does not
+  supervise Docker, launchd, or a foreground process.
 - **Local object store URLs** are derived from `server.bind` and the listener
   scheme (`http`/`https`), not from request headers. Use S3/Garage behind a
   proxy or NAT.
@@ -923,7 +1012,7 @@ requires restoring that backup.
 | Sandbox completion returns `503` | The object store reports the uploaded checksum as missing. Check `endpoint` reachability from the server and bucket permissions. |
 | Cookbook download URLs point at `0.0.0.0` or an internal name | Local object store uses `server.bind`; switch to S3/Garage or bind a client-reachable address. |
 | `401` from `chef-client` after migration | Client/server clock skew beyond `auth.skew_seconds`, or the client key was not imported. Check `microwave-ctl list-user-keys` / `list-client-keys`. |
-| Search returns no rows after switching backends | Remote search has no backfill; `reindex` is not implemented. Re-save objects or start from an empty install. |
+| Search returns no rows after switching backends | Run `microwave-ctl reindex` to backfill the remote cluster; check `search.url` and the cluster health. Reindex does not purge documents for already-deleted objects. |
 | `maintenance on` still serves requests | Check `microwave-ctl maintenance status` and that all replicas share the same database; `/_status` and `/_stats` are intentionally exempt. |
 | `psql` fails with `failed to run sqlite3` | Install `sqlite3` on the host (present in the container image). |
 | Server stops instantly on `SIGTERM` | Expected: no graceful-shutdown handler. Drain traffic before stopping. |

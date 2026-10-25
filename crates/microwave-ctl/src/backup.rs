@@ -1,9 +1,9 @@
 use crate::pg::{normalize_database_name, PgTarget};
-use crate::{context::Context, CtlError};
+use crate::{context::Context, BackupFormat, CtlError};
 use microwave_config::DatabaseDriver;
 use microwave_store::SqliteStore;
 use std::io::{IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use uuid::Uuid;
 
@@ -11,21 +11,105 @@ const DATABASE_FILE: &str = "microwave.db";
 const POSTGRES_DUMP_FILE: &str = "microwave.dump";
 const BOOKSHELF_DIR: &str = "bookshelf";
 
-/// Create a backup directory containing a consistent database dump and a copy
-/// of the local bookshelf, when one exists.
+/// Create a backup containing a consistent database dump and a copy of the
+/// local bookshelf, when one exists.
 ///
 /// SQLite uses `VACUUM INTO`; PostgreSQL uses a custom-format `pg_dump`
 /// archive. Both include committed WAL/transaction contents and are safe to
-/// take while a server is running.
-pub fn backup(context: &Context, path: &Path) -> Result<(), CtlError> {
+/// take while a server is running. The directory format writes the files
+/// as-is; the tar format writes the same layout into one uncompressed archive.
+pub fn backup(context: &Context, path: &Path, format: BackupFormat) -> Result<(), CtlError> {
+    match format {
+        BackupFormat::Directory => backup_directory(context, path)?,
+        BackupFormat::Tar => backup_tar(context, path)?,
+    }
+
+    println!("Backup written to {}", path.display());
+    println!(
+        "note: the bookshelf copy is not atomic with the database dump; drain writes for a strict backup."
+    );
+    Ok(())
+}
+
+fn backup_directory(context: &Context, path: &Path) -> Result<(), CtlError> {
     if path.exists() && !path.is_dir() {
         return Err(CtlError::message(format!(
-            "backup destination {} is not a directory",
+            "backup destination {} is not a directory; use --format tar for a file destination",
             path.display()
         )));
     }
     std::fs::create_dir_all(path)?;
+    write_backup_payload(context, path)
+}
 
+fn backup_tar(context: &Context, path: &Path) -> Result<(), CtlError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => {
+            return Err(CtlError::message(format!(
+                "backup destination {} is a directory; choose a file path for --format tar",
+                path.display()
+            )));
+        }
+        Ok(_) => {
+            return Err(CtlError::message(format!(
+                "backup destination {} already exists; remove it or choose a new path",
+                path.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    if let Some(parent) = parent {
+        std::fs::create_dir_all(parent)?;
+    }
+    let staging = tempfile::Builder::new()
+        .prefix(".microwave-backup-")
+        .tempdir_in(parent.unwrap_or_else(|| Path::new(".")))?;
+    write_backup_payload(context, staging.path())?;
+
+    // Build the archive beside the destination so the final rename is atomic
+    // and a failure never leaves a partial archive under the requested name.
+    let archive_temp = tempfile::Builder::new()
+        .prefix(".microwave-backup-")
+        .suffix(".tar")
+        .tempfile_in(parent.unwrap_or_else(|| Path::new(".")))?;
+    let archive_path = archive_temp.into_temp_path();
+    let file = std::fs::File::create(&archive_path)?;
+    let mut builder = tar::Builder::new(file);
+
+    match context.config.database.driver {
+        DatabaseDriver::Sqlite => {
+            builder.append_path_with_name(staging.path().join(DATABASE_FILE), DATABASE_FILE)?;
+        }
+        DatabaseDriver::Postgres => {
+            builder.append_path_with_name(
+                staging.path().join(POSTGRES_DUMP_FILE),
+                POSTGRES_DUMP_FILE,
+            )?;
+        }
+    }
+
+    let bookshelf = staging.path().join(BOOKSHELF_DIR);
+    if bookshelf.is_dir() {
+        builder.append_dir_all(BOOKSHELF_DIR, &bookshelf)?;
+    }
+    builder.finish()?;
+    drop(builder);
+
+    std::fs::rename(&archive_path, path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+fn write_backup_payload(context: &Context, path: &Path) -> Result<(), CtlError> {
     match context.config.database.driver {
         DatabaseDriver::Sqlite => backup_sqlite(context, path)?,
         DatabaseDriver::Postgres => backup_postgres(context, path)?,
@@ -37,11 +121,6 @@ pub fn backup(context: &Context, path: &Path) -> Result<(), CtlError> {
     if bookshelf.is_dir() {
         copy_dir_all(&bookshelf, &bookshelf_backup)?;
     }
-
-    println!("Backup written to {}", path.display());
-    println!(
-        "note: the bookshelf copy is not atomic with the database dump; drain writes for a strict backup."
-    );
     Ok(())
 }
 
@@ -100,9 +179,61 @@ fn backup_postgres(context: &Context, path: &Path) -> Result<(), CtlError> {
     Ok(())
 }
 
-/// Restore a backup directory created by [`backup`]. The live database and
-/// bookshelf are replaced.
-pub fn restore(context: &Context, path: &Path, yes: bool) -> Result<(), CtlError> {
+/// Restore a backup created by [`backup`]. The live database and bookshelf are
+/// replaced.
+///
+/// A directory and a tar archive are both accepted. The format is detected
+/// from the path when it is not specified explicitly; explicit
+/// [`BackupFormat::Tar`] requires a file and [`BackupFormat::Directory`]
+/// requires a directory.
+pub fn restore(
+    context: &Context,
+    path: &Path,
+    yes: bool,
+    format: Option<BackupFormat>,
+) -> Result<(), CtlError> {
+    let format = match (format, path.is_dir()) {
+        (Some(format), _) => format,
+        (None, true) => BackupFormat::Directory,
+        (None, false) if path.is_file() => BackupFormat::Tar,
+        (None, false) => {
+            return Err(CtlError::message(format!(
+                "backup {} does not exist or is neither a directory nor a tar archive",
+                path.display()
+            )));
+        }
+    };
+
+    match format {
+        BackupFormat::Directory => {
+            if !path.is_dir() {
+                return Err(CtlError::message(format!(
+                    "--format directory requires a backup directory, but {} is not a directory",
+                    path.display()
+                )));
+            }
+            restore_directory(context, path, yes)?;
+        }
+        BackupFormat::Tar => {
+            if !path.is_file() {
+                return Err(CtlError::message(format!(
+                    "--format tar requires a backup file, but {} is not a file",
+                    path.display()
+                )));
+            }
+            let staging = tempfile::Builder::new()
+                .prefix("microwave-restore-")
+                .tempdir()?;
+            extract_tar(path, staging.path())?;
+            restore_directory(context, staging.path(), yes)?;
+        }
+    }
+
+    println!("Restored from {}", path.display());
+    Ok(())
+}
+
+fn restore_directory(context: &Context, path: &Path, yes: bool) -> Result<(), CtlError> {
     match context.config.database.driver {
         DatabaseDriver::Sqlite => restore_sqlite(context, path, yes)?,
         DatabaseDriver::Postgres => restore_postgres(context, path, yes)?,
@@ -114,9 +245,73 @@ pub fn restore(context: &Context, path: &Path, yes: bool) -> Result<(), CtlError
     if bookshelf_backup.is_dir() {
         copy_dir_all(&bookshelf_backup, &bookshelf)?;
     }
-
-    println!("Restored from {}", path.display());
     Ok(())
+}
+
+/// Extract a backup tar archive into a staging directory.
+///
+/// Only the files this command writes are accepted: the database snapshot or
+/// dump and the `bookshelf/` tree. Absolute paths, `..`, symlinks, devices, and
+/// every other entry type are rejected, so a malformed or hostile archive
+/// cannot write outside the staging directory or plant a link that a later
+/// live-data replacement would follow.
+fn extract_tar(path: &Path, destination: &Path) -> Result<(), CtlError> {
+    let file = std::fs::File::open(path)?;
+    let mut archive = tar::Archive::new(file);
+    let mut saw_payload = false;
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let entry_path = entry.path()?.into_owned();
+        if !allowed_tar_entry(&entry_path) {
+            return Err(CtlError::message(format!(
+                "backup archive contains an unexpected entry {}; expected {} or {} or {}/",
+                entry_path.display(),
+                DATABASE_FILE,
+                POSTGRES_DUMP_FILE,
+                BOOKSHELF_DIR
+            )));
+        }
+
+        let entry_type = entry.header().entry_type();
+        if !entry_type.is_file() && !entry_type.is_dir() {
+            return Err(CtlError::message(format!(
+                "backup archive entry {} is not a regular file or directory",
+                entry_path.display()
+            )));
+        }
+
+        if !entry.unpack_in(destination)? {
+            return Err(CtlError::message(format!(
+                "backup archive entry {} escapes the extraction directory",
+                entry_path.display()
+            )));
+        }
+        saw_payload = true;
+    }
+
+    if !saw_payload {
+        return Err(CtlError::message(format!(
+            "backup archive {} is empty",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn allowed_tar_entry(path: &Path) -> bool {
+    if path.as_os_str().is_empty() || path.is_absolute() {
+        return false;
+    }
+    if path
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return false;
+    }
+    path == Path::new(DATABASE_FILE)
+        || path == Path::new(POSTGRES_DUMP_FILE)
+        || path.starts_with(BOOKSHELF_DIR)
 }
 
 fn restore_sqlite(context: &Context, path: &Path, yes: bool) -> Result<(), CtlError> {
@@ -365,7 +560,8 @@ fn copy_dir_all(source: &Path, destination: &Path) -> Result<(), CtlError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{archive_database, database_names_match};
+    use super::{allowed_tar_entry, archive_database, database_names_match};
+    use std::path::Path;
 
     #[test]
     fn reads_the_database_name_from_a_pg_restore_toc() {
@@ -378,5 +574,23 @@ mod tests {
         assert!(database_names_match("microwave%2Dprod", "microwave-prod"));
         assert!(database_names_match("/microwave", "microwave"));
         assert!(!database_names_match("microwave", "other"));
+    }
+
+    #[test]
+    fn only_accepts_the_expected_backup_layout_in_a_tar_archive() {
+        assert!(allowed_tar_entry(Path::new("microwave.db")));
+        assert!(allowed_tar_entry(Path::new("microwave.dump")));
+        assert!(allowed_tar_entry(Path::new("bookshelf")));
+        assert!(allowed_tar_entry(Path::new(
+            "bookshelf/organization-abc/checksum-def"
+        )));
+
+        assert!(!allowed_tar_entry(Path::new("../microwave.db")));
+        assert!(!allowed_tar_entry(Path::new(
+            "bookshelf/../../microwave.db"
+        )));
+        assert!(!allowed_tar_entry(Path::new("/etc/passwd")));
+        assert!(!allowed_tar_entry(Path::new("pivotal.pem")));
+        assert!(!allowed_tar_entry(Path::new("")));
     }
 }
