@@ -191,10 +191,10 @@ pub fn signed_request_with_signed_path(
     )
 }
 
-/// Sign `signed_body` for `signed_path` but send `body` to `path`.
+/// Sign `signed_body` and `signed_path` but send `body` to `path`.
 ///
-/// The upstream validation endpoint checks the signature against the original
-/// request's content hash without re-hashing the validation request body.
+/// Used to prove that signatures are bound to the body actually sent: the
+/// validation endpoint must reject a valid signature for another body.
 #[allow(clippy::too_many_arguments)]
 pub fn signed_request_with_signed_path_and_body(
     method: &str,

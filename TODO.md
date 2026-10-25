@@ -95,7 +95,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [ ] `GET /license` — return `{"limit_exceeded": bool, "node_license": int, "node_count": int, "upgrade_url": str}`.
 - [ ] `POST /authenticate_user` — superuser-only endpoint verifying username/password (with transparent hash upgrade) and returning `linked` user payload; reject superuser target with `403`.
 - [ ] `POST /system_recovery` — superuser-only endpoint verifying recovery password when `recovery_authentication_enabled = true`.
-- [x] `ANY /organizations/:org/validate/*` — verifies the signature against the wildcard path and the supplied content hash, then returns `{"requestor_name": ..., "requestor_type": ...}`.
+- [x] `ANY /organizations/:org/validate/*` — verifies the signature against the wildcard path and the actual request body, then returns `{"requestor_name": ..., "requestor_type": ...}`.
 - [x] `GET /organizations/:org/:type/:name/_identifiers` — returns `{"id": ..., "authz_id": ..., "org_id": ...}` for nodes and the upstream 404 for unsupported types.
 - [x] `POST /organizations/:org/controls` — returns the upstream `410 Gone` analytics deprecation response for every method.
 - [ ] Verify against `status_spec.rb`, `stats_spec.rb`, `license_spec.rb`, `authenticate_user_spec.rb`, `system_recovery_spec.rb`, `validate_spec.rb`, `object_identifier_spec.rb`, `controls_spec.rb`.
@@ -139,7 +139,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [ ] **Roles (`/organizations/:org/roles`):**
   - [ ] `GET,POST /organizations/:org/roles`, `GET,PUT,DELETE /organizations/:org/roles/:name`.
   - [x] `GET /organizations/:org/roles/:name/environments` and `GET /organizations/:org/roles/:name/environments/:env` (and `/environments/:env/roles/:name`).
-  - [x] Validate role JSON schema (`json_class: "Chef::Role"`, `run_list`, `env_run_lists`, `default_attributes`, `override_attributes`).
+  - [ ] Validate role JSON schema (`json_class: "Chef::Role"`, `run_list`, `env_run_lists`, `default_attributes`, `override_attributes`).
 - [ ] **Environments (`/organizations/:org/environments`):**
   - [ ] `GET,POST /organizations/:org/environments`, `GET,PUT,DELETE /organizations/:org/environments/:env`.
   - [ ] Protect `_default` environment from deletion or modification (`405 Method Not Allowed`).

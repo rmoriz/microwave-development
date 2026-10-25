@@ -72,6 +72,19 @@ async fn body_json(response: Response) -> Value {
     support::response_json(response).await
 }
 
+async fn anon_request(app: &axum::Router, method: &str, path: &str) -> Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
 fn state() -> AppState {
     support::state_with_pivotal()
 }
@@ -208,6 +221,52 @@ async fn identifiers_require_organization_membership() {
 }
 
 #[tokio::test]
+async fn internal_read_only_routes_report_405_before_authentication() {
+    let state = state();
+    let app = support::app(state);
+    create_org(&app).await;
+    create_node(&app, "web1").await;
+    create_environment(&app, "prod", json!({})).await;
+    create_role(&app, json!({ "name": "web", "run_list": [] })).await;
+
+    for (method, path, allow) in [
+        (
+            "PATCH",
+            "/organizations/acme/nodes/web1/_identifiers",
+            "GET",
+        ),
+        ("PATCH", "/organizations/acme/roles/web/environments", "GET"),
+        (
+            "PUT",
+            "/organizations/acme/roles/web/environments/prod",
+            "GET",
+        ),
+        (
+            "PUT",
+            "/organizations/acme/environments/prod/roles/web",
+            "GET",
+        ),
+        (
+            "PATCH",
+            "/organizations/acme/validate/organizations/acme/nodes",
+            "GET, POST, PUT, DELETE",
+        ),
+    ] {
+        // No signature at all: an auth-first implementation would return 401.
+        let response = anon_request(&app, method, path).await;
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED, "{path}");
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ALLOW)
+                .and_then(|value| value.to_str().ok()),
+            Some(allow),
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn validate_reports_the_signing_requestor_for_every_supported_method() {
     let state = state();
     let app = support::app(state);
@@ -216,16 +275,14 @@ async fn validate_reports_the_signing_requestor_for_every_supported_method() {
     let signed_path = "/organizations/acme/nodes";
     let validation_path = "/organizations/acme/validate/organizations/acme/nodes";
     for method in ["GET", "POST", "PUT", "DELETE"] {
-        // Sign the body of the original request but send no body, exactly like
-        // pedant's `construct_request`/`do_request` split.
-        let payload = br#"{"foo":"bar"}"#;
+        // Pedant signs the empty validation request body, as it sends no
+        // payload for these calls.
         let response = app
             .clone()
-            .oneshot(support::signed_request_with_signed_path_and_body(
+            .oneshot(support::signed_request_with_signed_path(
                 method,
                 validation_path,
                 signed_path,
-                payload,
                 b"",
                 SignVersion::V1_3,
                 "pivotal",
@@ -238,6 +295,28 @@ async fn validate_reports_the_signing_requestor_for_every_supported_method() {
             json!({ "requestor_name": "pivotal", "requestor_type": "user" })
         );
     }
+}
+
+#[tokio::test]
+async fn validate_rejects_a_signature_for_a_different_body() {
+    let state = state();
+    let app = support::app(state);
+    create_org(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(support::signed_request_with_signed_path_and_body(
+            "POST",
+            "/organizations/acme/validate/organizations/acme/nodes",
+            "/organizations/acme/nodes",
+            br#"{"foo":"bar"}"#,
+            b"",
+            SignVersion::V1_3,
+            "pivotal",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -277,11 +356,10 @@ async fn validate_reports_clients_and_rejects_unknown_actors() {
 
     let response = app
         .clone()
-        .oneshot(support::signed_request_with_signed_path_and_body(
+        .oneshot(support::signed_request_with_signed_path(
             "POST",
             "/organizations/acme/validate/organizations/acme/nodes",
             "/organizations/acme/nodes",
-            br#"{"foo":"bar"}"#,
             b"",
             SignVersion::V1_3,
             "web1",
@@ -296,11 +374,10 @@ async fn validate_reports_clients_and_rejects_unknown_actors() {
 
     let response = app
         .clone()
-        .oneshot(support::signed_request_with_signed_path_and_body(
+        .oneshot(support::signed_request_with_signed_path(
             "POST",
             "/organizations/acme/validate/organizations/acme/nodes",
             "/organizations/acme/nodes",
-            br#"{"foo":"bar"}"#,
             b"",
             SignVersion::V1_3,
             "nobody",

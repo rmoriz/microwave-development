@@ -232,17 +232,44 @@ impl Harness {
         let response = self
             .app
             .clone()
-            .oneshot(support::signed_request_with_signed_path_and_body(
+            .oneshot(support::signed_request_with_signed_path(
                 method,
                 path,
                 signed_path,
-                br#"{"foo":"bar"}"#,
                 body,
                 SignVersion::V1_3,
                 user,
             ))
             .await
             .expect("router handles signed validation request");
+        Step::from_response(label, response).await
+    }
+
+    /// Sign the body of another request while sending an empty validation
+    /// body. This must fail signature verification.
+    async fn send_signed_path_with_mismatched_body(
+        &self,
+        label: &str,
+        method: &str,
+        path: &str,
+        signed_path: &str,
+        signed_body: &[u8],
+        user: &str,
+    ) -> Step {
+        let response = self
+            .app
+            .clone()
+            .oneshot(support::signed_request_with_signed_path_and_body(
+                method,
+                path,
+                signed_path,
+                signed_body,
+                b"",
+                SignVersion::V1_3,
+                user,
+            ))
+            .await
+            .expect("router handles mismatched signed validation request");
         Step::from_response(label, response).await
     }
 
@@ -4215,7 +4242,8 @@ async fn scenario_internal_compat(h: &Harness) -> Vec<Step> {
     }
 
     // Signed-request validation. The signature belongs to `/nodes`, while the
-    // request is sent to the validation path with no body.
+    // request is sent to the validation path with an empty body. The signature
+    // is still bound to the actual (empty) body.
     for method in ["GET", "POST", "PUT", "DELETE"] {
         let step = h
             .send_signed_path(
@@ -4234,6 +4262,19 @@ async fn scenario_internal_compat(h: &Harness) -> Vec<Step> {
         );
         steps.push(step);
     }
+
+    let step = h
+        .send_signed_path_with_mismatched_body(
+            "validate mismatched body",
+            "POST",
+            &format!("/organizations/{org}/validate/organizations/{org}/nodes"),
+            &format!("/organizations/{org}/nodes"),
+            br#"{"foo":"bar"}"#,
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::UNAUTHORIZED);
+    steps.push(step);
 
     let step = h
         .send_signed_path(

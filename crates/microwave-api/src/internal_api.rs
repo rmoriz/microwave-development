@@ -4,6 +4,12 @@
 //! * `GET /organizations/:org/:type/:name/_identifiers`
 //! * `ANY /organizations/:org/validate/*`
 //! * `ANY /organizations/:org/controls`
+//!
+//! `/validate/*` and `_identifiers` are internal Chef Server APIs. Upstream
+//! only routes them on the internal listener; Microwave exposes them on the
+//! main listener to authenticated organization members (and `controls` returns
+//! 410 before authentication). Deployments that need the upstream network
+//! split should block these paths at the reverse proxy.
 
 use crate::helpers::organization;
 use crate::{ApiError, AppState, AuthContext};
@@ -64,9 +70,9 @@ async fn get_identifiers(
     })))
 }
 
-/// Report the verified requestor. Signature verification (including the
-/// signed-path override in the authentication middleware) and the organization
-/// membership check have already happened by the time this runs.
+/// Report the verified requestor. The authentication middleware has already
+/// verified the signature against the wildcard path and the actual request
+/// body, and checked organization membership.
 async fn validate(Extension(auth): Extension<AuthContext>) -> Json<Value> {
     let requestor_type = match auth.principal.actor_type {
         ActorType::User => "user",

@@ -98,6 +98,21 @@ async fn authenticate_request(
         }
     }
 
+    // Internal compatibility resources authenticate before their handlers run,
+    // but webmachine still answers an unsupported method with 405 first. Let
+    // those requests through to the router so the `Allow` header is generated
+    // there without requiring a valid signature.
+    if let Some(allowed) = internal_allowed_methods(&path) {
+        if !allowed.contains(&request.method().as_str()) {
+            let response = next.run(request).await;
+            return with_version_header(
+                response,
+                &requested_version.to_string(),
+                &requested_version.to_string(),
+            );
+        }
+    }
+
     // The org-scoped user key resources are read-only. Upstream reports 405
     // before attempting authentication, so a request with an unsupported
     // method must not fail signature verification first.
@@ -272,9 +287,8 @@ async fn authenticate_signed(
     let path = parts.uri.path().to_string();
     let method = parts.method.as_str().to_string();
     // `chef_wm_validate` signs the path below `/validate/`, not the validation
-    // URL itself. It also canonicalizes the supplied content hash instead of
-    // re-hashing the body, because the caller's signature belongs to the
-    // request being validated.
+    // URL itself. The body is still the body that was actually sent:
+    // `chef_authn` hashes it and rejects a mismatched `X-Ops-Content-Hash`.
     let validated_path = validate_signed_path(&path);
     let canonical_path = validated_path.as_deref().unwrap_or(path.as_str());
     let org = match organization_name_from_path(&path) {
@@ -322,16 +336,8 @@ async fn authenticate_signed(
             if key.expired {
                 continue;
             }
-            let verified = if validated_path.is_some() {
-                microwave_crypto::verify_request_with_content_hash(
-                    &key.public_key,
-                    &auth_headers,
-                    &canonical,
-                )
-            } else {
-                microwave_crypto::verify_request(&key.public_key, &auth_headers, &canonical)
-            };
-            if verified.is_ok() {
+            if microwave_crypto::verify_request(&key.public_key, &auth_headers, &canonical).is_ok()
+            {
                 authenticated = Some((principal, key.key_name));
                 break 'principals;
             }
@@ -525,6 +531,49 @@ fn validate_signed_path(path: &str) -> Option<String> {
         return None;
     }
     Some(format!("/{rest}"))
+}
+
+/// Methods accepted by internal resources that must answer 405 before
+/// authentication, matching webmachine's `allowed_methods/2` ordering.
+///
+/// `HEAD` accompanies GET because axum routes it to the GET handler. The
+/// router strips it from the generated `Allow` header.
+fn internal_allowed_methods(path: &str) -> Option<&'static [&'static str]> {
+    if validate_signed_path(path).is_some() {
+        return Some(&["GET", "HEAD", "POST", "PUT", "DELETE"]);
+    }
+    if is_identifiers_path(path) || is_role_environment_path(path) {
+        return Some(&["GET", "HEAD"]);
+    }
+    None
+}
+
+/// `/organizations/:org/:object_type/:name/_identifiers`.
+fn is_identifiers_path(path: &str) -> bool {
+    let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
+    segments.len() == 5
+        && segments[0] == "organizations"
+        && !segments[1].is_empty()
+        && segments[4] == "_identifiers"
+}
+
+/// The read-only role/environment run-list resources:
+///
+/// * `/organizations/:org/roles/:role/environments`
+/// * `/organizations/:org/roles/:role/environments/:environment`
+/// * `/organizations/:org/environments/:environment/roles/:role`
+fn is_role_environment_path(path: &str) -> bool {
+    let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
+    if !(segments.len() == 5 || segments.len() == 6) || segments[0] != "organizations" {
+        return false;
+    }
+    if segments[2] == "roles" && segments[4] == "environments" {
+        return true;
+    }
+    segments.len() == 6
+        && segments[2] == "environments"
+        && segments[4] == "roles"
+        && !segments[5].is_empty()
 }
 
 /// `/organizations/:org/required_recipe` (exact, no trailing slash).
