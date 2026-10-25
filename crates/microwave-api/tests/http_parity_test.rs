@@ -21,9 +21,10 @@ use microwave_api::AppState;
 use microwave_config::{Config, DatabaseDriver};
 use microwave_crypto::SignVersion;
 use microwave_objectstore::{LocalObjectStore, ObjectStore};
-use microwave_store::{ActorType, MetadataStore, SqliteStore};
+use microwave_store::{ActorType, MetadataStore, SqliteStore, StoreError};
 use microwave_store_postgres::PostgresStore;
 use serde_json::{json, Map, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Once, OnceLock};
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -47,8 +48,65 @@ struct Harness {
     run: String,
     app: Router,
     store: Arc<dyn MetadataStore>,
-    pivotal_key: Option<String>,
+    cleanup_guard: CleanupGuard,
     _object_dir: TempDir,
+}
+
+/// Panic-safe PostgreSQL cleanup.
+///
+/// Normal test completion calls [`Harness::cleanup`], which asserts every
+/// deletion and disarms this guard. If a scenario panics first, `Drop` opens a
+/// fresh runtime on a dedicated thread, reconnects to the test database and
+/// removes the run's rows instead of leaving them for the next suite.
+struct CleanupGuard {
+    run: String,
+    postgres_url: Option<String>,
+    armed: AtomicBool,
+}
+
+impl CleanupGuard {
+    fn new(run: String, postgres_url: Option<String>) -> Self {
+        Self {
+            run,
+            postgres_url,
+            armed: AtomicBool::new(true),
+        }
+    }
+
+    fn disarm(&self) {
+        self.armed.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        if !self.armed.load(Ordering::SeqCst) {
+            return;
+        }
+        let Some(url) = self.postgres_url.clone() else {
+            return;
+        };
+        let run = self.run.clone();
+        let cleanup_run = run.clone();
+        let result = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| format!("build panic-cleanup runtime: {error}"))?;
+            runtime.block_on(async move {
+                let store = PostgresStore::connect_existing(&url)
+                    .await
+                    .map_err(|error| format!("connect for panic cleanup: {error}"))?;
+                cleanup_store(&store, &cleanup_run).await
+            })
+        })
+        .join();
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => eprintln!("WARNING: panic cleanup for {run} failed: {error}"),
+            Err(_) => eprintln!("WARNING: panic cleanup thread for {run} panicked"),
+        }
+    }
 }
 
 impl Harness {
@@ -69,11 +127,12 @@ impl Harness {
             .expect("build SQLite app state");
         let store: Arc<dyn MetadataStore> = sqlite;
 
+        let cleanup_guard = CleanupGuard::new(run.clone(), None);
         Self {
             run,
             app: microwave_api::router(state),
             store,
-            pivotal_key: None,
+            cleanup_guard,
             _object_dir: object_dir,
         }
     }
@@ -96,19 +155,16 @@ impl Harness {
             .find_actor_keys(&pivotal.id, ActorType::User)
             .await
             .expect("list pivotal keys");
-        let pivotal_key = if keys
+        if !keys
             .iter()
             .any(|key| key.public_key.trim() == support::PUBLIC_KEY.trim())
         {
-            None
-        } else {
             let name = format!("parity-{run}");
             store
                 .add_actor_key(&pivotal.id, ActorType::User, &name, support::PUBLIC_KEY)
                 .await
                 .expect("add pivotal parity key");
-            Some(name)
-        };
+        }
 
         let mut config = base_config(DatabaseDriver::Postgres);
         config.object_store.secret = Some("http-parity-secret".into());
@@ -117,11 +173,12 @@ impl Harness {
         let state = AppState::new(store.clone(), Arc::new(config), object_store)
             .expect("build PostgreSQL app state");
 
+        let cleanup_guard = CleanupGuard::new(run.clone(), Some(url));
         Some(Self {
             run,
             app: microwave_api::router(state),
             store,
-            pivotal_key,
+            cleanup_guard,
             _object_dir: object_dir,
         })
     }
@@ -206,38 +263,98 @@ impl Harness {
     }
 
     async fn cleanup(&self) {
-        let prefix = &self.run;
+        cleanup_store(self.store.as_ref(), &self.run)
+            .await
+            .unwrap_or_else(|error| panic!("cleanup for {} failed: {error}", self.run));
+        self.cleanup_guard.disarm();
+    }
+}
 
-        if let Ok(orgs) = self.store.list_orgs().await {
-            for org in orgs.into_iter().filter(|org| org.name.starts_with(prefix)) {
-                let _ = self.store.delete_org(&org.id).await;
-            }
-        }
-        if let Ok(users) = self.store.list_users().await {
-            for user in users
-                .into_iter()
-                .filter(|user| user.username.starts_with(prefix))
+async fn cleanup_store(store: &dyn MetadataStore, run: &str) -> Result<(), String> {
+    let orgs = store
+        .list_orgs()
+        .await
+        .map_err(|error| format!("list organizations: {error}"))?;
+    for org in orgs.into_iter().filter(|org| org.name.starts_with(run)) {
+        // Fetch the client keys before the org cascades. PostgreSQL
+        // `delete_org` now removes them too, while SQLite still relies on
+        // this explicit pass.
+        let clients = store
+            .list_clients(&org.id)
+            .await
+            .map_err(|error| format!("list clients for {}: {error}", org.name))?;
+        let mut keys = Vec::new();
+        for client in clients {
+            for key in store
+                .find_actor_keys(&client.id, ActorType::Client)
+                .await
+                .map_err(|error| format!("list keys for client {}: {error}", client.name))?
             {
-                let _ = self.store.delete_user(&user.username).await;
+                keys.push((client.id.clone(), key.key_name));
             }
         }
-        if let Ok(applications) = self.store.list_oauth_applications().await {
-            for application in applications
-                .into_iter()
-                .filter(|application| application.name.starts_with(prefix))
+        store
+            .delete_org(&org.id)
+            .await
+            .map_err(|error| format!("delete organization {}: {error}", org.name))?;
+        for (actor_id, key_name) in keys {
+            match store
+                .delete_actor_key(&actor_id, ActorType::Client, &key_name)
+                .await
             {
-                let _ = self.store.delete_oauth_application(application.id).await;
-            }
-        }
-        if let Some(key_name) = &self.pivotal_key {
-            if let Ok(Some(pivotal)) = self.store.find_user("pivotal").await {
-                let _ = self
-                    .store
-                    .delete_actor_key(&pivotal.id, ActorType::User, key_name)
-                    .await;
+                Ok(()) | Err(StoreError::NotFound(_)) => {}
+                Err(error) => {
+                    return Err(format!(
+                        "delete client key {key_name} for {actor_id}: {error}"
+                    ))
+                }
             }
         }
     }
+
+    let users = store
+        .list_users()
+        .await
+        .map_err(|error| format!("list users: {error}"))?;
+    for user in users
+        .into_iter()
+        .filter(|user| user.username.starts_with(run))
+    {
+        store
+            .delete_user(&user.username)
+            .await
+            .map_err(|error| format!("delete user {}: {error}", user.username))?;
+    }
+
+    let applications = store
+        .list_oauth_applications()
+        .await
+        .map_err(|error| format!("list oauth applications: {error}"))?;
+    for application in applications
+        .into_iter()
+        .filter(|application| application.name.starts_with(run))
+    {
+        store
+            .delete_oauth_application(application.id)
+            .await
+            .map_err(|error| format!("delete oauth application {}: {error}", application.id))?;
+    }
+
+    if let Some(pivotal) = store
+        .find_user("pivotal")
+        .await
+        .map_err(|error| format!("find pivotal: {error}"))?
+    {
+        match store
+            .delete_actor_key(&pivotal.id, ActorType::User, &format!("parity-{run}"))
+            .await
+        {
+            Ok(()) | Err(StoreError::NotFound(_)) => {}
+            Err(error) => return Err(format!("delete pivotal parity key: {error}")),
+        }
+    }
+
+    Ok(())
 }
 
 fn base_config(driver: DatabaseDriver) -> Config {
@@ -261,7 +378,14 @@ fn object_store(object_dir: &TempDir, config: &Config) -> Arc<dyn ObjectStore + 
 }
 
 fn test_postgres_url() -> Option<String> {
+    let required = std::env::var("MICROWAVE_REQUIRE_POSTGRES")
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
     let Some(value) = std::env::var_os("MICROWAVE_TEST_POSTGRES_URL") else {
+        assert!(
+            !required,
+            "MICROWAVE_REQUIRE_POSTGRES is set but MICROWAVE_TEST_POSTGRES_URL is \
+             missing; provide a PostgreSQL URL or unset the requirement"
+        );
         static WARN: Once = Once::new();
         WARN.call_once(|| {
             eprintln!(
@@ -420,14 +544,21 @@ impl Step {
         Self { body, ..self }
     }
 
+    fn map_text(self, map: impl FnOnce(&str) -> Value) -> Self {
+        let body = match &self.body {
+            RecordedBody::Text(text) => RecordedBody::Json(map(text)),
+            other => panic!("step '{}' is not text: {other:?}", self.label),
+        };
+        Self { body, ..self }
+    }
+
     fn normalized(&self) -> Value {
         let body = match &self.body {
             RecordedBody::Json(value) => normalize_value(value, None),
-            RecordedBody::Text(text) if self.label.contains("prometheus") => {
-                Value::String(mask_digits(&normalize_string(text)))
-            }
-            RecordedBody::Text(text) => Value::String(normalize_string(text)),
-            RecordedBody::Empty => Value::Null,
+            // Text and empty bodies stay visibly distinct from JSON strings
+            // and JSON null so body-shape regressions cannot hide.
+            RecordedBody::Text(text) => json!({ "text": normalize_string(text) }),
+            RecordedBody::Empty => json!({ "empty": true }),
         };
         json!({
             "status": self.status.as_u16(),
@@ -505,7 +636,7 @@ fn normalize_scalar(text: &str, key: Option<&str>) -> String {
         Some("access_token") | Some("refresh_token") => "<token>".into(),
         Some("create_time") | Some("created_at") | Some("updated_at") => "<timestamp>".into(),
         Some("sandbox_id") | Some("guid") => "<id>".into(),
-        Some("id") | Some("name") if is_hex_id(text) => "<id>".into(),
+        Some("id") if is_hex_id(text) => "<id>".into(),
         _ => normalize_string(text),
     }
 }
@@ -600,21 +731,21 @@ fn is_hex_id(text: &str) -> bool {
     text.len() == 32 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn mask_digits(text: &str) -> String {
-    let mut out = String::new();
-    let mut in_digits = false;
-    for character in text.chars() {
-        if character.is_ascii_digit() {
-            if !in_digits {
-                out.push_str("<n>");
-                in_digits = true;
-            }
-        } else {
-            in_digits = false;
-            out.push(character);
+/// Parse Prometheus text into metric-name/value pairs, masking only the
+/// counter/gauge values. Metric names and label sets stay comparable.
+fn prometheus_metrics(text: &str) -> Value {
+    let mut metrics = Map::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
         }
+        let Some((name, _value)) = line.rsplit_once(' ') else {
+            continue;
+        };
+        metrics.insert(name.to_string(), json!("<number>"));
     }
-    out
+    Value::Object(metrics)
 }
 
 // ---------------------------------------------------------------------------
@@ -1117,6 +1248,88 @@ async fn scenario_identity(h: &Harness) -> Vec<Step> {
     assert_eq!(step.json()["name"], "web2");
     steps.push(step);
 
+    // Credential verification and system recovery run through the same
+    // superuser-only handlers on both backends.
+    let recover = h.name("recover");
+    let body = json!({
+        "username": recover,
+        "email": format!("{recover}@example.test"),
+        "display_name": "Recovery User",
+        "password": "secret",
+        "recovery_authentication_enabled": true,
+    });
+    let step = h
+        .send(
+            "create recovery user",
+            "POST",
+            "/users",
+            &serde_json::to_vec(&body).unwrap(),
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::CREATED);
+    assert_eq!(
+        step.json(),
+        &json!({ "uri": format!("{BASE_URL}/users/{recover}") })
+    );
+    steps.push(step);
+
+    let body = json!({ "username": recover, "password": "secret" });
+    let step = h
+        .send(
+            "authenticate user",
+            "POST",
+            "/authenticate_user",
+            &serde_json::to_vec(&body).unwrap(),
+            "pivotal",
+        )
+        .await
+        .expect_ok();
+    assert_eq!(step.json()["status"], "linked");
+    assert_eq!(step.json()["user"]["username"], recover);
+    steps.push(step);
+
+    let body = json!({ "username": recover, "password": "wrong-password" });
+    let step = h
+        .send(
+            "authenticate user with bad password",
+            "POST",
+            "/authenticate_user",
+            &serde_json::to_vec(&body).unwrap(),
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::UNAUTHORIZED);
+    steps.push(step);
+
+    let body = json!({ "username": recover, "password": "secret" });
+    let step = h
+        .send(
+            "system recovery",
+            "POST",
+            "/system_recovery",
+            &serde_json::to_vec(&body).unwrap(),
+            "pivotal",
+        )
+        .await
+        .expect_ok();
+    assert_eq!(step.json()["username"], recover);
+    assert!(step.json().get("public_key").is_none());
+    steps.push(step);
+
+    let body = json!({ "username": recover, "password": "wrong-password" });
+    let step = h
+        .send(
+            "system recovery with bad password",
+            "POST",
+            "/system_recovery",
+            &serde_json::to_vec(&body).unwrap(),
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::UNAUTHORIZED);
+    steps.push(step);
+
     steps
 }
 
@@ -1599,6 +1812,273 @@ async fn scenario_objects(h: &Harness) -> Vec<Step> {
 }
 
 // ---------------------------------------------------------------------------
+// Scenario: groups and containers
+// ---------------------------------------------------------------------------
+
+async fn scenario_groups_containers(h: &Harness) -> Vec<Step> {
+    let org = h.org();
+    let member = h.name("member");
+    let mut steps = vec![create_org(h, &org).await];
+
+    steps.push(create_user(h, &member).await);
+    steps.push(add_user_to_org(h, &org, &member).await);
+
+    let body = json!({
+        "name": "worker",
+        "validator": false,
+        "public_key": support::PUBLIC_KEY,
+    });
+    let step = h
+        .send(
+            "create group member client",
+            "POST",
+            &format!("/organizations/{org}/clients"),
+            &serde_json::to_vec(&body).unwrap(),
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::CREATED);
+    steps.push(step);
+
+    // Groups.
+    let step = h
+        .send(
+            "list groups",
+            "GET",
+            &format!("/organizations/{org}/groups"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_ok();
+    assert_eq!(
+        step.json()["admins"],
+        format!("{BASE_URL}/organizations/{org}/groups/admins")
+    );
+    assert!(step.json()["users"].is_string());
+    steps.push(step);
+
+    let step = h
+        .send(
+            "create group",
+            "POST",
+            &format!("/organizations/{org}/groups"),
+            br#"{"id":"parity-group"}"#,
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::CREATED);
+    assert_eq!(
+        step.json()["uri"],
+        format!("{BASE_URL}/organizations/{org}/groups/parity-group")
+    );
+    steps.push(step);
+
+    let step = h
+        .send(
+            "read empty group",
+            "GET",
+            &format!("/organizations/{org}/groups/parity-group"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_ok();
+    assert_eq!(step.json()["users"], json!([]));
+    steps.push(step);
+
+    let body = json!({
+        "groupname": "parity-group",
+        "actors": {
+            "users": [member],
+            "clients": ["worker"],
+            "groups": ["users"],
+        },
+    });
+    let step = h
+        .send(
+            "replace group members",
+            "PUT",
+            &format!("/organizations/{org}/groups/parity-group"),
+            &serde_json::to_vec(&body).unwrap(),
+            "pivotal",
+        )
+        .await
+        .expect_ok();
+    assert_eq!(step.json()["users"], json!([member]));
+    assert_eq!(step.json()["clients"], json!(["worker"]));
+    assert_eq!(step.json()["groups"], json!(["users"]));
+    steps.push(step);
+
+    let step = h
+        .send(
+            "read group members",
+            "GET",
+            &format!("/organizations/{org}/groups/parity-group"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_ok();
+    assert_eq!(step.json()["actors"], json!(["worker", member]));
+    steps.push(step);
+
+    let step = h
+        .send(
+            "rename group",
+            "PUT",
+            &format!("/organizations/{org}/groups/parity-group"),
+            br#"{"groupname":"renamed-group"}"#,
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::CREATED);
+    assert_eq!(step.json()["name"], "renamed-group");
+    steps.push(step);
+
+    let step = h
+        .send(
+            "read renamed-away group",
+            "GET",
+            &format!("/organizations/{org}/groups/parity-group"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::NOT_FOUND);
+    steps.push(step);
+
+    let step = h
+        .send(
+            "delete default group",
+            "DELETE",
+            &format!("/organizations/{org}/groups/admins"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::FORBIDDEN);
+    steps.push(step);
+
+    let step = h
+        .send(
+            "delete group",
+            "DELETE",
+            &format!("/organizations/{org}/groups/renamed-group"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_ok();
+    assert_eq!(step.json()["name"], "renamed-group");
+    steps.push(step);
+
+    let step = h
+        .send(
+            "read deleted group",
+            "GET",
+            &format!("/organizations/{org}/groups/renamed-group"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::NOT_FOUND);
+    steps.push(step);
+
+    // Containers.
+    let step = h
+        .send(
+            "list containers",
+            "GET",
+            &format!("/organizations/{org}/containers"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_ok();
+    assert_eq!(step.json().as_object().unwrap().len(), 12);
+    assert_eq!(
+        step.json()["clients"],
+        format!("{BASE_URL}/organizations/{org}/containers/clients")
+    );
+    steps.push(step);
+
+    let step = h
+        .send(
+            "create container",
+            "POST",
+            &format!("/organizations/{org}/containers"),
+            br#"{"id":"parity-container","containerpath":"/"}"#,
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::CREATED);
+    assert_eq!(
+        step.json()["uri"],
+        format!("{BASE_URL}/organizations/{org}/containers/parity-container")
+    );
+    steps.push(step);
+
+    let step = h
+        .send(
+            "read container",
+            "GET",
+            &format!("/organizations/{org}/containers/parity-container"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_ok();
+    assert_eq!(
+        step.json(),
+        &json!({
+            "containername": "parity-container",
+            "containerpath": "parity-container",
+        })
+    );
+    steps.push(step);
+
+    let step = h
+        .send(
+            "delete default container",
+            "DELETE",
+            &format!("/organizations/{org}/containers/clients"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::FORBIDDEN);
+    steps.push(step);
+
+    let step = h
+        .send(
+            "delete container",
+            "DELETE",
+            &format!("/organizations/{org}/containers/parity-container"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_ok();
+    assert_eq!(step.json()["containername"], "parity-container");
+    steps.push(step);
+
+    let step = h
+        .send(
+            "read deleted container",
+            "GET",
+            &format!("/organizations/{org}/containers/parity-container"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::NOT_FOUND);
+    steps.push(step);
+
+    steps
+}
+
+// ---------------------------------------------------------------------------
 // Scenario: sandboxes, cookbooks, artifacts and depsolver
 // ---------------------------------------------------------------------------
 
@@ -1723,8 +2203,16 @@ async fn scenario_content(h: &Harness) -> Vec<Step> {
         .await
         .expect_ok();
     assert_eq!(step.json()["guid"], sandbox_id);
+    assert_eq!(step.json()["name"], sandbox_id);
     assert_eq!(step.json()["is_completed"], true);
     assert_eq!(step.json()["checksums"].as_array().unwrap().len(), 2);
+    let step = step.map_json(|value| {
+        let mut value = value.clone();
+        // The sandbox document repeats its generated id under `name`; mask
+        // that one known generated field rather than every 32-hex `name`.
+        value["name"] = json!("<sandbox_id>");
+        value
+    });
     steps.push(step);
 
     let step = h
@@ -1961,6 +2449,61 @@ async fn scenario_content(h: &Harness) -> Vec<Step> {
         .expect_status(StatusCode::NOT_FOUND);
     steps.push(step);
 
+    // Keep a cookbook and an artifact that reference an uploaded checksum,
+    // then delete the organization. PostgreSQL must clear the RESTRICT
+    // checksum links and version rows before the org cascade.
+    let kept_artifact = json!({
+        "name": "parity_keep",
+        "identifier": ARTIFACT_ID,
+        "version": "1.0.0",
+        "chef_type": "cookbook_version",
+        "frozen?": false,
+        "all_files": [{
+            "name": "recipes/default.rb",
+            "path": "recipes/default.rb",
+            "checksum": HELLO_CHECKSUM,
+            "specificity": "default",
+        }],
+        "metadata": { "version": "1.0.0", "name": "parity_keep" },
+    });
+    let step = h
+        .send_api(
+            "create checksum-backed cookbook artifact",
+            "PUT",
+            &format!("/organizations/{org}/cookbook_artifacts/parity_keep/{ARTIFACT_ID}"),
+            &serde_json::to_vec(&kept_artifact).unwrap(),
+            "pivotal",
+            "2",
+        )
+        .await
+        .expect_status(StatusCode::CREATED);
+    steps.push(step);
+
+    let step = h
+        .send(
+            "delete organization with checksums",
+            "DELETE",
+            &format!("/organizations/{org}"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_ok();
+    assert_eq!(step.json(), &json!({}));
+    steps.push(step);
+
+    let step = h
+        .send(
+            "read deleted organization",
+            "GET",
+            &format!("/organizations/{org}"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::NOT_FOUND);
+    steps.push(step);
+
     steps
 }
 
@@ -2026,6 +2569,40 @@ async fn scenario_policies_acls(h: &Harness) -> Vec<Step> {
     )
     .await
     .expect_status(StatusCode::CREATED);
+    steps.push(step);
+
+    let step = h
+        .send(
+            "create acl data bag",
+            "POST",
+            &format!("/organizations/{org}/data"),
+            br#"{"name":"aclbag"}"#,
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::CREATED);
+    steps.push(step);
+
+    let artifact = json!({
+        "name": "aclartifact",
+        "identifier": ARTIFACT_ID,
+        "version": "1.0.0",
+        "chef_type": "cookbook_version",
+        "frozen?": false,
+        "all_files": [],
+        "metadata": { "version": "1.0.0", "name": "aclartifact" },
+    });
+    let step = h
+        .send_api(
+            "create acl cookbook artifact",
+            "PUT",
+            &format!("/organizations/{org}/cookbook_artifacts/aclartifact/{ARTIFACT_ID}"),
+            &serde_json::to_vec(&artifact).unwrap(),
+            "pivotal",
+            "2",
+        )
+        .await
+        .expect_status(StatusCode::CREATED);
     steps.push(step);
 
     let revision = br#"{"name":"app","revision_id":"rev1","run_list":["recipe[app::default]"],"cookbook_locks":{"app":{"identifier":"abc123","version":"1.0.0"}}}"#;
@@ -2195,6 +2772,19 @@ async fn scenario_policies_acls(h: &Harness) -> Vec<Step> {
         (
             format!("/organizations/{org}/policies/app/_acl"),
             format!("/organizations/{org}/policies/app"),
+        ),
+        (format!("/users/{reader}/_acl"), format!("/users/{reader}")),
+        (
+            format!("/organizations/{org}/organizations/_acl"),
+            format!("/organizations/{org}"),
+        ),
+        (
+            format!("/organizations/{org}/data/aclbag/_acl"),
+            format!("/organizations/{org}/data/aclbag"),
+        ),
+        (
+            format!("/organizations/{org}/cookbook_artifacts/aclartifact/_acl"),
+            format!("/organizations/{org}/cookbook_artifacts/aclartifact/{ARTIFACT_ID}"),
         ),
     ];
 
@@ -2456,6 +3046,60 @@ async fn scenario_membership(h: &Harness) -> Vec<Step> {
         .await
         .expect_ok();
     assert_eq!(step.json(), &json!({ "value": 0 }));
+    steps.push(step);
+
+    // OAuth v1 identity reads use the same membership data through a bearer
+    // token instead of X-Ops signing.
+    let bob_user = h
+        .store
+        .find_user(&bob)
+        .await
+        .expect("find bob")
+        .expect("bob exists");
+    let application = h
+        .store
+        .create_oauth_application(
+            &format!("{}-member", h.run),
+            "https://parity.example/member",
+            "read",
+            true,
+        )
+        .await
+        .expect("create member oauth application");
+    let token = h
+        .store
+        .create_oauth_access_token(&bob_user.id, application.id, "read", Some(3600), false)
+        .await
+        .expect("create member token");
+    let bearer = format!("Bearer {}", token.token);
+
+    let step = h
+        .send_anon(
+            "oauth v1 me",
+            "GET",
+            "/id/v1/me",
+            b"",
+            "",
+            &[(header::AUTHORIZATION.as_str(), bearer.clone())],
+        )
+        .await
+        .expect_ok();
+    assert_eq!(step.json()["username"], bob);
+    steps.push(step);
+
+    let step = h
+        .send_anon(
+            "oauth v1 me organizations",
+            "GET",
+            "/id/v1/me/organizations",
+            b"",
+            "",
+            &[(header::AUTHORIZATION.as_str(), bearer)],
+        )
+        .await
+        .expect_ok();
+    assert_eq!(step.json().as_array().unwrap().len(), 1);
+    assert_eq!(step.json()[0]["name"], org);
     steps.push(step);
 
     let step = h
@@ -2940,19 +3584,21 @@ async fn scenario_oauth(h: &Harness) -> Vec<Step> {
 }
 
 fn filter_oauth_applications(value: &Value, prefix: &str) -> Value {
-    let mut applications: Vec<Value> = value
-        .as_array()
-        .expect("oauth application list")
-        .iter()
-        .filter(|application| {
-            application["name"]
-                .as_str()
-                .is_some_and(|name| name.starts_with(prefix))
-        })
-        .cloned()
-        .collect();
-    applications.sort_by_key(|application| application["name"].as_str().unwrap_or("").to_string());
-    Value::Array(applications)
+    // Preserve the server's order: both backends list by allocation order, so
+    // filtering must not hide a real ordering difference.
+    Value::Array(
+        value
+            .as_array()
+            .expect("oauth application list")
+            .iter()
+            .filter(|application| {
+                application["name"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with(prefix))
+            })
+            .cloned()
+            .collect(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -2968,6 +3614,20 @@ async fn scenario_ops(h: &Harness) -> Vec<Step> {
         .await
         .expect_ok();
     let before_license_nodes = before_license.json()["node_count"].as_u64().unwrap();
+    let before_license_limit = before_license.json()["limit_exceeded"].as_bool().unwrap();
+    let before_license_node_license = before_license.json()["node_license"].as_u64().unwrap();
+    assert_eq!(
+        before_license_limit,
+        before_license_nodes > before_license_node_license
+    );
+    steps.push(before_license.map_json(|value| {
+        json!({
+            "limit_exceeded": value["limit_exceeded"],
+            "node_license": value["node_license"],
+            "node_count_present": value["node_count"].is_u64(),
+            "upgrade_url": value["upgrade_url"],
+        })
+    }));
 
     let before_stats = h
         .send(
@@ -2981,6 +3641,23 @@ async fn scenario_ops(h: &Harness) -> Vec<Step> {
         .expect_ok();
     let before_stats_nodes = before_stats.json()["nodes"].as_u64().unwrap();
     assert!(before_stats.json()["uptime_seconds"].is_u64());
+    assert!(before_stats.json()["requests"]["total"].is_u64());
+    steps.push(before_stats.map_json(|value| {
+        json!({
+            "uptime_seconds": "<seconds>",
+            "requests": {
+                "total": "<count>",
+                "responses": {
+                    "2xx": "<count>",
+                    "4xx": "<count>",
+                    "5xx": "<count>",
+                },
+                "authentication_failures": "<count>",
+            },
+            "maintenance": value["maintenance"],
+            "nodes_present": value["nodes"].is_u64(),
+        })
+    }));
 
     steps.push(create_org(h, &org).await);
     for node in ["web1", "web2", "web3"] {
@@ -3046,8 +3723,10 @@ async fn scenario_ops(h: &Harness) -> Vec<Step> {
             "pivotal",
         )
         .await
-        .expect_ok();
-    assert!(step.body_text().contains("microwave_server_nodes"));
+        .expect_ok()
+        .map_text(prometheus_metrics);
+    assert!(step.json()["microwave_server_nodes"].is_string());
+    assert!(step.json()["microwave_server_requests_total"].is_string());
     steps.push(step);
 
     let step = h
@@ -3112,6 +3791,7 @@ parity_test!(
     objects_nodes_roles_environments_data_bags_search_match,
     scenario_objects
 );
+parity_test!(groups_containers_match, scenario_groups_containers);
 parity_test!(
     content_sandboxes_cookbooks_artifacts_depsolver_match,
     scenario_content

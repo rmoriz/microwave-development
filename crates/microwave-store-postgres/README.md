@@ -75,6 +75,8 @@ cargo test -p microwave-store-postgres
 # Cross-backend matrix: SQLite always, PostgreSQL when the URL is set:
 cargo test -p microwave-store --test dual_backend
 cargo test -p microwave-api --test http_parity_test
+# CI can make a missing URL a hard failure instead of a skip:
+MICROWAVE_REQUIRE_POSTGRES=1 cargo test -p microwave-api --test http_parity_test
 
 # Start a disposable PostgreSQL container and run the whole PostgreSQL gate
 # (crate integration tests, dual-backend and HTTP parity matrices, HTTP
@@ -106,13 +108,18 @@ store. The two transcripts must match on status code, `Location` and
 content-type headers, and response body. Only volatile values are normalized:
 generated ids/timestamps, generated key material, OAuth secrets/tokens, and the
 organization id/HMAC token embedded in bookshelf URLs. Coverage includes users,
-organizations, clients, keys, nodes, roles, environments, data bags, search,
-sandboxes, cookbooks, cookbook artifacts, depsolver, policies/policy groups,
-ACLs, membership/invitations, OAuth application/token routes, license, status
-and stats. The PostgreSQL half skips only when `MICROWAVE_TEST_POSTGRES_URL` is
-unset; a configured but unreachable database fails loudly. It uses unique
-names per run and deletes its organizations, users, OAuth applications and
-runtime pivotal key afterwards. OAuth HTML session/profile pages and remote
+organizations, clients, keys, nodes, roles, environments, data bags, groups,
+containers, search, sandboxes, cookbooks, cookbook artifacts, depsolver,
+policies/policy groups, user/org/object/data-bag/artifact ACLs,
+membership/invitations, OAuth application/token and v1 identity routes,
+credential authentication, system recovery, organization deletion, license,
+status and stats. The PostgreSQL half skips only when
+`MICROWAVE_TEST_POSTGRES_URL` is unset; a configured but unreachable database
+fails loudly, and `MICROWAVE_REQUIRE_POSTGRES=1` turns the unset case into a
+hard failure for CI. It uses unique names per run, asserts every cleanup
+deletion, removes client keys before/after the org cascade, and has a
+panic-safe PostgreSQL drop guard that reconnects on a dedicated thread and
+cleans the run's rows. OAuth HTML session/profile pages and remote
 OpenSearch/Elasticsearch remain covered by their dedicated suites rather than
 this matrix.
 
@@ -133,6 +140,15 @@ assertions against the same database must be serialized externally.
 
 ### Parity fixes found by the matrix
 
+- `delete_org` now clears `cookbook_version_checksums`,
+  `cookbook_artifact_version_checksums`, cookbook/artifact version rows,
+  sandbox/checksum rows and client `actor_keys` in one transaction before the
+  organization cascade. Previously PostgreSQL returned an error whenever the
+  organization still owned a cookbook or artifact with uploaded checksums,
+  because those checksum foreign keys are `ON DELETE RESTRICT`; SQLite
+  succeeded. The HTTP parity matrix deletes an organization with a
+  checksum-backed cookbook and artifact and now gets the same `200 {}` as
+  SQLite.
 - `create_user_with_profile` now adds the default self grant and the
   `server-admins` group ACL entries (all permissions except `grant`), and adds
   admin users to that group, matching SQLite. Previously PostgreSQL users had

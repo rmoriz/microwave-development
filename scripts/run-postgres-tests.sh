@@ -83,6 +83,9 @@ if [[ -z "$PORT" ]]; then
 fi
 
 export MICROWAVE_TEST_POSTGRES_URL="postgres://microwave:microwave@127.0.0.1:${PORT}/microwave_test"
+# CI gate: the parity matrix must not silently fall back to SQLite-only when
+# this script has already provisioned PostgreSQL.
+export MICROWAVE_REQUIRE_POSTGRES=1
 echo "PostgreSQL ready at 127.0.0.1:${PORT}; running tests..." >&2
 
 cargo test -p microwave-store-postgres "$@"
