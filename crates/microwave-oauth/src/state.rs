@@ -1,5 +1,7 @@
+use crate::OAuthError;
 use axum::extract::FromRef;
 use microwave_config::Config;
+use microwave_crypto::KeygenCache;
 use microwave_store::MetadataStore;
 use std::sync::Arc;
 
@@ -8,6 +10,23 @@ use std::sync::Arc;
 pub struct OAuthState {
     pub store: Arc<dyn MetadataStore>,
     pub config: Arc<Config>,
+    /// Shared pre-generated keypair cache.
+    pub keygen: Arc<KeygenCache>,
+}
+
+impl OAuthState {
+    /// Produce a new RSA keypair, preferring the shared cache and moving an
+    /// on-demand generation to Tokio's blocking pool.
+    pub async fn generate_keypair(&self) -> Result<(String, String), OAuthError> {
+        if let Some(pair) = self.keygen.try_take() {
+            return Ok(pair);
+        }
+        let cache = self.keygen.clone();
+        tokio::task::spawn_blocking(move || cache.take())
+            .await
+            .map_err(|_| OAuthError::internal())?
+            .map_err(|_| OAuthError::internal())
+    }
 }
 
 /// Implemented by the host application state so the identity router can be

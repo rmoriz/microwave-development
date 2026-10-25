@@ -116,6 +116,9 @@ A complete annotated example is
 | `object_store.secret` | `MW_OBJECT_STORE__SECRET` | generated | Only used by the local `/bookshelf` backend. |
 | `auth.skew_seconds` | `MW_AUTH__SKEW_SECONDS` | `900` | `X-Ops-Timestamp` tolerance. |
 | `auth.superuser_name` | `MW_AUTH__SUPERUSER_NAME` | `pivotal` | Account that cannot be demoted. |
+| `keygen.size` | `MW_KEYGEN__SIZE` | `3` | Maximum number of pre-generated 2048-bit RSA keypairs kept in memory. `0` disables caching and generates on demand. Maximum `1024`. |
+| `keygen.workers` | `MW_KEYGEN__WORKERS` | `1` | Background key-generation threads. Must not exceed `keygen.size`; maximum `8`. `0` leaves refilling to `warm_up`. |
+| `keygen.warm_up` | `MW_KEYGEN__WARM_UP` | `false` | Fill the cache synchronously during startup. Requires `keygen.size > 0`. Leave `false` to keep startup fast and let workers refill in the background. |
 | `data_collector.root_url` | `MW_DATA_COLLECTOR__ROOT_URL` | unset | Enables `POST /organizations/:org/data-collector` and receives the forwarded payload, e.g. `https://automate.example.com/data-collector/v0/`. |
 | `data_collector.token` | `MW_DATA_COLLECTOR__TOKEN` | unset | Shared bearer token accepted inbound and sent upstream as `x-data-collector-token`. Falls back to the `data_collector.token` secret. |
 | `data_collector.timeout` | `MW_DATA_COLLECTOR__TIMEOUT` (alias `MW_DATA_COLLECTOR__TIMEOUT_MS`) | `30000` | Upstream forwarding and response-read timeout in milliseconds (TOML alias `timeout_ms`). Must be greater than zero; `check-config` rejects `0`. |
@@ -666,7 +669,7 @@ time, and keep the legacy server read-only until the new one is verified.
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `GET /_status` | none | `{"status":"pong","upstreams":[],"keygen":{"status":"ok"},"indexing":{"mode":"embedded"}}`. |
+| `GET /_status` | none | `{"status":"pong","upstreams":[],"keygen":{"status":"ok","cached":3,"capacity":3,"workers":1,"worker_healthy":true,"worker_failures":0,"warm_up_failures":0,"generated_on_demand":0},"indexing":{"mode":"embedded"}}`. |
 | `GET /_stats` | none | Request counters, authentication failures, uptime, maintenance state, and node count. JSON by default, Prometheus text with `Accept: text/plain` or `?format=prometheus`. |
 | `GET /server_api_version` | none | `min_api_version` / `max_api_version` (`0`/`2`). |
 | `GET /license` | signed | Static license payload; telemetry is disabled. |
@@ -695,9 +698,23 @@ table exists in both SQLite and PostgreSQL for schema compatibility, and the
 `telemetry.*` configuration keys are parsed, but Microwave does not contact an
 external telemetry service. This is intentional: no phone-home.
 
+API key creation (`create_key`/`private_key` paths and organization validator
+provisioning) takes a pre-generated 2048-bit RSA keypair from a bounded,
+thread-safe in-memory cache. `keygen.size` controls how many keypairs are kept
+ready (default `3`), `keygen.workers` controls the background generators
+(default `1`, capped at `size`), and `keygen.warm_up` optionally fills the cache
+synchronously at startup. With the default `warm_up = false`, startup does not
+wait for RSA generation. A cache miss generates a keypair on Tokio's blocking
+pool, so the async runtime is not stalled. Private keys are only held in memory
+until handed to the API response and are never logged.
+
 `/_status` is a **liveness** probe, not a readiness probe. It always reports
-`pong` when the HTTP process is up; it does not check the metadata backend,
-OpenSearch, S3, or keygen health. Check dependencies separately:
+`pong` when the HTTP process is up. Its `keygen` object reports the cached
+keypair count, capacity, worker count, and worker health (`status` becomes
+`degraded` after a background or warm-up generation failure and returns to
+`ok` after the next successful background generation). `worker_failures` and
+`warm_up_failures` are cumulative counters. The probe still does not check the
+metadata backend, OpenSearch, or S3. Check dependencies separately:
 
 ```sh
 curl -fsS http://127.0.0.1:8000/_status

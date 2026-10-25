@@ -5,7 +5,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
 use chrono::{DateTime, SecondsFormat, Utc};
-use microwave_crypto::{generate_rsa_keypair, parse_public_key_pem};
+use microwave_crypto::parse_public_key_pem;
 use microwave_store::{ActorKey, ActorType, Permission};
 use serde_json::{json, Value};
 
@@ -348,7 +348,7 @@ async fn create_key(
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let key_name = required_key_name(body)?;
     let expires_at = required_expiration(body)?;
-    let (public_key, private_key) = key_material(body)?;
+    let (public_key, private_key) = key_material(state, body).await?;
 
     let key = state
         .store
@@ -398,7 +398,7 @@ async fn update_key(
             ))
         }
     };
-    let (public_key, private_key) = update_key_material(body)?;
+    let (public_key, private_key) = update_key_material(state, body).await?;
 
     forbid_authenticating_key(auth, target, key_name)?;
 
@@ -556,7 +556,10 @@ fn parse_expiration(value: &str) -> Result<String, ApiError> {
         .to_rfc3339_opts(SecondsFormat::Secs, true))
 }
 
-fn key_material(body: &Value) -> Result<(String, Option<String>), ApiError> {
+async fn key_material(
+    state: &AppState,
+    body: &Value,
+) -> Result<(String, Option<String>), ApiError> {
     let create_key = match body.get("create_key") {
         None => false,
         Some(Value::Bool(value)) => *value,
@@ -573,8 +576,10 @@ fn key_material(body: &Value) -> Result<(String, Option<String>), ApiError> {
             Ok((public_key(body)?, None))
         }
         None if create_key => {
-            let (private_key, public_key) =
-                generate_rsa_keypair().map_err(|_| ApiError::internal())?;
+            let (private_key, public_key) = state
+                .generate_keypair()
+                .await
+                .map_err(|_| ApiError::internal())?;
             Ok((public_key, Some(private_key)))
         }
         None => Err(ApiError::bad_request(
@@ -583,7 +588,10 @@ fn key_material(body: &Value) -> Result<(String, Option<String>), ApiError> {
     }
 }
 
-fn update_key_material(body: &Value) -> Result<(Option<String>, Option<String>), ApiError> {
+async fn update_key_material(
+    state: &AppState,
+    body: &Value,
+) -> Result<(Option<String>, Option<String>), ApiError> {
     let create_key = match body.get("create_key") {
         None => false,
         Some(Value::Bool(value)) => *value,
@@ -600,8 +608,10 @@ fn update_key_material(body: &Value) -> Result<(Option<String>, Option<String>),
             Ok((Some(public_key(body)?), None))
         }
         None if create_key => {
-            let (private_key, public_key) =
-                generate_rsa_keypair().map_err(|_| ApiError::internal())?;
+            let (private_key, public_key) = state
+                .generate_keypair()
+                .await
+                .map_err(|_| ApiError::internal())?;
             Ok((Some(public_key), Some(private_key)))
         }
         None => Ok((None, None)),

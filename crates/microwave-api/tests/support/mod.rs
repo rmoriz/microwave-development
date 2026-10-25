@@ -22,7 +22,32 @@ pub fn state_with_pivotal() -> AppState {
     state_with_config(Config::default())
 }
 
-pub fn state_with_config(mut config: Config) -> AppState {
+/// Build state for most tests with background key generation disabled.
+///
+/// Integration tests create many app states; pre-generating RSA keys in every
+/// one of them would make the suite needlessly slow. API paths still generate
+/// on demand, and tests that exercise the cache use [`state_with_keygen`].
+pub fn state_with_config(config: Config) -> AppState {
+    build_state(config, false)
+}
+
+/// Build state that keeps the keygen cache settings from `config`.
+pub fn state_with_keygen(config: Config) -> AppState {
+    build_state(config, true)
+}
+
+/// Disable background/pre-generated key generation for test fixtures that do
+/// not exercise the cache. API paths still fall back to on-demand generation.
+pub fn disable_keygen(config: &mut Config) {
+    config.keygen.size = 0;
+    config.keygen.workers = 0;
+    config.keygen.warm_up = false;
+}
+
+fn build_state(mut config: Config, keygen_enabled: bool) -> AppState {
+    if !keygen_enabled {
+        disable_keygen(&mut config);
+    }
     let store = Arc::new(SqliteStore::open_in_memory().unwrap());
     let user = store
         .create_user("pivotal", "pivotal@example.com", "bcrypt", "h", "s", true)

@@ -80,6 +80,7 @@ async fn pg_state(store: PostgresStore) -> (tempfile::TempDir, Router, PostgresS
     }
 
     let mut config = Config::default();
+    support::disable_keygen(&mut config);
     config.database.driver = DatabaseDriver::Postgres;
     config.object_store.secret = Some("pg-runtime-secret".into());
     let object_dir = tempfile::tempdir().expect("create object-store temp dir");
@@ -285,7 +286,8 @@ async fn core_api_works_against_postgresql() {
 #[test]
 fn app_state_sqlite_escape_hatch_is_optional() {
     let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    let config = Config::default();
+    let mut config = Config::default();
+    support::disable_keygen(&mut config);
     let object_store: Arc<dyn ObjectStore + Send + Sync> = Arc::new(LocalObjectStore::new(
         std::env::temp_dir().join(format!("mw-escape-{}", suffix())),
         "secret",

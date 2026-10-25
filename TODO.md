@@ -8,7 +8,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 >
 > **Verified:** `cargo test --workspace`, clippy with `-D warnings`, and `cargo fmt --check` are green. PostgreSQL integration covers the store, HTTP runtime, operational CLI, and snapshot export/import against PostgreSQL 18, and the server can be started with `MW_DATABASE__DRIVER=postgres`. The Debian trixie container image builds and both binaries start. Core pedant: 651 passed / 1 failed / 8 pending; the single failure is the known plain-HTTP `header_spec.rb` artifact. Extended pedant (final, after PostgreSQL runtime): 3,280 passed / 0 failed / 7 pending; all eleven extended tags pass. A strict stock `chef-client` converge now passes with both compatibility shims disabled (`MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0`), including validator registration.
 >
-> **Still open:** keeping the extended pedant suite green in CI; the remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup); TLS listener, keygen cache, and the dual-backend test matrix; OpenSearch 3.x evaluation; HA/performance validation; outbound telemetry export (intentionally disabled, no phone-home); and data-collector mutation action notifications. Data Collector forwarding, `required_recipe`, maintenance 503, metrics/`_stats`, and transparent `serialized_object` compression are implemented.
+> **Still open:** keeping the extended pedant suite green in CI; the remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup); the dual-backend test matrix; OpenSearch 3.x evaluation; HA/performance validation; outbound telemetry export (intentionally disabled, no phone-home); and data-collector mutation action notifications. Data Collector forwarding, `required_recipe`, maintenance 503, metrics/`_stats`, transparent compression, TLS, and the keygen cache are implemented.
 
 ---
 
@@ -40,7 +40,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
   - [x] `sha1+bcrypt` (`bcrypt(hex_sha1("--" + orig_salt + "--" + pass + "--"), bcrypt_salt)`).
   - [x] Legacy plain salted SHA-1 (`ec` and `osc` formats).
   - [x] Constant-time comparison and automatic re-hash to `bcrypt` on verify.
-- [ ] Implement `KeygenCache` background worker (pre-generating 2048-bit RSA PEM keypairs in a bounded channel) and health reporting for `/_status`.
+- [x] Implement `KeygenCache` background worker (pre-generating 2048-bit RSA PEM keypairs in a bounded queue) and health reporting for `/_status`.
 - [x] Port unit test vectors from `mixlib-authentication`, `chef_authn`, and `chef_password_tests.erl`.
 
 ### 1.3 Unified Database Schema & Store Providers (`microwave-store`)
@@ -88,7 +88,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [ ] Verify against `oc-chef-pedant/spec/api/header_spec.rb` and `server_api_version_spec.rb`.
 
 ### 2.2 System & Authentication Endpoints
-- [ ] `GET /_status` — health check for DB, search, object store, keygen cache, indexing mode.
+- [ ] `GET /_status` — indexing mode and keygen cache/worker state are implemented; DB, search, and object-store dependency probes remain.
 - [x] `GET /_stats` — Prometheus text and JSON (`application/json`) metrics endpoints (`chef_wm_prometheus_json_format` parity).
 - [ ] `GET /server_api_version` — return `{"min_api_version": 0, "max_api_version": 2}`.
 - [ ] `GET /license` — return `{"limit_exceeded": bool, "node_license": int, "node_count": int, "upgrade_url": str}`.

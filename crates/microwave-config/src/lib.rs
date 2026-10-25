@@ -4,6 +4,7 @@ pub mod config;
 
 pub use config::{
     AuthConfig, Config, ConfigError, DataCollectorConfig, DatabaseConfig, DatabaseDriver,
-    LicenseConfig, ObjectStoreBackend, ObjectStoreConfig, PathsConfig, RequiredRecipeConfig,
-    SearchBackend, SearchConfig, ServerConfig, StorageCompression, StorageConfig, TelemetryConfig,
+    KeygenConfig, LicenseConfig, ObjectStoreBackend, ObjectStoreConfig, PathsConfig,
+    RequiredRecipeConfig, SearchBackend, SearchConfig, ServerConfig, StorageCompression,
+    StorageConfig, TelemetryConfig,
 };

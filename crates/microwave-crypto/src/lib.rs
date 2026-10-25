@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod error;
+pub mod keygen;
 pub mod password;
 pub mod signature;
 
@@ -10,6 +11,7 @@ pub use auth::{
     SignVersion,
 };
 pub use error::CryptoError;
+pub use keygen::{KeyPair, KeygenCache, KeygenStatus};
 pub use password::{hash_password, needs_upgrade, verify_password, PasswordHash};
 pub use signature::{
     decode_signature, generate_rsa_keypair, parse_private_key_pem, parse_public_key_pem,

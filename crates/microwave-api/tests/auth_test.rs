@@ -1,3 +1,5 @@
+mod support;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use base64::engine::general_purpose::STANDARD;
@@ -22,6 +24,7 @@ fn state_with_pivotal() -> AppState {
         .add_actor_key(&user.id, ActorType::User, "default", PUBLIC_KEY)
         .unwrap();
     let mut config = Config::default();
+    support::disable_keygen(&mut config);
     config.object_store.secret = Some("test".into());
     let object_store: Arc<dyn ObjectStore + Send + Sync> = Arc::new(LocalObjectStore::new(
         std::env::temp_dir().join("mw-auth-test"),

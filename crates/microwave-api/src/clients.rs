@@ -4,7 +4,6 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
-use microwave_crypto::generate_rsa_keypair;
 use microwave_store::{ActorType, Client, Org, Principal, StoreError};
 use serde_json::{json, Map, Value};
 
@@ -100,7 +99,10 @@ async fn create_client(
             .map_err(ApiError::from)?;
         Some((public_key, None))
     } else if api_version.0 == 0 || create_key {
-        let (private_key, public_key) = generate_rsa_keypair().map_err(|_| ApiError::internal())?;
+        let (private_key, public_key) = state
+            .generate_keypair()
+            .await
+            .map_err(|_| ApiError::internal())?;
         state
             .store
             .add_actor_key(&client.id, ActorType::Client, "default", &public_key)
@@ -244,8 +246,10 @@ async fn update_client(
 
     let mut private_key = None;
     if private_key_flag {
-        let (generated_private, generated_public) =
-            generate_rsa_keypair().map_err(|_| ApiError::internal())?;
+        let (generated_private, generated_public) = state
+            .generate_keypair()
+            .await
+            .map_err(|_| ApiError::internal())?;
         state
             .store
             .update_or_create_default_key(&client.id, ActorType::Client, &generated_public)
