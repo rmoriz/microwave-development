@@ -104,6 +104,7 @@ A complete annotated example is
 | `server.tls.enabled` | `MW_SERVER__TLS__ENABLED` | unset | `true` requires both paths; `false` forces plain HTTP; unset enables TLS when either path is set (the other is then required and validated). |
 | `server.tls.cert_path` | `MW_SERVER__TLS__CERT_PATH` | unset | PEM certificate chain, leaf first. Setting either path enables TLS. |
 | `server.tls.key_path` | `MW_SERVER__TLS__KEY_PATH` | unset | PEM private key matching the certificate. Never printed or logged. |
+| `server.tls.reload_interval_seconds` | `MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS` | `0` | Periodic certificate/key reload interval in seconds. `0` disables polling; `SIGHUP` still reloads immediately on Unix. Requires TLS, maximum `604800` (seven days). |
 | `paths.data_dir` | `MW_PATHS__DATA_DIR` | `./data` | All mutable state. |
 | `database.driver` | `MW_DATABASE__DRIVER` | `sqlite` | `sqlite` or `postgres`. |
 | `database.url` | `MW_DATABASE__URL` | `sqlite://<data_dir>/microwave.db` | `sqlite://<path>` or a `postgres://` URL. Both backends are supported by the server, `microwave-ctl`, and `microwave-migrate`. |
@@ -189,8 +190,40 @@ Operational notes:
 
 - Keep the private key mode `0600`, owned by the service user (or
   `root:microwave` with mode `0640`). The certificate may be world-readable.
-- Certificates are loaded once at startup, so restart the service after
-  rotation. There is no in-place reload endpoint.
+- **Rotation does not require a restart.** Replace both PEM files, then send
+  `SIGHUP` to the server process on Unix:
+
+  ```sh
+  kill -HUP "$(pidof microwave-server)"
+  # or, with the packaged systemd unit:
+  sudo systemctl reload microwave-server
+  # or, in Docker:
+  docker kill --signal=HUP microwave-tls
+  ```
+
+  The replacement pair goes through the same validation as startup. Only after
+  it parses and the key matches the certificate is it swapped in atomically for
+  new connections; existing connections keep using the pair they negotiated.
+  If reading or validating the replacement fails, the server logs a clear
+  error and continues serving with the previous certificate. Key material is
+  never logged. On Unix the handler is installed before database bootstrap and
+  the listener bind, so an early `SIGHUP` cannot terminate the process. The
+  same handler is installed for plain-HTTP listeners and logs that TLS is
+  disabled.
+- Replace each file atomically (temporary file plus `rename`) so a reload never
+  reads a partially written file. The two renames are not one atomic operation:
+  a reload that races them may observe a new certificate with the old key, fail
+  validation, and keep the previous pair. Send another `SIGHUP` or wait for the
+  next polling interval; the completed rotation is then picked up.
+- To poll instead of signalling, set `server.tls.reload_interval_seconds`
+  (for example `60`). The timer reloads once at startup and then only when the
+  certificate or key file metadata changed, using the same validation and
+  failure behavior. `0` disables polling. SIGHUP remains available on Unix and
+  is the fastest way to complete a rotation.
+- SIGHUP is handled for every listener. On a plain-HTTP listener it logs
+  `TLS is disabled; nothing to reload` and continues, so `systemctl reload` and
+  `docker kill --signal=HUP` remain safe when TLS is not enabled. The signal
+  still does not re-read the rest of the configuration.
 - The certificate must be valid for the hostname clients use. `chef-client`
   verifies the server URL hostname and the issuing CA; a self-signed
   certificate is suitable only for tests or when the CA is installed on every
@@ -321,6 +354,26 @@ or probes that cannot match the certificate hostname; any other value keeps
 certificate verification enabled. With a publicly trusted certificate, set
 `MW_HEALTHCHECK_HOST` to a name covered by the certificate, or leave the
 default port and scheme and let a proxy expose TLS.
+
+To rotate the certificate of a running container, replace both files in the
+mounted directory atomically and signal the container. The server does not
+need to restart:
+
+```sh
+# copy the new tls.crt/tls.key into /etc/microwave/tls first
+docker kill --signal=HUP microwave-tls
+docker logs --tail 5 microwave-tls   # "reloaded TLS certificate and key"
+curl -kfsS https://127.0.0.1:8443/_status
+```
+
+`docker kill --signal=HUP` delivers the signal to PID 1 of the container,
+which is `microwave-server` because the image has no entrypoint wrapper.
+Alternatively set `MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS=60` and let the
+server poll the mounted files. Docker secrets are materialized as files, so
+rotating a secret requires recreating the container (or a periodic
+`docker service update`); bind mounts and Kubernetes projected volumes update
+in place and can be reloaded with SIGHUP. A failed reload keeps the previous
+certificate and logs an error without dropping the listener.
 
 Use `--build-arg RUST_VERSION=<x.y>` to pin the compiler instead of tracking
 the latest stable `rust:1-*` image.
@@ -916,6 +969,7 @@ requires restoring that backup.
 |---|---|
 | `failed to read config file` on start | `MW_CONFIG`/`--config` points at a missing file. `check-config` reports the same. |
 | `failed to read TLS certificate file` / `do not form a matching pair` | Fix `server.tls.cert_path`/`key_path`, make the files readable by the service user, and ensure the key belongs to the leaf certificate. `check-config` performs the same check without binding. |
+| `TLS certificate reload failed; keeping the previous certificate` | The replacement pair is unreadable, malformed, or mismatched. The server is still serving the previous certificate. Fix both files (write them atomically) and send `SIGHUP` again or wait for the next polling interval. |
 | `curl: (60) SSL certificate problem` against a direct HTTPS listener | The client does not trust the issuing CA, or the certificate does not cover the hostname used. Install the internal CA on clients; reserve `-k`/`MW_HEALTHCHECK_INSECURE` for probes and tests. |
 | `Permission denied` creating `microwave.db` | Data dir not writable by the service user. `chown -R microwave:microwave /var/lib/microwave`. |
 | `Address already in use` | Another process holds `server.bind`. Change the port or stop the other process. |

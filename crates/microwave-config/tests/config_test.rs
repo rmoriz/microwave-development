@@ -30,6 +30,7 @@ fn defaults_are_safe_and_local() {
     assert!(!c.server.tls.is_enabled());
     assert_eq!(c.server.tls.cert_path, None);
     assert_eq!(c.server.tls.key_path, None);
+    assert_eq!(c.server.tls.reload_interval_seconds, 0);
 }
 
 #[test]
@@ -271,6 +272,63 @@ fn tls_env_rejects_an_invalid_enable_flag() {
     let result = c.apply_env();
     std::env::remove_var("MW_SERVER__TLS__ENABLED");
     assert!(result.is_err());
+}
+
+#[test]
+fn tls_reload_interval_is_validated_in_toml_and_env() {
+    let c = Config::from_toml_str(
+        r#"
+        [server.tls]
+        cert_path = "/etc/microwave/tls.crt"
+        key_path = "/etc/microwave/tls.key"
+        reload_interval_seconds = 60
+    "#,
+    )
+    .unwrap();
+    assert_eq!(c.server.tls.reload_interval_seconds, 60);
+
+    let error = Config::from_toml_str(
+        r#"
+        [server.tls]
+        cert_path = "/etc/microwave/tls.crt"
+        key_path = "/etc/microwave/tls.key"
+        reload_interval_seconds = 604801
+    "#,
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("reload_interval_seconds"),
+        "unexpected error: {error}"
+    );
+
+    let error = Config::from_toml_str(
+        r#"
+        [server.tls]
+        reload_interval_seconds = 30
+    "#,
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("requires TLS to be enabled"),
+        "unexpected error: {error}"
+    );
+
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("MW_SERVER__TLS__CERT_PATH", "/env/tls.crt");
+    std::env::set_var("MW_SERVER__TLS__KEY_PATH", "/env/tls.key");
+    std::env::set_var("MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS", "30");
+    let mut c = Config::default();
+    c.apply_env().unwrap();
+    assert_eq!(c.server.tls.reload_interval_seconds, 30);
+
+    std::env::set_var("MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS", "not-a-number");
+    let mut c = Config::default();
+    let result = c.apply_env();
+
+    std::env::remove_var("MW_SERVER__TLS__CERT_PATH");
+    std::env::remove_var("MW_SERVER__TLS__KEY_PATH");
+    std::env::remove_var("MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS");
+    assert!(result.is_err(), "a non-numeric interval must be rejected");
 }
 
 #[test]

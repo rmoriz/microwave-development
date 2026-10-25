@@ -34,7 +34,8 @@
 
 ### Remaining gaps
 
-- Certificates are loaded once; rotation still needs a restart.
+- Certificates loaded at startup can now be rotated via SIGHUP or polling; see
+  [`tls-reload-report.md`](tls-reload-report.md).
 - No preflight expiry-window validation (an expired pair loads and clients
   reject it at handshake).
 - No chef-client-over-HTTPS e2e; clients must trust the issuing CA.
