@@ -534,7 +534,13 @@ fn validate_signed_path(path: &str) -> Option<String> {
 }
 
 /// Methods accepted by internal resources that must answer 405 before
-/// authentication, matching webmachine's `allowed_methods/2` ordering.
+/// authentication.
+///
+/// Upstream resolves method dispatch before `is_authorized/2`, so an
+/// unsupported method never verifies the signature. The gate only covers
+/// routes that are actually unauthenticated-internal or read-only; ordinary
+/// mutating routes that happen to share a path shape still authenticate
+/// normally.
 ///
 /// `HEAD` accompanies GET because axum routes it to the GET handler. The
 /// router strips it from the generated `Allow` header.
@@ -542,19 +548,25 @@ fn internal_allowed_methods(path: &str) -> Option<&'static [&'static str]> {
     if validate_signed_path(path).is_some() {
         return Some(&["GET", "HEAD", "POST", "PUT", "DELETE"]);
     }
-    if is_identifiers_path(path) || is_role_environment_path(path) {
+    if is_node_identifiers_path(path) || is_role_environment_path(path) {
         return Some(&["GET", "HEAD"]);
     }
     None
 }
 
-/// `/organizations/:org/:object_type/:name/_identifiers`.
-fn is_identifiers_path(path: &str) -> bool {
-    let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
-    segments.len() == 5
-        && segments[0] == "organizations"
-        && !segments[1].is_empty()
-        && segments[4] == "_identifiers"
+/// `/organizations/:org/nodes/:name/_identifiers`.
+///
+/// Only nodes are an upstream internal route. A broader `_identifiers` match
+/// would bypass authentication for real mutating routes such as
+/// `/data/:bag/_identifiers` or `/cookbooks/:cookbook/_identifiers`.
+fn is_node_identifiers_path(path: &str) -> bool {
+    let mut parts = path.trim_matches('/').split('/');
+    parts.next() == Some("organizations")
+        && parts.next().is_some_and(|part| !part.is_empty())
+        && parts.next() == Some("nodes")
+        && parts.next().is_some_and(|part| !part.is_empty())
+        && parts.next() == Some("_identifiers")
+        && parts.next().is_none()
 }
 
 /// The read-only role/environment run-list resources:
@@ -563,17 +575,25 @@ fn is_identifiers_path(path: &str) -> bool {
 /// * `/organizations/:org/roles/:role/environments/:environment`
 /// * `/organizations/:org/environments/:environment/roles/:role`
 fn is_role_environment_path(path: &str) -> bool {
-    let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
-    if !(segments.len() == 5 || segments.len() == 6) || segments[0] != "organizations" {
+    let mut parts = path.trim_matches('/').split('/');
+    if parts.next() != Some("organizations") {
         return false;
     }
-    if segments[2] == "roles" && segments[4] == "environments" {
-        return true;
+    if !parts.next().is_some_and(|part| !part.is_empty()) {
+        return false;
     }
-    segments.len() == 6
-        && segments[2] == "environments"
-        && segments[4] == "roles"
-        && !segments[5].is_empty()
+    let (Some(third), Some(fourth), Some(fifth)) = (parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    let sixth = parts.next();
+    if parts.next().is_some() || fourth.is_empty() {
+        return false;
+    }
+    if third == "roles" && fifth == "environments" {
+        return sixth.is_none_or(|part| !part.is_empty());
+    }
+    third == "environments" && fifth == "roles" && sixth.is_some_and(|part| !part.is_empty())
 }
 
 /// `/organizations/:org/required_recipe` (exact, no trailing slash).

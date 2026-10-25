@@ -267,6 +267,128 @@ async fn internal_read_only_routes_report_405_before_authentication() {
 }
 
 #[tokio::test]
+async fn identifiers_gate_does_not_shadow_mutating_routes() {
+    let state = state();
+    let app = support::app(state);
+    create_org(&app).await;
+
+    // These paths share the generic `_identifiers` shape but are real
+    // mutating routes. Without a signature they must authenticate (401), and
+    // with one they must reach their handlers instead of being forwarded
+    // without an AuthContext (500).
+    for (method, path) in [
+        ("PUT", "/organizations/acme/data/secrets/_identifiers"),
+        ("DELETE", "/organizations/acme/data/secrets/_identifiers"),
+        ("PUT", "/organizations/acme/cookbooks/apache/_identifiers"),
+        (
+            "DELETE",
+            "/organizations/acme/cookbooks/apache/_identifiers",
+        ),
+        (
+            "PUT",
+            "/organizations/acme/cookbook_artifacts/book/_identifiers",
+        ),
+        (
+            "DELETE",
+            "/organizations/acme/cookbook_artifacts/book/_identifiers",
+        ),
+    ] {
+        let response = anon_request(&app, method, path).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "{method} {path}"
+        );
+    }
+
+    // A data bag item legitimately named `_identifiers` still works.
+    let response = request(
+        &app,
+        "POST",
+        "/organizations/acme/data",
+        br#"{"name":"secrets"}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let response = request(
+        &app,
+        "POST",
+        "/organizations/acme/data/secrets",
+        br#"{"id":"_identifiers","value":"one"}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let response = request(
+        &app,
+        "GET",
+        "/organizations/acme/data/secrets/_identifiers",
+        b"",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["value"], "one");
+
+    let response = request(
+        &app,
+        "PUT",
+        "/organizations/acme/data/secrets/_identifiers",
+        br#"{"id":"_identifiers","value":"two"}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["value"], "two");
+
+    let response = request(
+        &app,
+        "DELETE",
+        "/organizations/acme/data/secrets/_identifiers",
+        b"",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Signed requests to cookbook/artifact versions named `_identifiers`
+    // reach their handlers and fail validation instead of returning 500.
+    let response = request(
+        &app,
+        "PUT",
+        "/organizations/acme/cookbooks/apache/_identifiers",
+        br#"{}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = request(
+        &app,
+        "DELETE",
+        "/organizations/acme/cookbooks/apache/_identifiers",
+        b"",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = request(
+        &app,
+        "PUT",
+        "/organizations/acme/cookbook_artifacts/book/_identifiers",
+        br#"{"identifier":"_identifiers"}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = request(
+        &app,
+        "DELETE",
+        "/organizations/acme/cookbook_artifacts/book/_identifiers",
+        b"",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn validate_reports_the_signing_requestor_for_every_supported_method() {
     let state = state();
     let app = support::app(state);
