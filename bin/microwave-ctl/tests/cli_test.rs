@@ -587,7 +587,7 @@ fn help_lists_the_operational_surface() {
 
 #[cfg(unix)]
 mod operational_process_tests {
-    use super::{assert_success, ctl, stderr, stdout};
+    use super::{assert_success, ctl, run, stderr, stdout};
     use std::ffi::CString;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
@@ -809,6 +809,119 @@ mod operational_process_tests {
         assert!(!output.status.success());
         assert!(stderr(&output).contains("not a regular file or directory"));
         assert!(!archive.exists());
+    }
+
+    /// Create live data, take a directory backup, then mutate the live
+    /// installation so a failed restore would be visible.
+    fn seeded_directory_backup(data: &Path, backups: &Path) -> PathBuf {
+        let bookshelf = data.join("bookshelf");
+        std::fs::create_dir_all(&bookshelf).unwrap();
+        std::fs::write(bookshelf.join("blob"), b"live-original").unwrap();
+        assert_success(&run(
+            data,
+            &[
+                "user-create",
+                "persisted",
+                "--password",
+                "persisted-password",
+            ],
+        ));
+
+        let backup = backups.join("snapshot");
+        assert_success(&run(data, &["backup", backup.to_str().unwrap()]));
+
+        assert_success(&run(
+            data,
+            &[
+                "user-create",
+                "transient",
+                "--password",
+                "transient-password",
+            ],
+        ));
+        std::fs::write(bookshelf.join("blob"), b"live-mutated").unwrap();
+        std::fs::write(bookshelf.join("extra"), b"live-extra").unwrap();
+        backup
+    }
+
+    fn assert_live_data_unchanged(data: &Path) {
+        let listed = run(data, &["user-list"]);
+        assert_success(&listed);
+        let text = stdout(&listed);
+        assert!(text.contains("persisted"), "stdout: {text}");
+        assert!(text.contains("transient"), "stdout: {text}");
+
+        let bookshelf = data.join("bookshelf");
+        assert_eq!(
+            std::fs::read(bookshelf.join("blob")).unwrap(),
+            b"live-mutated"
+        );
+        assert_eq!(
+            std::fs::read(bookshelf.join("extra")).unwrap(),
+            b"live-extra"
+        );
+        assert!(!bookshelf.join("leaked").exists());
+    }
+
+    #[test]
+    fn directory_restore_rejects_a_symlink_before_touching_live_data() {
+        let data = tempfile::tempdir().unwrap();
+        let backups = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("outside-secret");
+        std::fs::write(&secret, b"do-not-restore").unwrap();
+
+        let backup = seeded_directory_backup(data.path(), backups.path());
+        std::os::unix::fs::symlink(&secret, backup.join("bookshelf").join("leaked")).unwrap();
+
+        let mut command = ctl(data.path());
+        command.timeout(Duration::from_secs(30)).args([
+            "restore",
+            backup.to_str().unwrap(),
+            "--yes",
+        ]);
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(
+            stderr(&output).contains("refusing to copy symlink"),
+            "stderr: {}",
+            stderr(&output)
+        );
+
+        assert_live_data_unchanged(data.path());
+        assert_eq!(std::fs::read(&secret).unwrap(), b"do-not-restore");
+    }
+
+    #[test]
+    fn directory_restore_rejects_a_fifo_before_touching_live_data() {
+        let data = tempfile::tempdir().unwrap();
+        let backups = tempfile::tempdir().unwrap();
+        let backup = seeded_directory_backup(data.path(), backups.path());
+        let fifo = backup.join("bookshelf").join("pipe");
+        let fifo_c = CString::new(fifo.to_str().unwrap()).unwrap();
+        let result = unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) };
+        assert_eq!(
+            result,
+            0,
+            "mkfifo failed: {}",
+            std::io::Error::last_os_error()
+        );
+
+        let mut command = ctl(data.path());
+        command.timeout(Duration::from_secs(30)).args([
+            "restore",
+            backup.to_str().unwrap(),
+            "--yes",
+        ]);
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(
+            stderr(&output).contains("not a regular file or directory"),
+            "stderr: {}",
+            stderr(&output)
+        );
+
+        assert_live_data_unchanged(data.path());
     }
 }
 

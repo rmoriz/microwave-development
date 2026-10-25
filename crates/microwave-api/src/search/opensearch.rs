@@ -149,7 +149,7 @@ impl OpenSearchBackend {
         Ok(format!("{}\n", serialize(&action)?))
     }
 
-    async fn bulk(&self, body: String) -> Result<usize, SearchError> {
+    async fn bulk(&self, body: String, allow_not_found: bool) -> Result<usize, SearchError> {
         let url = self.url("/_bulk");
         let response = self
             .client
@@ -162,7 +162,7 @@ impl OpenSearchBackend {
         let response: BulkResponse = response.json().await.map_err(|error| {
             SearchError::Response(format!("could not decode bulk response: {error}"))
         })?;
-        bulk_acknowledged(response)
+        bulk_acknowledged(response, allow_not_found)
     }
 
     fn check_status(&self, url: &str, status: u16) -> Result<(), SearchError> {
@@ -198,7 +198,11 @@ struct BulkResponse {
 /// checked for an `error` member and a non-2xx `status`; any failure aborts the
 /// write instead of silently reporting success. Only items with a 2xx status
 /// and no error are counted.
-fn bulk_acknowledged(response: BulkResponse) -> Result<usize, SearchError> {
+///
+/// `allow_not_found` is used for deletes: a missing document returns an item
+/// status of 404 and should not produce a warning. Index writes pass `false`,
+/// so a 404 there is still a failure.
+fn bulk_acknowledged(response: BulkResponse, allow_not_found: bool) -> Result<usize, SearchError> {
     let mut acknowledged = 0;
     let mut failures = Vec::new();
 
@@ -215,6 +219,8 @@ fn bulk_acknowledged(response: BulkResponse) -> Result<usize, SearchError> {
                 id.map(|id| format!(" ({id})")).unwrap_or_default(),
                 bulk_error_summary(error)
             ));
+        } else if allow_not_found && status == Some(404) {
+            // Deleting an already-missing document is an expected no-op.
         } else if !status.is_some_and(|status| (200..300).contains(&status)) {
             failures.push(format!(
                 "item {index}{}: status {}",
@@ -324,7 +330,7 @@ impl super::backend::SearchBackend for OpenSearchBackend {
     }
 
     async fn index(&self, document: &SearchDocument) -> Result<IndexOutcome, SearchError> {
-        let acknowledged = self.bulk(self.index_body(document)?).await?;
+        let acknowledged = self.bulk(self.index_body(document)?, false).await?;
         if acknowledged == 0 {
             return Err(SearchError::Response(
                 "bulk response acknowledged no documents".to_string(),
@@ -334,7 +340,7 @@ impl super::backend::SearchBackend for OpenSearchBackend {
     }
 
     async fn delete(&self, _org_id: &str, id: &str) -> Result<(), SearchError> {
-        self.bulk(Self::delete_body(id)?).await.map(|_| ())
+        self.bulk(Self::delete_body(id)?, true).await.map(|_| ())
     }
 
     async fn delete_index(&self, org_id: &str) -> Result<(), SearchError> {
@@ -647,6 +653,50 @@ mod tests {
             action,
             json!({ "delete": { "_index": "chef", "_id": "node-guid" } })
         );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_missing_document_is_not_a_warning() {
+        let mock = mock(
+            200,
+            json!({
+                "errors": false,
+                "items": [{
+                    "delete": {
+                        "_index": "chef",
+                        "_id": "node-guid",
+                        "result": "not_found",
+                        "status": 404
+                    }
+                }]
+            }),
+        )
+        .await;
+        let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &mock.base_url).unwrap();
+
+        backend.delete("acme", "node-guid").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_index_item_with_status_404_is_still_a_failure() {
+        let mock = mock(
+            200,
+            json!({
+                "errors": false,
+                "items": [{
+                    "index": {
+                        "_index": "chef",
+                        "_id": "node-guid",
+                        "status": 404
+                    }
+                }]
+            }),
+        )
+        .await;
+        let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &mock.base_url).unwrap();
+
+        let error = backend.index(&document()).await.unwrap_err();
+        assert!(error.to_string().contains("status 404"));
     }
 
     #[tokio::test]

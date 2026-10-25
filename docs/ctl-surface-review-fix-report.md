@@ -134,3 +134,71 @@ Results:
 One intermediate PostgreSQL run hit the 10-second watchdog on a new tar backup
 test while the suite was heavily loaded. The watchdog was raised to 30 seconds
 (still bounded for the FIFO regression) and the final run above was green.
+
+## Round 3 — second review fix
+
+### 1. Directory restore destroyed live data before validating the backup bookshelf — ADDRESSED
+
+- `restore_directory` now copies and validates `bookshelf/` from the backup
+  into a staging directory inside the data directory before invoking the
+  database restore or touching the live bookshelf.
+- A symlink, FIFO, other non-regular entry, or copy error fails while the live
+  database and bookshelf are still intact.
+- After a successful database restore, the live bookshelf is renamed to a
+  sidecar, the staged tree is renamed into place, and the sidecar is removed.
+  If the final rename fails, the old tree is renamed back.
+- A backup without `bookshelf/` still leaves the restored installation without
+  one, matching the previous semantics.
+- The tar path keeps its existing safe extraction and now goes through the same
+  staged-bookshelf swap.
+
+Tests:
+
+- `directory_restore_rejects_a_symlink_before_touching_live_data`: live
+  `persisted` and `transient` users and mutated/extra blobs all remain; the
+  symlink target is untouched.
+- `directory_restore_rejects_a_fifo_before_touching_live_data`: same sentinel
+  checks, with a bounded watchdog.
+- Existing `backup_and_restore_round_trip`,
+  `tar_backup_and_restore_round_trip`, and PostgreSQL round-trip tests cover the
+  successful swap.
+
+### 2. Tar restore remains safe — ADDRESSED (unchanged)
+
+Tar extraction still validates entries before unpacking, and the extracted tree
+is now staged for bookshelf copying just like a directory backup.
+
+### 3. Symlink TOCTOU — ADDRESSED (file-level) with a documented residual
+
+- On Unix, regular bookshelf files are opened with `O_NOFOLLOW` and
+  `O_NONBLOCK`, then `fstat`-checked before copying; a symlink or FIFO swapped
+  in after the directory-entry check is rejected instead of followed or blocked
+  on.
+- Directories still use check-then-traverse rather than `openat`. That residual
+  directory-level TOCTOU window is documented in `docs/deployment.md`: run
+  backups and restores against a quiescent bookshelf.
+
+### 4. Optional: OpenSearch delete 404 noise — ADDRESSED
+
+- `_bulk` parsing accepts item status 404 only for delete operations.
+- Index writes still reject 404 and every other non-2xx item, and index errors
+  remain fatal.
+- `deleting_a_missing_document_is_not_a_warning` and
+  `an_index_item_with_status_404_is_still_a_failure` cover both sides.
+
+## Round 3 verification
+
+```sh
+cargo fmt --all
+CARGO_PROFILE_DEV_DEBUG=0 cargo test -p microwave-ctl -p microwave-ctl-bin
+CARGO_PROFILE_DEV_DEBUG=0 cargo clippy -p microwave-ctl -p microwave-ctl-bin --all-targets -- -D warnings
+CARGO_PROFILE_DEV_DEBUG=0 cargo test -p microwave-api --lib
+CARGO_PROFILE_DEV_DEBUG=0 cargo clippy -p microwave-api --all-targets -- -D warnings
+```
+
+Results:
+
+- `microwave-ctl` + `microwave-ctl-bin`: all tests passed, including 56 CLI
+  integration tests.
+- `microwave-api` lib: 38 passed (14 OpenSearch tests).
+- Clippy with `-D warnings` for the CLI and API: clean.

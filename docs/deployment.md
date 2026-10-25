@@ -652,7 +652,9 @@ an existing file. It is uncompressed, so it is large but inspectable with
 `tar tf`; compress it with your backup tooling if needed. It contains exactly
 the same database snapshot/dump and `bookshelf/` tree as the directory format.
 Symlinks and other non-regular files under `bookshelf/` abort the backup rather
-than leaking link targets or blocking on a FIFO.
+than leaking link targets or blocking on a FIFO. On Unix, file copies also open
+with `O_NOFOLLOW`/`O_NONBLOCK`; see the restore notes below for the residual
+directory-level TOCTOU caveat.
 
 PostgreSQL backup requires `pg_dump` to be installed and on `PATH`. The
 password is removed from the child process command line. A `password` query
@@ -717,12 +719,25 @@ configured target is refused unless `--yes` is given.
   must be reachable and the archive must match the schema; extra objects that
   are not in the archive are not removed;
 - refuses a SQLite backup that is the live database;
+- validates and copies `bookshelf/` from the backup into a staging directory
+  **before** touching the live database or live bookshelf. A symlink, FIFO, or
+  other bad entry fails the restore while live metadata and blobs are still
+  intact;
 - stages the SQLite database copy, then removes the live database and its
   `-wal`/`-shm` sidecars before renaming the staged file into place;
-- replaces `bookshelf/` if the backup has one;
+- swaps in the staged `bookshelf/` only after the database restore succeeds,
+  keeping the previous tree under a sidecar name until the rename completes;
+  a backup without a bookshelf still leaves the installation without one;
 - opens the restored SQLite database once to run schema migrations, so an
   incompatible backup fails the command instead of the next start. PostgreSQL
   schema migrations run on the next `PostgresStore::connect`.
+
+On Unix, regular bookshelf files are opened with `O_NOFOLLOW` and
+`O_NONBLOCK`, so a symlink or FIFO swapped in after the directory-entry check is
+rejected instead of followed or blocked on. A directory replaced by a symlink
+between the type check and traversal remains a narrow TOCTOU window; run
+backups and restores against a quiescent bookshelf, as required by the existing
+non-atomic bookshelf snapshot caveat.
 
 PostgreSQL restore requires `pg_restore` on `PATH` and is destructive: stop the
 server (and any other replica using the database) before running it. It does

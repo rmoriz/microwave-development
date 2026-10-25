@@ -238,17 +238,88 @@ pub fn restore(
 }
 
 fn restore_directory(context: &Context, path: &Path, yes: bool) -> Result<(), CtlError> {
+    // Validate and copy the backup bookshelf before the database or live
+    // bookshelf is touched. A symlink/FIFO (or any read error) in the backup
+    // must fail here, while the live installation is still intact.
+    let staged_bookshelf = stage_bookshelf(context, &path.join(BOOKSHELF_DIR))?;
+
     match context.config.database.driver {
         DatabaseDriver::Sqlite => restore_sqlite(context, path, yes)?,
         DatabaseDriver::Postgres => restore_postgres(context, path, yes)?,
     }
 
-    let bookshelf = context.data_dir.join(BOOKSHELF_DIR);
-    remove_path(&bookshelf)?;
-    let bookshelf_backup = path.join(BOOKSHELF_DIR);
-    if bookshelf_backup.is_dir() {
-        copy_dir_all(&bookshelf_backup, &bookshelf)?;
+    swap_bookshelf(context, staged_bookshelf)?;
+    Ok(())
+}
+
+/// A validated copy of the backup bookshelf, ready to replace the live one.
+///
+/// The temp directory must stay alive until the rename; dropping it removes the
+/// staged tree.
+type StagedBookshelf = Option<(tempfile::TempDir, PathBuf)>;
+
+fn stage_bookshelf(context: &Context, source: &Path) -> Result<StagedBookshelf, CtlError> {
+    match std::fs::symlink_metadata(source) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(CtlError::message(format!(
+                "backup bookshelf {} is a symlink; refusing to restore it",
+                source.display()
+            )));
+        }
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(CtlError::message(format!(
+                "backup bookshelf {} is not a directory",
+                source.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
     }
+
+    context.prepare_data_dir()?;
+    let staging = tempfile::Builder::new()
+        .prefix(".microwave-restore-bookshelf-")
+        .tempdir_in(&context.data_dir)?;
+    let staged = staging.path().join(BOOKSHELF_DIR);
+    copy_dir_all(source, &staged)?;
+    Ok(Some((staging, staged)))
+}
+
+/// Replace the live bookshelf only after the database restore succeeded.
+///
+/// The staged tree is renamed into place, keeping the old tree under a
+/// sidecar name until the rename succeeds so a failure does not lose it.
+fn swap_bookshelf(context: &Context, staged: StagedBookshelf) -> Result<(), CtlError> {
+    let bookshelf = context.data_dir.join(BOOKSHELF_DIR);
+    let Some((_staging, staged_bookshelf)) = staged else {
+        // A backup without a bookshelf intentionally leaves the installation
+        // without one, matching the previous restore semantics.
+        remove_path(&bookshelf)?;
+        return Ok(());
+    };
+
+    let had_live = match std::fs::symlink_metadata(&bookshelf) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    let old = sidecar(
+        &bookshelf,
+        &format!(".restore-old-{}", Uuid::new_v4().simple()),
+    );
+    if had_live {
+        std::fs::rename(&bookshelf, &old)?;
+    }
+
+    if let Err(error) = std::fs::rename(&staged_bookshelf, &bookshelf) {
+        if had_live {
+            let _ = std::fs::rename(&old, &bookshelf);
+        }
+        return Err(error.into());
+    }
+
+    remove_path(&old)?;
     Ok(())
 }
 
@@ -568,7 +639,7 @@ fn copy_dir_all(source: &Path, destination: &Path) -> Result<(), CtlError> {
         if file_type.is_dir() {
             copy_dir_all(&path, &target)?;
         } else if file_type.is_file() {
-            std::fs::copy(&path, target)?;
+            copy_regular_file(&path, &target)?;
         } else {
             return Err(CtlError::message(format!(
                 "refusing to copy {}; it is not a regular file or directory",
@@ -576,6 +647,49 @@ fn copy_dir_all(source: &Path, destination: &Path) -> Result<(), CtlError> {
             )));
         }
     }
+    Ok(())
+}
+
+/// Copy one regular file without following a symlink that may have replaced it
+/// after the directory entry type check.
+///
+/// `O_NOFOLLOW` rejects a swapped-in symlink and `O_NONBLOCK` keeps a swapped-in
+/// FIFO from blocking before the metadata check rejects it. Directories still
+/// have a narrow check-then-traverse window because this iterates with relative
+/// paths rather than `openat`; bookshelf trees are expected to be quiescent
+/// while a backup or restore runs.
+#[cfg(unix)]
+fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), CtlError> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut input = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(source)?;
+    let metadata = input.metadata()?;
+    if !metadata.is_file() {
+        return Err(CtlError::message(format!(
+            "refusing to copy {}; it is not a regular file",
+            source.display()
+        )));
+    }
+
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(destination)?;
+    std::io::copy(&mut input, &mut output)?;
+    std::fs::set_permissions(
+        destination,
+        std::fs::Permissions::from_mode(metadata.permissions().mode() & 0o777),
+    )?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), CtlError> {
+    std::fs::copy(source, destination)?;
     Ok(())
 }
 
