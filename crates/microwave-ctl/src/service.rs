@@ -76,8 +76,11 @@ pub fn run(
 /// Run `microwave-server serve` in this process.
 ///
 /// `MW_SERVER_BIN` wins; otherwise a `microwave-server` next to the current
-/// executable is preferred, then `PATH`. The configured path is passed as a
-/// separate argument (never through a shell) and validated before execution.
+/// executable is preferred, then `PATH`. Windows lookups use the executable
+/// suffix and `PATHEXT`. The configured path is passed as a single
+/// `--config=<path>` argument (never through a shell), so a path beginning
+/// with `-` cannot be parsed as an option, and it is validated before
+/// execution.
 fn start_foreground(config: Option<&Path>) -> Result<(), CtlError> {
     let program = resolve_server_binary()?;
     let config = validate_config_path(config)?;
@@ -85,7 +88,9 @@ fn start_foreground(config: Option<&Path>) -> Result<(), CtlError> {
     let mut command = Command::new(&program);
     command.arg("serve");
     if let Some(config) = config.as_deref() {
-        command.arg("--config").arg(config);
+        let mut argument = std::ffi::OsString::from("--config=");
+        argument.push(config.as_os_str());
+        command.arg(argument);
     }
 
     #[cfg(unix)]
@@ -128,8 +133,11 @@ fn resolve_server_binary() -> Result<PathBuf, CtlError> {
 
     if let Ok(current) = std::env::current_exe() {
         if let Some(directory) = current.parent() {
-            let candidate = directory.join(DEFAULT_SERVER_BIN);
-            if is_executable(&candidate) {
+            let candidate = directory.join(format!(
+                "{DEFAULT_SERVER_BIN}{}",
+                std::env::consts::EXE_SUFFIX
+            ));
+            if let Some(candidate) = executable_path(&candidate) {
                 return Ok(candidate);
             }
         }
@@ -146,10 +154,11 @@ fn resolve_server_binary() -> Result<PathBuf, CtlError> {
 
 /// Validate an explicit `MW_SERVER_BIN` value.
 ///
-/// A bare program name is resolved through `PATH`; anything with a path
-/// separator must be a real executable file. A leading `-` is harmless for a
-/// program name (it is not parsed as an option), but empty values are rejected
-/// rather than silently falling back to another binary.
+/// A bare program name is resolved through `PATH` (using the executable suffix
+/// and `PATHEXT` on Windows); anything with a path separator must be a real
+/// executable file. A leading `-` is harmless for a program name (it is not
+/// parsed as an option), but empty values are rejected rather than silently
+/// falling back to another binary.
 fn validate_server_binary(path: &Path) -> Result<PathBuf, CtlError> {
     if path.as_os_str().is_empty() {
         return Err(CtlError::message(format!(
@@ -164,13 +173,32 @@ fn validate_server_binary(path: &Path) -> Result<PathBuf, CtlError> {
             ))
         });
     }
-    if !is_executable(path) {
-        return Err(CtlError::message(format!(
+    executable_path(path).ok_or_else(|| {
+        CtlError::message(format!(
             "`{}` from {SERVER_BIN_ENV} is not an executable file; set {SERVER_BIN_ENV} to the microwave-server binary",
             path.display()
-        )));
+        ))
+    })
+}
+
+/// Return the file itself or its Windows executable-suffixed form.
+fn executable_path(path: &Path) -> Option<PathBuf> {
+    if is_executable(path) {
+        return Some(path.to_path_buf());
     }
-    Ok(path.to_path_buf())
+    #[cfg(windows)]
+    {
+        if path.extension().is_none() {
+            let suffix = std::env::consts::EXE_SUFFIX.trim_start_matches('.');
+            if !suffix.is_empty() {
+                let candidate = path.with_extension(suffix);
+                if is_executable(&candidate) {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn validate_config_path(config: Option<&Path>) -> Result<Option<PathBuf>, CtlError> {
@@ -315,11 +343,43 @@ fn program_available(program: &str) -> bool {
 }
 
 /// Find a bare program name on `PATH`, returning the resolved path.
+///
+/// On Windows the executable suffix and `PATHEXT` are tried, so
+/// `MW_SERVER_BIN=microwave-server` finds `microwave-server.exe`.
 fn find_program(program: &str) -> Option<PathBuf> {
     let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths)
-        .map(|directory| directory.join(program))
-        .find(|candidate| is_executable(candidate))
+    let names = program_names(program);
+    for directory in std::env::split_paths(&paths) {
+        for name in &names {
+            let candidate = directory.join(name);
+            if is_executable(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn program_names(program: &str) -> Vec<String> {
+    let mut names = vec![program.to_string()];
+    let suffix = std::env::consts::EXE_SUFFIX;
+    if !suffix.is_empty() && !program.ends_with(suffix) {
+        names.push(format!("{program}{suffix}"));
+    }
+    if cfg!(windows) && Path::new(program).extension().is_none() {
+        let extensions =
+            std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+        for extension in extensions
+            .split(';')
+            .filter(|extension| !extension.is_empty())
+        {
+            let candidate = format!("{program}{extension}");
+            if !names.contains(&candidate) {
+                names.push(candidate);
+            }
+        }
+    }
+    names
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -343,7 +403,7 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        find_program, parse_foreground_value, program_available, resolve_unit,
+        find_program, parse_foreground_value, program_available, program_names, resolve_unit,
         validate_config_path, validate_server_binary,
     };
     use std::sync::Mutex;
@@ -406,6 +466,15 @@ mod tests {
         assert!(!program_available("/definitely/not/here/systemctl"));
         assert!(find_program("sh").is_some() || find_program("bash").is_some());
         assert!(find_program("microwave-definitely-not-a-real-program").is_none());
+    }
+
+    #[test]
+    fn adds_the_platform_executable_suffix_to_program_names() {
+        let names = program_names("microwave-server");
+        let expected = format!("microwave-server{}", std::env::consts::EXE_SUFFIX);
+        assert!(names.contains(&expected), "names: {names:?}");
+        // The unsuffixed name is always tried first.
+        assert_eq!(names.first().map(String::as_str), Some("microwave-server"));
     }
 
     #[test]

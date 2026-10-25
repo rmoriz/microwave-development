@@ -333,10 +333,12 @@ Image properties:
   `microwave-server` from `MW_SERVER_BIN`, its own directory, or `PATH`, and
   `exec`s `microwave-server serve --config ...`. The result is that the server
   is PID 1, exactly as with a direct `exec`, so `docker stop`/`docker kill`
-  signals reach it. `MW_SERVICE_FOREGROUND=1` is the environment alternative to
-  `--foreground` for `service start`. The previous direct command
-  `microwave-server serve --config /etc/microwave/microwave.toml` still works as
-  a `command:`/`docker run` override.
+  signals reach it. `SIGTERM` and `SIGINT` trigger graceful shutdown;
+  `SIGHUP` still reloads the TLS pair. `MW_SERVICE_FOREGROUND=1` is the
+  environment alternative to `--foreground` for `service start`. The previous
+  direct command
+  `microwave-server serve --config /etc/microwave/microwave.toml` still works
+  as a `command:`/`docker run` override.
 
 ```sh
 docker build -t microwave-server:local .
@@ -543,6 +545,15 @@ foreground mode resolves the binary from `MW_SERVER_BIN`, the directory of the
 running `microwave-ctl`, or `PATH`, validates `--config`, and `exec`s
 `microwave-server serve` on Unix so signals and the PID behave as a direct
 launch.
+
+The foreground/container mode is a launch convenience, not a replacement for
+the hardened unit below. It does not apply `User`/`Group`, `StateDirectory`,
+`UMask=0077`, `NoNewPrivileges`, `ProtectSystem`/`ReadWritePaths`,
+`PrivateTmp`/`PrivateDevices`, the syscall/namespace filters, or the capability
+bounds. In a container those controls must come from the image user and the
+container runtime; on a host without systemd, run the foreground process under
+a supervisor that supplies equivalent isolation. Keep the systemd unit for
+normal host deployments.
 
 If you bind a privileged port inside the unit, add a drop-in with
 `AmbientCapabilities=CAP_NET_BIND_SERVICE` and
@@ -1058,9 +1069,16 @@ docker compose logs -f microwave
 ```
 
 There is no file logging or in-process rotation; use journald or the container
-log driver. The process exits immediately on `SIGTERM` (no graceful-shutdown
-handler is installed). SQLite WAL is crash-safe, but in-flight requests are
-dropped — drain traffic at the load balancer before stopping or restarting.
+log driver. `SIGTERM` and `SIGINT` trigger graceful shutdown: the listener
+stops accepting new connections and in-flight requests are allowed to finish.
+The TLS listener caps the drain at 5 seconds; plain HTTP waits for active
+requests to complete. `SIGTERM`/`SIGINT` exit with status 0 when the drain
+finishes, so `docker stop` does not need to escalate to `SIGKILL`. Process
+teardown can also wait for one in-progress background keypair generation to
+finish (the keygen workers are joined, which is CPU-bounded). SQLite WAL is
+crash-safe, but still drain traffic at the load balancer before stopping or
+restarting. `SIGHUP` remains the TLS reload signal and does not shut down the
+server.
 
 ## 12. Maintenance caveats
 
@@ -1092,8 +1110,10 @@ dropped — drain traffic at the load balancer before stopping or restarting.
   service` delegates to `systemctl`/`journalctl` and fails clearly when they are
   missing. `service start --foreground` (also `MW_SERVICE_FOREGROUND=1`) runs
   `microwave-server serve` in the foreground for containers; on Unix the CLI
-  `exec`s the server so PID 1/signal handling is direct. There is no detached
-  process supervisor for Docker daemons or launchd.
+  `exec`s the server so PID 1/signal handling is direct. It does not reproduce
+  the systemd unit's user, filesystem, capability, or syscall hardening; in a
+  container that isolation comes from the image and runtime. There is no
+  detached process supervisor for Docker daemons or launchd.
 - **Local object store URLs** are derived from `server.bind` and the listener
   scheme (`http`/`https`), not from request headers. Use S3/Garage behind a
   proxy or NAT.
@@ -1136,4 +1156,4 @@ requires restoring that backup.
 | Search returns no rows after switching backends | Run `microwave-ctl reindex` to backfill the remote cluster; check `search.url` and the cluster health. Reindex does not purge documents for already-deleted objects. |
 | `maintenance on` still serves requests | Check `microwave-ctl maintenance status` and that all replicas share the same database; `/_status` and `/_stats` are intentionally exempt. |
 | `psql` fails with `failed to run sqlite3` | Install `sqlite3` on the host (present in the container image). |
-| Server stops instantly on `SIGTERM` | Expected: no graceful-shutdown handler. Drain traffic before stopping. |
+| Server takes seconds to stop or `docker stop` waits | Active requests are draining after `SIGTERM`/`SIGINT`. The TLS listener caps the drain at 5 seconds; plain HTTP waits for active requests. Check for a hung handler rather than disabling graceful shutdown. |

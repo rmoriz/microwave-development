@@ -634,14 +634,33 @@ fn spawn_server(
 }
 
 #[cfg(unix)]
-fn send_sighup(child: &std::process::Child) {
-    let result = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGHUP) };
+fn send_signal(child: &std::process::Child, signal: libc::c_int) {
+    let result = unsafe { libc::kill(child.id() as libc::pid_t, signal) };
     assert_eq!(
         result,
         0,
-        "kill(SIGHUP) failed: {}",
+        "kill({signal}) failed: {}",
         std::io::Error::last_os_error()
     );
+}
+
+#[cfg(unix)]
+fn send_sighup(child: &std::process::Child) {
+    send_signal(child, libc::SIGHUP);
+}
+
+#[cfg(unix)]
+fn wait_for_exit(child: &mut std::process::Child, timeout: Duration) -> std::process::ExitStatus {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            return status;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("server did not exit within {timeout:?} after the shutdown signal");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 #[cfg(unix)]
@@ -726,6 +745,86 @@ fn sighup_on_a_plain_http_listener_is_safe() {
     send_sighup(guard.0.as_ref().unwrap());
     wait_for_plain_status(&bind);
     assert!(guard.0.as_mut().unwrap().try_wait().unwrap().is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn sigterm_shuts_down_plain_http_gracefully() {
+    let port_guard = PORT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("server.log");
+    let bind = ephemeral_addr();
+
+    // Disable background keygen workers so this test measures the shutdown
+    // path, not debug-build RSA generation joined during process teardown.
+    let child = spawn_server(
+        dir.path(),
+        &bind,
+        None,
+        &log,
+        None,
+        &[("MW_KEYGEN__WORKERS", "0"), ("MW_KEYGEN__WARM_UP", "false")],
+    );
+    let mut guard = ServerProcess(Some(child));
+    wait_for_tcp(&bind);
+    drop(port_guard);
+    wait_for_plain_status(&bind);
+
+    send_signal(guard.0.as_ref().unwrap(), libc::SIGTERM);
+    let status = wait_for_exit(guard.0.as_mut().unwrap(), Duration::from_secs(15));
+    let _ = guard.0.take();
+
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "the server should exit cleanly after SIGTERM, not via the default signal action"
+    );
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("installed SIGTERM/SIGINT shutdown handlers"));
+    assert!(text.contains("shutdown signal received; draining in-flight requests"));
+}
+
+#[cfg(unix)]
+#[test]
+fn sigint_shuts_down_tls_gracefully() {
+    let port_guard = PORT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let pair = generated_pair();
+    let (cert, key) = write_pair_files(dir.path(), &pair);
+    let log = dir.path().join("server.log");
+    let bind = ephemeral_addr();
+
+    // Disable background keygen workers so this test measures the shutdown
+    // path, not debug-build RSA generation joined during process teardown.
+    let child = spawn_server(
+        dir.path(),
+        &bind,
+        Some((&cert, &key)),
+        &log,
+        None,
+        &[("MW_KEYGEN__WORKERS", "0"), ("MW_KEYGEN__WARM_UP", "false")],
+    );
+    let mut guard = ServerProcess(Some(child));
+    wait_for_tcp(&bind);
+    drop(port_guard);
+    assert_eq!(wait_for_any_fingerprint(&bind), pair.fingerprint);
+
+    send_signal(guard.0.as_ref().unwrap(), libc::SIGINT);
+    let status = wait_for_exit(guard.0.as_mut().unwrap(), Duration::from_secs(15));
+    let _ = guard.0.take();
+
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "the TLS server should exit cleanly after SIGINT"
+    );
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("SIGINT"));
+    assert!(text.contains("shutdown signal received; draining in-flight requests"));
 }
 
 #[cfg(unix)]

@@ -801,8 +801,7 @@ mod operational_process_tests {
             pedant_tags(&log),
             vec![
                 "serve".to_string(),
-                "--config".to_string(),
-                config.to_str().unwrap().to_string()
+                format!("--config={}", config.display())
             ]
         );
 
@@ -825,6 +824,34 @@ mod operational_process_tests {
     }
 
     #[test]
+    fn service_start_foreground_accepts_a_config_path_starting_with_a_dash() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = fake_tool(dir.path(), "microwave-server");
+        let log = dir.path().join("server.log");
+        let config_name = "-microwave.toml";
+        std::fs::write(
+            dir.path().join(config_name),
+            "[server]\nbind = \"127.0.0.1:8000\"\n",
+        )
+        .unwrap();
+
+        // The global --config accepts a hyphen-leading value and the CLI
+        // forwards it as one attached `--config=<path>` argument.
+        let output = ctl(dir.path())
+            .current_dir(dir.path())
+            .env("MW_SERVER_BIN", &server)
+            .env("MW_TEST_LOG", &log)
+            .args(["service", "start", "--foreground", "--config", config_name])
+            .output()
+            .unwrap();
+        assert_success(&output);
+        assert_eq!(
+            pedant_tags(&log),
+            vec!["serve".to_string(), format!("--config={config_name}")]
+        );
+    }
+
+    #[test]
     fn service_start_honours_the_foreground_environment_alternative() {
         let dir = tempfile::tempdir().unwrap();
         let server = fake_tool(dir.path(), "microwave-server");
@@ -844,8 +871,7 @@ mod operational_process_tests {
             pedant_tags(&log),
             vec![
                 "serve".to_string(),
-                "--config".to_string(),
-                config.to_str().unwrap().to_string()
+                format!("--config={}", config.display())
             ]
         );
     }

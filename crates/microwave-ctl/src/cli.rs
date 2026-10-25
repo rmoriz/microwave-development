@@ -9,7 +9,7 @@ use std::path::PathBuf;
 )]
 pub struct Cli {
     /// Path to a TOML configuration file.
-    #[arg(long, global = true, value_name = "PATH")]
+    #[arg(long, global = true, value_name = "PATH", allow_hyphen_values = true)]
     pub config: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -415,6 +415,22 @@ mod tests {
                 ..
             }
         ));
+
+        // A hyphen-leading path is accepted as a value, not treated as an
+        // option, so it can be forwarded safely to the server.
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "service",
+            "start",
+            "--foreground",
+            "--config",
+            "-microwave.toml",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.config.as_deref(),
+            Some(std::path::Path::new("-microwave.toml"))
+        );
     }
 
     #[test]
