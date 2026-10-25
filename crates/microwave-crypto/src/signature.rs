@@ -1,4 +1,7 @@
-use crate::auth::{canonical_request, content_hash, CanonicalRequest, SignVersion};
+use crate::auth::{
+    canonical_request, canonical_request_with_content_hash, content_hash, CanonicalRequest,
+    SignVersion,
+};
 use crate::error::CryptoError;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -106,6 +109,39 @@ pub fn verify_request(
 
     let public_key = parse_public_key_pem(public_key_pem)?;
     let canonical = canonical_request(request)?;
+
+    match request.version {
+        SignVersion::V1_3 => {
+            let signature = Signature::try_from(headers.signature.as_slice())
+                .map_err(|_| CryptoError::InvalidSignatureLength(headers.signature.len()))?;
+            let verifying_key = VerifyingKey::<Sha256>::new(public_key);
+            verifying_key
+                .verify(canonical.as_bytes(), &signature)
+                .map_err(|_| CryptoError::VerificationFailed)
+        }
+        SignVersion::V1_0 | SignVersion::V1_1 => {
+            raw_verify(&public_key, canonical.as_bytes(), &headers.signature)
+        }
+    }
+}
+
+/// Verify a request signature with a PEM-encoded RSA public key, canonicalizing
+/// the `X-Ops-Content-Hash` header instead of re-hashing the request body.
+///
+/// This mirrors upstream `chef_authn`, which signs over the supplied header
+/// values. Callers that must enforce body integrity should use
+/// [`verify_request`] instead.
+pub fn verify_request_with_content_hash(
+    public_key_pem: &str,
+    headers: &AuthHeaders,
+    request: &CanonicalRequest<'_>,
+) -> Result<(), CryptoError> {
+    if headers.version != request.version || headers.user_id != request.user_id {
+        return Err(CryptoError::VerificationFailed);
+    }
+
+    let public_key = parse_public_key_pem(public_key_pem)?;
+    let canonical = canonical_request_with_content_hash(request, &headers.content_hash)?;
 
     match request.version {
         SignVersion::V1_3 => {

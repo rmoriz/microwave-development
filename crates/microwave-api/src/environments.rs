@@ -25,6 +25,10 @@ pub fn routes() -> Router<AppState> {
             get(get_environment_cookbook),
         )
         .route(
+            "/organizations/{organization}/environments/{environment}/recipes",
+            get(list_environment_recipes),
+        )
+        .route(
             "/organizations/{organization}/environments/{environment}",
             get(get_environment)
                 .put(update_environment)
@@ -220,6 +224,56 @@ async fn list_environment_cookbooks(
         );
     }
     Ok(Json(Value::Object(result)))
+}
+
+/// Return the alphabetically sorted, cookbook-qualified recipe names from the
+/// best-matching version of every cookbook in the environment. Default recipes
+/// are reported as just the cookbook name, matching upstream
+/// `chef_wm_environment_recipes`.
+async fn list_environment_recipes(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path((_organization, environment_name)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let org = organization(&auth)?;
+    let environment = state
+        .store
+        .find_environment(&org.id, &environment_name)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| {
+            ApiError::not_found(format!("Cannot load environment {environment_name}"))
+        })?;
+    require_permission(&state, &auth, &environment.authz_id, Permission::Read).await?;
+
+    let constraints = environment_constraints(&environment)?;
+    let versions = state
+        .store
+        .list_cookbook_versions(&org.id)
+        .await
+        .map_err(ApiError::from)?;
+    let mut grouped: BTreeMap<String, Vec<StoredCookbookVersion>> = BTreeMap::new();
+    for version in versions {
+        grouped
+            .entry(version.name.clone())
+            .or_default()
+            .push(version);
+    }
+
+    let mut recipes = Vec::new();
+    for (name, mut versions) in grouped {
+        filter_versions(&mut versions, constraints.get(&name));
+        sort_versions_descending(&mut versions);
+        let best = take_versions(versions, &NumVersions::Count(1));
+        let Some(version) = best.into_iter().next() else {
+            continue;
+        };
+        let manifest: Value =
+            serde_json::from_str(&version.manifest).map_err(|_| ApiError::internal())?;
+        recipes.extend(crate::cookbooks::recipe_names(&name, &manifest));
+    }
+    recipes.sort();
+    Ok(Json(json!(recipes)))
 }
 
 async fn get_environment_cookbook(

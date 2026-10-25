@@ -1,6 +1,6 @@
 use microwave_crypto::{
-    decode_signature, sign_request, verify_request, AuthHeaders, CanonicalRequest, CryptoError,
-    SignVersion,
+    decode_signature, sign_request, verify_request, verify_request_with_content_hash, AuthHeaders,
+    CanonicalRequest, CryptoError, SignVersion,
 };
 
 const MIXLIB_10: &[&str] = &[
@@ -112,4 +112,22 @@ fn rejects_wrong_public_key() {
     assert!(sign_request(other_private, &request(SignVersion::V1_3, b"a")).is_ok());
     assert!(verify_request(other_public, &signed, &request(SignVersion::V1_3, b"a")).is_err());
     assert!(verify_request(public, &signed, &request(SignVersion::V1_3, b"a")).is_ok());
+}
+
+#[test]
+fn content_hash_verification_uses_the_supplied_header() {
+    let private = include_str!("fixtures/test_key.pem");
+    let public = include_str!("fixtures/test_key_pub.pem");
+
+    for version in [SignVersion::V1_0, SignVersion::V1_1, SignVersion::V1_3] {
+        // The validation endpoint receives a signature for the original
+        // request body but no body of its own.
+        let signed = sign_request(private, &request(version, br#"{"foo":"bar"}"#)).unwrap();
+        let validation_request = request(version, b"");
+        verify_request_with_content_hash(public, &signed, &validation_request).unwrap();
+        assert!(matches!(
+            verify_request(public, &signed, &validation_request),
+            Err(CryptoError::VerificationFailed)
+        ));
+    }
 }

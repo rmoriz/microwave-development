@@ -116,8 +116,21 @@ pub fn content_hash(body: &[u8], version: SignVersion) -> String {
 
 /// Build the canonical request string used by the signature operation.
 pub fn canonical_request(request: &CanonicalRequest<'_>) -> Result<String, CryptoError> {
+    canonical_request_with_content_hash(request, &content_hash(request.body, request.version))
+}
+
+/// Build the canonical request using the `X-Ops-Content-Hash` supplied by the
+/// caller instead of hashing the request body.
+///
+/// Upstream `chef_authn` canonicalizes the header value it received and does
+/// not re-hash the body. Some legacy resources (notably the signature
+/// validation endpoint) rely on that behavior because the caller signs the
+/// body of a *different* request.
+pub fn canonical_request_with_content_hash(
+    request: &CanonicalRequest<'_>,
+    body_hash: &str,
+) -> Result<String, CryptoError> {
     let timestamp = canonical_time(request.timestamp)?;
-    let body_hash = content_hash(request.body, request.version);
 
     let canonical = match request.version {
         SignVersion::V1_0 | SignVersion::V1_1 => {

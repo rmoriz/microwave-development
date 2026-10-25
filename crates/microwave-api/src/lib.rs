@@ -13,6 +13,7 @@ pub mod environments;
 pub mod error;
 pub mod groups;
 pub mod helpers;
+pub mod internal_api;
 pub mod keys;
 pub mod membership;
 pub mod metrics;
@@ -63,6 +64,7 @@ pub fn router(state: AppState) -> Router {
         .merge(cookbooks::routes())
         .merge(cookbook_artifacts::routes())
         .merge(depsolver::routes())
+        .merge(internal_api::routes())
         .merge(oauth::routes());
 
     // Both optional surfaces are absent from the router when disabled so the

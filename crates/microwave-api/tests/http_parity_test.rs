@@ -220,6 +220,32 @@ impl Harness {
         Step::from_response(label, response).await
     }
 
+    async fn send_signed_path(
+        &self,
+        label: &str,
+        method: &str,
+        path: &str,
+        signed_path: &str,
+        body: &[u8],
+        user: &str,
+    ) -> Step {
+        let response = self
+            .app
+            .clone()
+            .oneshot(support::signed_request_with_signed_path_and_body(
+                method,
+                path,
+                signed_path,
+                br#"{"foo":"bar"}"#,
+                body,
+                SignVersion::V1_3,
+                user,
+            ))
+            .await
+            .expect("router handles signed validation request");
+        Step::from_response(label, response).await
+    }
+
     async fn send_anon(
         &self,
         label: &str,
@@ -4014,6 +4040,343 @@ async fn scenario_ops(h: &Harness) -> Vec<Step> {
 }
 
 // ---------------------------------------------------------------------------
+// Scenario: internal identifiers, validation, controls and env/role reads
+// ---------------------------------------------------------------------------
+
+async fn scenario_internal_compat(h: &Harness) -> Vec<Step> {
+    let org = h.org();
+    let mut steps = vec![create_org(h, &org).await];
+
+    // Node identifiers.
+    steps.push(create_node(h, &org, "web1", "_default").await);
+    let step = h
+        .send(
+            "node identifiers",
+            "GET",
+            &format!("/organizations/{org}/nodes/web1/_identifiers"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_ok();
+    let json = step.json();
+    for key in ["id", "authz_id", "org_id"] {
+        let value = json[key].as_str().expect("identifier is a string");
+        assert_eq!(value.len(), 32, "{key} is a 32-character id");
+        assert!(value.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+    steps.push(step.map_json(|_| json!({ "id": "<id>", "authz_id": "<id>", "org_id": "<id>" })));
+
+    let step = h
+        .send(
+            "missing node identifiers",
+            "GET",
+            &format!("/organizations/{org}/nodes/missing/_identifiers"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::NOT_FOUND);
+    assert_eq!(
+        step.json(),
+        &json!({ "error": ["No such 'nodes': 'missing'."] })
+    );
+    steps.push(step);
+
+    let step = h
+        .send(
+            "unsupported identifiers type",
+            "GET",
+            &format!("/organizations/{org}/search/bad_object/_identifiers"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::NOT_FOUND);
+    assert_eq!(
+        step.json(),
+        &json!({ "error": ["Unsupported object type: 'search'."] })
+    );
+    steps.push(step);
+
+    // Environments and a role with per-environment run lists.
+    for environment in ["prod", "undeclared"] {
+        let body = json!({ "name": environment, "cookbook_versions": {} });
+        steps.push(
+            h.send(
+                "create environment for roles",
+                "POST",
+                &format!("/organizations/{org}/environments"),
+                &serde_json::to_vec(&body).unwrap(),
+                "pivotal",
+            )
+            .await
+            .expect_status(StatusCode::CREATED),
+        );
+    }
+    let role = json!({
+        "name": "envy",
+        "run_list": ["recipe[base]"],
+        "env_run_lists": { "prod": ["recipe[prod]"], "ghost": [] },
+    });
+    steps.push(
+        h.send(
+            "create role with env run lists",
+            "POST",
+            &format!("/organizations/{org}/roles"),
+            &serde_json::to_vec(&role).unwrap(),
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::CREATED),
+    );
+
+    let step = h
+        .send(
+            "role environments",
+            "GET",
+            &format!("/organizations/{org}/roles/envy/environments"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_ok();
+    assert_eq!(step.json(), &json!(["_default", "ghost", "prod"]));
+    steps.push(step);
+
+    for (label, path, expected) in [
+        (
+            "role default run list",
+            format!("/organizations/{org}/roles/envy/environments/_default"),
+            json!({ "run_list": ["recipe[base]"] }),
+        ),
+        (
+            "role environment run list",
+            format!("/organizations/{org}/roles/envy/environments/prod"),
+            json!({ "run_list": ["recipe[prod]"] }),
+        ),
+        (
+            "role environment without run list",
+            format!("/organizations/{org}/roles/envy/environments/undeclared"),
+            json!({ "run_list": null }),
+        ),
+        (
+            "environment role default run list",
+            format!("/organizations/{org}/environments/_default/roles/envy"),
+            json!({ "run_list": ["recipe[base]"] }),
+        ),
+        (
+            "environment role run list",
+            format!("/organizations/{org}/environments/prod/roles/envy"),
+            json!({ "run_list": ["recipe[prod]"] }),
+        ),
+    ] {
+        let step = h
+            .send(label, "GET", &path, b"", "pivotal")
+            .await
+            .expect_ok();
+        assert_eq!(step.json(), &expected, "{label}");
+        steps.push(step);
+    }
+
+    for (label, path, message) in [
+        (
+            "role environments missing role",
+            format!("/organizations/{org}/roles/missing/environments"),
+            "Cannot load role missing",
+        ),
+        (
+            "role environment missing environment",
+            format!("/organizations/{org}/roles/envy/environments/missing"),
+            "Cannot load environment missing",
+        ),
+        (
+            "role environment nonexistent declared environment",
+            format!("/organizations/{org}/roles/envy/environments/ghost"),
+            "Cannot load environment ghost",
+        ),
+        (
+            "environment role missing role",
+            format!("/organizations/{org}/environments/prod/roles/missing"),
+            "Cannot load role missing",
+        ),
+        (
+            "environment role missing environment",
+            format!("/organizations/{org}/environments/missing/roles/envy"),
+            "Cannot load environment missing",
+        ),
+    ] {
+        let step = h
+            .send(label, "GET", &path, b"", "pivotal")
+            .await
+            .expect_status(StatusCode::NOT_FOUND);
+        assert_eq!(step.json(), &json!({ "error": [message] }), "{label}");
+        steps.push(step);
+    }
+
+    // Signed-request validation. The signature belongs to `/nodes`, while the
+    // request is sent to the validation path with no body.
+    for method in ["GET", "POST", "PUT", "DELETE"] {
+        let step = h
+            .send_signed_path(
+                "validate signature",
+                method,
+                &format!("/organizations/{org}/validate/organizations/{org}/nodes"),
+                &format!("/organizations/{org}/nodes"),
+                b"",
+                "pivotal",
+            )
+            .await
+            .expect_ok();
+        assert_eq!(
+            step.json(),
+            &json!({ "requestor_name": "pivotal", "requestor_type": "user" })
+        );
+        steps.push(step);
+    }
+
+    let step = h
+        .send_signed_path(
+            "validate wrong path",
+            "POST",
+            &format!("/organizations/{org}/validate/dog"),
+            &format!("/organizations/{org}/nodes"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::UNAUTHORIZED);
+    steps.push(step);
+
+    // Analytics controls are gone for every method.
+    for method in ["POST", "GET"] {
+        let step = h
+            .send(
+                "controls gone",
+                method,
+                &format!("/organizations/{org}/controls"),
+                b"",
+                "pivotal",
+            )
+            .await
+            .expect_status(StatusCode::GONE);
+        assert_eq!(
+            step.json(),
+            &json!({ "error": "Resource gone, analytics is no longer supported by Chef Server" })
+        );
+        steps.push(step);
+    }
+
+    // Environment recipes read the best matching cookbook version.
+    let constraint = json!({
+        "name": "recipes_env",
+        "cookbook_versions": { "apache": "= 1.0.0" },
+    });
+    steps.push(
+        h.send(
+            "create recipes environment",
+            "POST",
+            &format!("/organizations/{org}/environments"),
+            &serde_json::to_vec(&constraint).unwrap(),
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::CREATED),
+    );
+
+    let org_id = h
+        .store
+        .find_org(&org)
+        .await
+        .expect("find org for cookbook seed")
+        .expect("org exists")
+        .id;
+    let creator = h
+        .store
+        .find_user("pivotal")
+        .await
+        .expect("find pivotal for cookbook seed")
+        .expect("pivotal exists")
+        .authz_id;
+    for (name, version, recipes) in [
+        ("apache", "1.0.0", vec!["default", "one"]),
+        ("apache", "2.0.0", vec!["default", "two"]),
+        ("nginx", "1.0.0", vec!["default"]),
+    ] {
+        let files: Vec<Value> = recipes
+            .iter()
+            .map(|recipe| json!({ "name": format!("recipes/{recipe}.rb") }))
+            .collect();
+        let manifest = json!({
+            "name": format!("{name}-{version}"),
+            "cookbook_name": name,
+            "version": version,
+            "json_class": "Chef::CookbookVersion",
+            "chef_type": "cookbook_version",
+            "frozen?": false,
+            "all_files": files,
+            "metadata": { "name": name, "version": version },
+        });
+        h.store
+            .create_cookbook_version(
+                &org_id,
+                name,
+                version,
+                &serde_json::to_string(&manifest).unwrap(),
+                &[],
+                false,
+                &creator,
+            )
+            .await
+            .expect("seed cookbook version");
+    }
+
+    let step = h
+        .send(
+            "environment recipes",
+            "GET",
+            &format!("/organizations/{org}/environments/recipes_env/recipes"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_ok();
+    assert_eq!(step.json(), &json!(["apache", "apache::one", "nginx"]));
+    steps.push(step);
+
+    let step = h
+        .send(
+            "default environment recipes",
+            "GET",
+            &format!("/organizations/{org}/environments/_default/recipes"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_ok();
+    assert_eq!(step.json(), &json!(["apache", "apache::two", "nginx"]));
+    steps.push(step);
+
+    let step = h
+        .send(
+            "missing environment recipes",
+            "GET",
+            &format!("/organizations/{org}/environments/missing/recipes"),
+            b"",
+            "pivotal",
+        )
+        .await
+        .expect_status(StatusCode::NOT_FOUND);
+    assert_eq!(
+        step.json(),
+        &json!({ "error": ["Cannot load environment missing"] })
+    );
+    steps.push(step);
+
+    steps
+}
+
+// ---------------------------------------------------------------------------
 // Test registration
 // ---------------------------------------------------------------------------
 
@@ -4051,6 +4414,10 @@ parity_test!(identity_users_orgs_clients_keys_match, scenario_identity);
 parity_test!(
     objects_nodes_roles_environments_data_bags_search_match,
     scenario_objects
+);
+parity_test!(
+    internal_identifiers_validate_controls_environment_roles_match,
+    scenario_internal_compat
 );
 parity_test!(groups_containers_match, scenario_groups_containers);
 parity_test!(

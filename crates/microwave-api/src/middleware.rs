@@ -153,6 +153,17 @@ async fn authenticate_request(
         }
     }
 
+    if is_controls_path(&path) {
+        // Upstream `oc_chef_wm_controls` halts in `service_available/2`, so it
+        // answers 410 before authentication or organization resolution.
+        let response = next.run(request).await;
+        return with_version_header(
+            response,
+            &requested_version.to_string(),
+            &requested_version.to_string(),
+        );
+    }
+
     if is_data_collector_path(&path) {
         let configured = state.config.data_collector.is_configured();
         // Upstream rejects non-POST before authentication. Do the same while
@@ -260,6 +271,12 @@ async fn authenticate_signed(
 
     let path = parts.uri.path().to_string();
     let method = parts.method.as_str().to_string();
+    // `chef_wm_validate` signs the path below `/validate/`, not the validation
+    // URL itself. It also canonicalizes the supplied content hash instead of
+    // re-hashing the body, because the caller's signature belongs to the
+    // request being validated.
+    let validated_path = validate_signed_path(&path);
+    let canonical_path = validated_path.as_deref().unwrap_or(path.as_str());
     let org = match organization_name_from_path(&path) {
         Some(name) => Some(
             state
@@ -284,7 +301,7 @@ async fn authenticate_signed(
     let api_version_string = api_version.to_string();
     let canonical = microwave_crypto::CanonicalRequest {
         method: &method,
-        path: &path,
+        path: canonical_path,
         body: &body_bytes,
         user_id: &user_id,
         timestamp: &timestamp,
@@ -305,8 +322,16 @@ async fn authenticate_signed(
             if key.expired {
                 continue;
             }
-            if microwave_crypto::verify_request(&key.public_key, &auth_headers, &canonical).is_ok()
-            {
+            let verified = if validated_path.is_some() {
+                microwave_crypto::verify_request_with_content_hash(
+                    &key.public_key,
+                    &auth_headers,
+                    &canonical,
+                )
+            } else {
+                microwave_crypto::verify_request(&key.public_key, &auth_headers, &canonical)
+            };
+            if verified.is_ok() {
                 authenticated = Some((principal, key.key_name));
                 break 'principals;
             }
@@ -476,6 +501,30 @@ fn is_data_collector_path(path: &str) -> bool {
         && parts.next().is_some_and(|part| !part.is_empty())
         && parts.next() == Some("data-collector")
         && parts.next().is_none()
+}
+
+/// `/organizations/:org/controls` (exact, no trailing slash).
+fn is_controls_path(path: &str) -> bool {
+    let mut parts = path.trim_matches('/').split('/');
+    parts.next() == Some("organizations")
+        && parts.next().is_some_and(|part| !part.is_empty())
+        && parts.next() == Some("controls")
+        && parts.next().is_none()
+}
+
+/// `/organizations/:org/validate/<signed path>`.
+///
+/// Returns the path the request signature covers, or `None` when the request
+/// is not a validation request. `chef_wm_validate` turns the wildcard match
+/// back into an absolute path before handing it to signature verification.
+fn validate_signed_path(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/organizations/")?;
+    let (_org, rest) = rest.split_once('/')?;
+    let rest = rest.strip_prefix("validate/")?;
+    if rest.is_empty() {
+        return None;
+    }
+    Some(format!("/{rest}"))
 }
 
 /// `/organizations/:org/required_recipe` (exact, no trailing slash).

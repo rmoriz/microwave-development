@@ -152,11 +152,89 @@ fn signed_request_with_key_and_api_version(
     private_key: &str,
     api_version: &str,
 ) -> Request<Body> {
-    let canonical_path = path.split('?').next().unwrap_or(path);
+    signed_request_with_key_api_version_and_signed_path(
+        method,
+        path,
+        path,
+        body,
+        body,
+        version,
+        user_id,
+        private_key,
+        api_version,
+    )
+}
+
+/// Sign a request for a path other than the URI it is sent to.
+///
+/// The signature validation endpoint (`/organizations/:org/validate/*`) is
+/// signed for the real resource path, not for the validation URL.
+#[allow(clippy::too_many_arguments)]
+pub fn signed_request_with_signed_path(
+    method: &str,
+    path: &str,
+    signed_path: &str,
+    body: &[u8],
+    version: SignVersion,
+    user_id: &str,
+) -> Request<Body> {
+    signed_request_with_key_api_version_and_signed_path(
+        method,
+        path,
+        signed_path,
+        body,
+        body,
+        version,
+        user_id,
+        PRIVATE_KEY,
+        "2",
+    )
+}
+
+/// Sign `signed_body` for `signed_path` but send `body` to `path`.
+///
+/// The upstream validation endpoint checks the signature against the original
+/// request's content hash without re-hashing the validation request body.
+#[allow(clippy::too_many_arguments)]
+pub fn signed_request_with_signed_path_and_body(
+    method: &str,
+    path: &str,
+    signed_path: &str,
+    signed_body: &[u8],
+    body: &[u8],
+    version: SignVersion,
+    user_id: &str,
+) -> Request<Body> {
+    signed_request_with_key_api_version_and_signed_path(
+        method,
+        path,
+        signed_path,
+        signed_body,
+        body,
+        version,
+        user_id,
+        PRIVATE_KEY,
+        "2",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn signed_request_with_key_api_version_and_signed_path(
+    method: &str,
+    path: &str,
+    signed_path: &str,
+    signed_body: &[u8],
+    body: &[u8],
+    version: SignVersion,
+    user_id: &str,
+    private_key: &str,
+    api_version: &str,
+) -> Request<Body> {
+    let canonical_path = signed_path.split('?').next().unwrap_or(signed_path);
     let request = CanonicalRequest {
         method,
         path: canonical_path,
-        body,
+        body: signed_body,
         user_id,
         timestamp: "2026-10-24T12:00:00Z",
         api_version: Some(api_version),

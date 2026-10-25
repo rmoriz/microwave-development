@@ -118,6 +118,17 @@ impl ApiError {
         }
     }
 
+    /// A `410 Gone` response whose `error` member is a plain string, matching
+    /// the removed analytics/controls endpoint.
+    pub fn gone(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::GONE,
+            message: message.into(),
+            not_found_kind: None,
+            error_as_string: true,
+        }
+    }
+
     pub fn payload_too_large(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::PAYLOAD_TOO_LARGE,
