@@ -16,13 +16,13 @@
 //! the embedded schema migration.
 
 use microwave_store::{
-    ActorKeyRow, AuthzAclActorRow, AuthzAclGroupRow, AuthzEntityRow, AuthzGroupActorRow,
-    AuthzGroupGroupRow, ChecksumRow, ClientRow, ContainerRow, CookbookArtifactRow,
-    CookbookArtifactVersionChecksumRow, CookbookArtifactVersionRow, CookbookRow,
-    CookbookVersionChecksumRow, CookbookVersionRow, DataBagItemRow, GlobalGroupRow, GroupRow,
-    NamedObjectRow, NodeRow, OAuthApplicationRow, OrgRow, OrgUserAssociationRow, OrgUserInviteRow,
-    PolicyGroupRevisionAssociationRow, PolicyGroupRow, PolicyRevisionRow, PolicyRow,
-    SandboxedChecksumRow, StoreError, StoreSnapshot, UserRow,
+    decode_serialized_optional, encode_serialized_optional, ActorKeyRow, AuthzAclActorRow,
+    AuthzAclGroupRow, AuthzEntityRow, AuthzGroupActorRow, AuthzGroupGroupRow, ChecksumRow,
+    ClientRow, Compression, ContainerRow, CookbookArtifactRow, CookbookArtifactVersionChecksumRow,
+    CookbookArtifactVersionRow, CookbookRow, CookbookVersionChecksumRow, CookbookVersionRow,
+    DataBagItemRow, GlobalGroupRow, GroupRow, NamedObjectRow, NodeRow, OAuthApplicationRow, OrgRow,
+    OrgUserAssociationRow, OrgUserInviteRow, PolicyGroupRevisionAssociationRow, PolicyGroupRow,
+    PolicyRevisionRow, PolicyRow, SandboxedChecksumRow, StoreError, StoreSnapshot, UserRow,
 };
 use sqlx::postgres::{PgRow, Postgres};
 use sqlx::{Row, Transaction};
@@ -103,22 +103,40 @@ impl PostgresStore {
         import_containers(&mut transaction, snapshot).await?;
         import_groups(&mut transaction, snapshot).await?;
         import_global_groups(&mut transaction, snapshot).await?;
-        import_nodes(&mut transaction, snapshot).await?;
-        import_named_objects(&mut transaction, "roles", &snapshot.roles).await?;
-        import_named_objects(&mut transaction, "environments", &snapshot.environments).await?;
-        import_named_objects(&mut transaction, "data_bags", &snapshot.data_bags).await?;
-        import_data_bag_items(&mut transaction, snapshot).await?;
+        import_nodes(&mut transaction, snapshot, self.compression()).await?;
+        import_named_objects(
+            &mut transaction,
+            "roles",
+            &snapshot.roles,
+            self.compression(),
+        )
+        .await?;
+        import_named_objects(
+            &mut transaction,
+            "environments",
+            &snapshot.environments,
+            self.compression(),
+        )
+        .await?;
+        import_named_objects(
+            &mut transaction,
+            "data_bags",
+            &snapshot.data_bags,
+            self.compression(),
+        )
+        .await?;
+        import_data_bag_items(&mut transaction, snapshot, self.compression()).await?;
         import_checksums(&mut transaction, snapshot).await?;
         import_sandboxed_checksums(&mut transaction, snapshot).await?;
         import_cookbooks(&mut transaction, snapshot).await?;
-        import_cookbook_versions(&mut transaction, snapshot).await?;
+        import_cookbook_versions(&mut transaction, snapshot, self.compression()).await?;
         import_cookbook_version_checksums(&mut transaction, snapshot).await?;
         import_cookbook_artifacts(&mut transaction, snapshot).await?;
-        import_cookbook_artifact_versions(&mut transaction, snapshot).await?;
+        import_cookbook_artifact_versions(&mut transaction, snapshot, self.compression()).await?;
         import_cookbook_artifact_version_checksums(&mut transaction, snapshot).await?;
         import_policies(&mut transaction, snapshot).await?;
-        import_policy_groups(&mut transaction, snapshot).await?;
-        import_policy_revisions(&mut transaction, snapshot).await?;
+        import_policy_groups(&mut transaction, snapshot, self.compression()).await?;
+        import_policy_revisions(&mut transaction, snapshot, self.compression()).await?;
         import_policy_group_revision_associations(&mut transaction, snapshot).await?;
         import_oauth_applications(&mut transaction, snapshot).await?;
         advance_sequences(&mut transaction).await?;
@@ -145,6 +163,12 @@ fn text(row: &PgRow, index: usize) -> Result<String, StoreError> {
 
 fn opt_text(row: &PgRow, index: usize) -> Result<Option<String>, StoreError> {
     row.try_get(index).map_err(db)
+}
+
+/// Read a `serialized_object` column as plain snapshot JSON.
+fn serialized(row: &PgRow, index: usize) -> Result<Option<String>, StoreError> {
+    let value = opt_text(row, index)?;
+    decode_serialized_optional(value.as_deref())
 }
 
 fn integer(row: &PgRow, index: usize) -> Result<i64, StoreError> {
@@ -500,7 +524,7 @@ async fn collect_nodes(transaction: &mut PgTransaction<'_>) -> Result<Vec<NodeRo
             environment: text(row, 4)?,
             policy_name: opt_text(row, 5)?,
             policy_group: opt_text(row, 6)?,
-            serialized_object: opt_text(row, 7)?,
+            serialized_object: serialized(row, 7)?,
             last_updated_by: text(row, 8)?,
             created_at: text(row, 9)?,
             updated_at: text(row, 10)?,
@@ -527,7 +551,7 @@ async fn collect_named_objects(
                 authz_id: text(row, 1)?,
                 org_id: text(row, 2)?,
                 name: text(row, 3)?,
-                serialized_object: opt_text(row, 4)?,
+                serialized_object: serialized(row, 4)?,
                 last_updated_by: text(row, 5)?,
                 created_at: text(row, 6)?,
                 updated_at: text(row, 7)?,
@@ -553,7 +577,7 @@ async fn collect_data_bag_items(
             org_id: text(row, 1)?,
             data_bag_name: text(row, 2)?,
             item_name: text(row, 3)?,
-            serialized_object: opt_text(row, 4)?,
+            serialized_object: serialized(row, 4)?,
             last_updated_by: text(row, 5)?,
             created_at: text(row, 6)?,
             updated_at: text(row, 7)?,
@@ -648,7 +672,7 @@ async fn collect_cookbook_versions(
             meta_deps: opt_text(row, 9)?,
             meta_long_desc: opt_text(row, 10)?,
             metadata: opt_text(row, 11)?,
-            serialized_object: opt_text(row, 12)?,
+            serialized_object: serialized(row, 12)?,
             last_updated_by: text(row, 13)?,
             created_at: text(row, 14)?,
             updated_at: text(row, 15)?,
@@ -716,7 +740,7 @@ async fn collect_cookbook_artifact_versions(
             org_id: text(row, 2)?,
             identifier: text(row, 3)?,
             metadata: opt_text(row, 4)?,
-            serialized_object: opt_text(row, 5)?,
+            serialized_object: serialized(row, 5)?,
             created_at: text(row, 6)?,
             created_by: text(row, 7)?,
         })
@@ -786,7 +810,7 @@ async fn collect_policy_groups(
             org_id: text(row, 1)?,
             name: text(row, 2)?,
             authz_id: text(row, 3)?,
-            serialized_object: opt_text(row, 4)?,
+            serialized_object: serialized(row, 4)?,
             last_updated_by: text(row, 5)?,
             created_at: text(row, 6)?,
             updated_at: text(row, 7)?,
@@ -813,7 +837,7 @@ async fn collect_policy_revisions(
             policy_id: text(row, 2)?,
             revision_id: text(row, 3)?,
             name: text(row, 4)?,
-            serialized_object: opt_text(row, 5)?,
+            serialized_object: serialized(row, 5)?,
             last_updated_by: text(row, 6)?,
             created_at: text(row, 7)?,
             updated_at: text(row, 8)?,
@@ -1268,8 +1292,11 @@ async fn import_global_groups(
 async fn import_nodes(
     transaction: &mut PgTransaction<'_>,
     snapshot: &StoreSnapshot,
+    compression: Compression,
 ) -> Result<(), StoreError> {
     for row in &snapshot.nodes {
+        let serialized_object =
+            encode_serialized_optional(row.serialized_object.as_deref(), compression)?;
         sqlx::query(
             "INSERT INTO nodes
              (id, authz_id, org_id, name, environment, policy_name, policy_group,
@@ -1294,7 +1321,7 @@ async fn import_nodes(
         .bind(&row.environment)
         .bind(row.policy_name.as_deref())
         .bind(row.policy_group.as_deref())
-        .bind(row.serialized_object.as_deref())
+        .bind(serialized_object.as_deref())
         .bind(&row.last_updated_by)
         .bind(&row.created_at)
         .bind(&row.updated_at)
@@ -1309,6 +1336,7 @@ async fn import_named_objects(
     transaction: &mut PgTransaction<'_>,
     table: &str,
     rows: &[NamedObjectRow],
+    compression: Compression,
 ) -> Result<(), StoreError> {
     let sql = format!(
         "INSERT INTO {table}
@@ -1324,12 +1352,14 @@ async fn import_named_objects(
              updated_at = EXCLUDED.updated_at"
     );
     for row in rows {
+        let serialized_object =
+            encode_serialized_optional(row.serialized_object.as_deref(), compression)?;
         sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(&row.id)
             .bind(&row.authz_id)
             .bind(&row.org_id)
             .bind(&row.name)
-            .bind(row.serialized_object.as_deref())
+            .bind(serialized_object.as_deref())
             .bind(&row.last_updated_by)
             .bind(&row.created_at)
             .bind(&row.updated_at)
@@ -1343,8 +1373,11 @@ async fn import_named_objects(
 async fn import_data_bag_items(
     transaction: &mut PgTransaction<'_>,
     snapshot: &StoreSnapshot,
+    compression: Compression,
 ) -> Result<(), StoreError> {
     for row in &snapshot.data_bag_items {
+        let serialized_object =
+            encode_serialized_optional(row.serialized_object.as_deref(), compression)?;
         sqlx::query(
             "INSERT INTO data_bag_items
              (id, org_id, data_bag_name, item_name, serialized_object,
@@ -1363,7 +1396,7 @@ async fn import_data_bag_items(
         .bind(&row.org_id)
         .bind(&row.data_bag_name)
         .bind(&row.item_name)
-        .bind(row.serialized_object.as_deref())
+        .bind(serialized_object.as_deref())
         .bind(&row.last_updated_by)
         .bind(&row.created_at)
         .bind(&row.updated_at)
@@ -1456,8 +1489,11 @@ async fn import_cookbooks(
 async fn import_cookbook_versions(
     transaction: &mut PgTransaction<'_>,
     snapshot: &StoreSnapshot,
+    compression: Compression,
 ) -> Result<(), StoreError> {
     for row in &snapshot.cookbook_versions {
+        let serialized_object =
+            encode_serialized_optional(row.serialized_object.as_deref(), compression)?;
         sqlx::query(
             "INSERT INTO cookbook_versions
              (id, cookbook_id, org_id, name, major, minor, patch, frozen,
@@ -1493,7 +1529,7 @@ async fn import_cookbook_versions(
         .bind(row.meta_deps.as_deref())
         .bind(row.meta_long_desc.as_deref())
         .bind(row.metadata.as_deref())
-        .bind(row.serialized_object.as_deref())
+        .bind(serialized_object.as_deref())
         .bind(&row.last_updated_by)
         .bind(&row.created_at)
         .bind(&row.updated_at)
@@ -1556,8 +1592,11 @@ async fn import_cookbook_artifacts(
 async fn import_cookbook_artifact_versions(
     transaction: &mut PgTransaction<'_>,
     snapshot: &StoreSnapshot,
+    compression: Compression,
 ) -> Result<(), StoreError> {
     for row in &snapshot.cookbook_artifact_versions {
+        let serialized_object =
+            encode_serialized_optional(row.serialized_object.as_deref(), compression)?;
         sqlx::query(
             "INSERT INTO cookbook_artifact_versions
              (id, cookbook_artifact_id, org_id, identifier, metadata,
@@ -1577,7 +1616,7 @@ async fn import_cookbook_artifact_versions(
         .bind(&row.org_id)
         .bind(&row.identifier)
         .bind(row.metadata.as_deref())
-        .bind(row.serialized_object.as_deref())
+        .bind(serialized_object.as_deref())
         .bind(&row.created_at)
         .bind(&row.created_by)
         .execute(&mut **transaction)
@@ -1649,8 +1688,11 @@ async fn import_policies(
 async fn import_policy_groups(
     transaction: &mut PgTransaction<'_>,
     snapshot: &StoreSnapshot,
+    compression: Compression,
 ) -> Result<(), StoreError> {
     for row in &snapshot.policy_groups {
+        let serialized_object =
+            encode_serialized_optional(row.serialized_object.as_deref(), compression)?;
         sqlx::query(
             "INSERT INTO policy_groups
              (id, org_id, name, authz_id, serialized_object,
@@ -1669,7 +1711,7 @@ async fn import_policy_groups(
         .bind(&row.org_id)
         .bind(&row.name)
         .bind(&row.authz_id)
-        .bind(row.serialized_object.as_deref())
+        .bind(serialized_object.as_deref())
         .bind(&row.last_updated_by)
         .bind(&row.created_at)
         .bind(&row.updated_at)
@@ -1683,8 +1725,11 @@ async fn import_policy_groups(
 async fn import_policy_revisions(
     transaction: &mut PgTransaction<'_>,
     snapshot: &StoreSnapshot,
+    compression: Compression,
 ) -> Result<(), StoreError> {
     for row in &snapshot.policy_revisions {
+        let serialized_object =
+            encode_serialized_optional(row.serialized_object.as_deref(), compression)?;
         sqlx::query(
             "INSERT INTO policy_revisions
              (id, org_id, policy_id, revision_id, name, serialized_object,
@@ -1705,7 +1750,7 @@ async fn import_policy_revisions(
         .bind(&row.policy_id)
         .bind(&row.revision_id)
         .bind(&row.name)
-        .bind(row.serialized_object.as_deref())
+        .bind(serialized_object.as_deref())
         .bind(&row.last_updated_by)
         .bind(&row.created_at)
         .bind(&row.updated_at)

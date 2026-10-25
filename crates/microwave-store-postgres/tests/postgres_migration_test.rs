@@ -5,9 +5,9 @@
 //! message. A configured database that cannot be reached is a hard failure.
 
 use microwave_store::{
-    ActorType, ArtifactRepository, AuthzRepository, CookbookRepository, IdentityRepository,
-    MembershipRepository, NewNode, OAuthRepository, ObjectRepository, PolicyRepository,
-    SandboxRepository,
+    ActorType, ArtifactRepository, AuthzRepository, Compression, CookbookRepository,
+    IdentityRepository, MembershipRepository, NewNode, OAuthRepository, ObjectRepository,
+    PolicyRepository, SandboxRepository, COMPRESSED_PREFIX,
 };
 use microwave_store_postgres::PostgresStore;
 
@@ -193,6 +193,31 @@ async fn snapshot_round_trips_every_seeded_collection() {
 
     let before = store.export_snapshot().await.unwrap();
     assert!(before.orgs.iter().any(|row| row.name == org_name));
+    let exported_node = before
+        .nodes
+        .iter()
+        .find(|row| row.name == node_name)
+        .expect("node is in the snapshot");
+    assert_eq!(
+        exported_node.serialized_object.as_deref(),
+        Some(r#"{"name":"node","chef_environment":"_default"}"#)
+    );
+    assert!(before
+        .cookbook_artifact_versions
+        .iter()
+        .find(|row| row.identifier == "identifier-1")
+        .unwrap()
+        .serialized_object
+        .as_deref()
+        .is_some_and(|value| !value.starts_with(COMPRESSED_PREFIX)));
+    let raw_node: String =
+        sqlx::query_scalar("SELECT serialized_object FROM nodes WHERE org_id = $1 AND name = $2")
+            .bind(&org.id)
+            .bind(&node_name)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert!(raw_node.starts_with(COMPRESSED_PREFIX));
     assert!(before.users.iter().any(|row| row.id == user.id));
     assert!(before
         .cookbook_versions
@@ -272,6 +297,74 @@ async fn snapshot_round_trips_every_seeded_collection() {
         .await
         .unwrap();
     assert!(next.id > application.id);
+    drop(target);
+    drop_scratch_database(&url, &scratch_name).await;
+}
+
+#[tokio::test]
+async fn imports_snapshot_with_compression_none() {
+    let Some(url) = test_url() else {
+        eprintln!(
+            "SKIP: MICROWAVE_TEST_POSTGRES_URL is not set; start a disposable \
+             PostgreSQL with scripts/run-postgres-tests.sh"
+        );
+        return;
+    };
+    let store = PostgresStore::connect(&url)
+        .await
+        .expect("connect to configured PostgreSQL");
+    let suffix = suffix();
+    let org = store
+        .create_org(&format!("plain-import-org-{suffix}"), "Plain Import Org")
+        .await
+        .unwrap();
+    let creator = store.create_actor().await.unwrap();
+    for container in ["nodes"] {
+        store
+            .create_container_for_org(&org.id, container)
+            .await
+            .unwrap();
+    }
+    let name = format!("plain-import-node-{suffix}");
+    let body = format!(r#"{{"name":"{name}"}}"#);
+    store
+        .create_node(
+            &org.id,
+            NewNode {
+                name: &name,
+                body: &body,
+                environment: "_default",
+                policy_name: None,
+                policy_group: None,
+                creator_authz_id: &creator,
+            },
+        )
+        .await
+        .unwrap();
+    let snapshot = store.export_snapshot().await.unwrap();
+
+    let (scratch_name, scratch_url) = create_scratch_database(&url, &suffix).await;
+    let target = PostgresStore::connect_with_compression(&scratch_url, Compression::None)
+        .await
+        .expect("connect to plain-import target");
+    target.import_snapshot(&snapshot).await.unwrap();
+
+    let raw: String =
+        sqlx::query_scalar("SELECT serialized_object FROM nodes WHERE org_id = $1 AND name = $2")
+            .bind(&org.id)
+            .bind(&name)
+            .fetch_one(target.pool())
+            .await
+            .expect("read raw imported value");
+    assert_eq!(raw, body);
+    assert!(!raw.starts_with(COMPRESSED_PREFIX));
+    let node = target
+        .find_node(&org.id, &name)
+        .await
+        .unwrap()
+        .expect("imported node exists");
+    assert_eq!(node.serialized_object, body);
+
     drop(target);
     drop_scratch_database(&url, &scratch_name).await;
 }

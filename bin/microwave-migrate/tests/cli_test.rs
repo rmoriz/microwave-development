@@ -1,10 +1,16 @@
 use assert_cmd::Command;
-use microwave_store::SqliteStore;
+use microwave_store::{NewNode, SqliteStore};
 use std::path::Path;
 use std::process::Output;
 
 fn migrate() -> Command {
-    Command::cargo_bin("microwave-migrate").unwrap()
+    let mut command = Command::cargo_bin("microwave-migrate").unwrap();
+    // Keep the suite independent of the developer/CI environment. Tests that
+    // need an override pass `--compression`/`--config` explicitly.
+    command
+        .env_remove("MW_STORAGE__COMPRESSION")
+        .env_remove("MW_CONFIG");
+    command
 }
 
 fn run(args: &[&str]) -> Output {
@@ -21,6 +27,32 @@ fn stderr(output: &Output) -> String {
 
 fn database(dir: &Path) -> std::path::PathBuf {
     dir.join("microwave.db")
+}
+
+fn seed_node(store: &SqliteStore, suffix: &str) -> (String, String, String) {
+    let org = store
+        .create_org(&format!("import-org-{suffix}"), "Import Org")
+        .unwrap();
+    let creator = store.create_actor().unwrap();
+    store
+        .create_container_for_org_with_acl(&org.id, "nodes", &creator)
+        .unwrap();
+    let name = format!("import-node-{suffix}");
+    let body = format!(r#"{{"name":"{name}","run_list":[]}}"#);
+    store
+        .create_node(
+            &org.id,
+            NewNode {
+                name: &name,
+                body: &body,
+                environment: "_default",
+                policy_name: None,
+                policy_group: None,
+                creator_authz_id: &creator,
+            },
+        )
+        .unwrap();
+    (org.id, name, body)
 }
 
 #[test]
@@ -91,6 +123,107 @@ fn export_and_import_round_trip_through_the_cli() {
 }
 
 #[test]
+fn import_with_compression_none_stores_plain_serialized_objects() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(source.path())).unwrap();
+    let (_org_id, name, body) = seed_node(&store, "none");
+    drop(store);
+
+    let snapshots = tempfile::tempdir().unwrap();
+    let snapshot = snapshots.path().join("migration.json");
+    let exported = run(&[
+        "export",
+        "--data-dir",
+        source.path().to_str().unwrap(),
+        "--output",
+        snapshot.to_str().unwrap(),
+    ]);
+    assert!(
+        exported.status.success(),
+        "export failed: {}",
+        stderr(&exported)
+    );
+
+    let target = tempfile::tempdir().unwrap();
+    let imported = run(&[
+        "import",
+        "--data-dir",
+        target.path().to_str().unwrap(),
+        "--input",
+        snapshot.to_str().unwrap(),
+        "--compression",
+        "none",
+        "--yes",
+    ]);
+    assert!(
+        imported.status.success(),
+        "import failed: {}",
+        stderr(&imported)
+    );
+    assert!(stdout(&imported).contains("Import compression: none"));
+
+    let connection = rusqlite::Connection::open(database(target.path())).unwrap();
+    let raw: String = connection
+        .query_row(
+            "SELECT serialized_object FROM nodes WHERE name = ?1",
+            [&name],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(raw, body);
+    assert!(!raw.starts_with("mwz1:"));
+}
+
+#[test]
+fn import_compression_defaults_from_config_file() {
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(source.path())).unwrap();
+    let (_org_id, name, _body) = seed_node(&store, "config");
+    drop(store);
+
+    let snapshots = tempfile::tempdir().unwrap();
+    let snapshot = snapshots.path().join("migration.json");
+    run(&[
+        "export",
+        "--data-dir",
+        source.path().to_str().unwrap(),
+        "--output",
+        snapshot.to_str().unwrap(),
+    ]);
+
+    let config = snapshots.path().join("microwave.toml");
+    std::fs::write(&config, "[storage]\ncompression = \"none\"\n").unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    let imported = run(&[
+        "import",
+        "--data-dir",
+        target.path().to_str().unwrap(),
+        "--input",
+        snapshot.to_str().unwrap(),
+        "--config",
+        config.to_str().unwrap(),
+        "--yes",
+    ]);
+    assert!(
+        imported.status.success(),
+        "import failed: {}",
+        stderr(&imported)
+    );
+    assert!(stdout(&imported).contains("Import compression: none"));
+
+    let connection = rusqlite::Connection::open(database(target.path())).unwrap();
+    let raw: String = connection
+        .query_row(
+            "SELECT serialized_object FROM nodes WHERE name = ?1",
+            [&name],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!raw.starts_with("mwz1:"));
+}
+
+#[test]
 fn import_rejects_an_unsupported_snapshot_version() {
     let snapshots = tempfile::tempdir().unwrap();
     let snapshot = snapshots.path().join("future.json");
@@ -133,6 +266,17 @@ fn from_api_reports_a_missing_key_without_writing_a_file() {
     let message = stderr(&result);
     assert!(message.contains("migration.pem"));
     assert!(!output.exists());
+}
+
+#[test]
+fn import_help_lists_compression_options() {
+    let output = run(&["import", "--help"]);
+    assert!(output.status.success());
+    let message = stdout(&output);
+    assert!(message.contains("--compression"));
+    assert!(message.contains("--config"));
+    assert!(message.contains("zlib"));
+    assert!(message.contains("none"));
 }
 
 #[test]
@@ -278,6 +422,108 @@ fn postgres_export_and_import_round_trip_through_the_cli() {
         ))
         .expect("create OAuth application after snapshot import");
     assert!(application.id > max);
+    drop(target);
+    drop_scratch_database(&url, &scratch_name);
+}
+
+#[test]
+fn postgres_import_with_compression_none_stores_plain_serialized_objects() {
+    use microwave_store::{AuthzRepository, IdentityRepository, ObjectRepository};
+
+    let Some(url) = postgres_url() else {
+        eprintln!("SKIP: MICROWAVE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let store = runtime
+        .block_on(microwave_store_postgres::PostgresStore::connect(&url))
+        .expect("connect to configured PostgreSQL");
+    let suffix = unique("pg-plain");
+    let org = runtime
+        .block_on(store.create_org(&format!("org-{suffix}"), "Plain Import Org"))
+        .expect("create org");
+    let creator = runtime
+        .block_on(store.create_actor())
+        .expect("create actor");
+    runtime
+        .block_on(store.create_container_for_org(&org.id, "nodes"))
+        .expect("create nodes container");
+    let name = format!("node-{suffix}");
+    let body = format!(r#"{{"name":"{name}","run_list":[]}}"#);
+    runtime
+        .block_on(store.create_node(
+            &org.id,
+            NewNode {
+                name: &name,
+                body: &body,
+                environment: "_default",
+                policy_name: None,
+                policy_group: None,
+                creator_authz_id: &creator,
+            },
+        ))
+        .expect("create node");
+    drop(store);
+
+    let snapshots = tempfile::tempdir().unwrap();
+    let snapshot = snapshots.path().join("pg-plain.json");
+    let exported = run(&[
+        "export",
+        "--database-url",
+        &url,
+        "--output",
+        snapshot.to_str().unwrap(),
+    ]);
+    assert!(
+        exported.status.success(),
+        "export failed: {}",
+        stderr(&exported)
+    );
+
+    let (scratch_name, target_url) = scratch_database(&url, &suffix);
+    let imported = run(&[
+        "import",
+        "--database-url",
+        &target_url,
+        "--input",
+        snapshot.to_str().unwrap(),
+        "--compression",
+        "none",
+        "--yes",
+    ]);
+    assert!(
+        imported.status.success(),
+        "import failed: {}",
+        stderr(&imported)
+    );
+    assert!(stdout(&imported).contains("Import compression: none"));
+
+    let target = runtime
+        .block_on(microwave_store_postgres::PostgresStore::connect(
+            &target_url,
+        ))
+        .expect("connect to plain import target");
+    let raw: String = runtime
+        .block_on(
+            sqlx::query_scalar(
+                "SELECT serialized_object FROM nodes WHERE org_id = $1 AND name = $2",
+            )
+            .bind(&org.id)
+            .bind(&name)
+            .fetch_one(target.pool()),
+        )
+        .expect("read raw imported value");
+    assert_eq!(raw, body);
+    assert!(!raw.starts_with("mwz1:"));
+    let node = runtime
+        .block_on(target.find_node(&org.id, &name))
+        .expect("find imported node")
+        .expect("imported node exists");
+    assert_eq!(node.serialized_object, body);
+
     drop(target);
     drop_scratch_database(&url, &scratch_name);
 }

@@ -1,3 +1,4 @@
+use crate::compression::{decode_serialized, encode_serialized, Compression};
 use crate::identity::{conflict, new_id, now};
 use crate::objects::create_object_authz;
 use crate::sqlite::{SqliteStore, StoreError};
@@ -57,6 +58,7 @@ impl SqliteStore {
 
         let now = now();
         let revision_row_id = new_id();
+        let serialized_object = encode_serialized(body, self.compression())?;
         let mut connection = self.connection();
         let tx = connection.transaction()?;
         let (policy_id, policy_authz_id) = ensure_policy(&tx, org_id, name, creator_authz_id)?;
@@ -67,7 +69,7 @@ impl SqliteStore {
             &policy_id,
             name,
             revision_id,
-            body,
+            &serialized_object,
             creator_authz_id,
             &now,
         )?;
@@ -131,7 +133,7 @@ impl SqliteStore {
         revision_id: &str,
     ) -> Result<Option<StoredPolicyRevision>, StoreError> {
         let connection = self.connection();
-        Ok(connection
+        let revision = connection
             .query_row(
                 "SELECT pr.id, pr.policy_id, p.authz_id, pr.name, pr.revision_id,
                         pr.serialized_object, pr.created_at, pr.updated_at
@@ -141,7 +143,8 @@ impl SqliteStore {
                 params![org_id, name, revision_id],
                 policy_revision_from_row,
             )
-            .optional()?)
+            .optional()?;
+        decode_policy_revision_option(revision)
     }
 
     pub fn list_policy_revisions(
@@ -176,7 +179,7 @@ impl SqliteStore {
         let rows = statement.query_map(params![org_id, name], policy_revision_from_row)?;
         let mut revisions = Vec::new();
         for row in rows {
-            revisions.push(row?);
+            revisions.push(decode_policy_revision(row?)?);
         }
         Ok(revisions)
     }
@@ -232,6 +235,7 @@ impl SqliteStore {
 
         let now = now();
         let id = new_id();
+        let serialized_object = encode_serialized(body, self.compression())?;
         let mut connection = self.connection();
         let tx = connection.transaction()?;
         let authz_id = create_object_authz(&tx, org_id, "policy_groups", creator_authz_id)?;
@@ -239,7 +243,7 @@ impl SqliteStore {
             "INSERT INTO policy_groups
              (id, org_id, name, authz_id, serialized_object, last_updated_by, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-            params![id, org_id, name, authz_id, body, creator_authz_id, now],
+            params![id, org_id, name, authz_id, serialized_object, creator_authz_id, now],
         )
         .map_err(|error| conflict(error, format!("policy group {name} already exists")))?;
         tx.commit()?;
@@ -258,14 +262,15 @@ impl SqliteStore {
         name: &str,
     ) -> Result<Option<StoredPolicyGroup>, StoreError> {
         let connection = self.connection();
-        Ok(connection
+        let group = connection
             .query_row(
                 "SELECT id, authz_id, name, serialized_object
                  FROM policy_groups WHERE org_id = ?1 AND name = ?2",
                 params![org_id, name],
                 policy_group_from_row,
             )
-            .optional()?)
+            .optional()?;
+        decode_policy_group_option(group)
     }
 
     pub fn list_policy_groups(&self, org_id: &str) -> Result<Vec<StoredPolicyGroup>, StoreError> {
@@ -277,7 +282,7 @@ impl SqliteStore {
         let rows = statement.query_map([org_id], policy_group_from_row)?;
         let mut groups = Vec::new();
         for row in rows {
-            groups.push(row?);
+            groups.push(decode_policy_group(row?)?);
         }
         Ok(groups)
     }
@@ -329,8 +334,14 @@ impl SqliteStore {
         let mut connection = self.connection();
         let tx = connection.transaction()?;
         let (policy_id, _) = ensure_policy(&tx, org_id, policy_name, creator_authz_id)?;
-        let (_, group_authz_id) =
-            ensure_policy_group(&tx, org_id, group_name, group_body, creator_authz_id)?;
+        let (_, group_authz_id) = ensure_policy_group(
+            &tx,
+            org_id,
+            group_name,
+            group_body,
+            creator_authz_id,
+            self.compression(),
+        )?;
         let (revision_row_id, serialized_object) = ensure_policy_revision(
             &tx,
             org_id,
@@ -339,6 +350,7 @@ impl SqliteStore {
             revision_id,
             body,
             creator_authz_id,
+            self.compression(),
         )?;
 
         let existing_id: Option<String> = tx
@@ -406,7 +418,7 @@ impl SqliteStore {
         policy_name: &str,
     ) -> Result<Option<StoredPolicyGroupAssociation>, StoreError> {
         let connection = self.connection();
-        Ok(connection
+        let association = connection
             .query_row(
                 "SELECT a.id, a.policy_group_name, a.policy_group_authz_id,
                         a.policy_revision_name, a.policy_revision_revision_id,
@@ -418,7 +430,8 @@ impl SqliteStore {
                 params![org_id, group_name, policy_name],
                 policy_group_association_from_row,
             )
-            .optional()?)
+            .optional()?;
+        decode_policy_group_association_option(association)
     }
 
     pub fn list_policy_group_associations(
@@ -442,7 +455,7 @@ impl SqliteStore {
         )?;
         let mut associations = Vec::new();
         for row in rows {
-            associations.push(row?);
+            associations.push(decode_policy_group_association(row?)?);
         }
         Ok(associations)
     }
@@ -528,6 +541,7 @@ fn ensure_policy_group(
     name: &str,
     body: &str,
     creator_authz_id: &str,
+    compression: Compression,
 ) -> Result<(String, String), StoreError> {
     if let Some(group) = tx
         .query_row(
@@ -543,16 +557,26 @@ fn ensure_policy_group(
     let id = new_id();
     let authz_id = create_object_authz(tx, org_id, "policy_groups", creator_authz_id)?;
     let now = now();
+    let serialized_object = encode_serialized(body, compression)?;
     tx.execute(
         "INSERT INTO policy_groups
          (id, org_id, name, authz_id, serialized_object, last_updated_by, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-        params![id, org_id, name, authz_id, body, creator_authz_id, now],
+        params![
+            id,
+            org_id,
+            name,
+            authz_id,
+            serialized_object,
+            creator_authz_id,
+            now
+        ],
     )
     .map_err(|error| conflict(error, format!("policy group {name} already exists")))?;
     Ok((id, authz_id))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ensure_policy_revision(
     tx: &Transaction<'_>,
     org_id: &str,
@@ -561,8 +585,9 @@ fn ensure_policy_revision(
     revision_id: &str,
     body: &str,
     creator_authz_id: &str,
+    compression: Compression,
 ) -> Result<(String, String), StoreError> {
-    if let Some(revision) = tx
+    if let Some((id, serialized_object)) = tx
         .query_row(
             "SELECT id, serialized_object FROM policy_revisions
              WHERE org_id = ?1 AND name = ?2 AND revision_id = ?3",
@@ -571,11 +596,12 @@ fn ensure_policy_revision(
         )
         .optional()?
     {
-        return Ok(revision);
+        return Ok((id, decode_serialized(&serialized_object)?));
     }
 
     let id = new_id();
     let now = now();
+    let serialized_object = encode_serialized(body, compression)?;
     insert_revision(
         tx,
         &id,
@@ -583,7 +609,7 @@ fn ensure_policy_revision(
         policy_id,
         name,
         revision_id,
-        body,
+        &serialized_object,
         creator_authz_id,
         &now,
     )?;
@@ -598,7 +624,7 @@ fn insert_revision(
     policy_id: &str,
     name: &str,
     revision_id: &str,
-    body: &str,
+    serialized_object: &str,
     creator_authz_id: &str,
     now: &str,
 ) -> Result<(), StoreError> {
@@ -613,7 +639,7 @@ fn insert_revision(
             policy_id,
             revision_id,
             name,
-            body,
+            serialized_object,
             creator_authz_id,
             now
         ],
@@ -689,4 +715,41 @@ fn policy_group_association_from_row(
         revision_id: row.get(4)?,
         serialized_object: row.get(5)?,
     })
+}
+
+fn decode_policy_revision(
+    mut revision: StoredPolicyRevision,
+) -> Result<StoredPolicyRevision, StoreError> {
+    revision.serialized_object = decode_serialized(&revision.serialized_object)?;
+    Ok(revision)
+}
+
+fn decode_policy_revision_option(
+    revision: Option<StoredPolicyRevision>,
+) -> Result<Option<StoredPolicyRevision>, StoreError> {
+    revision.map(decode_policy_revision).transpose()
+}
+
+fn decode_policy_group(mut group: StoredPolicyGroup) -> Result<StoredPolicyGroup, StoreError> {
+    group.serialized_object = decode_serialized(&group.serialized_object)?;
+    Ok(group)
+}
+
+fn decode_policy_group_option(
+    group: Option<StoredPolicyGroup>,
+) -> Result<Option<StoredPolicyGroup>, StoreError> {
+    group.map(decode_policy_group).transpose()
+}
+
+fn decode_policy_group_association(
+    mut association: StoredPolicyGroupAssociation,
+) -> Result<StoredPolicyGroupAssociation, StoreError> {
+    association.serialized_object = decode_serialized(&association.serialized_object)?;
+    Ok(association)
+}
+
+fn decode_policy_group_association_option(
+    association: Option<StoredPolicyGroupAssociation>,
+) -> Result<Option<StoredPolicyGroupAssociation>, StoreError> {
+    association.map(decode_policy_group_association).transpose()
 }

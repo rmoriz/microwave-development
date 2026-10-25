@@ -1,3 +1,4 @@
+use crate::compression::Compression;
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -16,6 +17,8 @@ pub enum StoreError {
     NotFound(String),
     #[error("invalid value: {0}")]
     Invalid(String),
+    #[error("serialized object compression error: {0}")]
+    Compression(String),
     #[error("forbidden: {0}")]
     Forbidden(String),
     #[error("io error: {0}")]
@@ -25,11 +28,21 @@ pub enum StoreError {
 /// A SQLite-backed metadata store.
 pub struct SqliteStore {
     connection: Mutex<Connection>,
+    compression: Compression,
 }
 
 impl SqliteStore {
     /// Open a database on disk, creating parent directories if needed.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
+        Self::open_with_compression(path, Compression::default())
+    }
+
+    /// Open a database on disk with an explicit serialized-object compression
+    /// mode. Reads always accept both compressed and legacy plain values.
+    pub fn open_with_compression(
+        path: &Path,
+        compression: Compression,
+    ) -> Result<Self, StoreError> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)?;
@@ -41,16 +54,23 @@ impl SqliteStore {
         migrate(&connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
+            compression,
         })
     }
 
     /// Open a private in-memory database. Intended for tests.
     pub fn open_in_memory() -> Result<Self, StoreError> {
+        Self::open_in_memory_with_compression(Compression::default())
+    }
+
+    /// Open a private in-memory database with an explicit compression mode.
+    pub fn open_in_memory_with_compression(compression: Compression) -> Result<Self, StoreError> {
         let connection = Connection::open_in_memory()?;
         configure(&connection, false)?;
         migrate(&connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
+            compression,
         })
     }
 
@@ -68,7 +88,13 @@ impl SqliteStore {
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
         Ok(Self {
             connection: Mutex::new(connection),
+            compression: Compression::default(),
         })
+    }
+
+    /// Compression mode used for newly written serialized objects.
+    pub fn compression(&self) -> Compression {
+        self.compression
     }
 
     pub(crate) fn connection(&self) -> MutexGuard<'_, Connection> {

@@ -1,4 +1,6 @@
-use microwave_config::{Config, DatabaseDriver, ObjectStoreBackend, SearchBackend};
+use microwave_config::{
+    Config, DatabaseDriver, ObjectStoreBackend, SearchBackend, StorageCompression,
+};
 use std::sync::Mutex;
 
 /// Environment mutation is process-wide, so tests that set MW_* variables must
@@ -12,6 +14,7 @@ fn defaults_are_safe_and_local() {
     assert_eq!(c.server.bind, "0.0.0.0:8000");
     assert_eq!(c.paths.data_dir, "./data");
     assert_eq!(c.database.driver, DatabaseDriver::Sqlite);
+    assert_eq!(c.storage.compression, StorageCompression::Zlib);
     assert_eq!(c.search.backend, SearchBackend::Embedded);
     assert_eq!(c.object_store.backend, ObjectStoreBackend::Local);
     assert_eq!(c.auth.skew_seconds, 900);
@@ -79,6 +82,28 @@ fn search_backend_and_url_can_be_overridden_from_env() {
 
     std::env::remove_var("MW_SEARCH__BACKEND");
     std::env::remove_var("MW_SEARCH__URL");
+}
+
+#[test]
+fn storage_compression_can_be_disabled_from_toml_and_env() {
+    let c = Config::from_toml_str(
+        r#"
+        [storage]
+        compression = "none"
+    "#,
+    )
+    .unwrap();
+    assert_eq!(c.storage.compression, StorageCompression::None);
+
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("MW_STORAGE__COMPRESSION", "none");
+    let mut c = Config::default();
+    c.apply_env().unwrap();
+    assert_eq!(c.storage.compression, StorageCompression::None);
+
+    std::env::set_var("MW_STORAGE__COMPRESSION", "gzip");
+    assert!(c.apply_env().is_err());
+    std::env::remove_var("MW_STORAGE__COMPRESSION");
 }
 
 #[test]

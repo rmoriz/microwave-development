@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use microwave_store::{
-    NewNode, ObjectRepository, Permission, StoreError, StoredDataBagItem, StoredNode, StoredObject,
+    decode_serialized, encode_serialized, NewNode, ObjectRepository, Permission, StoreError,
+    StoredDataBagItem, StoredNode, StoredObject,
 };
 use sqlx::postgres::{PgRow, Postgres};
 use sqlx::{Row, Transaction};
@@ -19,6 +20,7 @@ impl PostgresStore {
     ) -> Result<StoredObject, StoreError> {
         let id = new_id();
         let timestamp = now();
+        let serialized_object = encode_serialized(body, self.compression())?;
         let mut transaction = self.pool().begin().await.map_err(db)?;
         let authz_id =
             create_object_authz(&mut transaction, org_id, container_name, creator_authz_id).await?;
@@ -32,7 +34,7 @@ impl PostgresStore {
             .bind(&authz_id)
             .bind(org_id)
             .bind(name)
-            .bind(body)
+            .bind(&serialized_object)
             .bind(creator_authz_id)
             .bind(&timestamp)
             .execute(&mut *transaction)
@@ -65,9 +67,11 @@ impl PostgresStore {
             .fetch_optional(self.pool())
             .await
             .map_err(db)?;
-        row.map(|row| stored_object_from_row(&row))
+        let object = row
+            .map(|row| stored_object_from_row(&row))
             .transpose()
-            .map_err(db)
+            .map_err(db)?;
+        decode_stored_object_option(object)
     }
 
     async fn list_named_objects(
@@ -84,10 +88,12 @@ impl PostgresStore {
             .fetch_all(self.pool())
             .await
             .map_err(db)?;
-        rows.iter()
-            .map(stored_object_from_row)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(db)
+        decode_stored_objects(
+            rows.iter()
+                .map(stored_object_from_row)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?,
+        )
     }
 
     async fn update_named_object(
@@ -98,6 +104,7 @@ impl PostgresStore {
         body: &str,
     ) -> Result<StoredObject, StoreError> {
         let timestamp = now();
+        let serialized_object = encode_serialized(body, self.compression())?;
         let sql = format!(
             "UPDATE {table} SET serialized_object = $3, updated_at = $4
              WHERE org_id = $1 AND name = $2"
@@ -105,7 +112,7 @@ impl PostgresStore {
         let result = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(org_id)
             .bind(name)
-            .bind(body)
+            .bind(&serialized_object)
             .bind(&timestamp)
             .execute(self.pool())
             .await
@@ -157,6 +164,7 @@ impl ObjectRepository for PostgresStore {
         } = node;
         let id = new_id();
         let timestamp = now();
+        let serialized_object = encode_serialized(body, self.compression())?;
         let mut transaction = self.pool().begin().await.map_err(db)?;
         let authz_id =
             create_object_authz(&mut transaction, org_id, "nodes", creator_authz_id).await?;
@@ -173,7 +181,7 @@ impl ObjectRepository for PostgresStore {
         .bind(environment)
         .bind(policy_name)
         .bind(policy_group)
-        .bind(body)
+        .bind(&serialized_object)
         .bind(creator_authz_id)
         .bind(&timestamp)
         .execute(&mut *transaction)
@@ -204,7 +212,8 @@ impl ObjectRepository for PostgresStore {
         .fetch_optional(self.pool())
         .await
         .map_err(db)?;
-        row.map(|row| node_from_row(&row)).transpose().map_err(db)
+        let node = row.map(|row| node_from_row(&row)).transpose().map_err(db)?;
+        decode_node_option(node)
     }
 
     async fn list_nodes(&self, org_id: &str) -> Result<Vec<StoredNode>, StoreError> {
@@ -217,10 +226,12 @@ impl ObjectRepository for PostgresStore {
         .fetch_all(self.pool())
         .await
         .map_err(db)?;
-        rows.iter()
-            .map(node_from_row)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(db)
+        decode_nodes(
+            rows.iter()
+                .map(node_from_row)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?,
+        )
     }
 
     async fn count_nodes(&self) -> Result<u64, StoreError> {
@@ -246,10 +257,12 @@ impl ObjectRepository for PostgresStore {
         .fetch_all(self.pool())
         .await
         .map_err(db)?;
-        rows.iter()
-            .map(node_from_row)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(db)
+        decode_nodes(
+            rows.iter()
+                .map(node_from_row)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?,
+        )
     }
 
     async fn update_node(
@@ -262,6 +275,7 @@ impl ObjectRepository for PostgresStore {
         policy_group: Option<&str>,
     ) -> Result<StoredNode, StoreError> {
         let timestamp = now();
+        let serialized_object = encode_serialized(body, self.compression())?;
         let result = sqlx::query(
             "UPDATE nodes
              SET serialized_object = $3, environment = $4, policy_name = $5,
@@ -270,7 +284,7 @@ impl ObjectRepository for PostgresStore {
         )
         .bind(org_id)
         .bind(name)
-        .bind(body)
+        .bind(&serialized_object)
         .bind(environment)
         .bind(policy_name)
         .bind(policy_group)
@@ -420,6 +434,7 @@ impl ObjectRepository for PostgresStore {
     ) -> Result<StoredDataBagItem, StoreError> {
         let id = new_id();
         let timestamp = now();
+        let serialized_object = encode_serialized(body, self.compression())?;
         sqlx::query(
             "INSERT INTO data_bag_items
              (id, org_id, data_bag_name, item_name, serialized_object,
@@ -430,7 +445,7 @@ impl ObjectRepository for PostgresStore {
         .bind(org_id)
         .bind(data_bag_name)
         .bind(item_name)
-        .bind(body)
+        .bind(&serialized_object)
         .bind(&timestamp)
         .execute(self.pool())
         .await
@@ -467,9 +482,11 @@ impl ObjectRepository for PostgresStore {
         .fetch_optional(self.pool())
         .await
         .map_err(db)?;
-        row.map(|row| data_bag_item_from_row(&row))
+        let item = row
+            .map(|row| data_bag_item_from_row(&row))
             .transpose()
-            .map_err(db)
+            .map_err(db)?;
+        decode_data_bag_item_option(item)
     }
 
     async fn list_data_bag_items(
@@ -487,10 +504,12 @@ impl ObjectRepository for PostgresStore {
         .fetch_all(self.pool())
         .await
         .map_err(db)?;
-        rows.iter()
-            .map(data_bag_item_from_row)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(db)
+        decode_data_bag_items(
+            rows.iter()
+                .map(data_bag_item_from_row)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?,
+        )
     }
 
     async fn update_data_bag_item(
@@ -501,6 +520,7 @@ impl ObjectRepository for PostgresStore {
         body: &str,
     ) -> Result<StoredDataBagItem, StoreError> {
         let timestamp = now();
+        let serialized_object = encode_serialized(body, self.compression())?;
         let result = sqlx::query(
             "UPDATE data_bag_items
              SET serialized_object = $4, updated_at = $5
@@ -509,7 +529,7 @@ impl ObjectRepository for PostgresStore {
         .bind(org_id)
         .bind(data_bag_name)
         .bind(item_name)
-        .bind(body)
+        .bind(&serialized_object)
         .bind(&timestamp)
         .execute(self.pool())
         .await
@@ -670,4 +690,49 @@ fn data_bag_item_from_row(row: &PgRow) -> Result<StoredDataBagItem, sqlx::Error>
         created_at: row.try_get(4)?,
         updated_at: row.try_get(5)?,
     })
+}
+
+fn decode_node(mut node: StoredNode) -> Result<StoredNode, StoreError> {
+    node.serialized_object = decode_serialized(&node.serialized_object)?;
+    Ok(node)
+}
+
+fn decode_node_option(node: Option<StoredNode>) -> Result<Option<StoredNode>, StoreError> {
+    node.map(decode_node).transpose()
+}
+
+fn decode_nodes(nodes: Vec<StoredNode>) -> Result<Vec<StoredNode>, StoreError> {
+    nodes.into_iter().map(decode_node).collect()
+}
+
+fn decode_stored_object(mut object: StoredObject) -> Result<StoredObject, StoreError> {
+    object.serialized_object = decode_serialized(&object.serialized_object)?;
+    Ok(object)
+}
+
+fn decode_stored_object_option(
+    object: Option<StoredObject>,
+) -> Result<Option<StoredObject>, StoreError> {
+    object.map(decode_stored_object).transpose()
+}
+
+fn decode_stored_objects(objects: Vec<StoredObject>) -> Result<Vec<StoredObject>, StoreError> {
+    objects.into_iter().map(decode_stored_object).collect()
+}
+
+fn decode_data_bag_item(mut item: StoredDataBagItem) -> Result<StoredDataBagItem, StoreError> {
+    item.serialized_object = decode_serialized(&item.serialized_object)?;
+    Ok(item)
+}
+
+fn decode_data_bag_item_option(
+    item: Option<StoredDataBagItem>,
+) -> Result<Option<StoredDataBagItem>, StoreError> {
+    item.map(decode_data_bag_item).transpose()
+}
+
+fn decode_data_bag_items(
+    items: Vec<StoredDataBagItem>,
+) -> Result<Vec<StoredDataBagItem>, StoreError> {
+    items.into_iter().map(decode_data_bag_item).collect()
 }

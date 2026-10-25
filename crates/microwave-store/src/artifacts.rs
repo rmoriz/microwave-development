@@ -1,3 +1,4 @@
+use crate::compression::{decode_serialized, encode_serialized};
 use crate::cookbooks::cleanup_unreferenced_checksums;
 use crate::identity::{conflict, now};
 use crate::objects::create_object_authz;
@@ -98,6 +99,7 @@ impl SqliteStore {
         creator_authz_id: &str,
     ) -> Result<StoredCookbookArtifactVersion, StoreError> {
         let timestamp = now();
+        let serialized_object = encode_serialized(manifest, self.compression())?;
         let mut connection = self.connection();
         let tx = connection.transaction()?;
 
@@ -136,7 +138,7 @@ impl SqliteStore {
                 artifact_id,
                 org_id,
                 identifier,
-                manifest,
+                serialized_object,
                 timestamp,
                 creator_authz_id
             ],
@@ -208,6 +210,7 @@ impl SqliteStore {
                 "cookbook artifact version {name} {identifier}"
             )));
         };
+        let manifest = decode_serialized(&manifest)?;
         let checksums = version_checksums(&tx, version_id)?;
 
         tx.execute(
@@ -291,6 +294,7 @@ fn query_artifact_version(
     let Some((id, name, identifier, manifest, authz_id, created_at, created_by)) = row else {
         return Ok(None);
     };
+    let manifest = decode_serialized(&manifest)?;
     let checksums = version_checksums(connection, id)?;
     Ok(Some(StoredCookbookArtifactVersion {
         id,

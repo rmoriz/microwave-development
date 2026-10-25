@@ -1471,9 +1471,11 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
+ "microwave-config",
  "microwave-migrate",
  "microwave-store",
  "microwave-store-postgres",
+ "rusqlite",
  "sqlx",
  "tempfile",
  "tokio",
@@ -1539,7 +1541,9 @@ name = "microwave-store"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "chrono",
+ "flate2",
  "rusqlite",
  "serde",
  "serde_json",

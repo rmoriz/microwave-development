@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use microwave_store::{
-    parse_version, CookbookRepository, Permission, StoreError, StoredCookbookVersion,
+    decode_serialized, encode_serialized, parse_version, CookbookRepository, Permission,
+    StoreError, StoredCookbookVersion,
 };
 use sqlx::postgres::Postgres;
 use sqlx::{Row, Transaction};
@@ -23,6 +24,7 @@ impl CookbookRepository for PostgresStore {
         let (major, minor, patch) = parse_version(version)?;
         let timestamp = now();
         let version_id = new_id();
+        let serialized_object = encode_serialized(manifest, self.compression())?;
         let mut transaction = self.pool().begin().await.map_err(db)?;
 
         let existing: Option<(i64, String)> =
@@ -67,7 +69,7 @@ impl CookbookRepository for PostgresStore {
         .bind(minor)
         .bind(patch)
         .bind(frozen)
-        .bind(manifest)
+        .bind(&serialized_object)
         .bind(creator_authz_id)
         .bind(&timestamp)
         .execute(&mut *transaction)
@@ -135,6 +137,7 @@ impl CookbookRepository for PostgresStore {
         };
         let id: String = row.try_get(0).map_err(db)?;
         let checksums = self.version_checksums(&id).await?;
+        let manifest = decode_serialized(&row.try_get::<String, _>(2).map_err(db)?)?;
         Ok(Some(StoredCookbookVersion {
             id,
             name: row.try_get(1).map_err(db)?,
@@ -143,7 +146,7 @@ impl CookbookRepository for PostgresStore {
                 row.try_get(7).map_err(db)?,
                 row.try_get(8).map_err(db)?,
             ),
-            manifest: row.try_get(2).map_err(db)?,
+            manifest,
             checksums,
             authz_id: row.try_get(5).map_err(db)?,
             frozen: row.try_get(9).map_err(db)?,
@@ -173,6 +176,7 @@ impl CookbookRepository for PostgresStore {
         for row in rows {
             let id: String = row.try_get(0).map_err(db)?;
             let checksums = self.version_checksums(&id).await?;
+            let manifest = decode_serialized(&row.try_get::<String, _>(2).map_err(db)?)?;
             versions.push(StoredCookbookVersion {
                 id,
                 name: row.try_get(1).map_err(db)?,
@@ -181,7 +185,7 @@ impl CookbookRepository for PostgresStore {
                     row.try_get(7).map_err(db)?,
                     row.try_get(8).map_err(db)?,
                 ),
-                manifest: row.try_get(2).map_err(db)?,
+                manifest,
                 checksums,
                 authz_id: row.try_get(5).map_err(db)?,
                 frozen: row.try_get(9).map_err(db)?,
@@ -205,6 +209,7 @@ impl CookbookRepository for PostgresStore {
     ) -> Result<(StoredCookbookVersion, Vec<String>), StoreError> {
         let (major, minor, patch) = parse_version(version)?;
         let timestamp = now();
+        let serialized_object = encode_serialized(manifest, self.compression())?;
         let mut transaction = self.pool().begin().await.map_err(db)?;
 
         let row = sqlx::query(
@@ -242,7 +247,7 @@ impl CookbookRepository for PostgresStore {
              WHERE id = $1",
         )
         .bind(&version_id)
-        .bind(manifest)
+        .bind(&serialized_object)
         .bind(frozen)
         .bind(&timestamp)
         .bind(updater_authz_id)
@@ -322,6 +327,7 @@ impl CookbookRepository for PostgresStore {
         let cookbook_id: i64 = row.try_get(1).map_err(db)?;
         let authz_id: String = row.try_get(2).map_err(db)?;
         let manifest: String = row.try_get(3).map_err(db)?;
+        let manifest = decode_serialized(&manifest)?;
         let created_at: String = row.try_get(4).map_err(db)?;
         let frozen: bool = row.try_get(5).map_err(db)?;
 

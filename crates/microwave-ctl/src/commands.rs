@@ -246,7 +246,11 @@ pub fn migrate_from_legacy(context: &Context, input: &Path, yes: bool) -> Result
             let database_path = context.sqlite_path()?;
             println!("Import target: sqlite:{}", database_path.display());
             crate::backup::confirm_destructive("import", yes)?;
-            microwave_migrate::import_database(database_path, input)?;
+            microwave_migrate::import_database_with_compression(
+                database_path,
+                input,
+                context.store_compression(),
+            )?;
             println!(
                 "Imported migration snapshot from {} into {}",
                 input.display(),
@@ -260,7 +264,11 @@ pub fn migrate_from_legacy(context: &Context, input: &Path, yes: bool) -> Result
                 microwave_migrate::redacted_postgres_url(&context.database_url)
             );
             crate::backup::confirm_destructive("import", yes)?;
-            microwave_migrate::import_postgres(&context.database_url, input)?;
+            microwave_migrate::import_postgres_with_compression(
+                &context.database_url,
+                input,
+                context.store_compression(),
+            )?;
             println!(
                 "Imported migration snapshot from {} into the configured PostgreSQL database",
                 input.display()

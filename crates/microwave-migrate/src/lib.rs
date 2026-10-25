@@ -17,6 +17,7 @@
 //! and writes the same snapshot envelope as a local export.
 
 use chrono::{SecondsFormat, Utc};
+pub use microwave_store::Compression;
 use microwave_store::{SqliteStore, StoreError, StoreSnapshot};
 use microwave_store_postgres::PostgresStore;
 use serde::{Deserialize, Serialize};
@@ -97,6 +98,8 @@ pub enum MigrateError {
     UnsupportedVersion { found: u32, supported: u32 },
     #[error("storage error: {0}")]
     Store(#[from] StoreError),
+    #[error("configuration error: {0}")]
+    Config(String),
     #[error("invalid legacy API URL {0:?}; expected an http:// or https:// URL")]
     InvalidUrl(String),
     #[error("legacy API request to {url} failed with HTTP {status}: {message}")]
@@ -149,11 +152,31 @@ pub fn export_database(database: &Path, output: &Path) -> Result<(), MigrateErro
 /// Import a JSON snapshot into the store under `data_dir`, creating the
 /// database when needed.
 pub fn import(data_dir: &Path, input: &Path) -> Result<(), MigrateError> {
-    import_database(&data_dir.join(DATABASE_FILE), input)
+    import_with_compression(data_dir, input, Compression::default())
+}
+
+/// Import a JSON snapshot into the store under `data_dir` with an explicit
+/// serialized-object compression mode.
+pub fn import_with_compression(
+    data_dir: &Path,
+    input: &Path,
+    compression: Compression,
+) -> Result<(), MigrateError> {
+    import_database_with_compression(&data_dir.join(DATABASE_FILE), input, compression)
 }
 
 /// Import a JSON snapshot into a specific SQLite database.
 pub fn import_database(database: &Path, input: &Path) -> Result<(), MigrateError> {
+    import_database_with_compression(database, input, Compression::default())
+}
+
+/// Import a JSON snapshot into a specific SQLite database, writing
+/// serialized objects with the configured compression mode.
+pub fn import_database_with_compression(
+    database: &Path,
+    input: &Path,
+    compression: Compression,
+) -> Result<(), MigrateError> {
     let snapshot = read_snapshot(input)?;
     if let Some(parent) = database.parent() {
         if !parent.as_os_str().is_empty() {
@@ -163,7 +186,7 @@ pub fn import_database(database: &Path, input: &Path) -> Result<(), MigrateError
             })?;
         }
     }
-    let store = SqliteStore::open(database)?;
+    let store = SqliteStore::open_with_compression(database, compression)?;
     store.import_snapshot(&snapshot.data)?;
     Ok(())
 }
@@ -206,10 +229,23 @@ pub fn export_postgres(database_url: &str, output: &Path) -> Result<(), MigrateE
 /// call it from inside an existing Tokio runtime; use the async
 /// [`PostgresStore`] methods directly in that case.
 pub fn import_postgres(database_url: &str, input: &Path) -> Result<(), MigrateError> {
+    import_postgres_with_compression(database_url, input, Compression::default())
+}
+
+/// Import a JSON snapshot into PostgreSQL, writing serialized objects with the
+/// configured compression mode.
+pub fn import_postgres_with_compression(
+    database_url: &str,
+    input: &Path,
+    compression: Compression,
+) -> Result<(), MigrateError> {
     validate_postgres_url(database_url)?;
     let snapshot = read_snapshot(input)?;
     let runtime = runtime()?;
-    let store = runtime.block_on(PostgresStore::connect(database_url))?;
+    let store = runtime.block_on(PostgresStore::connect_with_compression(
+        database_url,
+        compression,
+    ))?;
     runtime.block_on(store.import_snapshot(&snapshot.data))?;
     Ok(())
 }

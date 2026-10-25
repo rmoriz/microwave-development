@@ -1,3 +1,4 @@
+use crate::compression::{decode_serialized, encode_serialized};
 use crate::identity::{conflict, new_id, now};
 use crate::sqlite::{SqliteStore, StoreError};
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -31,6 +32,7 @@ impl SqliteStore {
         let (major, minor, patch) = parse_version(version)?;
         let timestamp = now();
         let version_id = new_id();
+        let serialized_object = encode_serialized(manifest, self.compression())?;
         let mut connection = self.connection();
         let tx = connection.transaction()?;
 
@@ -70,7 +72,7 @@ impl SqliteStore {
                 minor,
                 patch,
                 i64::from(frozen),
-                manifest,
+                serialized_object,
                 creator_authz_id,
                 timestamp
             ],
@@ -116,6 +118,7 @@ impl SqliteStore {
     ) -> Result<(StoredCookbookVersion, Vec<String>), StoreError> {
         let (major, minor, patch) = parse_version(version)?;
         let timestamp = now();
+        let serialized_object = encode_serialized(manifest, self.compression())?;
         let mut connection = self.connection();
         let tx = connection.transaction()?;
 
@@ -144,7 +147,7 @@ impl SqliteStore {
              WHERE id = ?1",
             params![
                 version_id,
-                manifest,
+                serialized_object,
                 i64::from(frozen),
                 timestamp,
                 updater_authz_id
@@ -228,6 +231,7 @@ impl SqliteStore {
         else {
             return Ok(None);
         };
+        let manifest = decode_serialized(&manifest)?;
         let checksums = version_checksums(&connection, &id)?;
         Ok(Some(StoredCookbookVersion {
             id,
@@ -274,6 +278,7 @@ impl SqliteStore {
         for row in rows {
             let (id, name, manifest, created_at, updated_at, authz_id, major, minor, patch, frozen) =
                 row?;
+            let manifest = decode_serialized(&manifest)?;
             let checksums = version_checksums(&connection, &id)?;
             versions.push(StoredCookbookVersion {
                 id,
@@ -329,6 +334,7 @@ impl SqliteStore {
                 "cookbook version {name} {version}"
             )));
         };
+        let manifest = decode_serialized(&manifest)?;
         let checksums = version_checksums(&tx, &version_id)?;
 
         tx.execute("DELETE FROM cookbook_versions WHERE id = ?1", [&version_id])?;

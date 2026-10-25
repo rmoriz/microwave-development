@@ -4,6 +4,7 @@ mod artifacts;
 mod authz;
 mod backend;
 mod backend_sqlite;
+mod compression;
 mod cookbooks;
 mod identity;
 mod kv;
@@ -23,6 +24,10 @@ pub use backend::{
     ArtifactRepository, AuthzRepository, CookbookRepository, IdentityRepository, KvRepository,
     MembershipRepository, MetadataStore, OAuthRepository, ObjectRepository, PolicyRepository,
     SandboxRepository, SecretsRepository,
+};
+pub use compression::{
+    decode_serialized, decode_serialized_optional, encode_serialized, encode_serialized_optional,
+    Compression, COMPRESSED_PREFIX, MAX_DECOMPRESSED_BYTES,
 };
 pub use cookbooks::{parse_version, StoredCookbookVersion};
 pub use identity::{ActorKey, ActorType, Client, Org, Principal, User, UserPatch, UserProfile};

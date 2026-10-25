@@ -1,6 +1,6 @@
 use crate::CtlError;
-use microwave_config::{Config, DatabaseDriver};
-use microwave_store::{MetadataStore, SqliteStore};
+use microwave_config::{Config, DatabaseDriver, StorageCompression};
+use microwave_store::{Compression, MetadataStore, SqliteStore};
 use microwave_store_postgres::PostgresStore;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -85,17 +85,21 @@ impl Context {
 
     fn open_metadata_store_inner(&self, migrate: bool) -> Result<StoreHandle, CtlError> {
         let runtime = new_runtime()?;
+        let compression = store_compression(self.config.storage.compression);
         let store: Arc<dyn MetadataStore> = match self.config.database.driver {
             DatabaseDriver::Sqlite => {
                 self.prepare_data_dir()?;
-                Arc::new(SqliteStore::open(self.sqlite_path()?)?)
+                Arc::new(SqliteStore::open_with_compression(
+                    self.sqlite_path()?,
+                    compression,
+                )?)
             }
-            DatabaseDriver::Postgres if migrate => {
-                Arc::new(runtime.block_on(PostgresStore::connect(&self.database_url))?)
-            }
-            DatabaseDriver::Postgres => {
-                Arc::new(runtime.block_on(PostgresStore::connect_existing(&self.database_url))?)
-            }
+            DatabaseDriver::Postgres if migrate => Arc::new(runtime.block_on(
+                PostgresStore::connect_with_compression(&self.database_url, compression),
+            )?),
+            DatabaseDriver::Postgres => Arc::new(runtime.block_on(
+                PostgresStore::connect_existing_with_compression(&self.database_url, compression),
+            )?),
         };
         Ok(StoreHandle { store, runtime })
     }
@@ -107,11 +111,19 @@ impl Context {
     /// contract should use [`Context::open_metadata_store`].
     pub fn open_store(&self) -> Result<SqliteStore, CtlError> {
         self.prepare_data_dir()?;
-        Ok(SqliteStore::open(self.sqlite_path()?)?)
+        Ok(SqliteStore::open_with_compression(
+            self.sqlite_path()?,
+            store_compression(self.config.storage.compression),
+        )?)
     }
 
     pub fn superuser_name(&self) -> &str {
         &self.config.auth.superuser_name
+    }
+
+    /// Serialized-object compression mode selected by configuration.
+    pub fn store_compression(&self) -> Compression {
+        store_compression(self.config.storage.compression)
     }
 }
 
@@ -135,6 +147,13 @@ impl StoreHandle {
     /// current-thread runtime cannot be entered re-entrantly and would panic.
     pub fn run<F: std::future::Future>(&self, future: F) -> F::Output {
         self.runtime.block_on(future)
+    }
+}
+
+fn store_compression(compression: StorageCompression) -> Compression {
+    match compression {
+        StorageCompression::Zlib => Compression::Zlib,
+        StorageCompression::None => Compression::None,
     }
 }
 

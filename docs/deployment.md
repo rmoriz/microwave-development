@@ -103,6 +103,7 @@ A complete annotated example is
 | `paths.data_dir` | `MW_PATHS__DATA_DIR` | `./data` | All mutable state. |
 | `database.driver` | `MW_DATABASE__DRIVER` | `sqlite` | `sqlite` or `postgres`. |
 | `database.url` | `MW_DATABASE__URL` | `sqlite://<data_dir>/microwave.db` | `sqlite://<path>` or a `postgres://` URL. Both backends are supported by the server, `microwave-ctl`, and `microwave-migrate`. |
+| `storage.compression` | `MW_STORAGE__COMPRESSION` | `zlib` | `zlib` stores new `serialized_object` rows as `mwz1:` + base64(zlib(JSON)); `none` stores plain JSON. Reads accept both formats either way, so existing databases keep working. |
 | `search.backend` | `MW_SEARCH__BACKEND` | `embedded` | `embedded`, `opensearch`, `elasticsearch`. |
 | `search.url` | `MW_SEARCH__URL` | unset | Required for the remote backends, e.g. `http://opensearch:9200`. |
 | `object_store.backend` | `MW_OBJECT_STORE__BACKEND` | `local` | `local`, `s3`, `garage`. |
@@ -123,6 +124,13 @@ A complete annotated example is
 | `telemetry.enabled` | `MW_TELEMETRY__ENABLED` | `false` | Reserved toggle. No outbound sender is implemented, so enabling it does not phone home. |
 | `telemetry.reporting_url` | `MW_TELEMETRY__REPORTING_URL` | unset | Reserved reporting destination for a future opt-in exporter. |
 | `telemetry.interval_seconds` | `MW_TELEMETRY__INTERVAL_SECONDS` | `86400` | Reserved exporter interval. |
+
+`storage.compression` applies to new writes. Decompression is capped at 64 MiB
+per value; corrupt or oversized compressed values fail with a storage error
+instead of panicking. Imports through `microwave-ctl` inherit the server
+configuration; the standalone `microwave-migrate import` accepts
+`--compression zlib|none` or `--config <path>` (with
+`MW_STORAGE__COMPRESSION` as an environment override).
 
 Validate a configuration file without starting the server:
 
@@ -556,6 +564,11 @@ objects. Restore those from your separate copies.
 microwave-migrate export --data-dir /var/lib/microwave --output /var/backups/snapshot.json
 microwave-migrate import --data-dir /var/lib/microwave-new --input /var/backups/snapshot.json --yes
 
+# Store imported serialized objects as plain JSON instead of the default MWZ1
+# envelope (or point --config at the target server's microwave.toml):
+microwave-migrate import --data-dir /var/lib/microwave-new \
+  --input /var/backups/snapshot.json --compression none --yes
+
 # PostgreSQL source and target
 microwave-migrate export \
   --database-url postgres://microwave:secret@db/microwave \
@@ -621,10 +634,12 @@ snapshot or need to stage the copy yourself:
    microwave-ctl --config /etc/microwave/microwave.toml \
      migrate-from-legacy --input /var/backups/acme-snapshot.json --yes
    ```
-   `microwave-migrate import --data-dir ... --input ... --yes` is equivalent
-   for SQLite. For PostgreSQL without a config file, use
-   `microwave-migrate import --database-url postgres://... --input ... --yes`.
-   Both import paths ask for confirmation unless `--yes` is given.
+   `microwave-migrate import` is the standalone equivalent for SQLite when
+   given the same storage compression (`--config` or `--compression`); it does
+   not implicitly read the server's configuration file. For PostgreSQL use
+   `microwave-migrate import --database-url postgres://... --input ... --yes`
+   with the same compression flags. Both import paths ask for confirmation
+   unless `--yes` is given.
 4. **Copy cookbook blobs.** The snapshot is metadata only. Place files under
    the object key layout `organization-<org_id>/checksum-<md5>` in
    `/var/lib/microwave/bookshelf/` for the local backend, or upload them to the

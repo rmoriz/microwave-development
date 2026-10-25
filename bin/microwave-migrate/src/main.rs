@@ -1,10 +1,12 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use microwave_config::{Config, StorageCompression};
 use microwave_migrate::{
-    export, export_postgres, from_api_with_options, import, import_postgres, redacted_postgres_url,
-    validate_postgres_url, FromApiOptions, MigrateError, DATABASE_FILE,
+    export, export_postgres, from_api_with_options, import_postgres_with_compression,
+    import_with_compression, redacted_postgres_url, validate_postgres_url, Compression,
+    FromApiOptions, MigrateError, DATABASE_FILE,
 };
 use std::io::{IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 #[derive(Debug, Parser)]
@@ -67,6 +69,15 @@ enum Command {
         /// Snapshot file to read.
         #[arg(long, value_name = "FILE")]
         input: PathBuf,
+        /// Compression for imported `serialized_object` values.
+        ///
+        /// Without this flag the default comes from --config,
+        /// MW_CONFIG/./microwave.toml, or MW_STORAGE__COMPRESSION.
+        #[arg(long, value_enum, value_name = "MODE")]
+        compression: Option<CompressionArg>,
+        /// Configuration file used to resolve the default compression.
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
     },
     /// Crawl a live legacy Chef Infra Server into a snapshot.
     FromApi {
@@ -104,7 +115,16 @@ fn main() -> ExitCode {
             database_url,
             yes,
             input,
-        } => import_command(data_dir, database_url, yes, &input),
+            compression,
+            config,
+        } => import_command(
+            data_dir,
+            database_url,
+            yes,
+            &input,
+            compression,
+            config.as_deref(),
+        ),
         Command::FromApi {
             url,
             client_name,
@@ -148,24 +168,61 @@ fn import_command(
     data_dir: Option<PathBuf>,
     database_url: Option<String>,
     yes: bool,
-    input: &std::path::Path,
+    input: &Path,
+    compression: Option<CompressionArg>,
+    config: Option<&Path>,
 ) -> Result<(), MigrateError> {
+    let compression = resolve_compression(compression, config)?;
     match (data_dir, database_url) {
         (Some(data_dir), None) => {
             let target = data_dir.join(DATABASE_FILE);
             println!("Import target: sqlite:{}", target.display());
+            println!("Import compression: {}", compression.as_str());
             confirm_import(yes)?;
-            import(&data_dir, input)
+            import_with_compression(&data_dir, input, compression)
                 .map(|()| println!("Imported snapshot from {}", input.display()))
         }
         (None, Some(database_url)) => {
             validate_postgres_url(&database_url)?;
             println!("Import target: {}", redacted_postgres_url(&database_url));
+            println!("Import compression: {}", compression.as_str());
             confirm_import(yes)?;
-            import_postgres(&database_url, input)
+            import_postgres_with_compression(&database_url, input, compression)
                 .map(|()| println!("Imported snapshot from {}", input.display()))
         }
         _ => unreachable!("clap requires exactly one of --data-dir and --database-url"),
+    }
+}
+
+/// Resolve import compression from the explicit flag, then the configuration
+/// file (including `MW_STORAGE__COMPRESSION`), then the built-in default.
+fn resolve_compression(
+    explicit: Option<CompressionArg>,
+    config_path: Option<&Path>,
+) -> Result<Compression, MigrateError> {
+    if let Some(compression) = explicit {
+        return Ok(compression.into());
+    }
+    let config =
+        Config::load(config_path).map_err(|error| MigrateError::Config(error.to_string()))?;
+    Ok(match config.storage.compression {
+        StorageCompression::Zlib => Compression::Zlib,
+        StorageCompression::None => Compression::None,
+    })
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CompressionArg {
+    Zlib,
+    None,
+}
+
+impl From<CompressionArg> for Compression {
+    fn from(value: CompressionArg) -> Self {
+        match value {
+            CompressionArg::Zlib => Self::Zlib,
+            CompressionArg::None => Self::None,
+        }
     }
 }
 

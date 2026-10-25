@@ -1,4 +1,5 @@
 use crate::authz::Permission;
+use crate::compression::{decode_serialized, encode_serialized};
 use crate::identity::{new_id, now};
 use crate::sqlite::{SqliteStore, StoreError};
 use rusqlite::{params, OptionalExtension, Transaction};
@@ -58,6 +59,7 @@ impl SqliteStore {
         } = node;
         let id = new_id();
         let now = now();
+        let serialized_object = encode_serialized(body, self.compression())?;
         let mut connection = self.connection();
         let tx = connection.transaction()?;
         let authz_id = create_object_authz(&tx, org_id, "nodes", creator_authz_id)?;
@@ -74,7 +76,7 @@ impl SqliteStore {
                 environment,
                 policy_name,
                 policy_group,
-                body,
+                serialized_object,
                 creator_authz_id,
                 now
             ],
@@ -96,7 +98,7 @@ impl SqliteStore {
 
     pub fn find_node(&self, org_id: &str, name: &str) -> Result<Option<StoredNode>, StoreError> {
         let connection = self.connection();
-        Ok(connection
+        let node = connection
             .query_row(
                 "SELECT id, authz_id, name, environment, policy_name, policy_group,
                         serialized_object, created_at, updated_at
@@ -104,7 +106,8 @@ impl SqliteStore {
                 params![org_id, name],
                 node_from_row,
             )
-            .optional()?)
+            .optional()?;
+        decode_node_option(node)
     }
 
     pub fn list_nodes(&self, org_id: &str) -> Result<Vec<StoredNode>, StoreError> {
@@ -117,7 +120,7 @@ impl SqliteStore {
         let rows = statement.query_map([org_id], node_from_row)?;
         let mut nodes = Vec::new();
         for row in rows {
-            nodes.push(row?);
+            nodes.push(decode_node(row?)?);
         }
         Ok(nodes)
     }
@@ -145,7 +148,7 @@ impl SqliteStore {
         let rows = statement.query_map(params![org_id, environment], node_from_row)?;
         let mut nodes = Vec::new();
         for row in rows {
-            nodes.push(row?);
+            nodes.push(decode_node(row?)?);
         }
         Ok(nodes)
     }
@@ -160,6 +163,7 @@ impl SqliteStore {
         policy_group: Option<&str>,
     ) -> Result<StoredNode, StoreError> {
         let now = now();
+        let serialized_object = encode_serialized(body, self.compression())?;
         let connection = self.connection();
         let changed = connection.execute(
             "UPDATE nodes
@@ -169,7 +173,7 @@ impl SqliteStore {
             params![
                 org_id,
                 name,
-                body,
+                serialized_object,
                 environment,
                 policy_name,
                 policy_group,
@@ -307,6 +311,7 @@ impl SqliteStore {
     ) -> Result<StoredDataBagItem, StoreError> {
         let id = new_id();
         let now = now();
+        let serialized_object = encode_serialized(body, self.compression())?;
         let connection = self.connection();
         connection
             .execute(
@@ -314,7 +319,7 @@ impl SqliteStore {
                  (id, org_id, data_bag_name, item_name, serialized_object,
                   last_updated_by, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, ?6)",
-                params![id, org_id, data_bag_name, item_name, body, now],
+                params![id, org_id, data_bag_name, item_name, serialized_object, now],
             )
             .map_err(|error| {
                 crate::identity::conflict(
@@ -339,7 +344,7 @@ impl SqliteStore {
         item_name: &str,
     ) -> Result<Option<StoredDataBagItem>, StoreError> {
         let connection = self.connection();
-        Ok(connection
+        let item = connection
             .query_row(
                 "SELECT id, data_bag_name, item_name, serialized_object, created_at, updated_at
                  FROM data_bag_items
@@ -347,7 +352,8 @@ impl SqliteStore {
                 params![org_id, data_bag_name, item_name],
                 data_bag_item_from_row,
             )
-            .optional()?)
+            .optional()?;
+        decode_data_bag_item_option(item)
     }
 
     pub fn list_data_bag_items(
@@ -364,7 +370,7 @@ impl SqliteStore {
         let rows = statement.query_map(params![org_id, data_bag_name], data_bag_item_from_row)?;
         let mut items = Vec::new();
         for row in rows {
-            items.push(row?);
+            items.push(decode_data_bag_item(row?)?);
         }
         Ok(items)
     }
@@ -377,12 +383,13 @@ impl SqliteStore {
         body: &str,
     ) -> Result<StoredDataBagItem, StoreError> {
         let now = now();
+        let serialized_object = encode_serialized(body, self.compression())?;
         let connection = self.connection();
         let changed = connection.execute(
             "UPDATE data_bag_items
              SET serialized_object = ?4, updated_at = ?5
              WHERE org_id = ?1 AND data_bag_name = ?2 AND item_name = ?3",
-            params![org_id, data_bag_name, item_name, body, now],
+            params![org_id, data_bag_name, item_name, serialized_object, now],
         )?;
         if changed == 0 {
             return Err(StoreError::NotFound(format!(
@@ -427,6 +434,7 @@ impl SqliteStore {
     ) -> Result<StoredObject, StoreError> {
         let id = new_id();
         let now = now();
+        let serialized_object = encode_serialized(body, self.compression())?;
         let mut connection = self.connection();
         let tx = connection.transaction()?;
         let authz_id = create_object_authz(&tx, org_id, container_name, creator_authz_id)?;
@@ -437,7 +445,15 @@ impl SqliteStore {
         );
         tx.execute(
             &sql,
-            params![id, authz_id, org_id, name, body, creator_authz_id, now],
+            params![
+                id,
+                authz_id,
+                org_id,
+                name,
+                serialized_object,
+                creator_authz_id,
+                now
+            ],
         )
         .map_err(|error| {
             crate::identity::conflict(error, format!("{table} {name} already exists"))
@@ -464,9 +480,10 @@ impl SqliteStore {
             "SELECT id, authz_id, name, serialized_object, created_at, updated_at
              FROM {table} WHERE org_id = ?1 AND name = ?2"
         );
-        Ok(connection
+        let object = connection
             .query_row(&sql, params![org_id, name], stored_object_from_row)
-            .optional()?)
+            .optional()?;
+        decode_stored_object_option(object)
     }
 
     fn list_named_objects(
@@ -483,7 +500,7 @@ impl SqliteStore {
         let rows = statement.query_map([org_id], stored_object_from_row)?;
         let mut objects = Vec::new();
         for row in rows {
-            objects.push(row?);
+            objects.push(decode_stored_object(row?)?);
         }
         Ok(objects)
     }
@@ -496,12 +513,13 @@ impl SqliteStore {
         body: &str,
     ) -> Result<StoredObject, StoreError> {
         let now = now();
+        let serialized_object = encode_serialized(body, self.compression())?;
         let connection = self.connection();
         let sql = format!(
             "UPDATE {table} SET serialized_object = ?3, updated_at = ?4
              WHERE org_id = ?1 AND name = ?2"
         );
-        let changed = connection.execute(&sql, params![org_id, name, body, now])?;
+        let changed = connection.execute(&sql, params![org_id, name, serialized_object, now])?;
         if changed == 0 {
             return Err(StoreError::NotFound(format!("{table} {name}")));
         }
@@ -623,4 +641,35 @@ fn data_bag_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredDat
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
     })
+}
+
+fn decode_node(mut node: StoredNode) -> Result<StoredNode, StoreError> {
+    node.serialized_object = decode_serialized(&node.serialized_object)?;
+    Ok(node)
+}
+
+fn decode_node_option(node: Option<StoredNode>) -> Result<Option<StoredNode>, StoreError> {
+    node.map(decode_node).transpose()
+}
+
+fn decode_stored_object(mut object: StoredObject) -> Result<StoredObject, StoreError> {
+    object.serialized_object = decode_serialized(&object.serialized_object)?;
+    Ok(object)
+}
+
+fn decode_stored_object_option(
+    object: Option<StoredObject>,
+) -> Result<Option<StoredObject>, StoreError> {
+    object.map(decode_stored_object).transpose()
+}
+
+fn decode_data_bag_item(mut item: StoredDataBagItem) -> Result<StoredDataBagItem, StoreError> {
+    item.serialized_object = decode_serialized(&item.serialized_object)?;
+    Ok(item)
+}
+
+fn decode_data_bag_item_option(
+    item: Option<StoredDataBagItem>,
+) -> Result<Option<StoredDataBagItem>, StoreError> {
+    item.map(decode_data_bag_item).transpose()
 }

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use microwave_store::{
-    ArtifactRepository, Permission, StoreError, StoredCookbookArtifact,
-    StoredCookbookArtifactVersion,
+    decode_serialized, encode_serialized, ArtifactRepository, Permission, StoreError,
+    StoredCookbookArtifact, StoredCookbookArtifactVersion,
 };
 use sqlx::postgres::Postgres;
 use sqlx::{Row, Transaction};
@@ -88,11 +88,12 @@ impl ArtifactRepository for PostgresStore {
         };
         let id: i64 = row.try_get(0).map_err(db)?;
         let checksums = self.artifact_version_checksums(id).await?;
+        let manifest = decode_serialized(&row.try_get::<String, _>(3).map_err(db)?)?;
         Ok(Some(StoredCookbookArtifactVersion {
             id,
             name: row.try_get(1).map_err(db)?,
             identifier: row.try_get(2).map_err(db)?,
-            manifest: row.try_get(3).map_err(db)?,
+            manifest,
             checksums,
             authz_id: row.try_get(4).map_err(db)?,
             created_at: row.try_get(5).map_err(db)?,
@@ -110,6 +111,7 @@ impl ArtifactRepository for PostgresStore {
         creator_authz_id: &str,
     ) -> Result<StoredCookbookArtifactVersion, StoreError> {
         let timestamp = now();
+        let serialized_object = encode_serialized(manifest, self.compression())?;
         let mut transaction = self.pool().begin().await.map_err(db)?;
 
         let existing: Option<(i64, String)> = sqlx::query_as(
@@ -152,7 +154,7 @@ impl ArtifactRepository for PostgresStore {
         .bind(artifact_id)
         .bind(org_id)
         .bind(identifier)
-        .bind(manifest)
+        .bind(&serialized_object)
         .bind(&timestamp)
         .bind(creator_authz_id)
         .fetch_one(&mut *transaction)
@@ -218,6 +220,7 @@ impl ArtifactRepository for PostgresStore {
         let artifact_id: i64 = row.try_get(1).map_err(db)?;
         let authz_id: String = row.try_get(2).map_err(db)?;
         let manifest: String = row.try_get(3).map_err(db)?;
+        let manifest = decode_serialized(&manifest)?;
         let created_at: String = row.try_get(4).map_err(db)?;
         let created_by: String = row.try_get(5).map_err(db)?;
 

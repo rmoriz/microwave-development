@@ -1,5 +1,5 @@
 use chrono::{SecondsFormat, Utc};
-use microwave_store::StoreError;
+use microwave_store::{Compression, StoreError};
 use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
 use uuid::Uuid;
@@ -16,17 +16,27 @@ const MIGRATION_ADVISORY_LOCK: i64 = 0x6d69_6372_6f77_6176;
 #[derive(Clone)]
 pub struct PostgresStore {
     pool: PgPool,
+    compression: Compression,
 }
 
 impl PostgresStore {
     /// Connect to PostgreSQL and apply the unified schema.
     pub async fn connect(database_url: &str) -> Result<Self, StoreError> {
+        Self::connect_with_compression(database_url, Compression::default()).await
+    }
+
+    /// Connect to PostgreSQL, apply the unified schema, and use an explicit
+    /// serialized-object compression mode for new writes.
+    pub async fn connect_with_compression(
+        database_url: &str,
+        compression: Compression,
+    ) -> Result<Self, StoreError> {
         let pool = PgPoolOptions::new()
             .max_connections(10)
             .connect(database_url)
             .await
             .map_err(db)?;
-        let store = Self { pool };
+        let store = Self { pool, compression };
         store.migrate().await?;
         Ok(store)
     }
@@ -38,22 +48,44 @@ impl PostgresStore {
     /// [`PostgresStore::connect`], this performs no DDL, so it works with a
     /// read-only database role.
     pub async fn connect_existing(database_url: &str) -> Result<Self, StoreError> {
+        Self::connect_existing_with_compression(database_url, Compression::default()).await
+    }
+
+    /// Connect without applying the schema and use an explicit compression
+    /// mode for any subsequent writes.
+    pub async fn connect_existing_with_compression(
+        database_url: &str,
+        compression: Compression,
+    ) -> Result<Self, StoreError> {
         let pool = PgPoolOptions::new()
             .max_connections(10)
             .connect(database_url)
             .await
             .map_err(db)?;
-        Ok(Self { pool })
+        Ok(Self { pool, compression })
     }
 
     /// Wrap an existing pool. The caller is responsible for calling
     /// [`PostgresStore::migrate`].
     pub fn from_pool(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            compression: Compression::default(),
+        }
+    }
+
+    /// Wrap an existing pool with an explicit compression mode.
+    pub fn from_pool_with_compression(pool: PgPool, compression: Compression) -> Self {
+        Self { pool, compression }
     }
 
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    /// Compression mode used for newly written serialized objects.
+    pub fn compression(&self) -> Compression {
+        self.compression
     }
 
     /// Apply the embedded unified schema. Safe to run repeatedly and from
