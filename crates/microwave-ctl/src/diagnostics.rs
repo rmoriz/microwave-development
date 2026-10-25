@@ -56,6 +56,19 @@ pub fn check_config(context: &Context) -> Result<(), CtlError> {
         )),
     }
 
+    if config.server.tls.is_enabled() {
+        match microwave_tls::validate(&config.server.tls) {
+            Ok(()) => checks.push(format!(
+                "tls {} {}",
+                config.server.tls.cert_path.as_deref().unwrap_or_default(),
+                config.server.tls.key_path.as_deref().unwrap_or_default()
+            )),
+            Err(error) => problems.push(error.to_string()),
+        }
+    } else {
+        checks.push("tls disabled".to_string());
+    }
+
     match config.search.backend {
         SearchBackend::Embedded => checks.push("search embedded".to_string()),
         backend => match non_empty(config.search.url.as_deref()) {

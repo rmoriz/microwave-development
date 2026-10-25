@@ -10,6 +10,7 @@ members = [
     "crates/microwave-api",
     "crates/microwave-oauth",
     "crates/microwave-objectstore",
+    "crates/microwave-tls",
     "crates/microwave-ctl",
     "crates/microwave-migrate",
     "bin/microwave-server",
@@ -43,6 +44,10 @@ rusqlite = { version = "0.39", features = ["bundled"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "tls-rustls-ring", "macros", "json", "chrono", "uuid"] }
 uuid = { version = "1", features = ["v4"] }
 axum = "0.8"
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rustls = "0.23"
+rustls-pemfile = "2"
+rcgen = "0.14"
 async-trait = "0.1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }

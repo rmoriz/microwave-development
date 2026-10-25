@@ -22,6 +22,7 @@ microwave-crypto = { path = "../../crates/microwave-crypto" }
 microwave-migrate = { path = "../../crates/microwave-migrate" }
 microwave-store = { path = "../../crates/microwave-store" }
 microwave-store-postgres = { path = "../../crates/microwave-store-postgres" }
+rcgen.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

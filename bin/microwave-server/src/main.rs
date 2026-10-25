@@ -58,6 +58,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Serve { config, check } => {
             let mut config = Config::load(config.as_deref())?;
+            // Load and validate the pair before touching the database so a bad
+            // certificate fails fast for both `serve` and `serve --check`.
+            let tls = if config.server.tls.is_enabled() {
+                Some(microwave_tls::load(&config.server.tls).map_err(|error| error.to_string())?)
+            } else {
+                None
+            };
+            let scheme = if tls.is_some() { "https" } else { "http" };
             let database_url = config.resolved_database_url();
             let compression = store_compression(config.storage.compression);
             let (store, sqlite): (Arc<dyn MetadataStore>, Option<Arc<SqliteStore>>) =
@@ -115,7 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     DatabaseDriver::Postgres => "postgres".to_string(),
                 };
                 eprintln!(
-                    "serve: configuration ok (bind {}, database backend {backend})",
+                    "serve: configuration ok (bind {}, scheme {scheme}, database backend {backend})",
                     config.server.bind
                 );
                 return Ok(());
@@ -127,8 +135,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None => AppState::new(store, Arc::new(config), object_store)?,
             };
             let listener = tokio::net::TcpListener::bind(&bind).await?;
-            tracing::info!(%bind, "microwave-server listening");
-            axum::serve(listener, router(state)).await?;
+            let local_addr = listener.local_addr()?;
+            tracing::info!(%bind, %local_addr, scheme, "microwave-server listening");
+            match tls {
+                Some(tls) => {
+                    let rustls_config =
+                        axum_server::tls_rustls::RustlsConfig::from_config(tls.config);
+                    let listener = listener.into_std()?;
+                    axum_server::from_tcp_rustls(listener, rustls_config)?
+                        .serve(router(state).into_make_service())
+                        .await?;
+                }
+                None => {
+                    axum::serve(listener, router(state)).await?;
+                }
+            }
         }
     }
 
@@ -190,6 +211,20 @@ fn redact_database_url(url: &str) -> String {
     format!("{scheme}://{user}:***@{host}")
 }
 
+fn listener_scheme(config: &Config) -> &'static str {
+    if config.server.tls.is_enabled() {
+        "https"
+    } else {
+        "http"
+    }
+}
+
+/// Base URL for local `/bookshelf` presigned links. It follows the listener
+/// scheme because the server may serve HTTPS directly.
+fn local_object_store_base_url(config: &Config) -> String {
+    format!("{}://{}", listener_scheme(config), config.server.bind)
+}
+
 fn build_object_store(
     config: &Config,
     secret: &str,
@@ -198,7 +233,7 @@ fn build_object_store(
         ObjectStoreBackend::Local => Ok(Arc::new(LocalObjectStore::new(
             Path::new(&config.paths.data_dir).join("bookshelf"),
             secret,
-            format!("http://{}", config.server.bind),
+            local_object_store_base_url(config),
         ))),
         ObjectStoreBackend::S3 | ObjectStoreBackend::Garage => {
             let endpoint = config
@@ -236,8 +271,26 @@ fn build_object_store(
 
 #[cfg(test)]
 mod tests {
-    use super::{redact_config_for_output, redact_database_url};
+    use super::{local_object_store_base_url, redact_config_for_output, redact_database_url};
     use microwave_config::Config;
+
+    #[test]
+    fn local_object_store_uses_https_only_when_tls_is_enabled() {
+        let plain = Config::default();
+        assert_eq!(local_object_store_base_url(&plain), "http://0.0.0.0:8000");
+
+        let mut tls = Config::default();
+        tls.server.tls.cert_path = Some("/etc/microwave/tls.crt".into());
+        tls.server.tls.key_path = Some("/etc/microwave/tls.key".into());
+        assert_eq!(local_object_store_base_url(&tls), "https://0.0.0.0:8000");
+
+        let mut disabled = tls;
+        disabled.server.tls.enabled = Some(false);
+        assert_eq!(
+            local_object_store_base_url(&disabled),
+            "http://0.0.0.0:8000"
+        );
+    }
 
     #[test]
     fn redacts_database_data_collector_and_object_store_credentials() {

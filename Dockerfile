@@ -83,13 +83,21 @@ WORKDIR /var/lib/microwave
 USER microwave:microwave
 
 VOLUME ["/var/lib/microwave"]
-EXPOSE 8000
+EXPOSE 8000 8443
 
 # `/_status` is unauthenticated and returns {"status":"pong", ...}. It is a
 # liveness probe; it does not check OpenSearch, S3, or the database.
-# Set MW_HTTP_PORT when the server binds a port other than 8000.
+# Set MW_HTTP_PORT when the server binds a port other than 8000 and
+# MW_HEALTHCHECK_SCHEME=https when it serves TLS. MW_HEALTHCHECK_HOST overrides
+# the probe hostname (default 127.0.0.1) when the certificate only covers a
+# DNS name. Set MW_HEALTHCHECK_INSECURE=1 (or true) to skip certificate
+# verification for the probe; any other value keeps verification enabled.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS "http://127.0.0.1:${MW_HTTP_PORT:-8000}/_status" >/dev/null || exit 1
+    CMD insecure=""; \
+        case "${MW_HEALTHCHECK_INSECURE:-}" in 1|true|TRUE) insecure="-k" ;; esac; \
+        curl -fsS $insecure \
+            "${MW_HEALTHCHECK_SCHEME:-http}://${MW_HEALTHCHECK_HOST:-127.0.0.1}:${MW_HTTP_PORT:-8000}/_status" \
+            >/dev/null || exit 1
 
 # No ENTRYPOINT on purpose: `docker run <image> microwave-ctl ...` and
 # `docker compose exec microwave microwave-ctl ...` both work without an
