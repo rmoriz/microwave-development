@@ -65,6 +65,7 @@ export MICROWAVE_TEST_POSTGRES_URL="postgres://microwave:microwave@127.0.0.1:${P
 echo "PostgreSQL ready at 127.0.0.1:${PORT}; running tests..." >&2
 
 cargo test -p microwave-store-postgres "$@"
-# The API runtime test connects through AppState and the real HTTP router, so
-# it must run with the same disposable database.
+# The API runtime tests connect through AppState and the real HTTP router, so
+# they must run with the same disposable database.
 cargo test -p microwave-api --test postgres_runtime_test "$@"
+cargo test -p microwave-api --test postgres_http_coverage_test "$@"
