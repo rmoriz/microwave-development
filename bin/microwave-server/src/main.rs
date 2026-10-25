@@ -58,6 +58,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Serve { config, check } => {
             let mut config = Config::load(config.as_deref())?;
+            // Load and validate the pair before touching the database so a bad
+            // certificate fails fast for both `serve` and `serve --check`.
+            let tls = if config.server.tls.is_enabled() {
+                Some(microwave_tls::load(&config.server.tls).map_err(|error| error.to_string())?)
+            } else {
+                None
+            };
+            let scheme = if tls.is_some() { "https" } else { "http" };
             let database_url = config.resolved_database_url();
             let (store, sqlite): (Arc<dyn MetadataStore>, Option<Arc<SqliteStore>>) =
                 match config.database.driver {
@@ -107,7 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     DatabaseDriver::Postgres => "postgres".to_string(),
                 };
                 eprintln!(
-                    "serve: configuration ok (bind {}, database backend {backend})",
+                    "serve: configuration ok (bind {}, scheme {scheme}, database backend {backend})",
                     config.server.bind
                 );
                 return Ok(());
@@ -119,8 +127,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None => AppState::new(store, Arc::new(config), object_store)?,
             };
             let listener = tokio::net::TcpListener::bind(&bind).await?;
-            tracing::info!(%bind, "microwave-server listening");
-            axum::serve(listener, router(state)).await?;
+            let local_addr = listener.local_addr()?;
+            tracing::info!(%bind, %local_addr, scheme, "microwave-server listening");
+            match tls {
+                Some(tls) => {
+                    let rustls_config =
+                        axum_server::tls_rustls::RustlsConfig::from_config(tls.config);
+                    let listener = listener.into_std()?;
+                    axum_server::from_tcp_rustls(listener, rustls_config)?
+                        .serve(router(state).into_make_service())
+                        .await?;
+                }
+                None => {
+                    axum::serve(listener, router(state)).await?;
+                }
+            }
         }
     }
 
@@ -183,7 +204,15 @@ fn build_object_store(
         ObjectStoreBackend::Local => Ok(Arc::new(LocalObjectStore::new(
             Path::new(&config.paths.data_dir).join("bookshelf"),
             secret,
-            format!("http://{}", config.server.bind),
+            format!(
+                "{}://{}",
+                if config.server.tls.is_enabled() {
+                    "https"
+                } else {
+                    "http"
+                },
+                config.server.bind
+            ),
         ))),
         ObjectStoreBackend::S3 | ObjectStoreBackend::Garage => {
             let endpoint = config

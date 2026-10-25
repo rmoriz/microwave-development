@@ -53,7 +53,8 @@ impl Config {
     /// Apply `MW_*` environment overrides.
     ///
     /// Supported keys:
-    /// - `MW_SERVER__BIND`
+    /// - `MW_SERVER__BIND`, `MW_SERVER__TLS__ENABLED`,
+    ///   `MW_SERVER__TLS__CERT_PATH`, `MW_SERVER__TLS__KEY_PATH`
     /// - `MW_PATHS__DATA_DIR`
     /// - `MW_DATABASE__DRIVER`, `MW_DATABASE__URL`
     /// - `MW_SEARCH__BACKEND`, `MW_SEARCH__URL`
@@ -75,6 +76,15 @@ impl Config {
         }
         if let Ok(value) = std::env::var("MW_SERVER__WORKER_THREADS") {
             self.server.worker_threads = parse_value("MW_SERVER__WORKER_THREADS", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_SERVER__TLS__ENABLED") {
+            self.server.tls.enabled = Some(parse_bool("MW_SERVER__TLS__ENABLED", &value)?);
+        }
+        if let Ok(value) = std::env::var("MW_SERVER__TLS__CERT_PATH") {
+            self.server.tls.cert_path = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_SERVER__TLS__KEY_PATH") {
+            self.server.tls.key_path = non_empty(value);
         }
         if let Ok(value) = std::env::var("MW_PATHS__DATA_DIR") {
             self.paths.data_dir = value;
@@ -231,6 +241,7 @@ fn parse_bool(key: &str, value: &str) -> Result<bool, ConfigError> {
 pub struct ServerConfig {
     pub bind: String,
     pub worker_threads: usize,
+    pub tls: TlsConfig,
 }
 
 impl Default for ServerConfig {
@@ -238,7 +249,45 @@ impl Default for ServerConfig {
         Self {
             bind: "0.0.0.0:8000".into(),
             worker_threads: 0,
+            tls: TlsConfig::default(),
         }
+    }
+}
+
+/// Optional TLS listener configuration.
+///
+/// Plain HTTP remains the default. TLS is enabled automatically when a
+/// certificate or key path is configured, or explicitly with
+/// `server.tls.enabled = true` (which then requires both paths). Setting
+/// `enabled = false` keeps the listener on plain HTTP and ignores the paths.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct TlsConfig {
+    /// `None` enables TLS automatically when either path is set.
+    pub enabled: Option<bool>,
+    /// PEM certificate chain served to clients.
+    pub cert_path: Option<String>,
+    /// PEM private key matching the certificate. Never printed or logged.
+    pub key_path: Option<String>,
+}
+
+impl TlsConfig {
+    /// Resolve whether the listener should speak TLS.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+            .unwrap_or_else(|| self.has_cert_path() || self.has_key_path())
+    }
+
+    fn has_cert_path(&self) -> bool {
+        self.cert_path
+            .as_deref()
+            .is_some_and(|path| !path.trim().is_empty())
+    }
+
+    fn has_key_path(&self) -> bool {
+        self.key_path
+            .as_deref()
+            .is_some_and(|path| !path.trim().is_empty())
     }
 }
 

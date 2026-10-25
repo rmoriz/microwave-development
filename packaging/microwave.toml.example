@@ -14,11 +14,26 @@
 #   microwave-server config --config /etc/microwave/microwave.toml
 
 [server]
-# Address the HTTP listener binds to. Put a TLS-terminating proxy in front of
-# the server; the server itself speaks plain HTTP.
+# Address the listener binds to. Plain HTTP is the default; enable the TLS
+# section below to serve HTTPS directly. A TLS-terminating reverse proxy in
+# front of plain HTTP remains supported.
 bind = "0.0.0.0:8000"
 # 0 lets the server size the Tokio runtime from the available CPUs.
 worker_threads = 0
+
+# Optional TLS listener (rustls). Setting both paths enables HTTPS
+# automatically; `enabled = true` makes the requirement explicit and
+# `enabled = false` keeps plain HTTP even when paths are present.
+# [server.tls]
+# enabled = true
+# cert_path = "/etc/microwave/tls.crt"   # PEM certificate chain
+# key_path = "/etc/microwave/tls.key"    # PEM private key, mode 0600
+#
+# The certificate must be valid for the names clients use; for chef-client
+# that is the server URL hostname. `check-config` verifies readability, PEM
+# structure, and that the key matches the certificate. Intermediate
+# certificates belong in cert_path, above the leaf certificate. Certificates
+# are not reloaded automatically: restart after rotating them.
 
 [paths]
 # All mutable local state lives here: microwave.db (+ WAL/SHM), bookshelf/

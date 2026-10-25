@@ -813,6 +813,7 @@ fn check_config_reports_valid_configuration() {
     assert!(text.contains("ok: data_dir"));
     assert!(text.contains("ok: database"));
     assert!(text.contains("ok: server.bind"));
+    assert!(text.contains("ok: tls disabled"));
     assert!(text.contains("ok: auth.superuser_name"));
 }
 
@@ -1620,4 +1621,101 @@ fn postgres_backup_and_restore_round_trip() {
     drop(store);
 
     drop_scratch_database(&base_url, &scratch);
+}
+
+fn write_tls_pair(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+            .unwrap();
+    let cert_path = dir.join("tls.crt");
+    let key_path = dir.join("tls.key");
+    std::fs::write(&cert_path, certified.cert.pem()).unwrap();
+    std::fs::write(&key_path, certified.signing_key.serialize_pem()).unwrap();
+    (cert_path, key_path)
+}
+
+#[test]
+fn check_config_accepts_a_tls_pair_without_printing_key_material() {
+    let dir = tempfile::tempdir().unwrap();
+    let (cert, key) = write_tls_pair(dir.path());
+    let secret = std::fs::read_to_string(&key)
+        .unwrap()
+        .lines()
+        .find(|line| !line.starts_with("-----"))
+        .unwrap()
+        .to_string();
+    let config = dir.path().join("microwave.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[server.tls]\ncert_path = {:?}\nkey_path = {:?}\n",
+            cert, key
+        ),
+    )
+    .unwrap();
+
+    let output = ctl(dir.path())
+        .args(["--config", config.to_str().unwrap(), "check-config"])
+        .output()
+        .unwrap();
+
+    assert_success(&output);
+    let text = stdout(&output);
+    assert!(text.contains("ok: tls "), "stdout: {text}");
+    assert!(!text.contains(&secret));
+    assert!(!text.contains("PRIVATE KEY"));
+}
+
+#[test]
+fn check_config_rejects_a_missing_tls_certificate() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = dir.path().join("tls.key");
+    std::fs::write(&key, "not used").unwrap();
+    let config = dir.path().join("microwave.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[server.tls]\ncert_path = {:?}\nkey_path = {:?}\n",
+            dir.path().join("missing.crt"),
+            key
+        ),
+    )
+    .unwrap();
+
+    let output = ctl(dir.path())
+        .args(["--config", config.to_str().unwrap(), "check-config"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let text = stderr(&output);
+    assert!(
+        text.contains("failed to read TLS certificate file"),
+        "stderr: {text}"
+    );
+}
+
+#[test]
+fn check_config_rejects_a_mismatched_tls_pair() {
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let (cert, _first_key) = write_tls_pair(first.path());
+    let (_second_cert, key) = write_tls_pair(second.path());
+    let config = first.path().join("microwave.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[server.tls]\ncert_path = {:?}\nkey_path = {:?}\n",
+            cert, key
+        ),
+    )
+    .unwrap();
+
+    let output = ctl(first.path())
+        .args(["--config", config.to_str().unwrap(), "check-config"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("matching pair"));
 }

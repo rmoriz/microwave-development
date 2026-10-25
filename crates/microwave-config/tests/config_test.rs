@@ -21,6 +21,9 @@ fn defaults_are_safe_and_local() {
     assert!(!c.required_recipe.enabled);
     assert!(!c.telemetry.enabled);
     assert_eq!(c.telemetry.interval_seconds, 86_400);
+    assert!(!c.server.tls.is_enabled());
+    assert_eq!(c.server.tls.cert_path, None);
+    assert_eq!(c.server.tls.key_path, None);
 }
 
 #[test]
@@ -79,6 +82,82 @@ fn search_backend_and_url_can_be_overridden_from_env() {
 
     std::env::remove_var("MW_SEARCH__BACKEND");
     std::env::remove_var("MW_SEARCH__URL");
+}
+
+#[test]
+fn toml_configures_tls_and_enables_it_when_paths_are_set() {
+    let c = Config::from_toml_str(
+        r#"
+        [server]
+        bind = "0.0.0.0:8443"
+
+        [server.tls]
+        cert_path = "/etc/microwave/tls.crt"
+        key_path = "/etc/microwave/tls.key"
+    "#,
+    )
+    .unwrap();
+    assert_eq!(
+        c.server.tls.cert_path.as_deref(),
+        Some("/etc/microwave/tls.crt")
+    );
+    assert_eq!(
+        c.server.tls.key_path.as_deref(),
+        Some("/etc/microwave/tls.key")
+    );
+    assert_eq!(c.server.tls.enabled, None);
+    assert!(c.server.tls.is_enabled());
+}
+
+#[test]
+fn tls_can_be_explicitly_disabled_even_with_paths() {
+    let c = Config::from_toml_str(
+        r#"
+        [server.tls]
+        enabled = false
+        cert_path = "/etc/microwave/tls.crt"
+        key_path = "/etc/microwave/tls.key"
+    "#,
+    )
+    .unwrap();
+    assert!(!c.server.tls.is_enabled());
+}
+
+#[test]
+fn tls_env_overrides_toml_paths_and_enable_flag() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("MW_SERVER__TLS__ENABLED", "true");
+    std::env::set_var("MW_SERVER__TLS__CERT_PATH", "/env/tls.crt");
+    std::env::set_var("MW_SERVER__TLS__KEY_PATH", "/env/tls.key");
+
+    let mut c = Config::from_toml_str(
+        r#"
+        [server.tls]
+        cert_path = "/toml/tls.crt"
+        key_path = "/toml/tls.key"
+    "#,
+    )
+    .unwrap();
+    c.apply_env().unwrap();
+
+    std::env::remove_var("MW_SERVER__TLS__ENABLED");
+    std::env::remove_var("MW_SERVER__TLS__CERT_PATH");
+    std::env::remove_var("MW_SERVER__TLS__KEY_PATH");
+
+    assert_eq!(c.server.tls.enabled, Some(true));
+    assert_eq!(c.server.tls.cert_path.as_deref(), Some("/env/tls.crt"));
+    assert_eq!(c.server.tls.key_path.as_deref(), Some("/env/tls.key"));
+    assert!(c.server.tls.is_enabled());
+}
+
+#[test]
+fn tls_env_rejects_an_invalid_enable_flag() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("MW_SERVER__TLS__ENABLED", "maybe");
+    let mut c = Config::default();
+    let result = c.apply_env();
+    std::env::remove_var("MW_SERVER__TLS__ENABLED");
+    assert!(result.is_err());
 }
 
 #[test]

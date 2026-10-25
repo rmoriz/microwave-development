@@ -6,7 +6,7 @@ A Rust reimplementation of the Chef Infra Server API, designed as a drop-in repl
 
 The repository contains a working vertical slice:
 
-- **Configuration** — TOML plus `MW_*` environment overrides.
+- **Configuration** — TOML plus `MW_*` environment overrides, including an optional TLS listener.
 - **Authentication** — `X-Ops-Sign` 1.0/1.1/1.3 canonicalization, RSA signing/verification, key reassembly, and legacy password hash compatibility.
 - **Storage** — one metadata contract with two backends: SQLite (default) and PostgreSQL, selected by `database.driver` / `MW_DATABASE__DRIVER`. The HTTP API, OAuth/identity surface, embedded search, authorization policy, bootstrap, operational CLI, and snapshot migration run on either backend. SQLite remains the default and the only backend with an in-process database file.
 - **Authorization** — recursive ACL/group checks, cycle rejection, the default organization policy, and ACL read/write endpoints with granular `users`/`clients` responses.
@@ -16,7 +16,7 @@ The repository contains a working vertical slice:
 - **OAuth/identity** — `/id` sign-in/sessions, OAuth application management, authorization-code and refresh-token flows, `/id/v1/me`, `/id/v1/me/organizations`, `/id/v1/status`, profile/password/key regeneration, and password-reset tokens.
 - **Dependency solving** — Chef version constraints (`=`, `>`, `<`, `>=`, `<=`, `~>`), deterministic backtracking, environment constraints, role expansion, timeouts, and upstream-shaped 412 failures.
 - **External backends** — S3/Garage object storage with SigV4 signing and presigned URLs, and OpenSearch/Elasticsearch search with bulk indexing and query translation. The local object store and embedded search remain the defaults.
-- **Server** — `microwave-server serve` selects the configured metadata backend, bootstraps a `pivotal` superuser and listens on the configured address. `serve --check` initializes/migrates the backend and prints its type without exposing credentials.
+- **Server** — `microwave-server serve` selects the configured metadata backend, bootstraps a `pivotal` superuser and listens on the configured address. It serves plain HTTP by default and HTTPS directly when `server.tls.cert_path` and `server.tls.key_path` are configured. `serve --check` initializes/migrates the backend and prints its type without exposing credentials.
 
 Testing and formatting are green, and a strict stock `chef-client` converge passes without compatibility shims (`MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0`):
 
@@ -36,6 +36,23 @@ cargo run -p microwave-server -- serve
 
 The first run creates `./data/pivotal.pem` (superuser private key), `./data/pivotal.password`, and `./data/objectstore.secret`. Use `MW_PATHS__DATA_DIR` to choose another data directory.
 
+### TLS
+
+Plain HTTP remains the default. To terminate TLS in the server itself, point it at a
+PEM certificate chain and matching PEM private key:
+
+```sh
+MW_SERVER__TLS__CERT_PATH=/etc/microwave/tls.crt \
+MW_SERVER__TLS__KEY_PATH=/etc/microwave/tls.key \
+cargo run -p microwave-server -- serve
+```
+
+`microwave-server serve --check` and `microwave-ctl check-config` verify that both
+files exist, are readable, contain a certificate and private key, and form a
+matching pair. They print only the paths, never key material. A load balancer or
+reverse proxy terminating TLS in front of plain HTTP remains fully supported;
+see [`docs/deployment.md`](docs/deployment.md#tls-listener).
+
 The full workspace suite is green.
 
 ## Deployment
@@ -53,7 +70,7 @@ Packaging artifacts: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
 - **Key rotation.** `add-client-key`, `add-user-key`, `list-client-keys`, `list-user-keys`, `delete-client-key`, and `delete-user-key` manage `actor_keys`. New keys are 2048-bit RSA keypairs; the private key is printed exactly once at creation and is not stored. When `--key-name` is omitted, the key name is the Chef-compatible SHA-1 public-key fingerprint. `--public-key-path` imports an existing PEM public key instead of generating one, and `--expiration-date` accepts `infinity` or an ISO-8601 timestamp.
 - **Secrets.** `set-secret`, `show-secret`, and `remove-secret` store values in the `kvpair` table under `secret:<group>:<name>`. Only `show-secret` prints a value. The supported credential names mirror upstream, including `object_store secret`, `bookshelf access_key_id`, `bookshelf secret_access_key`, `data_collector token`, and the SQL password groups. At startup the server resolves the local `/bookshelf` HMAC secret from configuration, then `object_store secret`, then `<data_dir>/objectstore.secret`, and copies file-backed values into the secret store. S3/Garage access and secret keys fall back to the `bookshelf` secrets when configuration omits them.
 - **Maintenance.** `maintenance on`, `maintenance off`, and `maintenance status` persist a flag in `kvpair` (`maintenance:enabled`). While the flag is on, the HTTP middleware returns `503 Service Unavailable` with a JSON error for normal API requests; `/_status` and `/_stats` remain reachable so health checks and monitoring keep working.
-- **Diagnostics.** `check-config` loads the resolved configuration and validates the data directory, database URL/driver, bind address, search backend, object-store credentials, and superuser name. `ha-status` reports a single-node deployment; multi-node, DRBD, and keepalived HA are not implemented. `psql` execs `sqlite3` against the configured database, or `psql` with a configured PostgreSQL URL, and passes trailing arguments through.
+- **Diagnostics.** `check-config` loads the resolved configuration and validates the data directory, database URL/driver, bind address, search backend, object-store credentials, TLS certificate/key pair, and superuser name. `ha-status` reports a single-node deployment; multi-node, DRBD, and keepalived HA are not implemented. `psql` execs `sqlite3` against the configured database, or `psql` with a configured PostgreSQL URL, and passes trailing arguments through.
 - **PostgreSQL operations.** `status`, user/org/key/secret/maintenance commands, `check-config`, `ha-status`, `psql`, `backup`, `restore`, and `migrate-from-legacy` all use the configured backend. PostgreSQL `backup` writes `microwave.dump` with `pg_dump --format=custom`; `restore` validates the archive with `pg_restore --list`, prints the target without credentials, compares the archive's source database, and then runs `pg_restore --clean --if-exists --single-transaction`. `restore` is destructive and requires confirmation or `--yes`. PostgreSQL passwords are removed from client-tool command lines; `password` is passed through `PGPASSWORD`, while `sslpassword` is placed in a temporary `0600` libpq service file referenced by `PGSERVICEFILE`/`PGSERVICE`. Environment variables and temporary files may still be observable to the same UID on some platforms. Install `pg_dump`/`pg_restore` on the host. `migrate-from-legacy` and `microwave-migrate import` also ask for confirmation unless `--yes` is given. Commands that need the store apply the embedded schema on connect; `status` and `check-config` use `connect_existing` so read-only probes do not create tables. SQLite backup/restore keeps the existing `VACUUM INTO` and staged-file path.
 
 ## Remaining Work
@@ -61,7 +78,7 @@ Packaging artifacts: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
 - Keep the full extended `oc-chef-pedant` suite green in CI. All eleven extended tags pass; the remaining 7 pending examples are Pedant's own skips. The core suite is also near-green, with only the known plain-HTTP header artifact.
 - PostgreSQL operational tooling. The HTTP runtime, OAuth, authorization, search, bootstrap, `microwave-ctl`, `microwave-migrate`, and backup/restore run against PostgreSQL. PostgreSQL backups use `pg_dump`/`pg_restore` and require the matching client tools on the host. Remaining gaps are the snapshot's intentional omission of `kvpair` secrets, no multi-replica HA load validation, and no automated failover.
 - The remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup format).
-- TLS listener, key-generation cache, transparent `serialized_object` compression, and the dual-backend test matrix.
+- TLS certificate rotation/reload without a restart, key-generation cache, transparent `serialized_object` compression, and the dual-backend test matrix.
 - OpenSearch 3.x evaluation and multi-node HA/performance validation.
 - Outbound telemetry export. The `telemetry` table (SQLite and PostgreSQL) and `telemetry.*` / `MW_TELEMETRY__*` configuration exist, but the sender is intentionally not implemented and defaults to disabled: Microwave never phones home. Operators can enable the flag for forward compatibility, but no background worker or external endpoint is contacted.
 - Optional data-collector mutation action notifications (`oc_chef_action`). The `POST /organizations/:org/data-collector` forwarding path itself is implemented.

@@ -1,0 +1,16 @@
+[package]
+name = "microwave-tls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+microwave-config = { path = "../microwave-config" }
+rustls.workspace = true
+rustls-pemfile.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+rcgen.workspace = true
+tempfile.workspace = true
