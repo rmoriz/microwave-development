@@ -1412,6 +1412,7 @@ dependencies = [
  "microwave-crypto",
  "microwave-migrate",
  "microwave-store",
+ "microwave-store-postgres",
  "thiserror 2.0.21",
  "tokio",
  "uuid",
@@ -1426,7 +1427,10 @@ dependencies = [
  "microwave-ctl",
  "microwave-migrate",
  "microwave-store",
+ "microwave-store-postgres",
+ "sqlx",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -1446,6 +1450,7 @@ dependencies = [
  "microwave-authz",
  "microwave-crypto",
  "microwave-store",
+ "microwave-store-postgres",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1463,7 +1468,9 @@ dependencies = [
  "clap",
  "microwave-migrate",
  "microwave-store",
+ "microwave-store-postgres",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

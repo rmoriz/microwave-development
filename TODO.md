@@ -4,9 +4,9 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 
 > **Status snapshot (2026-10-24):** The implementation is well beyond the checkbox state below. The original phase checklist is kept as a design trace; many completed items were never ticked. Treat the test, pedant, and e2e reports as authoritative.
 >
-> **Implemented:** the Rust workspace; TOML/`MW_*` configuration; X-Ops signing/verification 1.0/1.1/1.3; SQLite and PostgreSQL metadata backends behind one contract, with the HTTP API, OAuth, embedded search, authorization policy, and bootstrap running on either; authz/ACL engine and default org policy; HTTP edge and signed-auth middleware; users, organizations, clients, principals, keys, memberships/invitations; nodes, roles, environments, data bags; sandboxes, `/bookshelf`, local and S3/Garage object stores; cookbooks, cookbook artifacts, policyfiles/policy groups; full dependency solver; search with embedded and OpenSearch backends; `/id` OAuth; `microwave-ctl`/`chef-server-ctl`; snapshot migration and the live `from-api` crawler; Docker/Compose/systemd packaging; HA backend wiring.
+> **Implemented:** the Rust workspace; TOML/`MW_*` configuration; X-Ops signing/verification 1.0/1.1/1.3; SQLite and PostgreSQL metadata backends behind one contract, with the HTTP API, OAuth, embedded search, authorization policy, bootstrap, operational CLI, and snapshot migration running on either; authz/ACL engine and default org policy; HTTP edge and signed-auth middleware; users, organizations, clients, principals, keys, memberships/invitations; nodes, roles, environments, data bags; sandboxes, `/bookshelf`, local and S3/Garage object stores; cookbooks, cookbook artifacts, policyfiles/policy groups; full dependency solver; search with embedded and OpenSearch backends; `/id` OAuth; `microwave-ctl`/`chef-server-ctl`; snapshot migration and the live `from-api` crawler; Docker/Compose/systemd packaging; HA backend wiring.
 >
-> **Verified:** `cargo test --workspace`, clippy with `-D warnings`, and `cargo fmt --check` are green. PostgreSQL integration: 16 store tests plus 2 HTTP runtime tests pass against PostgreSQL 18, and the server can be started with `MW_DATABASE__DRIVER=postgres`. The Debian trixie container image builds and both binaries start. Core pedant: 651 passed / 1 failed / 8 pending; the single failure is the known plain-HTTP `header_spec.rb` artifact. Extended pedant (final, after PostgreSQL runtime): 3,280 passed / 0 failed / 7 pending; all eleven extended tags pass. A strict stock `chef-client` converge now passes with both compatibility shims disabled (`MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0`), including validator registration.
+> **Verified:** `cargo test --workspace`, clippy with `-D warnings`, and `cargo fmt --check` are green. PostgreSQL integration covers the store, HTTP runtime, operational CLI, and snapshot export/import against PostgreSQL 18, and the server can be started with `MW_DATABASE__DRIVER=postgres`. The Debian trixie container image builds and both binaries start. Core pedant: 651 passed / 1 failed / 8 pending; the single failure is the known plain-HTTP `header_spec.rb` artifact. Extended pedant (final, after PostgreSQL runtime): 3,280 passed / 0 failed / 7 pending; all eleven extended tags pass. A strict stock `chef-client` converge now passes with both compatibility shims disabled (`MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0`), including validator registration.
 >
 > **Still open:** keeping the extended pedant suite green in CI; HTTP 503 enforcement for maintenance mode; the remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup); TLS listener, metrics/`_stats`, keygen cache, transparent compression, and the dual-backend test matrix; OpenSearch 3.x evaluation; HA/performance validation; and Data Collector/`required_recipe` plus telemetry export.
 
@@ -250,6 +250,10 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [ ] Verify against `compliance_proxy_spec.rb` and `required_recipe_spec.rb`.
 
 ### 5.3 Control CLI (`microwave-ctl`, `chef-server-ctl` compatibility alias)
+> **Backend status:** the commands below that are implemented work against
+> both SQLite and PostgreSQL. `backup`/`restore` use `VACUUM INTO` for SQLite
+> and `pg_dump`/`pg_restore` for PostgreSQL; both require the matching client
+> tools for PostgreSQL. `reindex` remains a documented no-op.
 - [ ] Implement CLI argument parser (`clap`) matching `chef-server-ctl` command and flag syntax:
   - [ ] Install `chef-server-ctl` as a compatibility alias to `microwave-ctl`.
   - [ ] Org & User commands: `user-list`, `user-show`, `user-create`, `user-delete`, `user-edit`, `org-list`, `org-show`, `org-create`, `org-delete`, `org-user-add`, `org-user-remove`, `password`.
@@ -260,6 +264,9 @@ This document tracks the end-to-end engineering checklist for reimplementing the
   - [ ] Lifecycle & Diagnostics: `status`, `ha-status`, `version`, `psql`, `gather-logs`, `backup`, `restore`, `test` (runs `oc-chef-pedant`).
 
 ### 5.4 Legacy Data Migration Tool (`microwave-migrate`)
+> **Backend status:** export and import support both SQLite and PostgreSQL
+> through the shared versioned JSON snapshot. The snapshot intentionally omits
+> `kvpair` secrets; use `microwave-ctl backup` for a full database copy.
 - [ ] Implement **Mode 1: Archive / Backup Importer (`knife-ec-backup` & SQL dump format):**
   - [ ] Import users (including legacy password hashes and salts), organizations, associations, invites, and server-admins.
   - [ ] Import clients and multi-key records (`actor_keys`).

@@ -22,6 +22,7 @@ it when `database.driver = "postgres"`; SQLite remains the default.
 | OAuth | `OAuthRepository` | applications, grants, access/refresh tokens, ID sessions and password-reset tokens (sessions and resets use `kvpair`, mirroring SQLite) |
 | Key/value | `KvRepository` | raw `kvpair` access and the maintenance flag |
 | Secrets | `SecretsRepository` | namespaced operator secrets under `secret:<group>:<name>` |
+| Snapshot export/import | inherent methods | full `StoreSnapshot` export/import, shared format with SQLite, sequence advancement after explicit-id import |
 
 `PostgresStore` implements the full contract, so it satisfies
 `microwave_store::MetadataStore`.
@@ -98,11 +99,12 @@ against one database converge on one object-store secret.
 
 ## Deferred work
 
-- `microwave-ctl` and `microwave-migrate` still open SQLite stores only.
-  PostgreSQL administration uses `psql`; snapshot import/export and key
-  rotation are not ported.
-- `microwave-ctl backup`/`restore` are SQLite-only (`VACUUM INTO`). Use
-  `pg_dump` plus the object-store backup for PostgreSQL deployments.
+- The `microwave-migrate` snapshot intentionally omits `kvpair` rows,
+  including operator secrets and the maintenance flag. Use
+  `microwave-ctl backup` when those must be preserved.
+- Importing into a non-empty PostgreSQL database can conflict on unique names
+  (for example an existing global `server-admins` group with a different id).
+  Import into a fresh database, or reconcile the ids first.
 - Multi-replica HA has not been load-validated. Connection retry/backoff,
   per-query timeouts, and advisory locks for cluster-wide cleanup jobs remain
   follow-ups.

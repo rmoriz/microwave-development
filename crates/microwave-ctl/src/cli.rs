@@ -209,13 +209,16 @@ pub enum Command {
         org: Option<String>,
     },
 
-    /// Create a consistent metadata and bookshelf backup.
+    /// Create a consistent metadata and bookshelf backup. SQLite uses
+    /// `VACUUM INTO`; PostgreSQL uses `pg_dump`.
     Backup { path: PathBuf },
-    /// Restore metadata and bookshelf data from a backup.
+    /// Restore metadata and bookshelf data from a backup. SQLite restores the
+    /// staged database file; PostgreSQL replays the `pg_dump` archive.
     Restore { path: PathBuf },
 
     /// Import a Microwave migration snapshot (produced by the
-    /// `microwave-migrate` binary) into the local store.
+    /// `microwave-migrate` binary) into the configured SQLite or PostgreSQL
+    /// store.
     MigrateFromLegacy {
         /// Snapshot JSON file to import.
         #[arg(long, value_name = "FILE")]

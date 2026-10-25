@@ -1,7 +1,9 @@
 use crate::CtlError;
 use microwave_config::{Config, DatabaseDriver};
-use microwave_store::SqliteStore;
+use microwave_store::{MetadataStore, SqliteStore};
+use microwave_store_postgres::PostgresStore;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Resolved configuration and local paths for an operational command.
 pub struct Context {
@@ -65,6 +67,49 @@ impl Context {
         })
     }
 
+    /// Open the configured metadata store as a backend-neutral handle.
+    ///
+    /// Both backends satisfy [`MetadataStore`]. The handle owns a
+    /// current-thread Tokio runtime so the synchronous CLI can call the async
+    /// repository contract without turning every command into an async
+    /// function. PostgreSQL connects with the embedded schema applied, matching
+    /// server startup.
+    pub fn open_metadata_store(&self) -> Result<StoreHandle, CtlError> {
+        self.open_metadata_store_inner(true)
+    }
+
+    /// Open the store without applying PostgreSQL schema changes.
+    ///
+    /// Used by read-only diagnostics such as `status` and `check-config` so a
+    /// probe does not create tables in an empty database. SQLite opens the
+    /// existing file normally; callers that must not create it check
+    /// `database_path` first.
+    pub fn open_existing_metadata_store(&self) -> Result<StoreHandle, CtlError> {
+        self.open_metadata_store_inner(false)
+    }
+
+    fn open_metadata_store_inner(&self, migrate: bool) -> Result<StoreHandle, CtlError> {
+        let runtime = new_runtime()?;
+        let store: Arc<dyn MetadataStore> = match self.config.database.driver {
+            DatabaseDriver::Sqlite => {
+                self.prepare_data_dir()?;
+                Arc::new(SqliteStore::open(self.sqlite_path()?)?)
+            }
+            DatabaseDriver::Postgres if migrate => {
+                Arc::new(runtime.block_on(PostgresStore::connect(&self.database_url))?)
+            }
+            DatabaseDriver::Postgres => {
+                Arc::new(runtime.block_on(PostgresStore::connect_existing(&self.database_url))?)
+            }
+        };
+        Ok(StoreHandle { store, runtime })
+    }
+
+    /// Open the SQLite store directly.
+    ///
+    /// Kept for operations that need SQLite-specific APIs (for example the
+    /// `VACUUM INTO` backup path). Commands that only need the repository
+    /// contract should use [`Context::open_metadata_store`].
     pub fn open_store(&self) -> Result<SqliteStore, CtlError> {
         self.prepare_data_dir()?;
         Ok(SqliteStore::open(self.sqlite_path()?)?)
@@ -73,4 +118,29 @@ impl Context {
     pub fn superuser_name(&self) -> &str {
         &self.config.auth.superuser_name
     }
+}
+
+/// A backend-neutral store plus the runtime needed to drive its async traits.
+pub struct StoreHandle {
+    store: Arc<dyn MetadataStore>,
+    runtime: tokio::runtime::Runtime,
+}
+
+impl StoreHandle {
+    /// The underlying backend-neutral store.
+    pub fn store(&self) -> &dyn MetadataStore {
+        self.store.as_ref()
+    }
+
+    /// Run one repository future on the handle's current-thread runtime.
+    pub fn run<F: std::future::Future>(&self, future: F) -> F::Output {
+        self.runtime.block_on(future)
+    }
+}
+
+fn new_runtime() -> Result<tokio::runtime::Runtime, CtlError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| CtlError::message(format!("failed to build tokio runtime: {error}")))
 }

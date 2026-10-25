@@ -69,3 +69,7 @@ cargo test -p microwave-store-postgres "$@"
 # they must run with the same disposable database.
 cargo test -p microwave-api --test postgres_runtime_test "$@"
 cargo test -p microwave-api --test postgres_http_coverage_test "$@"
+# Operational CLI and snapshot tests run after the store suite because the
+# maintenance-flag assertions are global to the shared database.
+cargo test -p microwave-ctl-bin --test cli_test "$@"
+cargo test -p microwave-migrate-bin --test cli_test "$@"

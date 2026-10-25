@@ -31,6 +31,21 @@ impl PostgresStore {
         Ok(store)
     }
 
+    /// Connect to PostgreSQL without applying the embedded schema.
+    ///
+    /// Intended for read-only diagnostics and snapshot export against a
+    /// database whose schema is already managed by a server. Unlike
+    /// [`PostgresStore::connect`], this performs no DDL, so it works with a
+    /// read-only database role.
+    pub async fn connect_existing(database_url: &str) -> Result<Self, StoreError> {
+        let pool = PgPoolOptions::new()
+            .max_connections(10)
+            .connect(database_url)
+            .await
+            .map_err(db)?;
+        Ok(Self { pool })
+    }
+
     /// Wrap an existing pool. The caller is responsible for calling
     /// [`PostgresStore::migrate`].
     pub fn from_pool(pool: PgPool) -> Self {

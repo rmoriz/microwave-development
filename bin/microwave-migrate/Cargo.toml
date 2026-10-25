@@ -16,4 +16,6 @@ microwave-migrate = { path = "../../crates/microwave-migrate" }
 [dev-dependencies]
 assert_cmd.workspace = true
 microwave-store = { path = "../../crates/microwave-store" }
+microwave-store-postgres = { path = "../../crates/microwave-store-postgres" }
 tempfile.workspace = true
+tokio.workspace = true

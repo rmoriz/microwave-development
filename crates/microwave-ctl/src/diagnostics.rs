@@ -176,16 +176,31 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
 }
 
 fn stored_secret(context: &Context, group: &str, name: &str) -> Option<String> {
-    let path = context.database_path.as_deref()?;
-    if !path.is_file() {
-        return None;
-    }
-    let store = SqliteStore::open_read_only(path).ok()?;
-    store
-        .get_secret(group, name)
-        .ok()
-        .flatten()
-        .filter(|value| !value.is_empty())
+    let value = match context.config.database.driver {
+        DatabaseDriver::Sqlite => {
+            let path = context.database_path.as_deref()?;
+            if !path.is_file() {
+                return None;
+            }
+            SqliteStore::open_read_only(path)
+                .ok()?
+                .get_secret(group, name)
+                .ok()
+                .flatten()
+        }
+        DatabaseDriver::Postgres => {
+            // Only reached when configuration omitted the credential and the
+            // object-store backend needs it. A database that cannot be opened
+            // is reported as a missing credential by the caller, not as a
+            // configuration-check panic.
+            let store = context.open_existing_metadata_store().ok()?;
+            store
+                .run(store.store().get_secret(group, name))
+                .ok()
+                .flatten()
+        }
+    };
+    value.filter(|value| !value.is_empty())
 }
 
 fn database_driver_name(driver: DatabaseDriver) -> &'static str {

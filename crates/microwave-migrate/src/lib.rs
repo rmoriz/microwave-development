@@ -1,11 +1,14 @@
 //! Offline migration/export-import support for Microwave Server.
 //!
-//! Migration moves data between local `microwave-store` databases and a live
-//! legacy Chef Infra Server through a versioned JSON snapshot:
+//! Migration moves data between local `microwave-store` SQLite databases or
+//! PostgreSQL metadata stores and a live legacy Chef Infra Server through a
+//! versioned JSON snapshot:
 //!
 //! ```text
 //! microwave-migrate export --data-dir ./data --output snapshot.json
+//! microwave-migrate export --database-url postgres://db/microwave --output snapshot.json
 //! microwave-migrate import --data-dir ./new-data --input snapshot.json
+//! microwave-migrate import --database-url postgres://db/microwave --input snapshot.json
 //! microwave-migrate from-api --url https://chef.example.com \
 //!     --client-name migrator --key migrator.pem --output snapshot.json
 //! ```
@@ -15,6 +18,7 @@
 
 use chrono::{SecondsFormat, Utc};
 use microwave_store::{SqliteStore, StoreError, StoreSnapshot};
+use microwave_store_postgres::PostgresStore;
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -106,6 +110,8 @@ pub enum MigrateError {
     InvalidApiResponse { url: String, message: String },
     #[error("crypto error: {0}")]
     Crypto(#[from] microwave_crypto::CryptoError),
+    #[error("failed to build tokio runtime: {0}")]
+    Runtime(String),
 }
 
 /// Export the store under `data_dir` to a JSON snapshot at `output`.
@@ -155,6 +161,53 @@ pub fn import_database(database: &Path, input: &Path) -> Result<(), MigrateError
     let store = SqliteStore::open(database)?;
     store.import_snapshot(&snapshot.data)?;
     Ok(())
+}
+
+/// Export a PostgreSQL metadata store to a JSON snapshot.
+///
+/// This connects without applying the embedded schema, so it works with a
+/// read-only database role. The schema must already exist (the server creates
+/// it on startup). The connection URL is never written to the snapshot.
+pub fn export_postgres(database_url: &str, output: &Path) -> Result<(), MigrateError> {
+    let runtime = runtime()?;
+    let store = runtime.block_on(PostgresStore::connect_existing(database_url))?;
+    let data = runtime.block_on(store.export_snapshot())?;
+    let snapshot = Snapshot {
+        format: SNAPSHOT_FORMAT.to_string(),
+        version: SNAPSHOT_VERSION,
+        generated_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        source: SnapshotSource {
+            kind: SnapshotSourceKind::LocalStore,
+            url: None,
+            data_dir: None,
+        },
+        data,
+    };
+    write_snapshot(&snapshot, output)
+}
+
+/// Import a JSON snapshot into a PostgreSQL metadata store.
+///
+/// The import runs in one database transaction and preserves source ids,
+/// authz ids, timestamps, hashes, and keys. Importing the same snapshot twice
+/// is idempotent.
+pub fn import_postgres(database_url: &str, input: &Path) -> Result<(), MigrateError> {
+    let snapshot = read_snapshot(input)?;
+    let runtime = runtime()?;
+    let store = runtime.block_on(PostgresStore::connect(database_url))?;
+    runtime.block_on(store.import_snapshot(&snapshot.data))?;
+    Ok(())
+}
+
+/// Run a PostgreSQL snapshot operation on a current-thread Tokio runtime.
+///
+/// The migration binary and the operational CLI stay synchronous; only these
+/// backend calls cross into async.
+fn runtime() -> Result<tokio::runtime::Runtime, MigrateError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| MigrateError::Runtime(error.to_string()))
 }
 
 /// Crawl a live legacy Chef Infra Server into the snapshot format.

@@ -1,8 +1,11 @@
 use crate::commands::{find_org, find_user};
-use crate::{context::Context, CtlError};
+use crate::{
+    context::{Context, StoreHandle},
+    CtlError,
+};
 use chrono::{DateTime, SecondsFormat, Utc};
 use microwave_crypto::{generate_rsa_keypair, parse_public_key_pem, public_key_fingerprint};
-use microwave_store::{ActorType, SqliteStore};
+use microwave_store::{ActorType, StoreError};
 use std::path::Path;
 
 /// Options shared by `add-client-key` and `add-user-key`.
@@ -18,11 +21,11 @@ pub fn add_client_key(
     client_name: &str,
     options: &AddKeyOptions<'_>,
 ) -> Result<(), CtlError> {
-    let store = context.open_store()?;
+    let store = context.open_metadata_store()?;
     let org = find_org(&store, org_name)?;
     let client = store
-        .find_client(&org.id, client_name)?
-        .ok_or_else(|| microwave_store::StoreError::NotFound(format!("client {client_name}")))?;
+        .run(store.store().find_client(&org.id, client_name))?
+        .ok_or_else(|| StoreError::NotFound(format!("client {client_name}")))?;
 
     add_key(
         &store,
@@ -38,7 +41,7 @@ pub fn add_user_key(
     username: &str,
     options: &AddKeyOptions<'_>,
 ) -> Result<(), CtlError> {
-    let store = context.open_store()?;
+    let store = context.open_metadata_store()?;
     let user = find_user(&store, username)?;
 
     add_key(
@@ -51,7 +54,7 @@ pub fn add_user_key(
 }
 
 fn add_key(
-    store: &SqliteStore,
+    store: &StoreHandle,
     actor_id: &str,
     actor_type: ActorType,
     actor_description: &str,
@@ -90,7 +93,13 @@ fn add_key(
         None => public_key_fingerprint(&public_key)?,
     };
 
-    store.create_actor_key(actor_id, actor_type, &key_name, &public_key, &expires_at)?;
+    store.run(store.store().create_actor_key(
+        actor_id,
+        actor_type,
+        &key_name,
+        &public_key,
+        &expires_at,
+    ))?;
     println!("Created key {key_name} for {actor_description}");
 
     if let Some(private_key) = private_key {
@@ -108,20 +117,20 @@ pub fn list_client_keys(
     client_name: &str,
     verbose: bool,
 ) -> Result<(), CtlError> {
-    let store = context.open_store()?;
+    let store = context.open_metadata_store()?;
     let org = find_org(&store, org_name)?;
     let client = store
-        .find_client(&org.id, client_name)?
-        .ok_or_else(|| microwave_store::StoreError::NotFound(format!("client {client_name}")))?;
-    let keys = store.list_actor_keys(&client.id, ActorType::Client)?;
+        .run(store.store().find_client(&org.id, client_name))?
+        .ok_or_else(|| StoreError::NotFound(format!("client {client_name}")))?;
+    let keys = store.run(store.store().list_actor_keys(&client.id, ActorType::Client))?;
     print_keys(&keys, verbose);
     Ok(())
 }
 
 pub fn list_user_keys(context: &Context, username: &str, verbose: bool) -> Result<(), CtlError> {
-    let store = context.open_store()?;
+    let store = context.open_metadata_store()?;
     let user = find_user(&store, username)?;
-    let keys = store.list_actor_keys(&user.id, ActorType::User)?;
+    let keys = store.run(store.store().list_actor_keys(&user.id, ActorType::User))?;
     print_keys(&keys, verbose);
     Ok(())
 }
@@ -132,20 +141,28 @@ pub fn delete_client_key(
     client_name: &str,
     key_name: &str,
 ) -> Result<(), CtlError> {
-    let store = context.open_store()?;
+    let store = context.open_metadata_store()?;
     let org = find_org(&store, org_name)?;
     let client = store
-        .find_client(&org.id, client_name)?
-        .ok_or_else(|| microwave_store::StoreError::NotFound(format!("client {client_name}")))?;
-    store.delete_actor_key(&client.id, ActorType::Client, key_name)?;
+        .run(store.store().find_client(&org.id, client_name))?
+        .ok_or_else(|| StoreError::NotFound(format!("client {client_name}")))?;
+    store.run(
+        store
+            .store()
+            .delete_actor_key(&client.id, ActorType::Client, key_name),
+    )?;
     println!("Deleted key {key_name} for client {client_name} in organization {org_name}");
     Ok(())
 }
 
 pub fn delete_user_key(context: &Context, username: &str, key_name: &str) -> Result<(), CtlError> {
-    let store = context.open_store()?;
+    let store = context.open_metadata_store()?;
     let user = find_user(&store, username)?;
-    store.delete_actor_key(&user.id, ActorType::User, key_name)?;
+    store.run(
+        store
+            .store()
+            .delete_actor_key(&user.id, ActorType::User, key_name),
+    )?;
     println!("Deleted key {key_name} for user {username}");
     Ok(())
 }

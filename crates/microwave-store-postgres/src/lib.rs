@@ -28,6 +28,7 @@ mod cookbooks;
 mod identity;
 mod kv;
 mod membership;
+mod migration;
 mod oauth;
 mod objects;
 mod policies;

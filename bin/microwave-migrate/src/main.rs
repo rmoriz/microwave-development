@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
-use microwave_migrate::{export, from_api_with_options, import, FromApiOptions};
+use microwave_migrate::{
+    export, export_postgres, from_api_with_options, import, import_postgres, FromApiOptions,
+};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -16,20 +18,46 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Write a versioned JSON snapshot of the local store.
+    /// Write a versioned JSON snapshot of a local store.
     Export {
-        /// Data directory containing microwave.db.
-        #[arg(long, value_name = "DIR")]
-        data_dir: PathBuf,
+        /// Data directory containing microwave.db (SQLite).
+        #[arg(
+            long,
+            value_name = "DIR",
+            conflicts_with = "database_url",
+            required_unless_present = "database_url"
+        )]
+        data_dir: Option<PathBuf>,
+        /// PostgreSQL connection URL to export.
+        #[arg(
+            long,
+            value_name = "URL",
+            conflicts_with = "data_dir",
+            required_unless_present = "data_dir"
+        )]
+        database_url: Option<String>,
         /// Snapshot file to write.
         #[arg(long, value_name = "FILE")]
         output: PathBuf,
     },
     /// Import a snapshot into a local store, creating it when needed.
     Import {
-        /// Data directory containing (or receiving) microwave.db.
-        #[arg(long, value_name = "DIR")]
-        data_dir: PathBuf,
+        /// Data directory containing (or receiving) microwave.db (SQLite).
+        #[arg(
+            long,
+            value_name = "DIR",
+            conflicts_with = "database_url",
+            required_unless_present = "database_url"
+        )]
+        data_dir: Option<PathBuf>,
+        /// PostgreSQL connection URL to import into.
+        #[arg(
+            long,
+            value_name = "URL",
+            conflicts_with = "data_dir",
+            required_unless_present = "data_dir"
+        )]
+        database_url: Option<String>,
         /// Snapshot file to read.
         #[arg(long, value_name = "FILE")]
         input: PathBuf,
@@ -60,10 +88,16 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Export { data_dir, output } => export(&data_dir, &output)
-            .map(|()| println!("Exported snapshot to {}", output.display())),
-        Command::Import { data_dir, input } => import(&data_dir, &input)
-            .map(|()| println!("Imported snapshot from {}", input.display())),
+        Command::Export {
+            data_dir,
+            database_url,
+            output,
+        } => export_command(data_dir, database_url, &output),
+        Command::Import {
+            data_dir,
+            database_url,
+            input,
+        } => import_command(data_dir, database_url, &input),
         Command::FromApi {
             url,
             client_name,
@@ -86,5 +120,33 @@ fn main() -> ExitCode {
             eprintln!("error: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn export_command(
+    data_dir: Option<PathBuf>,
+    database_url: Option<String>,
+    output: &std::path::Path,
+) -> Result<(), microwave_migrate::MigrateError> {
+    match (data_dir, database_url) {
+        (Some(data_dir), None) => export(&data_dir, output)
+            .map(|()| println!("Exported snapshot to {}", output.display())),
+        (None, Some(database_url)) => export_postgres(&database_url, output)
+            .map(|()| println!("Exported snapshot to {}", output.display())),
+        _ => unreachable!("clap requires exactly one of --data-dir and --database-url"),
+    }
+}
+
+fn import_command(
+    data_dir: Option<PathBuf>,
+    database_url: Option<String>,
+    input: &std::path::Path,
+) -> Result<(), microwave_migrate::MigrateError> {
+    match (data_dir, database_url) {
+        (Some(data_dir), None) => import(&data_dir, input)
+            .map(|()| println!("Imported snapshot from {}", input.display())),
+        (None, Some(database_url)) => import_postgres(&database_url, input)
+            .map(|()| println!("Imported snapshot from {}", input.display())),
+        _ => unreachable!("clap requires exactly one of --data-dir and --database-url"),
     }
 }
