@@ -274,16 +274,22 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 
 ### 5.4 Legacy Data Migration Tool (`microwave-migrate`)
 > **Backend status:** export and import support both SQLite and PostgreSQL
-> through the shared versioned JSON snapshot. The snapshot intentionally omits
-> `kvpair` secrets; use `microwave-ctl backup` for a full database copy.
-- [ ] Implement **Mode 1: Archive / Backup Importer (`knife-ec-backup` & SQL dump format):**
-  - [ ] Import users (including legacy password hashes and salts), organizations, associations, invites, and server-admins.
-  - [ ] Import clients and multi-key records (`actor_keys`).
-  - [ ] Import containers, groups, and full ACL graphs (preserving `authz_id`s).
-  - [ ] Import nodes, roles, environments, data bags, cookbooks (and bookshelf blobs), cookbook artifacts, policies, and policy groups.
-  - [ ] Import `oc-id` OAuth applications.
-- [ ] Implement **Mode 2: Live API Crawler:**
-  - [ ] Crawl a running upstream server using `pivotal` credentials to pull all orgs, users, ACLs, cookbooks/blobs, policies, nodes, roles, environments, and data bags into the new server.
+> through the shared versioned JSON snapshot. `import-knife-backup` also
+> supports both backends, writes cookbook blobs to a local object-store root,
+> and requires `--bookshelf-dir` with `--database-url`. The snapshot
+> intentionally omits `kvpair` secrets; use `microwave-ctl backup` for a full
+> database copy.
+- [x] Implement **Mode 1: Archive / Backup Importer (`knife-ec-backup` directory):**
+  - [x] `microwave-migrate import-knife-backup` parses a ChefFS backup directory offline, supports `--dry-run`, and requires confirmation/`--yes`.
+  - [x] Import users (profiles, admin flag, legacy password hashes/salts from `key_dump.json`), organizations, associations, and invites.
+  - [x] Import clients and multi-key records from `key_table_dump.json`/inline public keys (`actor_keys`), preserving key names, versions, and expiry.
+  - [x] Import containers, groups, group nesting, and ACL graphs, including user ACLs, granular `users`/`clients`, and the standard global `server-admins`/read-access graph.
+  - [x] Import nodes, roles, environments, data bags/items, and ChefFS cookbooks (metadata, frozen status, MD5 checksums, and local bookshelf blobs). Environment constraints are preserved in the environment bodies.
+  - [ ] Import cookbook artifacts, policies/policy groups, and `oc-id` OAuth applications. These are not present in a knife backup; snapshot import already handles them when a snapshot contains them.
+  - [ ] Evaluate arbitrary Ruby in `metadata.rb` and import blobs into S3/Garage. The current parser is a tested DSL subset and blobs target the local object store.
+- [x] Implement **Mode 2: Live API Crawler:**
+  - [x] Crawl a running upstream server using `pivotal` credentials to pull orgs, users, ACLs, cookbooks/metadata, policies, nodes, roles, environments, and data bags into a snapshot.
+  - [ ] Copy cookbook blobs during the live crawl; the crawler currently transfers metadata and checksum references only.
 - [ ] Trigger full search reindex and verify object counts and checksum integrity post-migration.
 
 ### 5.5 Full Pedant Verification, HA & Performance Benchmarks

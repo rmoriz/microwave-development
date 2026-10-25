@@ -45,7 +45,7 @@ The workspace builds four binaries:
 | `microwave-server` | HTTP daemon. `serve` (with `--check` for a preflight) and `config` (print resolved config). |
 | `microwave-ctl` | Operational CLI. |
 | `chef-server-ctl` | Compatibility alias built from the same CLI crate; identical command surface. |
-| `microwave-migrate` | Versioned JSON snapshot export/import. |
+| `microwave-migrate` | Versioned JSON snapshot export/import, live crawler, and offline `knife ec backup` directory import. |
 
 Build them from source:
 
@@ -150,9 +150,9 @@ A complete annotated example is
 `storage.compression` applies to new writes. Decompression is capped at 64 MiB
 per value; corrupt or oversized compressed values fail with a storage error
 instead of panicking. Imports through `microwave-ctl` inherit the server
-configuration; the standalone `microwave-migrate import` accepts
-`--compression zlib|none` or `--config <path>` (with
-`MW_STORAGE__COMPRESSION` as an environment override).
+configuration; the standalone `microwave-migrate import` and
+`import-knife-backup` accept `--compression zlib|none` or `--config <path>`
+(with `MW_STORAGE__COMPRESSION` as an environment override).
 
 Validate a configuration file without starting the server, or validate it and
 initialize/migrate the configured metadata backend:
@@ -921,7 +921,51 @@ the legacy API never returns). `microwave-ctl migrate-from-legacy --input
 <snapshot>` imports that snapshot into the configured SQLite or PostgreSQL
 database.
 
-For a full export/import workflow, use `from-api` to produce the snapshot and
+### Importing a `knife ec backup` repository
+
+If the legacy server was backed up with `knife ec backup`, import that
+directory directly. The importer needs no HTTP server, writes cookbook blobs
+through the local object store, and imports metadata in one store transaction:
+
+```sh
+# SQLite; cookbook blobs default to <data-dir>/bookshelf
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --data-dir /var/lib/microwave \
+  --yes
+
+# PostgreSQL
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --database-url postgres://microwave:secret@db/microwave \
+  --bookshelf-dir /var/lib/microwave/bookshelf \
+  --yes
+
+# Validate and count first; writes nothing and does not ask for confirmation
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --data-dir /var/lib/microwave \
+  --dry-run
+```
+
+The supported layout covers users and user ACLs, optional
+`key_dump.json`/`key_table_dump.json`, organizations, members/invitations,
+clients, containers, groups, nodes, roles, environments, data bags/items,
+per-object ACLs, and ChefFS cookbook directories (`metadata.rb`/`metadata.json`,
+`status.json`, MD5-addressed files). See the
+[`microwave-migrate` README](../crates/microwave-migrate/README.md#knife-ec-backup-directory-import)
+for the exact supported subset and remaining gaps (arbitrary Ruby in
+`metadata.rb`, cookbook artifacts/policies/policy groups, OAuth applications,
+S3/Garage blobs, and purge semantics).
+
+The command merges/upserts into an existing store, so it asks for an
+interactive `yes` or `--yes`. Re-importing the same backup is idempotent.
+Objects that were deleted from the backup but still exist in the target are
+not removed.
+
+### Importing a snapshot
+
+For a snapshot-based workflow, use `from-api` to produce the snapshot and
 then import it. The manual path below remains useful when you already have a
 snapshot or need to stage the copy yourself:
 
@@ -946,11 +990,12 @@ snapshot or need to stage the copy yourself:
    `microwave-migrate import --database-url postgres://... --input ... --yes`
    with the same compression flags. Both import paths ask for confirmation
    unless `--yes` is given.
-4. **Copy cookbook blobs.** The snapshot is metadata only. Place files under
-   the object key layout `organization-<org_id>/checksum-<md5>` in
-   `/var/lib/microwave/bookshelf/` for the local backend, or upload them to the
-   configured S3 bucket under the same keys. The legacy bookshelf directory
-   layout is not converted by any tool here; this step is manual today.
+4. **Copy cookbook blobs.** Snapshot import is metadata only. The knife
+   importer above handles blobs, but a snapshot-based migration still needs
+   files placed under the object key layout
+   `organization-<org_id>/checksum-<md5>` in `/var/lib/microwave/bookshelf/`
+   for the local backend, or uploaded to the configured S3 bucket under the
+   same keys.
 5. **Verify** with `microwave-ctl status`, `user-list`, `org-list`,
    `org-show <org>`, and a `knife` or `chef-client` read against a test org.
 6. **Start the server** and drain clients over gradually.
@@ -962,8 +1007,8 @@ cookbook metadata and checksum references, policyfiles/policy groups, and
 OAuth applications. Chef clients keep their existing keys and URLs, so no
 client reconfiguration is needed if the endpoint stays the same.
 
-Until a blob importer exists, the practical migration is a parallel run: keep
-the legacy server authoritative, move one organization at a
+For large or S3/Garage-backed deployments, the practical migration is a
+parallel run: keep the legacy server authoritative, move one organization at a
 time, and keep the legacy server read-only until the new one is verified.
 
 ## 11. Health, status, and logs

@@ -27,8 +27,14 @@ use thiserror::Error;
 use url::Url;
 
 mod from_api;
+mod knife_backup;
 
 pub use from_api::{crawl_from_api, from_api_with_options, read_private_key, FromApiOptions};
+pub use knife_backup::{
+    apply_knife_backup_plan_postgres, apply_knife_backup_plan_sqlite, import_knife_backup,
+    import_knife_backup_postgres, import_knife_backup_postgres_with_compression,
+    import_knife_backup_to, prepare_knife_backup, KnifeBackupPlan, KnifeBackupSummary,
+};
 
 /// Value of the snapshot envelope's `format` field.
 pub const SNAPSHOT_FORMAT: &str = "microwave-server-snapshot";
@@ -112,6 +118,10 @@ pub enum MigrateError {
     Transport { url: String, message: String },
     #[error("invalid response from {url}: {message}")]
     InvalidApiResponse { url: String, message: String },
+    #[error("invalid knife-ec-backup directory {path}: {message}")]
+    InvalidBackup { path: PathBuf, message: String },
+    #[error("object store error: {0}")]
+    ObjectStore(#[from] microwave_objectstore::ObjectStoreError),
     #[error("crypto error: {0}")]
     Crypto(#[from] microwave_crypto::CryptoError),
     #[error("failed to build tokio runtime: {0}")]

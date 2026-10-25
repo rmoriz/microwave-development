@@ -3,8 +3,9 @@
 Migration support for Microwave Server. This crate owns the versioned JSON
 snapshot format and the `microwave-migrate` binary. It can export a local
 SQLite store or a PostgreSQL metadata store, import a snapshot into either
-backend, or crawl a live legacy Chef Infra Server into the same snapshot
-envelope.
+backend, crawl a live legacy Chef Infra Server into the same snapshot
+envelope, or import a `knife ec backup` repository directly without an HTTP
+server.
 
 ## Commands
 
@@ -42,12 +43,32 @@ microwave-migrate from-api \
   --api-version 2 \
   --output acme.json
 
+# Import a knife ec backup directory into SQLite and ./data/bookshelf
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --data-dir ./new-data \
+  --yes
+
+# Import the same layout into PostgreSQL (the local bookshelf root is explicit)
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --database-url postgres://microwave:secret@db/microwave \
+  --bookshelf-dir /var/lib/microwave-new/bookshelf \
+  --yes
+
+# Parse and count without touching the database or object store
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --data-dir ./new-data \
+  --dry-run
+
 # Import through the operational CLI (uses the configured database path)
 microwave-ctl migrate-from-legacy --input migration.json --yes
 ```
 
-`import` merges into live metadata and asks for confirmation; `--yes` is
-required in scripts and other non-interactive environments.
+`import` and `import-knife-backup` merge into live metadata and ask for
+confirmation; `--yes` is required in scripts and other non-interactive
+environments. `--dry-run` never confirms and never writes.
 
 `import` validates the envelope before touching the database. Invalid JSON,
 an unexpected `format`, or an unsupported `version` exit non-zero and do not
@@ -197,6 +218,105 @@ PostgreSQL's sequence-backed identifiers (`cookbooks`, `cookbook_artifacts`,
 `cookbook_artifact_versions`, and `oauth_applications`) are inserted with the
 snapshot ids, then their sequences are advanced to the highest imported id.
 Later inserts cannot collide with the restored rows.
+
+## `knife ec backup` directory import
+
+`import-knife-backup` reads the repository written by
+[`knife-ec-backup`](https://github.com/chef/knife-ec-backup) directly. It does
+not start a server and never sends HTTP requests. The importer builds the same
+`StoreSnapshot` used by `import`, writes cookbook blobs through the local
+object store, and then imports metadata in one store transaction. Its output
+contains counts and file paths only; password hashes, public keys, and file
+contents are never printed.
+
+### Supported layout
+
+```text
+users/<name>.json
+user_acls/<name>.json
+key_dump.json                  # optional, from --with-user-sql
+key_table_dump.json            # optional, from --with-key-sql
+organizations/<org>/org.json
+organizations/<org>/members.json
+organizations/<org>/invitations.json
+organizations/<org>/clients/<name>.json
+organizations/<org>/containers/<name>.json
+organizations/<org>/groups/<name>.json
+organizations/<org>/nodes/<name>.json
+organizations/<org>/roles/<name>.json
+organizations/<org>/environments/<name>.json
+organizations/<org>/data_bags/<bag>/<item>
+organizations/<org>/cookbooks/<name>-<version>/...
+organizations/<org>/acls/<type>/<name>.json
+organizations/<org>/acls/organization.json
+```
+
+The importer preserves organization `guid`s, user and client public keys,
+multi-key rows (`key_name`, `key_version`, `expires_at`), API object bodies,
+data bag item bodies, group membership/nesting, and cookbook frozen status.
+Internal ids and authz ids are generated deterministically from the backup
+scope when the repository has none, so importing the same directory twice is
+idempotent. When `key_dump.json` or a user object contains source ids, those
+ids are reused.
+
+`key_dump.json` is read as the JSON array exported by `ec_key_export.rb`:
+`username`, `hashed_password`, `salt`, `hash_type`, `admin`, and optional
+`id`/`authz_id`/`public_key`. `key_table_dump.json` is read as the `keys_by_name`
+rows: `type` (`user`/`client`), `name`, `org_name`, `key_name`, `public_key`,
+`key_version`, and `expires_at`. Inline `public_key` fields in user/client
+JSON become the `default` key only when the key table does not already define
+one.
+
+ACLs accept both API shapes: legacy `actors`/`groups` and granular
+`users`/`clients`/`groups`. Global `admins` on a user ACL maps to Microwave's
+`server-admins` group. Because the backup does not contain global groups,
+the importer recreates the standard graph: administrators join `server-admins`
+and each organization's `admins`/`users` groups are children of its
+`<org>_read_access_group`.
+
+Cookbooks are ChefFS directories, not server manifests. The importer:
+
+- reads `metadata.json`, or a practical subset of `metadata.rb`
+  (`name`, `version`, scalar metadata, `depends`, `supports`, related
+  constraint maps, and the common `long_description IO.read(README...)` form;
+  `attribute`, `recipe`, and `provides` declarations are not reconstructed
+  from the Ruby DSL);
+- reads `status.json` (`frozen`/`frozen?`) and preserves the frozen flag;
+- hashes every regular cookbook file with MD5, excluding `status.json`;
+- builds a segmented Chef cookbook manifest and the matching `checksums`,
+  `cookbooks`, `cookbook_versions`, and `cookbook_version_checksums` rows;
+- copies each blob to `<bookshelf-dir>/organization-<org_id>/checksum-<md5>`;
+- refuses symlinks and other non-regular files in cookbook directories.
+
+Environment `cookbook_versions` constraints are preserved in the environment
+body, so the existing dependency solver applies them unchanged.
+
+### Intentional gaps
+
+- No HTTP, `--purge`, or deletion sync. Import merges/upserts; objects removed
+  from the backup remain in an existing target store.
+- The `metadata.rb` parser is not a Ruby interpreter. It does not evaluate
+  arbitrary Ruby, conditionals, string interpolation, `eval`, or custom
+  helper methods. Prefer a `metadata.json` when the source provides one.
+- Cookbook artifacts, policies/policy groups, sandboxes, OAuth applications,
+  search indexes, and `kvpair` secrets are not in a knife backup and are not
+  imported by this command. Snapshot import still carries policies, artifacts,
+  and OAuth registrations when the snapshot contains them.
+- Only the local object store is supported for blobs in this pass. Importing
+  into an S3/Garage-backed deployment requires a separate blob upload.
+- Cookbook files are buffered in memory while the directory is parsed. Very
+  large multi-gigabyte backups should be split by organization or handled with
+  a streaming importer in a future pass.
+- Old `key_dump.json` rows whose password exists only inside the serialized
+  user object and that have no `hash_type` are imported with an empty or
+  default-typed hash. Modern `hashed_password`/`salt`/`hash_type` rows are
+  preserved and upgraded on login like snapshot imports.
+- Invalid `status.json`, malformed JSON, and unknown required references abort
+  before the metadata transaction. Unknown ACL actors/groups and unsupported
+  object ACL types are reported as warnings and skipped.
+- `knife-ec-backup` does not include global group membership. The standard
+  admin/read-access graph described above is inferred; custom global-group
+  membership must be reconciled separately.
 
 ## Live legacy API crawler
 

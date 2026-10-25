@@ -19,6 +19,7 @@ assert_cmd.workspace = true
 microwave-store = { path = "../../crates/microwave-store" }
 microwave-store-postgres = { path = "../../crates/microwave-store-postgres" }
 rusqlite.workspace = true
+serde_json.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

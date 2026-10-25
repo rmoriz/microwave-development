@@ -111,6 +111,9 @@ cargo test -p microwave-api --test postgres_http_coverage_test "$@"
 # The HTTP parity matrix re-runs the same signed scenarios against SQLite and
 # PostgreSQL and compares status, headers and normalized bodies.
 cargo test -p microwave-api --test http_parity_test "$@"
+# The knife backup importer has a PostgreSQL-gated half in its library test;
+# run it explicitly because the crate is not part of the store matrix above.
+cargo test -p microwave-migrate --test knife_backup_test "$@"
 # Operational CLI and snapshot tests run after the store suite because the
 # maintenance-flag assertions are global to the shared database.
 cargo test -p microwave-ctl-bin --test cli_test "$@"

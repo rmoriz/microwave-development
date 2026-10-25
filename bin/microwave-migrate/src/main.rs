@@ -1,9 +1,10 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use microwave_config::{Config, StorageCompression};
 use microwave_migrate::{
-    export, export_postgres, from_api_with_options, import_postgres_with_compression,
-    import_with_compression, redacted_postgres_url, validate_postgres_url, Compression,
-    FromApiOptions, MigrateError, DATABASE_FILE,
+    apply_knife_backup_plan_postgres, apply_knife_backup_plan_sqlite, export, export_postgres,
+    from_api_with_options, import_postgres_with_compression, import_with_compression,
+    prepare_knife_backup, redacted_postgres_url, validate_postgres_url, Compression,
+    FromApiOptions, KnifeBackupPlan, MigrateError, DATABASE_FILE,
 };
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -79,6 +80,50 @@ enum Command {
         #[arg(long, value_name = "PATH")]
         config: Option<PathBuf>,
     },
+    /// Import a `knife ec backup` repository directory without an HTTP server.
+    ImportKnifeBackup {
+        /// Backup directory created by `knife ec backup`.
+        #[arg(long, value_name = "DIR")]
+        input: PathBuf,
+        /// Data directory receiving microwave.db (SQLite).
+        #[arg(
+            long,
+            value_name = "DIR",
+            conflicts_with = "database_url",
+            required_unless_present = "database_url"
+        )]
+        data_dir: Option<PathBuf>,
+        /// PostgreSQL connection URL to import into.
+        #[arg(
+            long,
+            value_name = "URL",
+            conflicts_with = "data_dir",
+            required_unless_present = "data_dir"
+        )]
+        database_url: Option<String>,
+        /// Local object-store root for cookbook files.
+        ///
+        /// Defaults to <data-dir>/bookshelf for SQLite. Required with
+        /// --database-url unless --dry-run is used.
+        #[arg(long, value_name = "DIR")]
+        bookshelf_dir: Option<PathBuf>,
+        /// Skip the interactive confirmation. Required when stdin is not a
+        /// terminal.
+        #[arg(long)]
+        yes: bool,
+        /// Parse and validate the backup, print counts, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Compression for imported `serialized_object` values.
+        ///
+        /// Without this flag the default comes from --config,
+        /// MW_CONFIG/./microwave.toml, or MW_STORAGE__COMPRESSION.
+        #[arg(long, value_enum, value_name = "MODE")]
+        compression: Option<CompressionArg>,
+        /// Configuration file used to resolve the default compression.
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
+    },
     /// Crawl a live legacy Chef Infra Server into a snapshot.
     FromApi {
         /// Base URL of the legacy server.
@@ -122,6 +167,25 @@ fn main() -> ExitCode {
             database_url,
             yes,
             &input,
+            compression,
+            config.as_deref(),
+        ),
+        Command::ImportKnifeBackup {
+            input,
+            data_dir,
+            database_url,
+            bookshelf_dir,
+            yes,
+            dry_run,
+            compression,
+            config,
+        } => import_knife_backup_command(
+            &input,
+            data_dir,
+            database_url,
+            bookshelf_dir,
+            yes,
+            dry_run,
             compression,
             config.as_deref(),
         ),
@@ -191,6 +255,74 @@ fn import_command(
                 .map(|()| println!("Imported snapshot from {}", input.display()))
         }
         _ => unreachable!("clap requires exactly one of --data-dir and --database-url"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn import_knife_backup_command(
+    input: &Path,
+    data_dir: Option<PathBuf>,
+    database_url: Option<String>,
+    bookshelf_dir: Option<PathBuf>,
+    yes: bool,
+    dry_run: bool,
+    compression: Option<CompressionArg>,
+    config: Option<&Path>,
+) -> Result<(), MigrateError> {
+    let compression = resolve_compression(compression, config)?;
+    match (data_dir, database_url) {
+        (Some(data_dir), None) => {
+            let database = data_dir.join(DATABASE_FILE);
+            let bookshelf = bookshelf_dir.unwrap_or_else(|| data_dir.join("bookshelf"));
+            println!("Import target: sqlite:{}", database.display());
+            println!("Bookshelf target: {}", bookshelf.display());
+            println!("Import compression: {}", compression.as_str());
+            let plan = prepare_knife_backup(input)?;
+            print_knife_summary(&plan);
+            if dry_run {
+                println!("Dry run: no database or object-store changes were made");
+                return Ok(());
+            }
+            confirm_import(yes)?;
+            apply_knife_backup_plan_sqlite(&data_dir, &plan, &bookshelf, compression)
+                .map(|_| println!("Imported knife backup from {}", input.display()))
+        }
+        (None, Some(database_url)) => {
+            validate_postgres_url(&database_url)?;
+            println!(
+                "Import target: PostgreSQL {}",
+                redacted_postgres_url(&database_url)
+            );
+            println!("Import compression: {}", compression.as_str());
+            if !dry_run {
+                if let Some(bookshelf) = &bookshelf_dir {
+                    println!("Bookshelf target: {}", bookshelf.display());
+                }
+            }
+            let plan = prepare_knife_backup(input)?;
+            print_knife_summary(&plan);
+            if dry_run {
+                println!("Dry run: no database or object-store changes were made");
+                return Ok(());
+            }
+            let Some(bookshelf) = bookshelf_dir else {
+                return Err(MigrateError::Config(
+                    "--bookshelf-dir is required with --database-url so cookbook blobs have a local object-store target"
+                        .into(),
+                ));
+            };
+            confirm_import(yes)?;
+            apply_knife_backup_plan_postgres(&database_url, &plan, &bookshelf, compression)
+                .map(|_| println!("Imported knife backup from {}", input.display()))
+        }
+        _ => unreachable!("clap requires exactly one of --data-dir and --database-url"),
+    }
+}
+
+fn print_knife_summary(plan: &KnifeBackupPlan) {
+    println!("Backup contents: {}", plan.summary.display_line());
+    for warning in &plan.summary.warnings {
+        eprintln!("warning: {warning}");
     }
 }
 
