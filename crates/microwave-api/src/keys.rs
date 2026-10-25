@@ -93,7 +93,7 @@ async fn update_user_key(
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let target = user_target(&state, &headers, &username).await?;
     authorize(&state, &auth, &target, Permission::Update).await?;
-    update_key(&state, &target, &key_name, &body).await
+    update_key(&state, &auth, &target, &key_name, &body).await
 }
 
 async fn delete_user_key(
@@ -104,7 +104,7 @@ async fn delete_user_key(
 ) -> Result<Json<Value>, ApiError> {
     let target = user_target(&state, &headers, &username).await?;
     authorize(&state, &auth, &target, Permission::Update).await?;
-    delete_key(&state, &target, &key_name).await
+    delete_key(&state, &auth, &target, &key_name).await
 }
 
 async fn list_client_keys(
@@ -150,7 +150,7 @@ async fn update_client_key(
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let target = client_target(&state, &auth, &headers, &client_name).await?;
     authorize(&state, &auth, &target, Permission::Update).await?;
-    update_key(&state, &target, &key_name, &body).await
+    update_key(&state, &auth, &target, &key_name, &body).await
 }
 
 async fn delete_client_key(
@@ -161,7 +161,7 @@ async fn delete_client_key(
 ) -> Result<Json<Value>, ApiError> {
     let target = client_target(&state, &auth, &headers, &client_name).await?;
     authorize(&state, &auth, &target, Permission::Update).await?;
-    delete_key(&state, &target, &key_name).await
+    delete_key(&state, &auth, &target, &key_name).await
 }
 
 async fn list_org_user_keys(
@@ -366,6 +366,7 @@ async fn create_key(
 
 async fn update_key(
     state: &AppState,
+    auth: &AuthContext,
     target: &KeyTarget,
     key_name: &str,
     body: &Value,
@@ -399,6 +400,8 @@ async fn update_key(
     };
     let (public_key, private_key) = update_key_material(body)?;
 
+    forbid_authenticating_key(auth, target, key_name)?;
+
     let key = state
         .store
         .update_actor_key(
@@ -413,21 +416,41 @@ async fn update_key(
         .map_err(ApiError::from)?;
 
     let renamed = new_key_name.as_deref().is_some_and(|name| name != key_name);
-    let response = key_json(target, &key, private_key.as_deref());
-    let uri = response["uri"].as_str().unwrap_or_default().to_string();
+    // Upstream echoes only the fields that were part of the request.
+    let mut response = serde_json::Map::new();
+    if has_name {
+        response.insert("name".into(), json!(key.key_name));
+    }
+    if has_public_key || private_key.is_some() {
+        response.insert("public_key".into(), json!(key.public_key));
+    }
+    if has_expiration {
+        response.insert("expiration_date".into(), json!(key.expires_at));
+    }
+    if let Some(private_key) = private_key.as_deref() {
+        response.insert("private_key".into(), json!(private_key));
+    }
+    let uri = format!("{}/{}", target.uri, key.key_name);
     let status = if renamed {
         StatusCode::CREATED
     } else {
         StatusCode::OK
     };
-    Ok((status, location_headers(&uri)?, Json(response)))
+    let headers = if renamed {
+        location_headers(&uri)?
+    } else {
+        HeaderMap::new()
+    };
+    Ok((status, headers, Json(Value::Object(response))))
 }
 
 async fn delete_key(
     state: &AppState,
+    auth: &AuthContext,
     target: &KeyTarget,
     key_name: &str,
 ) -> Result<Json<Value>, ApiError> {
+    forbid_authenticating_key(auth, target, key_name)?;
     let key = state
         .store
         .find_actor_key(&target.actor_id, target.actor_type, key_name)
@@ -447,9 +470,27 @@ fn created_key_response(
     key: &ActorKey,
     private_key: Option<&str>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
-    let response = key_json(target, key, private_key);
-    let uri = response["uri"].as_str().unwrap_or_default().to_string();
+    // POST only reports the key's location plus generated private material.
+    let uri = format!("{}/{}", target.uri, key.key_name);
+    let mut response = json!({ "uri": uri });
+    if let Some(private_key) = private_key {
+        response["private_key"] = json!(private_key);
+    }
     Ok((StatusCode::CREATED, location_headers(&uri)?, Json(response)))
+}
+
+/// A request may not modify or delete the key it authenticated with.
+fn forbid_authenticating_key(
+    auth: &AuthContext,
+    target: &KeyTarget,
+    key_name: &str,
+) -> Result<(), ApiError> {
+    if auth.principal.actor_id == target.actor_id && auth.key_name.as_deref() == Some(key_name) {
+        return Err(ApiError::forbidden_string(format!(
+            "The key '{key_name}' was used to authenticate this request and cannot be modified or deleted."
+        )));
+    }
+    Ok(())
 }
 
 fn key_json(target: &KeyTarget, key: &ActorKey, private_key: Option<&str>) -> Value {
@@ -571,10 +612,15 @@ fn public_key(body: &Value) -> Result<String, ApiError> {
     let public_key = body
         .get("public_key")
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
         .ok_or_else(|| ApiError::bad_request("public_key must be a non-empty string"))?;
-    parse_public_key_pem(public_key)
+    if public_key.trim().is_empty() {
+        return Err(ApiError::bad_request(
+            "public_key must be a non-empty string",
+        ));
+    }
+    parse_public_key_pem(public_key.trim())
         .map_err(|_| ApiError::bad_request("public_key is not a valid PEM public key"))?;
+    // Preserve the exact PEM supplied by the client; pedant compares the
+    // stored key byte-for-byte, including the trailing newline.
     Ok(public_key.to_string())
 }

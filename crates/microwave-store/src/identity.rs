@@ -628,13 +628,15 @@ impl SqliteStore {
             .find_actor_key(actor_id, actor_type, "default")?
             .is_some()
         {
+            // Replacing the default key resets its lifetime; the upstream API
+            // has no way to set an expiry through client/user PUTs.
             self.update_actor_key(
                 actor_id,
                 actor_type,
                 "default",
                 None,
                 Some(public_key),
-                None,
+                Some("infinity"),
             )
         } else {
             self.create_actor_key(actor_id, actor_type, "default", public_key, "infinity")

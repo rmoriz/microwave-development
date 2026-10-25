@@ -274,6 +274,7 @@ for tag in "${TAGS[@]}"; do
   set +e
   (cd "$PEDANT_DIR" && \
     SUPERUSER_KEY="$PEDANT_SUPERUSER_KEY" \
+    WEBUI_KEY="$PEDANT_SUPERUSER_KEY" \
     "$BUNDLE_BIN" exec ./bin/oc-chef-pedant \
       -c "$PEDANT_CONFIG" \
       -L "$TAG_DIR/http-traffic.log" \

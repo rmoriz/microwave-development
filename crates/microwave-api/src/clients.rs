@@ -464,6 +464,9 @@ fn optional_bool(body: &Value, field: &str) -> Result<Option<bool>, ApiError> {
     match body.get(field) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::Bool(value)) => Ok(Some(*value)),
+        // The v0 client API also accepts the string forms.
+        Some(Value::String(value)) if value.eq_ignore_ascii_case("true") => Ok(Some(true)),
+        Some(Value::String(value)) if value.eq_ignore_ascii_case("false") => Ok(Some(false)),
         Some(_) => Err(ApiError::bad_request(format!("Field '{field}' is invalid"))),
     }
 }
