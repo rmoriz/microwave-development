@@ -79,7 +79,7 @@ Packaging artifacts: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
 - Keep the full extended `oc-chef-pedant` suite green in CI. All eleven extended tags pass; the remaining 7 pending examples are Pedant's own skips. The core suite is also near-green, with only the known plain-HTTP header artifact.
 - PostgreSQL operational tooling. The HTTP runtime, OAuth, authorization, search, bootstrap, `microwave-ctl`, `microwave-migrate`, and backup/restore run against PostgreSQL. PostgreSQL backups use `pg_dump`/`pg_restore` and require the matching client tools on the host. Remaining gaps are the snapshot's intentional omission of `kvpair` secrets, no multi-replica HA load validation, and no automated failover.
 - The remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup format).
-- TLS certificate rotation/reload without a restart and the dual-backend test matrix.
+- TLS certificate rotation/reload without a restart and the full dual-backend test matrix.
 - OpenSearch 3.x evaluation and multi-node HA/performance validation.
 - Outbound telemetry export. The `telemetry` table (SQLite and PostgreSQL) and `telemetry.*` / `MW_TELEMETRY__*` configuration exist, but the sender is intentionally not implemented and defaults to disabled: Microwave never phones home. Operators can enable the flag for forward compatibility, but no background worker or external endpoint is contacted.
 - Optional data-collector mutation action notifications (`oc_chef_action`). The `POST /organizations/:org/data-collector` forwarding path itself is implemented.
@@ -99,7 +99,7 @@ The first `oc-chef-pedant` run is recorded in [`docs/pedant-report.md`](docs/ped
 
 The harness is `scripts/run-pedant.sh`. Users, organizations, clients, and nodes now pass with zero failures in this tag set. The only failure is the known plain-HTTP `headers` artifact; the 8 pending examples are pedant's own skips.
 
-Extended suites (final, including the PostgreSQL runtime and operations features): **3,280 passed / 0 failed / 7 pending**. All eleven extended tags are green.
+Extended suites (final, including the PostgreSQL runtime, operations, TLS, keygen cache, and compression): **3,280 passed / 0 failed / 7 pending**. All eleven extended tags are green.
 
 See `docs/superpowers/specs/2026-10-24-microwave-server-design.md` and `TODO.md` for the full target and remaining work.
 

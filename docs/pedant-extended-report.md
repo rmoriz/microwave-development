@@ -8,7 +8,7 @@
 `scripts/pedant-solr-stub.rb` (new)
 **Branch:** `subagent/pedant-more`
 
-> **Final run (2026-10-25, after the PostgreSQL runtime and operations merges):** **3,280 passed / 0 failed / 7 pending out of 3,287 examples. All eleven extended tags pass.** A post-operations re-run (maintenance 503, `_stats`, data collector/required recipe) produced the identical result. The counts below are the historical pre-fix baseline.
+> **Final run (2026-10-25, after the PostgreSQL runtime, operations, TLS, keygen-cache, and compression merges):** **3,280 passed / 0 failed / 7 pending out of 3,287 examples. All eleven extended tags pass.** Re-runs after the operations and TLS/keygen/compression changes produced the identical result. The counts below are the historical pre-fix baseline.
 >
 > | Tag | Examples | Passed | Failed | Pending |
 > | --- | ---: | ---: | ---: | ---: |
