@@ -134,6 +134,13 @@ A complete annotated example is
 | `data_collector.root_url` | `MW_DATA_COLLECTOR__ROOT_URL` | unset | Enables `POST /organizations/:org/data-collector` and receives the forwarded payload, e.g. `https://automate.example.com/data-collector/v0/`. |
 | `data_collector.token` | `MW_DATA_COLLECTOR__TOKEN` | unset | Shared bearer token accepted inbound and sent upstream as `x-data-collector-token`. Falls back to the `data_collector.token` secret. |
 | `data_collector.timeout` | `MW_DATA_COLLECTOR__TIMEOUT` (alias `MW_DATA_COLLECTOR__TIMEOUT_MS`) | `30000` | Upstream forwarding and response-read timeout in milliseconds (TOML alias `timeout_ms`). Must be greater than zero; `check-config` rejects `0`. |
+| `data_collector.actions_enabled` | `MW_DATA_COLLECTOR__ACTIONS_ENABLED` | `false` | Opt in to `oc_chef_action` mutation notifications while `root_url` is configured. `root_url` alone only enables client payload forwarding. Disabled automatically when `root_url` is unset. |
+| `data_collector.service_hostname` | `MW_DATA_COLLECTOR__SERVICE_HOSTNAME` | unset | `service_hostname` reported in action messages. Falls back to the request `X-Forwarded-Host` (or `Host`), then `localhost`. |
+| `compliance_proxy.url` | `MW_COMPLIANCE_PROXY__URL` | unset | Enables the Automate compliance profile proxy routes. Non-empty value only; unset means every method returns `404`. |
+| `compliance_proxy.token` | `MW_COMPLIANCE_PROXY__TOKEN` | unset | Service token sent upstream. Falls back to `data_collector.token` or the `data_collector.token` secret. |
+| `compliance_proxy.token_header` | `MW_COMPLIANCE_PROXY__TOKEN_HEADER` | `x-data-collector-token` | Header that carries the service token. Invalid, framing, routing, and hop-by-hop header names are rejected by config validation. |
+| `compliance_proxy.timeout` | `MW_COMPLIANCE_PROXY__TIMEOUT` (alias `MW_COMPLIANCE_PROXY__TIMEOUT_MS`) | `30000` | Request and response-read timeout in milliseconds (TOML alias `timeout_ms`). Must be greater than zero. |
+| `compliance_proxy.insecure_skip_tls_verify` | `MW_COMPLIANCE_PROXY__INSECURE_SKIP_TLS_VERIFY` | `false` | Skip certificate verification for a test/private compliance upstream. Keep `false` in production. |
 | `required_recipe.enabled` | `MW_REQUIRED_RECIPE__ENABLED` (alias `MW_REQUIRED_RECIPE__ENABLE`) | `false` | Enables `GET /organizations/:org/required_recipe`. TOML alias `enable`. |
 | `required_recipe.path` | `MW_REQUIRED_RECIPE__PATH` | unset | Recipe file served as `text/plain` when the endpoint is enabled. |
 | `telemetry.enabled` | `MW_TELEMETRY__ENABLED` | `false` | Reserved toggle. No outbound sender is implemented, so enabling it does not phone home. |
@@ -970,6 +977,8 @@ time, and keep the legacy server read-only until the new one is verified.
 | `GET /server_api_version` | none | `min_api_version` / `max_api_version` (`0`/`2`). |
 | `GET /license` | signed | Static license payload; telemetry is disabled. |
 | `POST /organizations/:org/data-collector` | signed or `x-data-collector-token` | Present only when `data_collector.root_url` is configured. Forwards the JSON body to the configured collector and preserves its status and body. Timeouts map to `504`, other upstream failures to `502`; a disabled endpoint returns `404`. |
+| `GET /organizations/:org/owners/:owner/compliance[/profile]` | signed | Present only when `compliance_proxy.url` is configured. Rewrites to `/compliance/profiles/:owner[/profile]` and preserves the upstream status and body. Timeouts map to `504`, other upstream failures to `502`. |
+| `GET /compliance/organizations/:org/owners/:owner/compliance[/profile]` | signed | Legacy chef-gate spelling of the same compliance proxy route. |
 | `GET /organizations/:org/required_recipe` | signed | Present only when `required_recipe.enabled` is true. Returns the configured recipe file as `text/plain`; `POST` returns `405`, and the disabled endpoint returns `404` for every method. |
 
 ### Data Collector, required recipe, and telemetry
@@ -982,6 +991,43 @@ Clients without a token may authenticate with a normal Chef signature instead.
 The forwarder uses a shared connection pool, applies the configured timeout to
 both the request and response body, caps upstream responses at 1 MiB, and does
 not hold database locks across the outbound request.
+
+While `data_collector.root_url` is set and `data_collector.actions_enabled` is
+explicitly true (the default is false), successful node, role, environment,
+data bag/item, client, key, policy, membership, ACL, cookbook, and organization
+mutations also produce an `oc_chef_action` message (`message_type: action`,
+`message_version: 0.1.1`) to the same collector URL. The payload follows
+upstream's entity/task fields, uses the server-side token, and recursively
+redacts `password`, `private_key`, `secret`, and `token` values. Payload
+construction and the token-secret lookup happen in the worker, not on the
+request path. Notifications are off the request path: a single background
+worker drains a bounded 256-entry queue with the configured timeout. A full
+queue, timeout, refused connection, or non-2xx collector response is logged and
+dropped without changing the API response. Failed (4xx/5xx) mutations never
+emit notifications, and no collector connection is made while `root_url` is
+unset. Request bodies larger than 256 KiB are not retained at all; smaller
+bodies are parsed and scrubbed before they enter the queue, and queued jobs
+share an 8 MiB retained-data budget. Delete notifications omit `data` because
+the request has no body.
+
+The compliance proxy is independent of client payload forwarding. Setting
+`compliance_proxy.url` enables the Automate profile routes, rewrites
+`owners/:owner/compliance[/profile]` to
+`/compliance/profiles/:owner[/profile]`, sends
+`x-data-collector-auth: version=1.0` and the configured service token, and
+relays the upstream status, body, and content type. It never forwards
+client-supplied Chef authorization headers. Owner and profile segments are
+rejected if they contain `.`/`..`, slashes, or control characters; the final
+URL is parsed and must stay under the configured base path's
+`/compliance/profiles/` prefix before any request is sent. One trailing slash
+after a profile is normalized away (a lone `/` becomes the owner-level path);
+empty internal segments (double slashes) are rejected. Responses are capped
+at 1 MiB and use the configured timeout; upstream failures map to `502` and
+timeouts to `504`. `insecure_skip_tls_verify` exists for test or private-CA
+setups and should stay `false` in production. The legacy
+`/compliance/organizations/:org/...` spelling resolves the organization for
+authentication, so client principals are checked against the same org as the
+standard route.
 
 The optional `required_recipe` endpoint is off by default. Enabling it requires
 `required_recipe.path`; the file is read on each request and served as plain

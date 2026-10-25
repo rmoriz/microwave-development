@@ -25,6 +25,13 @@ fn defaults_are_safe_and_local() {
     assert!(!c.keygen.warm_up);
     assert!(!c.data_collector.is_configured());
     assert_eq!(c.data_collector.timeout, 30_000);
+    assert!(!c.data_collector.actions_enabled);
+    assert!(!c.data_collector.actions_enabled());
+    assert_eq!(c.data_collector.service_hostname, None);
+    assert!(!c.compliance_proxy.is_configured());
+    assert_eq!(c.compliance_proxy.timeout, 30_000);
+    assert_eq!(c.compliance_proxy.token_header, None);
+    assert!(!c.compliance_proxy.insecure_skip_tls_verify);
     assert!(!c.required_recipe.enabled);
     assert!(!c.telemetry.enabled);
     assert_eq!(c.telemetry.interval_seconds, 86_400);
@@ -515,4 +522,183 @@ fn env_overrides_data_collector_required_recipe_and_telemetry() {
         Some("https://telemetry.example.com")
     );
     assert_eq!(c.telemetry.interval_seconds, 120);
+}
+
+#[test]
+fn toml_configures_compliance_proxy_and_action_notifications() {
+    let c = Config::from_toml_str(
+        r#"
+        [data_collector]
+        root_url = "https://automate.example.com/data-collector/v0/"
+        actions_enabled = false
+        service_hostname = "chef.example.com"
+
+        [compliance_proxy]
+        url = "https://automate.example.com"
+        token = "service-token"
+        token_header = "x-automate-token"
+        timeout_ms = 2500
+        insecure_skip_tls_verify = true
+    "#,
+    )
+    .unwrap();
+
+    assert!(c.data_collector.is_configured());
+    assert!(!c.data_collector.actions_enabled());
+    assert_eq!(
+        c.data_collector.service_hostname.as_deref(),
+        Some("chef.example.com")
+    );
+    assert!(c.compliance_proxy.is_configured());
+    assert_eq!(
+        c.compliance_proxy.url.as_deref(),
+        Some("https://automate.example.com")
+    );
+    assert_eq!(c.compliance_proxy.token.as_deref(), Some("service-token"));
+    assert_eq!(
+        c.compliance_proxy.token_header.as_deref(),
+        Some("x-automate-token")
+    );
+    assert_eq!(c.compliance_proxy.timeout, 2500);
+    assert!(c.compliance_proxy.insecure_skip_tls_verify);
+}
+
+#[test]
+fn env_overrides_compliance_proxy_and_action_notifications() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    for (key, value) in [
+        (
+            "MW_DATA_COLLECTOR__ROOT_URL",
+            "https://automate.example.com/data-collector/v0/",
+        ),
+        ("MW_DATA_COLLECTOR__ACTIONS_ENABLED", "false"),
+        ("MW_DATA_COLLECTOR__SERVICE_HOSTNAME", "chef.example.com"),
+        ("MW_COMPLIANCE_PROXY__URL", "https://automate.example.com"),
+        ("MW_COMPLIANCE_PROXY__TOKEN", "env-service-token"),
+        ("MW_COMPLIANCE_PROXY__TOKEN_HEADER", "x-automate-token"),
+        ("MW_COMPLIANCE_PROXY__TIMEOUT", "1500"),
+        ("MW_COMPLIANCE_PROXY__INSECURE_SKIP_TLS_VERIFY", "true"),
+    ] {
+        std::env::set_var(key, value);
+    }
+
+    let mut c = Config::default();
+    c.apply_env().unwrap();
+
+    for key in [
+        "MW_DATA_COLLECTOR__ROOT_URL",
+        "MW_DATA_COLLECTOR__ACTIONS_ENABLED",
+        "MW_DATA_COLLECTOR__SERVICE_HOSTNAME",
+        "MW_COMPLIANCE_PROXY__URL",
+        "MW_COMPLIANCE_PROXY__TOKEN",
+        "MW_COMPLIANCE_PROXY__TOKEN_HEADER",
+        "MW_COMPLIANCE_PROXY__TIMEOUT",
+        "MW_COMPLIANCE_PROXY__INSECURE_SKIP_TLS_VERIFY",
+    ] {
+        std::env::remove_var(key);
+    }
+
+    assert!(!c.data_collector.actions_enabled());
+    assert_eq!(
+        c.data_collector.service_hostname.as_deref(),
+        Some("chef.example.com")
+    );
+    assert_eq!(
+        c.compliance_proxy.url.as_deref(),
+        Some("https://automate.example.com")
+    );
+    assert_eq!(
+        c.compliance_proxy.token.as_deref(),
+        Some("env-service-token")
+    );
+    assert_eq!(
+        c.compliance_proxy.token_header.as_deref(),
+        Some("x-automate-token")
+    );
+    assert_eq!(c.compliance_proxy.timeout, 1500);
+    assert!(c.compliance_proxy.insecure_skip_tls_verify);
+}
+
+#[test]
+fn rejects_zero_forwarding_timeouts() {
+    assert!(Config::from_toml_str(
+        r#"
+        [data_collector]
+        timeout = 0
+    "#
+    )
+    .is_err());
+    assert!(Config::from_toml_str(
+        r#"
+        [compliance_proxy]
+        url = "https://automate.example.com"
+        timeout = 0
+    "#
+    )
+    .is_err());
+}
+
+#[test]
+fn root_url_alone_does_not_enable_action_notifications() {
+    let c = Config::from_toml_str(
+        r#"
+        [data_collector]
+        root_url = "https://automate.example.com/data-collector/v0/"
+    "#,
+    )
+    .unwrap();
+    assert!(c.data_collector.is_configured());
+    assert!(!c.data_collector.actions_enabled());
+
+    let enabled = Config::from_toml_str(
+        r#"
+        [data_collector]
+        root_url = "https://automate.example.com/data-collector/v0/"
+        actions_enabled = true
+    "#,
+    )
+    .unwrap();
+    assert!(enabled.data_collector.actions_enabled());
+}
+
+#[test]
+fn rejects_invalid_compliance_proxy_urls_and_headers() {
+    for url in ["not a url", "ftp://automate.example.com", "https://"] {
+        let input = format!(
+            r#"
+            [compliance_proxy]
+            url = "{url}"
+            "#
+        );
+        assert!(
+            Config::from_toml_str(&input).is_err(),
+            "accepted invalid URL {url}"
+        );
+    }
+
+    for header in [
+        "Host",
+        "Content-Type",
+        "Content-Length",
+        "Connection",
+        "Transfer-Encoding",
+        "X-Forwarded-For",
+        "X-Forwarded-Host",
+        "X-Real-IP",
+        "Forwarded",
+        "X-Data-Collector-Auth",
+        "not a header",
+    ] {
+        let input = format!(
+            r#"
+            [compliance_proxy]
+            url = "https://automate.example.com"
+            token_header = "{header}"
+            "#
+        );
+        assert!(
+            Config::from_toml_str(&input).is_err(),
+            "accepted dangerous token header {header}"
+        );
+    }
 }

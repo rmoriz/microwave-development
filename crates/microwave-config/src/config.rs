@@ -16,6 +16,7 @@ pub struct Config {
     pub keygen: KeygenConfig,
     pub license: LicenseConfig,
     pub data_collector: DataCollectorConfig,
+    pub compliance_proxy: ComplianceProxyConfig,
     pub required_recipe: RequiredRecipeConfig,
     pub telemetry: TelemetryConfig,
 }
@@ -49,6 +50,24 @@ impl Config {
                 value: "0".into(),
             });
         }
+        if self.data_collector.timeout == 0 {
+            return Err(ConfigError::InvalidValue {
+                key: "data_collector.timeout".into(),
+                value: "0".into(),
+            });
+        }
+        if self.compliance_proxy.timeout == 0 {
+            return Err(ConfigError::InvalidValue {
+                key: "compliance_proxy.timeout".into(),
+                value: "0".into(),
+            });
+        }
+        self.compliance_proxy
+            .validate()
+            .map_err(|message| ConfigError::InvalidValue {
+                key: "compliance_proxy".into(),
+                value: message,
+            })?;
         Ok(())
     }
 
@@ -96,7 +115,10 @@ impl Config {
     /// - `MW_KEYGEN__SIZE`, `MW_KEYGEN__WORKERS`, `MW_KEYGEN__WARM_UP`
     /// - `MW_LICENSE__NODE_LICENSE`, `MW_LICENSE__UPGRADE_URL`
     /// - `MW_DATA_COLLECTOR__ROOT_URL`, `MW_DATA_COLLECTOR__TOKEN`,
-    ///   `MW_DATA_COLLECTOR__TIMEOUT` (alias `MW_DATA_COLLECTOR__TIMEOUT_MS`)
+    ///   `MW_DATA_COLLECTOR__TIMEOUT` (alias `MW_DATA_COLLECTOR__TIMEOUT_MS`),
+    ///   `MW_DATA_COLLECTOR__ACTIONS_ENABLED`, `MW_DATA_COLLECTOR__SERVICE_HOSTNAME`
+    /// - `MW_COMPLIANCE_PROXY__URL`, `MW_COMPLIANCE_PROXY__TOKEN`,
+    ///   `MW_COMPLIANCE_PROXY__TOKEN_HEADER`, `MW_COMPLIANCE_PROXY__TIMEOUT`
     /// - `MW_REQUIRED_RECIPE__ENABLED` (alias `MW_REQUIRED_RECIPE__ENABLE`),
     ///   `MW_REQUIRED_RECIPE__PATH`
     /// - `MW_TELEMETRY__ENABLED`, `MW_TELEMETRY__REPORTING_URL`,
@@ -235,6 +257,31 @@ impl Config {
             .or_else(|_| std::env::var("MW_DATA_COLLECTOR__TIMEOUT_MS"))
         {
             self.data_collector.timeout = parse_value("MW_DATA_COLLECTOR__TIMEOUT", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_DATA_COLLECTOR__ACTIONS_ENABLED") {
+            self.data_collector.actions_enabled =
+                parse_bool("MW_DATA_COLLECTOR__ACTIONS_ENABLED", &value)?;
+        }
+        if let Ok(value) = std::env::var("MW_DATA_COLLECTOR__SERVICE_HOSTNAME") {
+            self.data_collector.service_hostname = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_COMPLIANCE_PROXY__URL") {
+            self.compliance_proxy.url = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_COMPLIANCE_PROXY__TOKEN") {
+            self.compliance_proxy.token = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_COMPLIANCE_PROXY__TOKEN_HEADER") {
+            self.compliance_proxy.token_header = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_COMPLIANCE_PROXY__TIMEOUT")
+            .or_else(|_| std::env::var("MW_COMPLIANCE_PROXY__TIMEOUT_MS"))
+        {
+            self.compliance_proxy.timeout = parse_value("MW_COMPLIANCE_PROXY__TIMEOUT", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_COMPLIANCE_PROXY__INSECURE_SKIP_TLS_VERIFY") {
+            self.compliance_proxy.insecure_skip_tls_verify =
+                parse_bool("MW_COMPLIANCE_PROXY__INSECURE_SKIP_TLS_VERIFY", &value)?;
         }
         if let Ok(value) = std::env::var("MW_REQUIRED_RECIPE__ENABLED")
             .or_else(|_| std::env::var("MW_REQUIRED_RECIPE__ENABLE"))
@@ -623,6 +670,14 @@ pub struct DataCollectorConfig {
     /// default is 30000.
     #[serde(alias = "timeout_ms")]
     pub timeout: u64,
+    /// Send `oc_chef_action` mutation notifications for successful writes.
+    /// This is only active when `root_url` is set. It defaults to false so a
+    /// configuration that only enables client payload forwarding does not
+    /// unexpectedly start server-side writes to the collector.
+    pub actions_enabled: bool,
+    /// Hostname reported as `service_hostname` in action messages. When unset
+    /// the request `X-Forwarded-Host` (or `Host`) is used.
+    pub service_hostname: Option<String>,
 }
 
 impl DataCollectorConfig {
@@ -632,6 +687,11 @@ impl DataCollectorConfig {
             .as_deref()
             .is_some_and(|url| !url.trim().is_empty())
     }
+
+    /// True when server-side mutation notifications should be dispatched.
+    pub fn actions_enabled(&self) -> bool {
+        self.is_configured() && self.actions_enabled
+    }
 }
 
 impl Default for DataCollectorConfig {
@@ -640,6 +700,133 @@ impl Default for DataCollectorConfig {
             root_url: None,
             token: None,
             timeout: 30_000,
+            actions_enabled: false,
+            service_hostname: None,
+        }
+    }
+}
+
+/// Compliance profile proxy configuration. When `url` is set, the two
+/// upstream nginx compatibility routes are forwarded to Automate:
+///
+/// - `GET /organizations/:org/owners/:owner/compliance[/profile]`
+/// - `GET /compliance/organizations/:org/owners/:owner/compliance[/profile]`
+///
+/// The upstream path is rewritten to `/compliance/profiles/:owner[/profile]`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ComplianceProxyConfig {
+    /// Base URL of the Automate/compliance service, for example
+    /// `https://automate.example.com`. A non-empty value enables the routes.
+    pub url: Option<String>,
+    /// Optional service token sent on the forwarded request. When omitted the
+    /// server falls back to the configured `data_collector.token` (or the
+    /// `data_collector.token` secret), matching upstream nginx.
+    pub token: Option<String>,
+    /// Header used to carry `token`. Defaults to `x-data-collector-token`.
+    pub token_header: Option<String>,
+    /// Request timeout in milliseconds. Defaults to 30000.
+    #[serde(alias = "timeout_ms")]
+    pub timeout: u64,
+    /// Skip TLS certificate verification for the compliance upstream. Keep
+    /// this false outside test environments or a trusted private CA setup.
+    pub insecure_skip_tls_verify: bool,
+}
+
+impl ComplianceProxyConfig {
+    /// True when a non-empty `url` is configured.
+    pub fn is_configured(&self) -> bool {
+        self.url
+            .as_deref()
+            .is_some_and(|url| !url.trim().is_empty())
+    }
+
+    /// Validate the upstream URL and token header. Called by
+    /// [`Config::validate`] so a bad value fails at startup, not on the first
+    /// proxied request.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(url) = self
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+        {
+            let parsed = url::Url::parse(url)
+                .map_err(|error| format!("compliance_proxy.url is invalid: {error}"))?;
+            if !matches!(parsed.scheme(), "http" | "https") {
+                return Err(format!(
+                    "compliance_proxy.url must use http or https (got {})",
+                    parsed.scheme()
+                ));
+            }
+            if parsed.host_str().is_none() {
+                return Err("compliance_proxy.url must include a host".into());
+            }
+        }
+
+        if let Some(header) = self
+            .token_header
+            .as_deref()
+            .map(str::trim)
+            .filter(|header| !header.is_empty())
+        {
+            validate_token_header_name(header)?;
+        }
+        Ok(())
+    }
+}
+
+/// Header names that must never carry the compliance service token: either
+/// they change request framing/routing, or they are explicitly managed by the
+/// proxy. The list also covers hop-by-hop headers that must not be set by an
+/// application.
+const FORBIDDEN_TOKEN_HEADERS: &[&str] = &[
+    "host",
+    "content-type",
+    "content-length",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "accept",
+    "accept-encoding",
+    "user-agent",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-real-ip",
+    "forwarded",
+    "x-data-collector-auth",
+];
+
+fn validate_token_header_name(header: &str) -> Result<(), String> {
+    if !header
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(format!(
+            "compliance_proxy.token_header {header:?} is not a valid header name"
+        ));
+    }
+    if FORBIDDEN_TOKEN_HEADERS.contains(&header.to_ascii_lowercase().as_str()) {
+        return Err(format!(
+            "compliance_proxy.token_header must not be a framing, routing, or hop-by-hop header ({header:?})"
+        ));
+    }
+    Ok(())
+}
+
+impl Default for ComplianceProxyConfig {
+    fn default() -> Self {
+        Self {
+            url: None,
+            token: None,
+            token_header: None,
+            timeout: 30_000,
+            insecure_skip_tls_verify: false,
         }
     }
 }

@@ -149,6 +149,34 @@ warm_up = false
 # Forwarding timeout in milliseconds (upstream default 30000). `timeout_ms` is
 # accepted as an alias.
 timeout = 30000
+# Emit server-side mutation notifications (`oc_chef_action`) for successful
+# writes while the collector is configured. This is opt-in: root_url alone
+# only enables client payload forwarding. Notifications use a bounded
+# in-process queue and never delay the API response.
+actions_enabled = false
+# Hostname reported as `service_hostname` in action messages. When unset the
+# request X-Forwarded-Host (or Host) is used.
+# service_hostname = "chef.example.com"
+
+[compliance_proxy]
+# Enables the Automate compliance profile proxy:
+#   GET /organizations/:org/owners/:owner/compliance[/profile]
+#   GET /compliance/organizations/:org/owners/:owner/compliance[/profile]
+# Both are rewritten to /compliance/profiles/:owner[/profile] upstream.
+# Leave unset to disable the routes (they then return 404).
+# url = "https://automate.example.com"
+# Optional service token. When omitted the data_collector.token (or its
+# secret) is used, matching upstream nginx.
+# token = "replace-with-a-long-random-token"
+# Header that carries the token. Defaults to x-data-collector-token.
+# token_header = "x-data-collector-token"
+# Forwarding timeout in milliseconds (upstream default 30000). `timeout_ms` is
+# accepted as an alias.
+timeout = 30000
+# Skip TLS certificate verification for the compliance upstream. Keep false in
+# production; enable only for a test stub or a trusted private CA setup that
+# requires it.
+insecure_skip_tls_verify = false
 
 [required_recipe]
 # Serve a server-enforced recipe at GET /organizations/:org/required_recipe.

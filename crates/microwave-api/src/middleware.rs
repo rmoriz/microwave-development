@@ -201,6 +201,23 @@ async fn authenticate_request(
         }
     }
 
+    if is_compliance_proxy_path(&path) {
+        let enabled = state.config.compliance_proxy.is_configured();
+        let method = request.method();
+        // The proxy is GET-only upstream. A disabled proxy is absent from the
+        // router, so bypass authentication and let the fallback return 404 for
+        // every method and auth state.
+        let is_read = method == axum::http::Method::GET || method == axum::http::Method::HEAD;
+        if !enabled || !is_read {
+            let response = next.run(request).await;
+            return with_version_header(
+                response,
+                &requested_version.to_string(),
+                &requested_version.to_string(),
+            );
+        }
+    }
+
     if is_principal_path(&path) {
         // The principal resource is unauthenticated upstream but still needs
         // the negotiated API version to choose the v0 vs v1+ response shape.
@@ -373,6 +390,27 @@ async fn authenticate_signed(
             )));
         }
     }
+    let mut action_meta = if state.actions.is_enabled()
+        && crate::actions::is_candidate(parts.method.as_str(), &path)
+    {
+        crate::actions::RequestMeta::capture(
+            &parts.method,
+            &path,
+            &parts.headers,
+            body_bytes.clone(),
+            &principal,
+            org.as_ref(),
+        )
+    } else {
+        None
+    };
+    if let Some(meta) = action_meta.as_mut() {
+        if let Some(username) =
+            crate::actions::resolve_invitation_username(state.store.as_ref(), &path).await
+        {
+            meta.set_resolved_username(username);
+        }
+    }
     let mut request = axum::extract::Request::from_parts(parts, axum::body::Body::from(body_bytes));
     request
         .extensions_mut()
@@ -383,7 +421,11 @@ async fn authenticate_signed(
         key_name: Some(key_name),
     });
 
-    Ok(next.run(request).await)
+    let response = next.run(request).await;
+    if let Some(meta) = action_meta {
+        state.actions.notify(meta, response.status()).await;
+    }
+    Ok(response)
 }
 
 /// Authenticate a webui-signed impersonation request. The request names the
@@ -596,6 +638,28 @@ fn is_role_environment_path(path: &str) -> bool {
     third == "environments" && fifth == "roles" && sixth.is_some_and(|part| !part.is_empty())
 }
 
+
+/// `/organizations/:org/owners/:owner/compliance[/...]` and the legacy
+/// `/compliance/organizations/:org/owners/:owner/compliance[/...]` spelling.
+fn is_compliance_proxy_path(path: &str) -> bool {
+    let parts: Vec<&str> = path
+        .trim_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let parts = if parts.first() == Some(&"compliance") {
+        &parts[1..]
+    } else {
+        &parts[..]
+    };
+    parts.len() >= 5
+        && parts.first() == Some(&"organizations")
+        && parts.get(1).is_some_and(|part| !part.is_empty())
+        && parts.get(2) == Some(&"owners")
+        && parts.get(3).is_some_and(|part| !part.is_empty())
+        && parts.get(4) == Some(&"compliance")
+}
+
 /// `/organizations/:org/required_recipe` (exact, no trailing slash).
 fn is_required_recipe_path(path: &str) -> bool {
     let mut parts = path.trim_matches('/').split('/');
@@ -621,14 +685,20 @@ fn has_signing_headers(headers: &HeaderMap) -> bool {
 
 fn organization_name_from_path(path: &str) -> Option<String> {
     let mut parts = path.trim_matches('/').split('/');
-    if parts.next() == Some("organizations") {
-        parts
-            .next()
-            .filter(|part| !part.is_empty())
-            .map(ToString::to_string)
-    } else {
-        None
+    let first = parts.next()?;
+    if first == "compliance" {
+        // The legacy chef-gate spelling is
+        // `/compliance/organizations/:org/...`.
+        if parts.next() != Some("organizations") {
+            return None;
+        }
+    } else if first != "organizations" {
+        return None;
     }
+    parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .map(ToString::to_string)
 }
 
 /// Upstream's principal endpoint has no authentication (`auth_info` returns
@@ -721,5 +791,38 @@ pub(crate) fn normalize_allow_header(response: &mut Response) {
         response
             .headers_mut()
             .insert(axum::http::header::ALLOW, value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_compliance_proxy_path, organization_name_from_path};
+
+    #[test]
+    fn extracts_the_organization_from_standard_and_legacy_compliance_paths() {
+        assert_eq!(
+            organization_name_from_path("/organizations/acme/nodes").as_deref(),
+            Some("acme")
+        );
+        assert_eq!(
+            organization_name_from_path("/compliance/organizations/acme/owners/foo/compliance")
+                .as_deref(),
+            Some("acme")
+        );
+        assert_eq!(organization_name_from_path("/users/alice"), None);
+        assert_eq!(organization_name_from_path("/compliance/owners/acme"), None);
+    }
+
+    #[test]
+    fn recognizes_both_compliance_proxy_spellings() {
+        assert!(is_compliance_proxy_path(
+            "/organizations/acme/owners/foo/compliance"
+        ));
+        assert!(is_compliance_proxy_path(
+            "/compliance/organizations/acme/owners/foo/compliance/profile"
+        ));
+        assert!(!is_compliance_proxy_path(
+            "/organizations/acme/owners/foo/nodes"
+        ));
     }
 }

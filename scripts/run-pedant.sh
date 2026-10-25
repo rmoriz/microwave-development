@@ -17,6 +17,7 @@
 #   core                 headers users organizations clients nodes (the default)
 #   extended             keys acls data_bags cookbooks sandboxes search policies
 #                        oauth license depsolver versioned_behaviors
+#                        compliance_proxy
 #   all                  core + extended
 #
 # Individual tags are passed straight to Pedant's --focus.  Friendly aliases
@@ -94,7 +95,7 @@ fi
 # ---- Tag selection ----------------------------------------------------------
 CORE_TAGS=(headers users organizations clients nodes)
 EXTENDED_TAGS=(keys acls data_bags cookbooks sandboxes search policies oauth
-               license depsolver versioned_behaviors)
+               license depsolver versioned_behaviors compliance_proxy)
 
 expand_tag_sets() {
   local tag
@@ -126,6 +127,7 @@ pedant_tag() {
     oauth|oc-id|oc_id) printf '%s' "oc_id" ;;
     acls|acl) printf '%s' "acl" ;;
     versioned_behaviors|versioned-behaviors|api_v1|api-v1) printf '%s' "api_v1" ;;
+    compliance_proxy|compliance-proxy) printf '%s' "compliance_proxy_tests" ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -207,6 +209,19 @@ node_license = 25
 upgrade_url = "https://www.chef.io/pricing"
 EOF
 
+  # The vendored compliance_proxy spec starts its own HTTPS stub on this port
+  # and uses a self-signed certificate. Point the server at it for that tag
+  # only; every other tag leaves the proxy disabled.
+  if [[ "$tag" == "compliance_proxy" ]]; then
+    cat >>"$config" <<EOF
+
+[compliance_proxy]
+url = "https://127.0.0.1:${PEDANT_COMPLIANCE_PROXY_PORT:-9998}"
+timeout = 5000
+insecure_skip_tls_verify = true
+EOF
+  fi
+
   echo
   echo "==> [$tag] starting microwave-server on $SERVER_URL"
   RUST_LOG="${RUST_LOG:-info}" "$SERVER_BIN" serve --config "$config" >"$TAG_DIR/server.log" 2>&1 &
@@ -283,6 +298,10 @@ for tag in "${TAGS[@]}"; do
   [[ -n "$tag" ]] || continue
   start_server "$tag"
   focus="$(pedant_tag "$tag")"
+  PEDANT_EXTRA_ARGS=""
+  if [[ "$tag" == "compliance_proxy" ]]; then
+    PEDANT_EXTRA_ARGS="--compliance-proxy-tests"
+  fi
 
   echo
   echo "==> [$tag] running pedant (focus: $focus)"
@@ -294,6 +313,7 @@ for tag in "${TAGS[@]}"; do
     "$BUNDLE_BIN" exec ./bin/oc-chef-pedant \
       -c "$PEDANT_CONFIG" \
       -L "$TAG_DIR/http-traffic.log" \
+      $PEDANT_EXTRA_ARGS \
       --focus "$focus" 2>&1) | tee "$LOG"
   status=${PIPESTATUS[0]}
   set -e
