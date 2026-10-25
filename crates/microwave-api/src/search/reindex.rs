@@ -26,8 +26,10 @@ use microwave_store::{MetadataStore, Org};
 pub struct ReindexReport {
     /// Number of organizations visited.
     pub organizations: usize,
-    /// Total documents submitted to the backend.
-    pub documents: usize,
+    /// Total documents acknowledged by the backend. Documents are counted only
+    /// after a successful write; remote backends that reject bulk items do not
+    /// contribute to this number because the reindex fails instead.
+    pub acknowledged_documents: usize,
     pub nodes: usize,
     pub roles: usize,
     pub environments: usize,
@@ -37,14 +39,14 @@ pub struct ReindexReport {
 }
 
 impl ReindexReport {
-    fn record(&mut self, kind: &IndexKind, count: usize) {
-        self.documents += count;
+    fn record(&mut self, kind: &IndexKind, acknowledged: usize) {
+        self.acknowledged_documents += acknowledged;
         match kind {
-            IndexKind::Node => self.nodes += count,
-            IndexKind::Role => self.roles += count,
-            IndexKind::Environment => self.environments += count,
-            IndexKind::Client => self.clients += count,
-            IndexKind::DataBag(_) => self.data_bag_items += count,
+            IndexKind::Node => self.nodes += acknowledged,
+            IndexKind::Role => self.roles += acknowledged,
+            IndexKind::Environment => self.environments += acknowledged,
+            IndexKind::Client => self.clients += acknowledged,
+            IndexKind::DataBag(_) => self.data_bag_items += acknowledged,
         }
     }
 }
@@ -53,8 +55,9 @@ impl ReindexReport {
 ///
 /// The caller chooses the backend. Indexing through the embedded backend is
 /// harmless and reports the relational document counts, because the embedded
-/// backend ignores writes and reads the store directly. Remote backends are
-/// sent one document at a time through [`SearchBackend::index`].
+/// backend acknowledges each relational document and reads the store directly.
+/// Remote backends are sent one document at a time through
+/// [`SearchBackend::index`]; only acknowledged documents are counted.
 pub async fn reindex(
     backend: &dyn SearchBackend,
     store: &dyn MetadataStore,
@@ -101,8 +104,8 @@ async fn reindex_org(
         IndexKind::Client,
     ] {
         let documents = documents_for_kind(store, org, kind.clone()).await?;
-        report.record(&kind, documents.len());
-        index_documents(backend, documents).await?;
+        let acknowledged = index_documents(backend, documents).await?;
+        report.record(&kind, acknowledged);
     }
 
     let data_bags = store
@@ -113,8 +116,8 @@ async fn reindex_org(
     for data_bag in data_bags {
         let kind = IndexKind::DataBag(data_bag.name);
         let documents = documents_for_kind(store, org, kind.clone()).await?;
-        report.record(&kind, documents.len());
-        index_documents(backend, documents).await?;
+        let acknowledged = index_documents(backend, documents).await?;
+        report.record(&kind, acknowledged);
     }
     Ok(())
 }
@@ -141,11 +144,12 @@ async fn documents_for_kind(
 async fn index_documents(
     backend: &dyn SearchBackend,
     documents: Vec<SearchDocument>,
-) -> Result<(), SearchError> {
+) -> Result<usize, SearchError> {
+    let mut acknowledged = 0;
     for document in documents {
-        backend.index(&document).await?;
+        acknowledged += backend.index(&document).await?.acknowledged;
     }
-    Ok(())
+    Ok(acknowledged)
 }
 
 fn api_error(error: ApiError) -> SearchError {
@@ -155,19 +159,30 @@ fn api_error(error: ApiError) -> SearchError {
 #[cfg(test)]
 mod tests {
     use super::{reindex, ReindexReport};
-    use crate::search::{IndexKind, SearchBackend, SearchDocument, SearchError, SearchHits};
+    use crate::search::{
+        IndexKind, IndexOutcome, SearchBackend, SearchDocument, SearchError, SearchHits,
+    };
     use async_trait::async_trait;
     use microwave_store::{NewNode, SqliteStore};
     use std::sync::{Arc, Mutex};
 
     struct RecordingBackend {
         documents: Mutex<Vec<SearchDocument>>,
+        acknowledged: usize,
     }
 
     impl RecordingBackend {
         fn new() -> Self {
             Self {
                 documents: Mutex::new(Vec::new()),
+                acknowledged: 1,
+            }
+        }
+
+        fn acknowledging(acknowledged: usize) -> Self {
+            Self {
+                documents: Mutex::new(Vec::new()),
+                acknowledged,
             }
         }
 
@@ -198,9 +213,11 @@ mod tests {
             })
         }
 
-        async fn index(&self, document: &SearchDocument) -> Result<(), SearchError> {
+        async fn index(&self, document: &SearchDocument) -> Result<IndexOutcome, SearchError> {
             self.documents.lock().unwrap().push(document.clone());
-            Ok(())
+            Ok(IndexOutcome {
+                acknowledged: self.acknowledged,
+            })
         }
 
         async fn delete(&self, _org_id: &str, _id: &str) -> Result<(), SearchError> {
@@ -274,7 +291,7 @@ mod tests {
             report,
             ReindexReport {
                 organizations: 1,
-                documents: 5,
+                acknowledged_documents: 5,
                 nodes: 1,
                 roles: 1,
                 environments: 1,
@@ -317,6 +334,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn counts_only_documents_the_backend_acknowledges() {
+        let store = populated_store();
+        let backend = RecordingBackend::acknowledging(0);
+        let report = reindex(&backend, store.as_ref(), None).await.unwrap();
+
+        assert_eq!(backend.documents.lock().unwrap().len(), 5);
+        assert_eq!(report.acknowledged_documents, 0);
+        assert_eq!(report.nodes, 0);
+        assert_eq!(report.roles, 0);
+        assert_eq!(report.environments, 0);
+        assert_eq!(report.clients, 0);
+        assert_eq!(report.data_bag_items, 0);
+    }
+
+    #[tokio::test]
     async fn reports_a_missing_organization() {
         let store = populated_store();
         let backend = RecordingBackend::new();
@@ -333,6 +365,6 @@ mod tests {
         let backend = RecordingBackend::new();
         let report = reindex(&backend, &store, None).await.unwrap();
         assert_eq!(report.organizations, 0);
-        assert_eq!(report.documents, 0);
+        assert_eq!(report.acknowledged_documents, 0);
     }
 }

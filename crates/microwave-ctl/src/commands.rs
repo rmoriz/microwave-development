@@ -251,10 +251,8 @@ pub fn reindex(context: &Context, org: Option<&str>) -> Result<(), CtlError> {
         println!(
             "relational search is authoritative; the embedded backend reads the store directly, so there is no external index to rebuild"
         );
-        println!("documents_in_store: {}", report.documents);
-    } else {
-        println!("documents_indexed: {}", report.documents);
     }
+    println!("documents_acknowledged: {}", report.acknowledged_documents);
     println!("nodes: {}", report.nodes);
     println!("roles: {}", report.roles);
     println!("environments: {}", report.environments);

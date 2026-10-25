@@ -80,6 +80,10 @@ fn backup_tar(context: &Context, path: &Path) -> Result<(), CtlError> {
     let archive_path = archive_temp.into_temp_path();
     let file = std::fs::File::create(&archive_path)?;
     let mut builder = tar::Builder::new(file);
+    // Never archive a link target. The staging copy rejects symlinks before
+    // this point; disabling follow_symlinks keeps the tar builder from
+    // dereferencing anything that appears later as well.
+    builder.follow_symlinks(false);
 
     match context.config.database.driver {
         DatabaseDriver::Sqlite => {
@@ -549,10 +553,27 @@ fn copy_dir_all(source: &Path, destination: &Path) -> Result<(), CtlError> {
     for entry in std::fs::read_dir(source)? {
         let entry = entry?;
         let target = destination.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir_all(&entry.path(), &target)?;
+        // `DirEntry::file_type` does not follow symlinks. Reject everything
+        // that is not a regular file or directory so a link cannot leak a file
+        // from outside the bookshelf and a FIFO/device cannot block or hang the
+        // copy.
+        let file_type = entry.file_type()?;
+        let path = entry.path();
+        if file_type.is_symlink() {
+            return Err(CtlError::message(format!(
+                "refusing to copy symlink {}; backup and restore only handle regular files and directories",
+                path.display()
+            )));
+        }
+        if file_type.is_dir() {
+            copy_dir_all(&path, &target)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&path, target)?;
         } else {
-            std::fs::copy(entry.path(), target)?;
+            return Err(CtlError::message(format!(
+                "refusing to copy {}; it is not a regular file or directory",
+                path.display()
+            )));
         }
     }
     Ok(())

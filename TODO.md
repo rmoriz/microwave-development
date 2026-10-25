@@ -257,9 +257,10 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 > and `pg_dump`/`pg_restore` for PostgreSQL; both require the matching client
 > tools for PostgreSQL. A directory or a single tar archive can be used for
 > either backend. `reconfigure` validates, initializes/migrates, and reports
-> without restarting a server. `reindex` verifies relational counts for the
-> embedded backend and backfills remote OpenSearch/Elasticsearch documents;
-> it does not purge remote documents for already-deleted objects.
+> without restarting a server. `reindex` prints relational counts for the
+> embedded backend and backfills remote OpenSearch/Elasticsearch documents,
+> counting only acknowledged bulk items; it does not purge remote documents for
+> already-deleted objects.
 - [ ] Full upstream command/flag parity. The clap surface is implemented; the remaining gaps are `user-edit`, `cleanup`, `cleanup-bifrost`, `filtered-dump`, `rotate-credentials`, `rotate-all-credentials`, `rotate-shared-secrets`, `oc-id-show-app`, and `gather-logs`.
   - [x] Install `chef-server-ctl` as a compatibility alias to `microwave-ctl`.
   - [x] Org & User commands: `user-list`, `user-show`, `user-create`, `user-delete`, `org-list`, `org-show`, `org-create`, `org-delete`, `org-user-add`, `org-user-remove`, `password`.

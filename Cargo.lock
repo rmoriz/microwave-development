@@ -1582,6 +1582,7 @@ name = "microwave-ctl-bin"
 version = "0.1.0"
 dependencies = [
  "assert_cmd",
+ "libc",
  "microwave-crypto",
  "microwave-ctl",
  "microwave-migrate",

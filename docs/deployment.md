@@ -446,9 +446,12 @@ microwave-ctl service tail --lines 100 --follow
 `service` delegates to `systemctl` and, for `tail`, `journalctl`, using the
 `microwave-server` unit. Override the unit with `--unit` or
 `MW_SERVICE_UNIT`, and the tool paths with `MW_SYSTEMCTL` and `MW_JOURNALCTL`.
-The systemd exit status is preserved. If `systemctl` is not installed, the
-command fails with an actionable error; it does not attempt to track or signal
-a process started elsewhere. Use your container runtime (for example
+Unit names are validated before invocation: a leading `-`, whitespace or
+control characters, or `/` is rejected so an environment override cannot become
+an option. The systemd exit status is preserved. `tail` only requires
+`journalctl`. If `systemctl` is not installed, the command fails with an
+actionable error; it does not attempt to track or signal a process started
+elsewhere. Use your container runtime (for example
 `docker compose stop microwave`) or run `microwave-server serve` under your
 platform's supervisor in that case.
 
@@ -489,13 +492,14 @@ microwave-ctl --config /etc/microwave/microwave.toml reindex --org acme
 ```
 
 It indexes nodes, roles, environments, clients, and every data bag item for
-all organizations (or the selected one) and prints per-type counts. A remote
-write failure aborts the command with a non-zero exit status, so it cannot
-silently report success against an unreachable cluster. Indexing uses one
-bulk write per document, so very large installations take time; run it during a
-maintenance window. With `search.backend = "embedded"` it verifies the
-relational document counts and reports that relational search is authoritative
-instead of doing wasted work.
+all organizations (or the selected one) and prints per-type acknowledged
+counts. Bulk responses are checked item by item: HTTP 200 with `errors:true`
+or any failed item/status aborts the command, so it cannot silently report
+success when the cluster rejected documents, and rejected documents are not
+counted. Indexing uses one bulk write per document, so very large installations
+take time; run it during a maintenance window. With
+`search.backend = "embedded"` it prints the relational document counts and
+reports that relational search is authoritative instead of doing wasted work.
 
 The reindex adds or replaces documents by store id. It does **not** delete
 documents for objects that were removed while the remote backend was inactive.
@@ -630,7 +634,10 @@ writes:
   committed WAL contents, safe to take while the server is running;
 - `microwave.dump` for PostgreSQL — a custom-format `pg_dump` archive, taken
   from a consistent database snapshot, safe while the server is running;
-- `bookshelf/` — a recursive copy of the local blob store, if present.
+- `bookshelf/` — a recursive copy of the local blob store, if present. The
+  copy refuses symlinks and other non-regular files (FIFOs, sockets, devices)
+  instead of dereferencing or blocking on them; the tar builder also runs with
+  `follow_symlinks(false)`.
 
 For a single-file archive with the same payload, use the tar format:
 
@@ -644,6 +651,8 @@ The archive is written atomically to the requested file and refuses to replace
 an existing file. It is uncompressed, so it is large but inspectable with
 `tar tf`; compress it with your backup tooling if needed. It contains exactly
 the same database snapshot/dump and `bookshelf/` tree as the directory format.
+Symlinks and other non-regular files under `bookshelf/` abort the backup rather
+than leaking link targets or blocking on a FIFO.
 
 PostgreSQL backup requires `pg_dump` to be installed and on `PATH`. The
 password is removed from the child process command line. A `password` query
@@ -923,8 +932,9 @@ relational counts or backfills a remote search cluster; see
 [Search](#search). `pedant` runs `scripts/run-pedant.sh` with the supplied tags
 (tags are passed as separate arguments, output is streamed, and the harness exit
 status is preserved; set `MW_PEDANT_SCRIPT` when the script is not in the
-current tree or beside the binary). `service` controls the systemd unit, or
-fails clearly when systemd is unavailable. `backup`/`restore` use `VACUUM INTO`
+current tree or beside the binary, and discovery stops at the repository root).
+`service` controls the systemd unit, or fails clearly when systemd is
+unavailable. `backup`/`restore` use `VACUUM INTO`
 for SQLite and `pg_dump`/`pg_restore` for PostgreSQL, in directory or tar
 format. `microwave-migrate` exports and imports both backends; see
 [Backup and restore](#9-backup-and-restore).
@@ -956,11 +966,12 @@ dropped — drain traffic at the load balancer before stopping or restarting.
   Turning the flag off takes effect on the next request; no restart is needed.
 - **Reindex semantics.** `microwave-ctl reindex` backfills a remote
   OpenSearch/Elasticsearch cluster from the relational store and reports
-  per-type counts; it fails loudly on the first backend write error. It does
-  not delete documents for objects removed while the remote backend was
+  per-type acknowledged counts; it fails loudly on the first transport error or
+  failed bulk item, including when `_bulk` returns HTTP 200 with `errors:true`.
+  It does not delete documents for objects removed while the remote backend was
   inactive. To purge stale documents, stop the server, delete the remote
-  `chef` index, and reindex before resuming traffic. With the embedded
-  backend it only verifies relational counts, because the store is the index.
+  `chef` index, and reindex before resuming traffic. With the embedded backend
+  it only prints relational counts, because the store is the index.
 - **PostgreSQL client tools.** `microwave-ctl backup`/`restore` shell out to
   `pg_dump`/`pg_restore`; install the matching major version on the host or run
   them from a maintenance container. `psql` likewise needs the client tool.

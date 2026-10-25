@@ -21,32 +21,66 @@ pub fn run(
     lines: usize,
     follow: bool,
 ) -> Result<(), CtlError> {
-    let unit = resolve_unit(unit);
-    let systemctl = std::env::var(SYSTEMCTL_ENV).unwrap_or_else(|_| "systemctl".into());
-    if !program_available(&systemctl) {
-        return Err(unavailable(&systemctl));
-    }
-
+    let unit = resolve_unit(unit)?;
     match action {
+        // Reading the journal does not require a running systemctl binary.
         ServiceAction::Tail => tail(&unit, lines, follow),
-        ServiceAction::Start => systemctl_action(&systemctl, "start", &unit),
-        ServiceAction::Stop => systemctl_action(&systemctl, "stop", &unit),
-        ServiceAction::Restart => systemctl_action(&systemctl, "restart", &unit),
-        ServiceAction::Status => systemctl_action(&systemctl, "status", &unit),
+        _ => {
+            let systemctl = std::env::var(SYSTEMCTL_ENV).unwrap_or_else(|_| "systemctl".into());
+            if !program_available(&systemctl) {
+                return Err(unavailable(&systemctl));
+            }
+            let verb = match action {
+                ServiceAction::Start => "start",
+                ServiceAction::Stop => "stop",
+                ServiceAction::Restart => "restart",
+                ServiceAction::Status => "status",
+                ServiceAction::Tail => unreachable!("tail was handled above"),
+            };
+            systemctl_action(&systemctl, verb, &unit)
+        }
     }
 }
 
-fn resolve_unit(unit: Option<&str>) -> String {
-    unit.map(str::trim)
-        .filter(|unit| !unit.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            std::env::var(UNIT_ENV)
-                .ok()
-                .map(|unit| unit.trim().to_string())
-                .filter(|unit| !unit.is_empty())
-        })
-        .unwrap_or_else(|| DEFAULT_UNIT.to_string())
+/// Resolve and validate the unit name.
+///
+/// A unit is passed to `systemctl`/`journalctl` as a separate argument, but a
+/// value beginning with `-` would still be parsed as an option. Unit names also
+/// cannot contain whitespace, control characters, or `/`; rejecting them here
+/// keeps an environment override from turning into argument injection.
+fn resolve_unit(unit: Option<&str>) -> Result<String, CtlError> {
+    if let Some(unit) = unit {
+        return validate_unit(unit);
+    }
+    match std::env::var(UNIT_ENV) {
+        Ok(unit) => validate_unit(&unit),
+        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_UNIT.to_string()),
+        Err(std::env::VarError::NotUnicode(_)) => Err(CtlError::message(format!(
+            "{UNIT_ENV} is not valid UTF-8; set a plain systemd unit name"
+        ))),
+    }
+}
+
+fn validate_unit(unit: &str) -> Result<String, CtlError> {
+    if unit.is_empty() {
+        return Err(CtlError::message(
+            "the service unit must not be empty; pass --unit or set MW_SERVICE_UNIT",
+        ));
+    }
+    if unit.starts_with('-') {
+        return Err(CtlError::message(
+            "the service unit must not start with '-'; this would be parsed as an option",
+        ));
+    }
+    if unit
+        .chars()
+        .any(|character| character.is_whitespace() || character.is_control() || character == '/')
+    {
+        return Err(CtlError::message(
+            "the service unit must not contain whitespace, control characters, or '/'; use a systemd unit name such as microwave-server",
+        ));
+    }
+    Ok(unit.to_string())
 }
 
 fn systemctl_action(program: &str, verb: &str, unit: &str) -> Result<(), CtlError> {
@@ -137,11 +171,49 @@ mod tests {
     fn resolves_the_unit_from_the_flag_then_environment_then_default() {
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("MW_SERVICE_UNIT");
-        assert_eq!(resolve_unit(Some("custom.service")), "custom.service");
-        assert_eq!(resolve_unit(Some("  ")), "microwave-server");
+        assert_eq!(
+            resolve_unit(Some("custom.service")).unwrap(),
+            "custom.service"
+        );
+        assert_eq!(resolve_unit(None).unwrap(), "microwave-server");
 
         std::env::set_var("MW_SERVICE_UNIT", "env.service");
-        assert_eq!(resolve_unit(None), "env.service");
+        assert_eq!(resolve_unit(None).unwrap(), "env.service");
+        std::env::remove_var("MW_SERVICE_UNIT");
+    }
+
+    #[test]
+    fn rejects_option_like_and_malformed_units() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        for unit in [
+            "",
+            "-oops.service",
+            "--now",
+            "bad unit.service",
+            "bad\tunit.service",
+            "bad\nunit.service",
+            "bad\u{7}unit.service",
+            "path/unit.service",
+        ] {
+            let error = resolve_unit(Some(unit))
+                .expect_err(&format!("unit {unit:?} should be rejected"))
+                .to_string();
+            assert!(
+                error.contains("service unit"),
+                "unexpected error for {unit:?}: {error}"
+            );
+        }
+
+        let error = resolve_unit(Some("-oops.service")).unwrap_err().to_string();
+        assert!(error.contains("must not start with '-'"));
+    }
+
+    #[test]
+    fn rejects_an_invalid_environment_unit() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("MW_SERVICE_UNIT", "-injected.service");
+        let error = resolve_unit(None).unwrap_err().to_string();
+        assert!(error.contains("must not start with '-'"));
         std::env::remove_var("MW_SERVICE_UNIT");
     }
 

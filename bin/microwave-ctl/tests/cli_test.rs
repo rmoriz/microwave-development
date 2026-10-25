@@ -355,7 +355,7 @@ fn reindex_reports_relational_authority_for_the_embedded_backend() {
     let scoped = run(dir.path(), &["reindex", "--org", "acme"]);
     assert_success(&scoped);
     assert!(stdout(&scoped).contains("organization: acme"));
-    assert!(stdout(&scoped).contains("documents_in_store: 2"));
+    assert!(stdout(&scoped).contains("documents_acknowledged: 2"));
 
     let missing = run(dir.path(), &["reindex", "--org", "missing"]);
     assert!(!missing.status.success());
@@ -386,7 +386,7 @@ fn reindex_fails_loudly_when_a_remote_backend_is_unreachable() {
         .unwrap();
     assert!(!output.status.success());
     assert!(stderr(&output).contains("reindex failed"));
-    assert!(!stdout(&output).contains("documents_indexed"));
+    assert!(!stdout(&output).contains("documents_acknowledged"));
 }
 
 #[test]
@@ -427,6 +427,24 @@ fn reconfigure_validates_initializes_and_preserves_existing_data() {
     assert!(!refused.status.success());
     assert!(stderr(&refused).contains("server.bind"));
     assert!(!stdout(&refused).contains("metadata backend is ready"));
+}
+
+#[test]
+fn reconfigure_with_bad_config_does_not_create_the_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("bad.toml");
+    std::fs::write(&bad, "[server]\nbind = \"not-an-address\"\n").unwrap();
+
+    let output = ctl(dir.path())
+        .args(["--config", bad.to_str().unwrap(), "reconfigure"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("server.bind"));
+    assert!(
+        !dir.path().join("microwave.db").exists(),
+        "a failed reconfigure must not initialize the database"
+    );
 }
 
 #[test]
@@ -570,8 +588,10 @@ fn help_lists_the_operational_surface() {
 #[cfg(unix)]
 mod operational_process_tests {
     use super::{assert_success, ctl, stderr, stdout};
+    use std::ffi::CString;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
     fn fake_tool(dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(name);
@@ -677,14 +697,28 @@ mod operational_process_tests {
     }
 
     #[test]
-    fn service_tail_uses_journalctl_and_validates_line_count() {
+    fn service_rejects_option_like_units_before_running_systemctl() {
         let dir = tempfile::tempdir().unwrap();
-        let systemctl = fake_tool(dir.path(), "systemctl");
+        let output = ctl(dir.path())
+            .env("MW_SYSTEMCTL", "/definitely/not/here/systemctl")
+            .env("MW_SERVICE_UNIT", "-injected.service")
+            .args(["service", "start"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let text = stderr(&output);
+        assert!(text.contains("must not start with '-'"), "stderr: {text}");
+        assert!(!text.contains("no systemd service manager"));
+    }
+
+    #[test]
+    fn service_tail_uses_journalctl_without_requiring_systemctl() {
+        let dir = tempfile::tempdir().unwrap();
         let journalctl = fake_tool(dir.path(), "journalctl");
         let log = dir.path().join("journalctl.log");
 
         let output = ctl(dir.path())
-            .env("MW_SYSTEMCTL", &systemctl)
+            .env("MW_SYSTEMCTL", "/definitely/not/here/systemctl")
             .env("MW_JOURNALCTL", &journalctl)
             .env("MW_TEST_LOG", &log)
             .args([
@@ -711,13 +745,70 @@ mod operational_process_tests {
         );
 
         let invalid = ctl(dir.path())
-            .env("MW_SYSTEMCTL", &systemctl)
+            .env("MW_SYSTEMCTL", "/definitely/not/here/systemctl")
             .env("MW_JOURNALCTL", &journalctl)
             .args(["service", "tail", "--lines", "0"])
             .output()
             .unwrap();
         assert!(!invalid.status.success());
         assert!(stderr(&invalid).contains("greater than zero"));
+    }
+
+    #[test]
+    fn tar_backup_rejects_symlinked_bookshelf_content() {
+        let data = tempfile::tempdir().unwrap();
+        let backups = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("outside-secret");
+        std::fs::write(&secret, b"do-not-archive").unwrap();
+
+        let bookshelf = data.path().join("bookshelf");
+        std::fs::create_dir_all(&bookshelf).unwrap();
+        std::os::unix::fs::symlink(&secret, bookshelf.join("leaked")).unwrap();
+        let archive = backups.path().join("booked.tar");
+
+        let mut command = ctl(data.path());
+        command.timeout(Duration::from_secs(30)).args([
+            "backup",
+            archive.to_str().unwrap(),
+            "--tar",
+        ]);
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(stderr(&output).contains("refusing to copy symlink"));
+        assert!(!archive.exists());
+
+        // The target must still be intact and was not archived anywhere.
+        assert_eq!(std::fs::read(&secret).unwrap(), b"do-not-archive");
+    }
+
+    #[test]
+    fn tar_backup_rejects_a_fifo_without_blocking() {
+        let data = tempfile::tempdir().unwrap();
+        let backups = tempfile::tempdir().unwrap();
+        let bookshelf = data.path().join("bookshelf");
+        std::fs::create_dir_all(&bookshelf).unwrap();
+        let fifo = bookshelf.join("pipe");
+        let fifo_c = CString::new(fifo.to_str().unwrap()).unwrap();
+        let result = unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) };
+        assert_eq!(
+            result,
+            0,
+            "mkfifo failed: {}",
+            std::io::Error::last_os_error()
+        );
+        let archive = backups.path().join("booked.tar");
+
+        let mut command = ctl(data.path());
+        command.timeout(Duration::from_secs(30)).args([
+            "backup",
+            archive.to_str().unwrap(),
+            "--tar",
+        ]);
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(stderr(&output).contains("not a regular file or directory"));
+        assert!(!archive.exists());
     }
 }
 
