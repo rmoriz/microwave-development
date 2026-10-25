@@ -98,6 +98,21 @@ async fn authenticate_request(
         }
     }
 
+    // Internal compatibility resources authenticate before their handlers run,
+    // but webmachine still answers an unsupported method with 405 first. Let
+    // those requests through to the router so the `Allow` header is generated
+    // there without requiring a valid signature.
+    if let Some(allowed) = internal_allowed_methods(&path) {
+        if !allowed.contains(&request.method().as_str()) {
+            let response = next.run(request).await;
+            return with_version_header(
+                response,
+                &requested_version.to_string(),
+                &requested_version.to_string(),
+            );
+        }
+    }
+
     // The org-scoped user key resources are read-only. Upstream reports 405
     // before attempting authentication, so a request with an unsupported
     // method must not fail signature verification first.
@@ -151,6 +166,17 @@ async fn authenticate_request(
                 &requested_version.to_string(),
             );
         }
+    }
+
+    if is_controls_path(&path) {
+        // Upstream `oc_chef_wm_controls` halts in `service_available/2`, so it
+        // answers 410 before authentication or organization resolution.
+        let response = next.run(request).await;
+        return with_version_header(
+            response,
+            &requested_version.to_string(),
+            &requested_version.to_string(),
+        );
     }
 
     if is_data_collector_path(&path) {
@@ -260,6 +286,11 @@ async fn authenticate_signed(
 
     let path = parts.uri.path().to_string();
     let method = parts.method.as_str().to_string();
+    // `chef_wm_validate` signs the path below `/validate/`, not the validation
+    // URL itself. The body is still the body that was actually sent:
+    // `chef_authn` hashes it and rejects a mismatched `X-Ops-Content-Hash`.
+    let validated_path = validate_signed_path(&path);
+    let canonical_path = validated_path.as_deref().unwrap_or(path.as_str());
     let org = match organization_name_from_path(&path) {
         Some(name) => Some(
             state
@@ -284,7 +315,7 @@ async fn authenticate_signed(
     let api_version_string = api_version.to_string();
     let canonical = microwave_crypto::CanonicalRequest {
         method: &method,
-        path: &path,
+        path: canonical_path,
         body: &body_bytes,
         user_id: &user_id,
         timestamp: &timestamp,
@@ -476,6 +507,93 @@ fn is_data_collector_path(path: &str) -> bool {
         && parts.next().is_some_and(|part| !part.is_empty())
         && parts.next() == Some("data-collector")
         && parts.next().is_none()
+}
+
+/// `/organizations/:org/controls` (exact, no trailing slash).
+fn is_controls_path(path: &str) -> bool {
+    let mut parts = path.trim_matches('/').split('/');
+    parts.next() == Some("organizations")
+        && parts.next().is_some_and(|part| !part.is_empty())
+        && parts.next() == Some("controls")
+        && parts.next().is_none()
+}
+
+/// `/organizations/:org/validate/<signed path>`.
+///
+/// Returns the path the request signature covers, or `None` when the request
+/// is not a validation request. `chef_wm_validate` turns the wildcard match
+/// back into an absolute path before handing it to signature verification.
+fn validate_signed_path(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/organizations/")?;
+    let (_org, rest) = rest.split_once('/')?;
+    let rest = rest.strip_prefix("validate/")?;
+    if rest.is_empty() {
+        return None;
+    }
+    Some(format!("/{rest}"))
+}
+
+/// Methods accepted by internal resources that must answer 405 before
+/// authentication.
+///
+/// Upstream resolves method dispatch before `is_authorized/2`, so an
+/// unsupported method never verifies the signature. The gate only covers
+/// routes that are actually unauthenticated-internal or read-only; ordinary
+/// mutating routes that happen to share a path shape still authenticate
+/// normally.
+///
+/// `HEAD` accompanies GET because axum routes it to the GET handler. The
+/// router strips it from the generated `Allow` header.
+fn internal_allowed_methods(path: &str) -> Option<&'static [&'static str]> {
+    if validate_signed_path(path).is_some() {
+        return Some(&["GET", "HEAD", "POST", "PUT", "DELETE"]);
+    }
+    if is_node_identifiers_path(path) || is_role_environment_path(path) {
+        return Some(&["GET", "HEAD"]);
+    }
+    None
+}
+
+/// `/organizations/:org/nodes/:name/_identifiers`.
+///
+/// Only nodes are an upstream internal route. A broader `_identifiers` match
+/// would bypass authentication for real mutating routes such as
+/// `/data/:bag/_identifiers` or `/cookbooks/:cookbook/_identifiers`.
+fn is_node_identifiers_path(path: &str) -> bool {
+    let mut parts = path.trim_matches('/').split('/');
+    parts.next() == Some("organizations")
+        && parts.next().is_some_and(|part| !part.is_empty())
+        && parts.next() == Some("nodes")
+        && parts.next().is_some_and(|part| !part.is_empty())
+        && parts.next() == Some("_identifiers")
+        && parts.next().is_none()
+}
+
+/// The read-only role/environment run-list resources:
+///
+/// * `/organizations/:org/roles/:role/environments`
+/// * `/organizations/:org/roles/:role/environments/:environment`
+/// * `/organizations/:org/environments/:environment/roles/:role`
+fn is_role_environment_path(path: &str) -> bool {
+    let mut parts = path.trim_matches('/').split('/');
+    if parts.next() != Some("organizations") {
+        return false;
+    }
+    if !parts.next().is_some_and(|part| !part.is_empty()) {
+        return false;
+    }
+    let (Some(third), Some(fourth), Some(fifth)) = (parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    let sixth = parts.next();
+    if parts.next().is_some() || fourth.is_empty() {
+        return false;
+    }
+    if third == "roles" && fifth == "environments" {
+        return sixth.is_none_or(|part| !part.is_empty());
+    }
+    third == "environments" && fifth == "roles" && sixth.is_some_and(|part| !part.is_empty())
 }
 
 /// `/organizations/:org/required_recipe` (exact, no trailing slash).

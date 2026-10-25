@@ -672,7 +672,7 @@ async fn recipes_from_latest(state: &AppState, org: &Org) -> Result<Vec<Value>, 
     Ok(recipes)
 }
 
-fn recipe_names(cookbook_name: &str, manifest: &Value) -> Vec<String> {
+pub(crate) fn recipe_names(cookbook_name: &str, manifest: &Value) -> Vec<String> {
     let mut names = Vec::new();
     if let Some(files) = manifest.get("all_files").and_then(Value::as_array) {
         for file in files {
@@ -694,7 +694,10 @@ fn recipe_names(cookbook_name: &str, manifest: &Value) -> Vec<String> {
 }
 
 fn qualify_recipe(cookbook_name: &str, recipe: &str) -> String {
-    let name = recipe.strip_suffix(".rb").unwrap_or(recipe);
+    // Upstream uses `filename:basename/2`, so nested recipe paths collapse to
+    // their final component before the `.rb` suffix is removed.
+    let name = recipe.rsplit('/').next().unwrap_or(recipe);
+    let name = name.strip_suffix(".rb").unwrap_or(name);
     if name == "default" {
         cookbook_name.to_string()
     } else {

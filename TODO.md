@@ -95,9 +95,9 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [ ] `GET /license` — return `{"limit_exceeded": bool, "node_license": int, "node_count": int, "upgrade_url": str}`.
 - [ ] `POST /authenticate_user` — superuser-only endpoint verifying username/password (with transparent hash upgrade) and returning `linked` user payload; reject superuser target with `403`.
 - [ ] `POST /system_recovery` — superuser-only endpoint verifying recovery password when `recovery_authentication_enabled = true`.
-- [ ] `ANY /organizations/:org/validate/*` — verify signed request and return `{"requestor_name": ..., "requestor_type": ...}`.
-- [ ] `GET /organizations/:org/:type/:name/_identifiers` — return `{"id": ..., "authz_id": ..., "org_id": ...}` for nodes.
-- [ ] `POST /organizations/:org/controls` — return `410 Gone` analytics deprecation response.
+- [x] `ANY /organizations/:org/validate/*` — verifies the signature against the wildcard path and the actual request body, then returns `{"requestor_name": ..., "requestor_type": ...}`.
+- [x] `GET /organizations/:org/:type/:name/_identifiers` — returns `{"id": ..., "authz_id": ..., "org_id": ...}` for nodes and the upstream 404 for unsupported types.
+- [x] `POST /organizations/:org/controls` — returns the upstream `410 Gone` analytics deprecation response for every method.
 - [ ] Verify against `status_spec.rb`, `stats_spec.rb`, `license_spec.rb`, `authenticate_user_spec.rb`, `system_recovery_spec.rb`, `validate_spec.rb`, `object_identifier_spec.rb`, `controls_spec.rb`.
 
 ### 2.3 Users, Organizations, Associations, Clients, Keys & Principals
@@ -138,13 +138,13 @@ This document tracks the end-to-end engineering checklist for reimplementing the
   - [ ] Trigger search index add/update/delete on mutation.
 - [ ] **Roles (`/organizations/:org/roles`):**
   - [ ] `GET,POST /organizations/:org/roles`, `GET,PUT,DELETE /organizations/:org/roles/:name`.
-  - [ ] `GET /organizations/:org/roles/:name/environments` and `GET /organizations/:org/roles/:name/environments/:env` (and `/environments/:env/roles/:name`).
+  - [x] `GET /organizations/:org/roles/:name/environments` and `GET /organizations/:org/roles/:name/environments/:env` (and `/environments/:env/roles/:name`).
   - [ ] Validate role JSON schema (`json_class: "Chef::Role"`, `run_list`, `env_run_lists`, `default_attributes`, `override_attributes`).
 - [ ] **Environments (`/organizations/:org/environments`):**
   - [ ] `GET,POST /organizations/:org/environments`, `GET,PUT,DELETE /organizations/:org/environments/:env`.
   - [ ] Protect `_default` environment from deletion or modification (`405 Method Not Allowed`).
   - [ ] Validate environment JSON (`cookbook_versions` constraint map, `default_attributes`, `override_attributes`).
-  - [ ] Implement `GET /organizations/:org/environments/:env/cookbooks`, `.../cookbooks/:cookbook`, and `.../recipes` (filtering cookbooks by environment version constraints).
+  - [x] Implement `GET /organizations/:org/environments/:env/cookbooks`, `.../cookbooks/:cookbook`, and `.../recipes` (filtering cookbooks by environment version constraints).
 - [ ] **Data Bags (`/organizations/:org/data`):**
   - [ ] `GET,POST /organizations/:org/data`, `GET,POST,DELETE /organizations/:org/data/:bag`.
   - [ ] `GET,PUT,DELETE /organizations/:org/data/:bag/:item` (handle `raw_data` wrapper vs unwrapped item JSON, validate `id` field match, index items under `{data_bag, bag_name}`).
