@@ -816,6 +816,40 @@ fn check_config_rejects_incomplete_external_backends() {
 }
 
 #[test]
+fn check_config_rejects_invalid_data_collector_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("microwave.toml");
+    std::fs::write(
+        &config,
+        "[data_collector]\nroot_url = \"ftp://automate.example.com/ingest\"\ntimeout = 0\n",
+    )
+    .unwrap();
+
+    let output = ctl(dir.path())
+        .args(["--config", config.to_str().unwrap(), "check-config"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let text = stderr(&output);
+    assert!(text.contains("data_collector.root_url"));
+    assert!(text.contains("data_collector.timeout"));
+}
+
+#[test]
+fn check_config_rejects_required_recipe_without_a_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("microwave.toml");
+    std::fs::write(&config, "[required_recipe]\nenabled = true\n").unwrap();
+
+    let output = ctl(dir.path())
+        .args(["--config", config.to_str().unwrap(), "check-config"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("required_recipe.path"));
+}
+
+#[test]
 fn check_config_accepts_a_postgres_url_without_connecting() {
     let dir = tempfile::tempdir().unwrap();
     let output = ctl(dir.path())

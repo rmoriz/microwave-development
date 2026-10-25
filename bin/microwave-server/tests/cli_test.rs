@@ -28,6 +28,26 @@ fn config_prints_json_defaults() {
 }
 
 #[test]
+fn config_redacts_database_and_data_collector_credentials() {
+    let output = Command::cargo_bin("microwave-server")
+        .unwrap()
+        .arg("config")
+        .env(
+            "MW_DATABASE__URL",
+            "postgres://microwave:s3cr3t@db.example.com/microwave",
+        )
+        .env("MW_DATA_COLLECTOR__TOKEN", "collector-token")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(!text.contains("s3cr3t"));
+    assert!(!text.contains("collector-token"));
+    assert!(text.contains("postgres://microwave:***@db.example.com/microwave"));
+    assert!(text.contains("\"token\": \"***\""));
+}
+
+#[test]
 fn serve_check_reports_configuration_and_exits_successfully() {
     let dir = tempfile::tempdir().unwrap();
     let output = Command::cargo_bin("microwave-server")

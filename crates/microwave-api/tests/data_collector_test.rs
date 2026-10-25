@@ -75,6 +75,58 @@ async fn start_mock(
     (format!("http://{address}/data-collector/v0/"), captured)
 }
 
+/// Send response headers and a partial body immediately, then stall. This
+/// exercises the response-body read timeout rather than the connect/headers
+/// timeout covered by `start_mock`.
+async fn start_slow_body_upstream(stall: Duration) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        read_request_headers(&stream).await;
+        write_all(
+            &stream,
+            b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 100\r\n\r\n{\"partial\":",
+        )
+        .await;
+        tokio::time::sleep(stall).await;
+    });
+    format!("http://{address}/data-collector/v0/")
+}
+
+async fn read_request_headers(stream: &tokio::net::TcpStream) {
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+        match stream.try_read(&mut buffer) {
+            Ok(0) => return,
+            Ok(count) => request.extend_from_slice(&buffer[..count]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if stream.readable().await.is_err() {
+                    return;
+                }
+            }
+            Err(_) => return,
+        }
+    }
+}
+
+async fn write_all(stream: &tokio::net::TcpStream, data: &[u8]) {
+    let mut written = 0;
+    while written < data.len() {
+        match stream.try_write(&data[written..]) {
+            Ok(0) => return,
+            Ok(count) => written += count,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if stream.writable().await.is_err() {
+                    return;
+                }
+            }
+            Err(_) => return,
+        }
+    }
+}
+
 fn data_collector_config(root_url: &str, token: Option<&str>, timeout: u64) -> Config {
     let mut config = Config::default();
     config.data_collector.root_url = Some(root_url.to_string());
@@ -292,6 +344,45 @@ async fn timeout_returns_gateway_timeout() {
 }
 
 #[tokio::test]
+async fn slow_response_body_returns_gateway_timeout() {
+    let root_url = start_slow_body_upstream(Duration::from_millis(1_000)).await;
+    let app =
+        app_with_data_collector(data_collector_config(&root_url, Some("server-token"), 200)).await;
+
+    let response = app
+        .oneshot(token_request(
+            "/organizations/acme/data-collector",
+            "server-token",
+            br#"{}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+}
+
+#[tokio::test]
+async fn oversized_upstream_response_returns_bad_gateway() {
+    let oversized = "x".repeat(1_048_577);
+    let (root_url, _) = start_mock(200, &oversized, Duration::ZERO).await;
+    let app = app_with_data_collector(data_collector_config(
+        &root_url,
+        Some("server-token"),
+        5_000,
+    ))
+    .await;
+
+    let response = app
+        .oneshot(token_request(
+            "/organizations/acme/data-collector",
+            "server-token",
+            br#"{}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
 async fn token_request_is_forwarded_without_an_org_lookup() {
     let (root_url, captured) = start_mock(200, "{}", Duration::ZERO).await;
     let app = app_with_data_collector(data_collector_config(
@@ -314,7 +405,7 @@ async fn token_request_is_forwarded_without_an_org_lookup() {
 }
 
 #[tokio::test]
-async fn configured_data_collector_only_accepts_post() {
+async fn configured_data_collector_rejects_non_post_before_authentication() {
     let (root_url, _) = start_mock(200, "{}", Duration::ZERO).await;
     let app = app_with_data_collector(data_collector_config(
         &root_url,
@@ -323,16 +414,28 @@ async fn configured_data_collector_only_accepts_post() {
     ))
     .await;
 
-    let response = app
+    // A token is not required to get the method-not-allowed response.
+    let without_token = app
+        .clone()
         .oneshot(
             Request::get("/organizations/acme/data-collector")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(without_token.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+    let with_token = app
+        .oneshot(
+            Request::put("/organizations/acme/data-collector")
                 .header("x-data-collector-token", "server-token")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(with_token.status(), StatusCode::METHOD_NOT_ALLOWED);
 }
 
 #[tokio::test]

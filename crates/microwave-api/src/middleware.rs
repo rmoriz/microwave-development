@@ -73,7 +73,11 @@ pub async fn authenticate(
     // configured shared token instead of a Chef signature.
     if is_required_recipe_path(&path) {
         let enabled = state.config.required_recipe.enabled;
-        if !enabled || request.method() != axum::http::Method::GET {
+        let method = request.method();
+        // Axum's `get()` also serves HEAD. Treat HEAD like GET for the auth
+        // gate so it cannot bypass signature verification.
+        let is_read = method == axum::http::Method::GET || method == axum::http::Method::HEAD;
+        if !enabled || !is_read {
             let response = next.run(request).await;
             return with_version_header(
                 response,
@@ -93,6 +97,16 @@ pub async fn authenticate(
 
     if is_data_collector_path(&path) {
         let configured = state.config.data_collector.is_configured();
+        // Upstream rejects non-POST before authentication. Do the same while
+        // the route is enabled, even when the caller forgot the token.
+        if configured && request.method() != axum::http::Method::POST {
+            let response = next.run(request).await;
+            return with_version_header(
+                response,
+                &requested_version.to_string(),
+                &requested_version.to_string(),
+            );
+        }
         if !configured || crate::data_collector::has_valid_token(&state, request.headers()).await {
             let response = next.run(request).await;
             return with_version_header(

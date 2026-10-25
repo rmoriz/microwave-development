@@ -112,6 +112,32 @@ pub fn check_config(context: &Context) -> Result<(), CtlError> {
         ));
     }
 
+    if let Some(root_url) = non_empty(config.data_collector.root_url.as_deref()) {
+        if !is_http_url(root_url) {
+            problems.push(format!(
+                "data_collector.root_url must be an http:// or https:// URL with a host, got {root_url}"
+            ));
+        } else {
+            checks.push(format!("data_collector.root_url {root_url}"));
+        }
+    }
+    if config.data_collector.timeout == 0 {
+        problems.push("data_collector.timeout must be greater than 0".to_string());
+    } else {
+        checks.push(format!(
+            "data_collector.timeout {}ms",
+            config.data_collector.timeout
+        ));
+    }
+    if config.required_recipe.enabled {
+        match non_empty(config.required_recipe.path.as_deref()) {
+            Some(path) => checks.push(format!("required_recipe.path {path}")),
+            None => problems.push(
+                "required_recipe.path must be set when required_recipe.enabled is true".to_string(),
+            ),
+        }
+    }
+
     if problems.is_empty() {
         for check in checks {
             println!("ok: {check}");
@@ -173,6 +199,20 @@ pub fn psql(context: &Context, args: &[String]) -> Result<(), CtlError> {
 
 fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn is_http_url(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    let Some(rest) = lower
+        .strip_prefix("http://")
+        .or_else(|| lower.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    !rest.is_empty()
+        && !rest.starts_with('/')
+        && !rest.chars().any(char::is_whitespace)
+        && !rest.starts_with(':')
 }
 
 fn stored_secret(context: &Context, group: &str, name: &str) -> Option<String> {

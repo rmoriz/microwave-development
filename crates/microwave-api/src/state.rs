@@ -3,6 +3,7 @@ use microwave_config::Config;
 use microwave_objectstore::ObjectStore;
 use microwave_store::{MetadataStore, Org, Principal, SqliteStore};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -15,6 +16,9 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub object_store: Arc<dyn ObjectStore + Send + Sync>,
     pub search: Arc<dyn SearchBackend>,
+    /// Shared connection pool for outbound compatibility forwards. Per-request
+    /// deadlines are applied by each caller so the pool can be reused safely.
+    pub(crate) http_client: reqwest::Client,
 }
 
 impl AppState {
@@ -26,12 +30,14 @@ impl AppState {
         object_store: Arc<dyn ObjectStore + Send + Sync>,
     ) -> Result<Self, SearchError> {
         let search = build_search_backend(&config.search, store.clone())?;
+        let http_client = build_http_client(&config);
         Ok(Self {
             store,
             sqlite: None,
             config,
             object_store,
             search,
+            http_client,
         })
     }
 
@@ -46,12 +52,14 @@ impl AppState {
         object_store: Arc<dyn ObjectStore + Send + Sync>,
     ) -> Result<Self, SearchError> {
         let search = build_search_backend(&config.search, store.clone())?;
+        let http_client = build_http_client(&config);
         Ok(Self {
             store: store.clone(),
             sqlite: Some(store),
             config,
             object_store,
             search,
+            http_client,
         })
     }
 
@@ -66,6 +74,23 @@ impl AppState {
             .as_deref()
             .expect("AppState::sqlite() called while running against a non-SQLite backend")
     }
+}
+
+fn build_http_client(config: &Config) -> reqwest::Client {
+    let request_timeout = Duration::from_millis(config.data_collector.timeout.max(1));
+    reqwest::Client::builder()
+        .connect_timeout(request_timeout.min(Duration::from_secs(10)))
+        // `read_timeout` is what aborts a stalled response body after headers
+        // have arrived; the total deadline is applied per request.
+        .read_timeout(request_timeout)
+        // Compatibility forwards preserve upstream redirects rather than
+        // following them, matching nginx's proxy behavior.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap_or_else(|error| {
+            tracing::error!(%error, "failed to build shared HTTP client; using defaults");
+            reqwest::Client::new()
+        })
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -116,7 +116,7 @@ A complete annotated example is
 | `auth.superuser_name` | `MW_AUTH__SUPERUSER_NAME` | `pivotal` | Account that cannot be demoted. |
 | `data_collector.root_url` | `MW_DATA_COLLECTOR__ROOT_URL` | unset | Enables `POST /organizations/:org/data-collector` and receives the forwarded payload, e.g. `https://automate.example.com/data-collector/v0/`. |
 | `data_collector.token` | `MW_DATA_COLLECTOR__TOKEN` | unset | Shared bearer token accepted inbound and sent upstream as `x-data-collector-token`. Falls back to the `data_collector.token` secret. |
-| `data_collector.timeout` | `MW_DATA_COLLECTOR__TIMEOUT` (alias `MW_DATA_COLLECTOR__TIMEOUT_MS`) | `30000` | Upstream forwarding timeout in milliseconds (TOML alias `timeout_ms`). |
+| `data_collector.timeout` | `MW_DATA_COLLECTOR__TIMEOUT` (alias `MW_DATA_COLLECTOR__TIMEOUT_MS`) | `30000` | Upstream forwarding and response-read timeout in milliseconds (TOML alias `timeout_ms`). Must be greater than zero; `check-config` rejects `0`. |
 | `required_recipe.enabled` | `MW_REQUIRED_RECIPE__ENABLED` (alias `MW_REQUIRED_RECIPE__ENABLE`) | `false` | Enables `GET /organizations/:org/required_recipe`. TOML alias `enable`. |
 | `required_recipe.path` | `MW_REQUIRED_RECIPE__PATH` | unset | Recipe file served as `text/plain` when the endpoint is enabled. |
 | `telemetry.enabled` | `MW_TELEMETRY__ENABLED` | `false` | Reserved toggle. No outbound sender is implemented, so enabling it does not phone home. |
@@ -602,12 +602,16 @@ The optional `data_collector.token` is accepted from clients as
 `x-data-collector-token` (or resolved from the `data_collector.token` secret)
 and is always replaced with the server-side value when forwarding upstream.
 Clients without a token may authenticate with a normal Chef signature instead.
-The forwarder uses the configured timeout and does not hold database locks
-across the outbound request.
+The forwarder uses a shared connection pool, applies the configured timeout to
+both the request and response body, caps upstream responses at 1 MiB, and does
+not hold database locks across the outbound request.
 
 The optional `required_recipe` endpoint is off by default. Enabling it requires
 `required_recipe.path`; the file is read on each request and served as plain
-text. The feature is independent of telemetry.
+text. The file must be a regular file no larger than 1 MiB, must not be a
+symlink, must not be group- or world-writable, and must be owned by root when
+the server runs as root (otherwise by the server's effective user). The
+feature is independent of telemetry.
 
 Telemetry is off by default and there is no outbound sender. The `telemetry`
 table exists in both SQLite and PostgreSQL for schema compatibility, and the

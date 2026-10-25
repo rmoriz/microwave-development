@@ -52,9 +52,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Config { config } => {
             let mut config = Config::load(config.as_deref())?;
-            // `config` is a user-facing diagnostic. Never print credentials
-            // embedded in a PostgreSQL URL.
-            config.database.url = config.database.url.as_deref().map(redact_database_url);
+            // `config` is a user-facing diagnostic. Never print credentials.
+            redact_config_for_output(&mut config);
             println!("{}", serde_json::to_string_pretty(&config)?);
         }
         Command::Serve { config, check } => {
@@ -134,6 +133,16 @@ fn sqlite_path(database_url: &str) -> &str {
         .unwrap_or(database_url)
 }
 
+/// Hide credentials before printing configuration.
+fn redact_config_for_output(config: &mut Config) {
+    config.database.url = config.database.url.as_deref().map(redact_database_url);
+    config.data_collector.token = config
+        .data_collector
+        .token
+        .as_ref()
+        .map(|_| "***".to_string());
+}
+
 /// Hide the password in a database URL before printing configuration.
 ///
 /// `postgres://user:secret@host/db` becomes `postgres://user:***@host/db`.
@@ -197,7 +206,24 @@ fn build_object_store(
 
 #[cfg(test)]
 mod tests {
-    use super::redact_database_url;
+    use super::{redact_config_for_output, redact_database_url};
+    use microwave_config::Config;
+
+    #[test]
+    fn redacts_database_and_data_collector_credentials() {
+        let mut config = Config::default();
+        config.database.url =
+            Some("postgres://microwave:s3cr3t@db.example.com/microwave".to_string());
+        config.data_collector.token = Some("collector-token".to_string());
+
+        redact_config_for_output(&mut config);
+
+        assert_eq!(
+            config.database.url.as_deref(),
+            Some("postgres://microwave:***@db.example.com/microwave")
+        );
+        assert_eq!(config.data_collector.token.as_deref(), Some("***"));
+    }
 
     #[test]
     fn redacts_the_password_from_a_database_url() {
