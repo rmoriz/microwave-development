@@ -27,17 +27,20 @@ const TLS_KEY_TARGET: &str = "tls-key";
 
 /// Explicit data-directory private-file allowlist. This is a fixed manifest,
 /// never a glob: unknown files are never read or archived.
-const DATA_DIR_PRIVATE_FILES: [&str; 10] = [
+const DATA_DIR_PRIVATE_FILES: [&str; 13] = [
     "pivotal.pem",
     "pivotal.password",
     "objectstore.secret",
     "private-chef-secrets.json",
+    "private_chef_secrets.json",
     "webui_priv.pem",
     "webui_pub.pem",
     "oc_id_priv.pem",
     "oc_id_pub.pem",
     "ocid_priv.pem",
     "ocid_pub.pem",
+    "oc-id.pem",
+    "oc_id.pem",
 ];
 
 /// Create a backup containing a consistent database dump and a copy of the
@@ -72,16 +75,19 @@ pub fn backup(
         "note: the bookshelf copy is not atomic with the database dump; drain writes for a strict backup."
     );
     match &private_files {
+        Some(files) if files.is_empty() => println!(
+            "no allowlisted private key/certificate payload files were present; an empty private manifest was written."
+        ),
         Some(files) => {
             let private = files.iter().filter(|file| file.private).count();
             println!(
-                "included {} private file(s) under {PRIVATE_DIR}/ ({private} private, {} public); the backup contains unencrypted key material.",
+                "included {} private payload file(s) under {PRIVATE_DIR}/ ({private} private, {} public); the backup contains unencrypted key material.",
                 files.len(),
                 files.len().saturating_sub(private)
             );
         }
         None => println!(
-            "private keys were not included; re-run with --include-private-keys to add the fixed server key/certificate set."
+            "private key/certificate files were not included; create a NEW backup in a NEW destination with --include-private-keys. An existing backup destination cannot be extended with keys."
         ),
     }
     Ok(())
@@ -185,6 +191,11 @@ fn write_backup_payload(
     path: &Path,
     private_files: Option<&[PrivateBackupFile]>,
 ) -> Result<(), CtlError> {
+    // Resolve any existing private/ tree before writing the database. A
+    // destination is either new, contains a tree this tool wrote, or is
+    // rejected; never recursively delete an unrelated user directory.
+    prepare_private_backup_destination(path)?;
+
     match context.config.database.driver {
         DatabaseDriver::Sqlite => backup_sqlite(context, path)?,
         DatabaseDriver::Postgres => backup_postgres(context, path)?,
@@ -197,13 +208,71 @@ fn write_backup_payload(
         copy_dir_all(&bookshelf, &bookshelf_backup)?;
     }
 
-    match private_files {
-        Some(files) => write_private_backup(path, files)?,
-        // A destination can contain a stale private/ tree from an earlier
-        // run. The default format must contain metadata and bookshelf only.
-        None => remove_path(&path.join(PRIVATE_DIR))?,
+    if let Some(files) = private_files {
+        write_private_backup(path, files)?;
     }
     Ok(())
+}
+
+/// Remove a previous private/ tree from a backup destination only when it is
+/// recognizably the tree this command writes. An unrelated directory is
+/// refused rather than deleted.
+fn prepare_private_backup_destination(path: &Path) -> Result<(), CtlError> {
+    let private_root = path.join(PRIVATE_DIR);
+    match std::fs::symlink_metadata(&private_root) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            Err(CtlError::message(format!(
+                "backup destination contains {PRIVATE_DIR}/, but it is not a directory this command can replace; choose a new destination"
+            )))
+        }
+        Ok(_) => {
+            if is_recognized_private_backup_tree(&private_root)? {
+                remove_path(&private_root)
+            } else {
+                Err(CtlError::message(format!(
+                    "backup destination contains {PRIVATE_DIR}/ that is not a recognizable microwave-ctl private backup tree; refusing to delete it. Choose a new backup destination."
+                )))
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn is_recognized_private_backup_tree(private_root: &Path) -> Result<bool, CtlError> {
+    let manifest_path = private_root.join("manifest.json");
+    let files_root = private_root.join("files");
+    if !is_regular_non_symlink(&manifest_path)? || !is_directory_non_symlink(&files_root)? {
+        return Ok(false);
+    }
+    let bytes = match read_private_bytes(&manifest_path, false) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(false),
+    };
+    let Ok(manifest) = serde_json::from_slice::<Value>(&bytes) else {
+        return Ok(false);
+    };
+    Ok(
+        manifest.get("format").and_then(Value::as_str) == Some(PRIVATE_MANIFEST_FORMAT)
+            && manifest.get("version").and_then(Value::as_u64)
+                == Some(u64::from(PRIVATE_MANIFEST_VERSION)),
+    )
+}
+
+fn is_regular_non_symlink(path: &Path) -> Result<bool, CtlError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file() && !metadata.file_type().is_symlink()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn is_directory_non_symlink(path: &Path) -> Result<bool, CtlError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.is_dir() && !metadata.file_type().is_symlink()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn backup_sqlite(context: &Context, path: &Path) -> Result<(), CtlError> {
@@ -459,7 +528,6 @@ fn add_private_backup_file(
 
 fn write_private_backup(path: &Path, files: &[PrivateBackupFile]) -> Result<(), CtlError> {
     let private_root = path.join(PRIVATE_DIR);
-    remove_path(&private_root)?;
     let files_root = path.join(PRIVATE_FILES_DIR);
     std::fs::create_dir_all(&files_root)?;
     set_mode(&private_root, PRIVATE_DIRECTORY_MODE)?;
@@ -500,10 +568,20 @@ fn write_new_file_mode(path: &Path, data: &[u8], mode: u32) -> Result<(), CtlErr
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(mode);
     }
-    let mut file = options.open(path)?;
-    file.write_all(data)?;
-    file.sync_all()?;
-    set_mode(path, mode)?;
+    let mut file = options.open(path).map_err(|error| {
+        CtlError::message(format!("failed to create private file {path:?}: {error}"))
+    })?;
+    file.write_all(data).map_err(|error| {
+        CtlError::message(format!("failed to write private file {path:?}: {error}"))
+    })?;
+    file.sync_all().map_err(|error| {
+        CtlError::message(format!("failed to sync private file {path:?}: {error}"))
+    })?;
+    set_mode(path, mode).map_err(|error| {
+        CtlError::message(format!(
+            "failed to set mode on private file {path:?}: {error}"
+        ))
+    })?;
     Ok(())
 }
 
@@ -533,7 +611,14 @@ pub fn restore(
     yes: bool,
     format: Option<BackupFormat>,
     restore_private_keys: bool,
+    private_only: bool,
 ) -> Result<(), CtlError> {
+    if private_only && !restore_private_keys {
+        return Err(CtlError::message(
+            "--private-only requires --restore-private-keys",
+        ));
+    }
+
     let format = match (format, path.is_dir()) {
         (Some(format), _) => format,
         (None, true) => BackupFormat::Directory,
@@ -554,7 +639,11 @@ pub fn restore(
                     path.display()
                 )));
             }
-            restore_directory(context, path, yes, restore_private_keys)?;
+            if private_only {
+                restore_private_only(context, path, yes)?;
+            } else {
+                restore_directory(context, path, yes, restore_private_keys)?;
+            }
         }
         BackupFormat::Tar => {
             if !path.is_file() {
@@ -567,12 +656,46 @@ pub fn restore(
                 .prefix("microwave-restore-")
                 .tempdir()?;
             extract_tar(path, staging.path())?;
-            restore_directory(context, staging.path(), yes, restore_private_keys)?;
+            if private_only {
+                restore_private_only(context, staging.path(), yes)?;
+            } else {
+                restore_directory(context, staging.path(), yes, restore_private_keys)?;
+            }
         }
     }
 
-    println!("Restored from {}", path.display());
+    if private_only {
+        println!("Restored private files from {}", path.display());
+    } else {
+        println!("Restored from {}", path.display());
+    }
     Ok(())
+}
+
+/// Restore only the `private/` subtree. The database and bookshelf are not
+/// touched, so an operator can retry a failed private apply without replaying
+/// metadata. The manifest and destinations are validated and staged first.
+fn restore_private_only(context: &Context, path: &Path, yes: bool) -> Result<(), CtlError> {
+    let staged = stage_private_restore(context, path)?;
+    let total = staged.entries.len();
+    if total > 0 {
+        eprintln!(
+            "warning: restoring private keys/certificates can invalidate existing clients and break a running server; {total} file(s) will be applied. The database and bookshelf will NOT be restored."
+        );
+    }
+    confirm_destructive("private key restore", yes)?;
+
+    match apply_private_restore(staged) {
+        Ok(count) => {
+            println!(
+                "restored {count} private payload file(s); restart the server to load the restored key/certificate material."
+            );
+            Ok(())
+        }
+        Err(error) => Err(CtlError::message(format!(
+            "private key restore failed: {error}. The database and bookshelf were not touched; fix the reported problem and retry with --private-only."
+        ))),
+    }
 }
 
 fn restore_directory(
@@ -622,13 +745,13 @@ fn restore_directory(
             Ok(count) => {
                 if count > 0 {
                     println!(
-                        "restored {count} private file(s); restart the server to load the restored key/certificate material."
+                        "restored {count} private payload file(s); restart the server to load the restored key/certificate material."
                     );
                 }
             }
             Err(error) => {
                 return Err(CtlError::message(format!(
-                    "private key restore failed: {error}; the database and bookshelf were restored and remain intact. Fix the reported problem and restore again, or restore the private files separately."
+                    "private key restore failed: {error}. The database and bookshelf were restored and remain intact; no database/bookshelf replay is needed. Fix the reported problem and retry with --restore-private-keys --private-only."
                 )));
             }
         }
@@ -712,18 +835,29 @@ fn swap_bookshelf(context: &Context, staged: StagedBookshelf) -> Result<(), CtlE
     Ok(())
 }
 
-/// A validated private file, copied into a private staging directory before
-/// the database or bookshelf is replaced.
+/// A validated private destination with its new contents staged beside the
+/// canonical target.
 struct PrivateRestoreEntry {
     target: PathBuf,
-    kind: PrivateKind,
     mode: u32,
-    staged_path: PathBuf,
+    temporary: PathBuf,
+    backup: Option<PathBuf>,
+    old_mode: Option<u32>,
 }
 
 struct StagedPrivateRestore {
-    _directory: tempfile::TempDir,
     entries: Vec<PrivateRestoreEntry>,
+}
+
+impl Drop for StagedPrivateRestore {
+    fn drop(&mut self) {
+        for entry in &self.entries {
+            let _ = std::fs::remove_file(&entry.temporary);
+            if let Some(backup) = &entry.backup {
+                let _ = std::fs::remove_file(backup);
+            }
+        }
+    }
 }
 
 fn stage_private_restore(
@@ -734,21 +868,18 @@ fn stage_private_restore(
     match std::fs::symlink_metadata(&private_root) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return Err(CtlError::message(format!(
-                "backup private directory {} is a symlink; refusing to restore it",
-                private_root.display()
+                "backup private directory {private_root:?} is a symlink; refusing to restore it"
             )));
         }
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => {
             return Err(CtlError::message(format!(
-                "backup private path {} is not a directory",
-                private_root.display()
+                "backup private path {private_root:?} is not a directory"
             )));
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(CtlError::message(format!(
-                "backup {} does not contain {PRIVATE_MANIFEST}; it was probably created without --include-private-keys",
-                backup.display()
+                "backup {backup:?} does not contain {PRIVATE_MANIFEST}; it was probably created without --include-private-keys"
             )));
         }
         Err(error) => return Err(error.into()),
@@ -782,8 +913,7 @@ fn stage_private_restore(
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(CtlError::message(format!(
-                "backup {} does not contain {PRIVATE_MANIFEST}; it was probably created without --include-private-keys",
-                backup.display()
+                "backup {backup:?} does not contain {PRIVATE_MANIFEST}; it was probably created without --include-private-keys"
             )));
         }
         Err(error) => return Err(error.into()),
@@ -813,6 +943,11 @@ fn stage_private_restore(
         .get("entries")
         .and_then(Value::as_array)
         .ok_or_else(|| CtlError::message(format!("{PRIVATE_MANIFEST} has no entries array")))?;
+
+    // Resolve the configured data directory before constructing destinations.
+    // A data_dir that is itself a symlink is valid and is resolved to its
+    // canonical directory, matching server startup.
+    let data_dir = canonical_data_dir(context)?;
 
     let mut entries = Vec::with_capacity(raw_entries.len());
     let mut seen_paths = HashSet::new();
@@ -865,7 +1000,7 @@ fn stage_private_restore(
                     })?;
                 let private = data_dir_file_is_private(fixed);
                 (
-                    context.data_dir.join(fixed),
+                    data_dir.join(fixed),
                     if private { PRIVATE_MODE } else { PUBLIC_MODE },
                 )
             }
@@ -875,7 +1010,7 @@ fn stage_private_restore(
                         "private manifest tls-cert target must be {TLS_CERT_TARGET:?}, got {target:?}"
                     )));
                 }
-                let configured = configured_tls_path(context, kind)?;
+                let configured = resolve_tls_target(context, kind)?;
                 (configured, PUBLIC_MODE)
             }
             PrivateKind::TlsPrivateKey => {
@@ -884,7 +1019,7 @@ fn stage_private_restore(
                         "private manifest tls-key target must be {TLS_KEY_TARGET:?}, got {target:?}"
                     )));
                 }
-                let configured = configured_tls_path(context, kind)?;
+                let configured = resolve_tls_target(context, kind)?;
                 (configured, PRIVATE_MODE)
             }
         };
@@ -895,8 +1030,7 @@ fn stage_private_restore(
         }
         if !seen_targets.insert(destination.clone()) {
             return Err(CtlError::message(format!(
-                "private manifest maps more than one file to {}",
-                destination.display()
+                "private manifest maps more than one file to {destination:?}"
             )));
         }
 
@@ -914,34 +1048,279 @@ fn stage_private_restore(
         entries.push((
             PrivateRestoreEntry {
                 target: destination,
-                kind,
                 mode: expected_mode,
-                staged_path: PathBuf::new(),
+                temporary: PathBuf::new(),
+                backup: None,
+                old_mode: None,
             },
             data,
+            kind,
         ));
     }
 
     validate_private_files_directory(backup, &seen_paths)?;
 
-    context.prepare_data_dir()?;
-    let directory = tempfile::Builder::new()
-        .prefix(".microwave-restore-private-")
-        .tempdir_in(&context.data_dir)?;
-    set_mode(directory.path(), PRIVATE_DIRECTORY_MODE)?;
+    stage_private_destinations(entries)
+}
 
-    let mut staged_entries = Vec::with_capacity(entries.len());
-    for (index, (mut entry, data)) in entries.into_iter().enumerate() {
-        let staged_path = directory.path().join(format!("{index:04}"));
-        write_new_file_mode(&staged_path, &data, entry.mode)?;
-        entry.staged_path = staged_path;
-        staged_entries.push(entry);
+/// Preflight and stage every private destination before the database or
+/// bookshelf is touched. This creates missing parent directories, validates
+/// final target types, resolves parent symlinks for TLS paths, and writes the
+/// new payload plus a temporary copy of any previous target beside it.
+fn stage_private_destinations(
+    entries: Vec<(PrivateRestoreEntry, Vec<u8>, PrivateKind)>,
+) -> Result<StagedPrivateRestore, CtlError> {
+    let mut staged = StagedPrivateRestore {
+        entries: Vec::with_capacity(entries.len()),
+    };
+    let mut seen_targets = HashSet::new();
+
+    for (mut entry, data, kind) in entries {
+        let parent = entry
+            .target
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty());
+        let Some(parent) = parent else {
+            return Err(CtlError::message(format!(
+                "private target {:?} has no parent directory",
+                entry.target
+            )));
+        };
+        ensure_private_directory(parent, kind.allows_parent_symlinks())?;
+        entry.target = finalize_private_target(&entry.target, kind)?;
+
+        if !seen_targets.insert(entry.target.clone()) {
+            return Err(CtlError::message(format!(
+                "private manifest maps more than one file to {:?}",
+                entry.target
+            )));
+        }
+
+        stage_one_private_destination(&mut entry, &data)?;
+        staged.entries.push(entry);
     }
 
-    Ok(StagedPrivateRestore {
-        _directory: directory,
-        entries: staged_entries,
-    })
+    Ok(staged)
+}
+
+/// Resolve the final target path. The data-directory root has already been
+/// canonicalized; data-dir payload targets must not be symlinks. Configured
+/// TLS final-target symlinks are resolved by [`resolve_tls_target`] before
+/// this point, and TLS intermediate parent symlinks are handled by
+/// [`ensure_private_directory`].
+fn finalize_private_target(target: &Path, kind: PrivateKind) -> Result<PathBuf, CtlError> {
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    let canonical_parent = std::fs::canonicalize(parent).map_err(|error| {
+        CtlError::message(format!(
+            "failed to resolve private target parent {:?}: {error}",
+            parent
+        ))
+    })?;
+    let file_name = target.file_name().ok_or_else(|| {
+        CtlError::message(format!("private target {:?} has no file name", target))
+    })?;
+    let candidate = canonical_parent.join(file_name);
+
+    match std::fs::symlink_metadata(&candidate) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            if matches!(kind, PrivateKind::DataDir) {
+                Err(CtlError::message(format!(
+                    "private data-directory target {:?} is a symlink; refusing to replace it",
+                    candidate
+                )))
+            } else {
+                let resolved = std::fs::canonicalize(&candidate).map_err(|error| {
+                    CtlError::message(format!(
+                        "configured TLS target symlink {:?} does not resolve: {error}",
+                        candidate
+                    ))
+                })?;
+                let resolved_metadata = std::fs::metadata(&resolved).map_err(|error| {
+                    CtlError::message(format!(
+                        "failed to inspect configured TLS target {:?}: {error}",
+                        resolved
+                    ))
+                })?;
+                if !resolved_metadata.is_file() {
+                    return Err(CtlError::message(format!(
+                        "configured TLS target {:?} resolves to a non-file",
+                        candidate
+                    )));
+                }
+                Ok(resolved)
+            }
+        }
+        Ok(metadata) if metadata.is_file() => {
+            Ok(std::fs::canonicalize(&candidate).map_err(|error| {
+                CtlError::message(format!(
+                    "failed to resolve private target {:?}: {error}",
+                    candidate
+                ))
+            })?)
+        }
+        Ok(metadata) if metadata.is_dir() => Err(CtlError::message(format!(
+            "private target {:?} is a directory; refusing to replace it",
+            candidate
+        ))),
+        Ok(_) => Err(CtlError::message(format!(
+            "private target {:?} is not a regular file",
+            candidate
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(candidate),
+        Err(error) => Err(CtlError::message(format!(
+            "failed to inspect private target {:?}: {error}",
+            candidate
+        ))),
+    }
+}
+
+fn stage_one_private_destination(
+    entry: &mut PrivateRestoreEntry,
+    data: &[u8],
+) -> Result<(), CtlError> {
+    let temporary = sidecar(
+        &entry.target,
+        &format!(".restore-private-{}", Uuid::new_v4().simple()),
+    );
+    if let Err(error) = write_new_file_mode(&temporary, data, entry.mode) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error);
+    }
+
+    match std::fs::symlink_metadata(&entry.target) {
+        Ok(metadata) if metadata.is_file() => {
+            let old_data = match read_private_bytes(&entry.target, false) {
+                Ok(data) => data,
+                Err(error) => {
+                    let _ = std::fs::remove_file(&temporary);
+                    return Err(error);
+                }
+            };
+            let backup = sidecar(
+                &entry.target,
+                &format!(".restore-private-backup-{}", Uuid::new_v4().simple()),
+            );
+            if let Err(error) = write_new_file_mode(&backup, &old_data, PRIVATE_MODE) {
+                let _ = std::fs::remove_file(&temporary);
+                let _ = std::fs::remove_file(&backup);
+                return Err(error);
+            }
+            entry.old_mode = Some(file_mode(&metadata));
+            entry.backup = Some(backup);
+        }
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(CtlError::message(format!(
+                "private target {:?} is a symlink; refusing to replace it",
+                entry.target
+            )));
+        }
+        Ok(metadata) if metadata.is_dir() => {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(CtlError::message(format!(
+                "private target {:?} is a directory; refusing to replace it",
+                entry.target
+            )));
+        }
+        Ok(_) => {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(CtlError::message(format!(
+                "private target {:?} is not a regular file",
+                entry.target
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(CtlError::message(format!(
+                "failed to inspect private target {:?}: {error}",
+                entry.target
+            )));
+        }
+    }
+
+    entry.temporary = temporary;
+    Ok(())
+}
+
+fn file_mode(metadata: &std::fs::Metadata) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o777
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        PRIVATE_MODE
+    }
+}
+
+fn canonical_data_dir(context: &Context) -> Result<PathBuf, CtlError> {
+    context.prepare_data_dir()?;
+    let canonical = std::fs::canonicalize(&context.data_dir).map_err(|error| {
+        CtlError::message(format!(
+            "failed to resolve data directory {:?}: {error}",
+            context.data_dir
+        ))
+    })?;
+    let metadata = std::fs::metadata(&canonical).map_err(|error| {
+        CtlError::message(format!(
+            "failed to inspect data directory {:?}: {error}",
+            canonical
+        ))
+    })?;
+    if !metadata.is_dir() {
+        return Err(CtlError::message(format!(
+            "data directory {:?} is not a directory",
+            canonical
+        )));
+    }
+    Ok(canonical)
+}
+
+/// Resolve a configured TLS target. A final-target symlink (for example a
+/// Let's Encrypt `live/.../cert.pem` link into `archive/...`) is allowed and
+/// replaced at its canonical regular-file target, preserving the symlink.
+fn resolve_tls_target(context: &Context, kind: PrivateKind) -> Result<PathBuf, CtlError> {
+    let configured = configured_tls_path(context, kind)?;
+    match std::fs::symlink_metadata(&configured) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let resolved = std::fs::canonicalize(&configured).map_err(|error| {
+                CtlError::message(format!(
+                    "configured TLS target symlink {:?} does not resolve: {error}",
+                    configured
+                ))
+            })?;
+            let metadata = std::fs::metadata(&resolved).map_err(|error| {
+                CtlError::message(format!(
+                    "failed to inspect configured TLS target {:?}: {error}",
+                    resolved
+                ))
+            })?;
+            if !metadata.is_file() {
+                return Err(CtlError::message(format!(
+                    "configured TLS target {:?} resolves to a non-file",
+                    configured
+                )));
+            }
+            Ok(resolved)
+        }
+        Ok(metadata) if metadata.is_file() => Ok(configured),
+        Ok(metadata) if metadata.is_dir() => Err(CtlError::message(format!(
+            "configured TLS target {:?} is a directory",
+            configured
+        ))),
+        Ok(_) => Err(CtlError::message(format!(
+            "configured TLS target {:?} is not a regular file",
+            configured
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(configured),
+        Err(error) => Err(CtlError::message(format!(
+            "failed to inspect configured TLS target {:?}: {error}",
+            configured
+        ))),
+    }
 }
 
 fn manifest_field<'a>(value: &'a Value, key: &str) -> Result<&'a str, CtlError> {
@@ -1027,14 +1406,14 @@ fn validate_private_files_directory(
         let metadata = std::fs::symlink_metadata(entry.path())?;
         if metadata.file_type().is_symlink() {
             return Err(CtlError::message(format!(
-                "backup private file {} is a symlink; refusing to restore it",
-                entry.path().display()
+                "backup private file {:?} is a symlink; refusing to restore it",
+                entry.path()
             )));
         }
         if !metadata.is_file() {
             return Err(CtlError::message(format!(
-                "backup private file {} is not a regular file",
-                entry.path().display()
+                "backup private file {:?} is not a regular file",
+                entry.path()
             )));
         }
         let path = format!("{PRIVATE_FILES_DIR}/{name}");
@@ -1056,23 +1435,24 @@ fn validate_private_files_directory(
 }
 
 fn read_regular_private_file(path: &Path) -> Result<Vec<u8>, CtlError> {
-    let metadata = std::fs::symlink_metadata(path)?;
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        CtlError::message(format!(
+            "failed to inspect private payload {path:?}: {error}"
+        ))
+    })?;
     if metadata.file_type().is_symlink() {
         return Err(CtlError::message(format!(
-            "refusing to restore symlinked private file {}",
-            path.display()
+            "refusing to restore symlinked private file {path:?}"
         )));
     }
     if !metadata.is_file() {
         return Err(CtlError::message(format!(
-            "private file {} is not a regular file",
-            path.display()
+            "private file {path:?} is not a regular file"
         )));
     }
     if metadata.len() > MAX_PRIVATE_FILE_BYTES {
         return Err(CtlError::message(format!(
-            "private file {} exceeds the {MAX_PRIVATE_FILE_BYTES}-byte file limit",
-            path.display()
+            "private file {path:?} exceeds the {MAX_PRIVATE_FILE_BYTES}-byte file limit"
         )));
     }
     read_private_bytes(path, false)
@@ -1095,83 +1475,128 @@ fn read_private_bytes(path: &Path, follow_symlinks: bool) -> Result<Vec<u8>, Ctl
     #[cfg(not(unix))]
     let _ = follow_symlinks;
 
-    let mut file = options.open(path)?;
-    let metadata = file.metadata()?;
+    let mut file = options.open(path).map_err(|error| {
+        CtlError::message(format!("failed to open private file {path:?}: {error}"))
+    })?;
+    let metadata = file.metadata().map_err(|error| {
+        CtlError::message(format!(
+            "failed to inspect open private file {path:?}: {error}"
+        ))
+    })?;
     if !metadata.is_file() {
         return Err(CtlError::message(format!(
-            "private file {} is not a regular file",
-            path.display()
+            "private file {path:?} is not a regular file"
         )));
     }
     if metadata.len() > MAX_PRIVATE_FILE_BYTES {
         return Err(CtlError::message(format!(
-            "private file {} exceeds the {MAX_PRIVATE_FILE_BYTES}-byte file limit",
-            path.display()
+            "private file {path:?} exceeds the {MAX_PRIVATE_FILE_BYTES}-byte file limit"
         )));
     }
     let mut data = Vec::new();
-    file.read_to_end(&mut data)?;
+    file.read_to_end(&mut data).map_err(|error| {
+        CtlError::message(format!("failed to read private file {path:?}: {error}"))
+    })?;
     Ok(data)
 }
 
+/// Commit staged private files as a set. On an ordinary commit failure, files
+/// already applied in this run are restored from their temporary backups.
+/// The message reports how many of how many were applied and which target
+/// failed; an unsafe rollback is reported explicitly rather than claimed.
 fn apply_private_restore(staged: StagedPrivateRestore) -> Result<usize, CtlError> {
-    let mut restored = 0;
-    for entry in staged.entries {
-        if let Some(parent) = entry.target.parent() {
-            if !parent.as_os_str().is_empty() {
-                ensure_private_directory(parent, entry.kind.allows_parent_symlinks())?;
-            }
-        }
-        match std::fs::symlink_metadata(&entry.target) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(CtlError::message(format!(
-                    "private target {} is a symlink; refusing to replace it",
-                    entry.target.display()
-                )));
-            }
-            Ok(metadata) if metadata.is_dir() => {
-                return Err(CtlError::message(format!(
-                    "private target {} is a directory; refusing to replace it",
-                    entry.target.display()
-                )));
-            }
-            Ok(metadata) if !metadata.is_file() => {
-                return Err(CtlError::message(format!(
-                    "private target {} is not a regular file",
-                    entry.target.display()
-                )));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-
-        let data = std::fs::read(&entry.staged_path)?;
-        let temporary = sidecar(
-            &entry.target,
-            &format!(".restore-{}", Uuid::new_v4().simple()),
-        );
-        if let Err(error) = write_new_file_mode(&temporary, &data, entry.mode) {
-            let _ = std::fs::remove_file(&temporary);
-            return Err(error);
-        }
+    let total = staged.entries.len();
+    for (index, entry) in staged.entries.iter().enumerate() {
         #[cfg(windows)]
-        {
-            if entry.target.exists() {
+        if entry.target.exists() {
+            if let Err(error) = std::fs::remove_file(&entry.target) {
+                return Err(private_apply_error(
+                    index,
+                    total,
+                    entry,
+                    &error,
+                    &staged.entries,
+                ));
+            }
+        }
+        if let Err(error) = std::fs::rename(&entry.temporary, &entry.target) {
+            return Err(private_apply_error(
+                index,
+                total,
+                entry,
+                &error,
+                &staged.entries,
+            ));
+        }
+        if let Err(error) = set_mode(&entry.target, entry.mode) {
+            let error = std::io::Error::other(error.to_string());
+            return Err(private_apply_error(
+                index,
+                total,
+                entry,
+                &error,
+                &staged.entries,
+            ));
+        }
+        if let Some(backup) = &entry.backup {
+            let _ = std::fs::remove_file(backup);
+        }
+    }
+    Ok(total)
+}
+
+fn private_apply_error(
+    index: usize,
+    total: usize,
+    entry: &PrivateRestoreEntry,
+    error: &std::io::Error,
+    entries: &[PrivateRestoreEntry],
+) -> CtlError {
+    let rollback_errors = rollback_private_entries(&entries[..=index]);
+    let rollback = if rollback_errors.is_empty() {
+        "rolled back the private files already applied in this run".to_string()
+    } else {
+        format!(
+            "rollback failed for {}: {}; partial private state may remain",
+            rollback_errors.len(),
+            rollback_errors.join("; ")
+        )
+    };
+    CtlError::message(format!(
+        "applied {index} of {total} private payload file(s); failed while applying {:?}: {error}; {rollback}",
+        entry.target
+    ))
+}
+
+fn rollback_private_entries(entries: &[PrivateRestoreEntry]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for entry in entries.iter().rev() {
+        match &entry.backup {
+            Some(backup) => {
+                #[cfg(windows)]
+                {
+                    let _ = std::fs::remove_file(&entry.target);
+                }
+                if let Err(error) = std::fs::rename(backup, &entry.target) {
+                    errors.push(format!("{:?}: {error}", entry.target));
+                    continue;
+                }
+                if let Some(mode) = entry.old_mode {
+                    if let Err(error) = set_mode(&entry.target, mode) {
+                        errors.push(format!("{:?} mode: {error}", entry.target));
+                    }
+                }
+            }
+            None => {
                 if let Err(error) = std::fs::remove_file(&entry.target) {
-                    let _ = std::fs::remove_file(&temporary);
-                    return Err(error.into());
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        errors.push(format!("{:?}: {error}", entry.target));
+                    }
                 }
             }
         }
-        if let Err(error) = std::fs::rename(&temporary, &entry.target) {
-            let _ = std::fs::remove_file(&temporary);
-            return Err(error.into());
-        }
-        set_mode(&entry.target, entry.mode)?;
-        restored += 1;
     }
-    Ok(restored)
+    errors
 }
 
 /// Create missing parent directories with mode 0700. Existing directories are
@@ -1210,41 +1635,57 @@ fn ensure_private_directory(path: &Path, allow_symlinks: bool) -> Result<(), Ctl
 /// Extract a backup tar archive into a staging directory.
 ///
 /// Only the files this command writes are accepted: the database snapshot or
-/// dump and the `bookshelf/` tree. Absolute paths, `..`, symlinks, devices, and
-/// every other entry type are rejected, so a malformed or hostile archive
-/// cannot write outside the staging directory or plant a link that a later
-/// live-data replacement would follow.
+/// dump, the `bookshelf/` tree, and the fixed `private/manifest.json` +
+/// `private/files/<file>` layout. Absolute paths, `..`, symlinks, hard links,
+/// devices, FIFOs, and unknown entries are rejected, so a malformed or hostile
+/// archive cannot write outside the staging directory or plant a link that a
+/// later live-data replacement would follow. Private entry sizes are checked
+/// from the tar header before any payload is extracted.
 fn extract_tar(path: &Path, destination: &Path) -> Result<(), CtlError> {
     let file = std::fs::File::open(path)?;
     let mut archive = tar::Archive::new(file);
     let mut saw_payload = false;
+    let mut private_total = 0_u64;
 
     for entry in archive.entries()? {
         let mut entry = entry?;
         let entry_path = entry.path()?.into_owned();
         if !allowed_tar_entry(&entry_path) {
             return Err(CtlError::message(format!(
-                "backup archive contains an unexpected entry {}; expected {}, {}, {}/, or {}/",
-                entry_path.display(),
+                "backup archive contains an unexpected entry {entry_path:?}; expected {}, {}, {}/, {PRIVATE_MANIFEST}, or {PRIVATE_FILES_DIR}/<file>",
                 DATABASE_FILE,
                 POSTGRES_DUMP_FILE,
-                BOOKSHELF_DIR,
-                PRIVATE_DIR
+                BOOKSHELF_DIR
             )));
         }
 
         let entry_type = entry.header().entry_type();
         if !entry_type.is_file() && !entry_type.is_dir() {
             return Err(CtlError::message(format!(
-                "backup archive entry {} is not a regular file or directory",
-                entry_path.display()
+                "backup archive entry {entry_path:?} is not a regular file or directory"
             )));
+        }
+
+        if entry_type.is_file()
+            && (is_private_tar_payload(&entry_path) || entry_path == Path::new(PRIVATE_MANIFEST))
+        {
+            let size = entry.header().size()?;
+            if size > MAX_PRIVATE_FILE_BYTES {
+                return Err(CtlError::message(format!(
+                    "backup archive private entry {entry_path:?} exceeds the {MAX_PRIVATE_FILE_BYTES}-byte file limit"
+                )));
+            }
+            private_total = private_total.saturating_add(size);
+            if private_total > MAX_PRIVATE_TOTAL_BYTES {
+                return Err(CtlError::message(format!(
+                    "backup archive private entries exceed the {MAX_PRIVATE_TOTAL_BYTES}-byte total limit"
+                )));
+            }
         }
 
         if !entry.unpack_in(destination)? {
             return Err(CtlError::message(format!(
-                "backup archive entry {} escapes the extraction directory",
-                entry_path.display()
+                "backup archive entry {entry_path:?} escapes the extraction directory"
             )));
         }
         saw_payload = true;
@@ -1285,6 +1726,10 @@ fn allowed_tar_entry(path: &Path) -> bool {
     {
         return true;
     }
+    is_private_tar_payload(path)
+}
+
+fn is_private_tar_payload(path: &Path) -> bool {
     match path.strip_prefix(PRIVATE_FILES_DIR) {
         Ok(relative) => {
             !relative.as_os_str().is_empty()
@@ -1603,7 +2048,10 @@ fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), CtlError> 
 
 #[cfg(test)]
 mod tests {
-    use super::{allowed_tar_entry, archive_database, database_names_match};
+    use super::{
+        allowed_tar_entry, archive_database, data_dir_file_is_private, database_names_match,
+        rollback_private_entries, PrivateRestoreEntry, DATA_DIR_PRIVATE_FILES,
+    };
     use std::path::Path;
 
     #[test]
@@ -1641,5 +2089,88 @@ mod tests {
         assert!(!allowed_tar_entry(Path::new("/etc/passwd")));
         assert!(!allowed_tar_entry(Path::new("pivotal.pem")));
         assert!(!allowed_tar_entry(Path::new("")));
+    }
+
+    #[test]
+    fn private_allowlist_matches_the_migration_source_allowlist() {
+        const MIGRATE_ARCHIVE: &str = include_str!("../../microwave-migrate/src/archive.rs");
+        let start = MIGRATE_ARCHIVE
+            .find("const DATA_DIR_PRIVATE_FILES")
+            .expect("migrate data-dir allowlist");
+        let block = &MIGRATE_ARCHIVE[start..];
+        let block = &block[..block.find("];").expect("allowlist terminator")];
+        let migrate = block.split('"').skip(1).step_by(2).collect::<Vec<_>>();
+        assert_eq!(migrate, DATA_DIR_PRIVATE_FILES);
+    }
+
+    #[test]
+    fn private_allowlist_matches_the_migration_data_dir_set() {
+        let expected = [
+            "pivotal.pem",
+            "pivotal.password",
+            "objectstore.secret",
+            "private-chef-secrets.json",
+            "private_chef_secrets.json",
+            "webui_priv.pem",
+            "webui_pub.pem",
+            "oc_id_priv.pem",
+            "oc_id_pub.pem",
+            "ocid_priv.pem",
+            "ocid_pub.pem",
+            "oc-id.pem",
+            "oc_id.pem",
+        ];
+        assert_eq!(DATA_DIR_PRIVATE_FILES, expected);
+        for public in ["webui_pub.pem", "oc_id_pub.pem", "ocid_pub.pem"] {
+            assert!(!data_dir_file_is_private(public), "{public}");
+        }
+        for private in expected {
+            if !matches!(private, "webui_pub.pem" | "oc_id_pub.pem" | "ocid_pub.pem") {
+                assert!(data_dir_file_is_private(private), "{private}");
+            }
+        }
+    }
+
+    #[test]
+    fn private_rollback_restores_overwritten_files_and_removes_new_ones() {
+        let directory = tempfile::tempdir().unwrap();
+        let overwritten = directory.path().join("overwritten.pem");
+        let backup = directory.path().join("overwritten.bak");
+        std::fs::write(&overwritten, b"new").unwrap();
+        std::fs::write(&backup, b"old").unwrap();
+        let created = directory.path().join("created.pem");
+        std::fs::write(&created, b"created").unwrap();
+        let entries = vec![
+            PrivateRestoreEntry {
+                target: overwritten.clone(),
+                mode: 0o600,
+                temporary: directory.path().join("ignored.tmp"),
+                backup: Some(backup),
+                old_mode: Some(0o640),
+            },
+            PrivateRestoreEntry {
+                target: created.clone(),
+                mode: 0o600,
+                temporary: directory.path().join("ignored2.tmp"),
+                backup: None,
+                old_mode: None,
+            },
+        ];
+        let errors = rollback_private_entries(&entries);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(std::fs::read(&overwritten).unwrap(), b"old");
+        assert!(!created.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&overwritten)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o640
+            );
+        }
     }
 }

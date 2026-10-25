@@ -292,9 +292,15 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 > archive; replicate the bucket. `microwave-ctl backup --include-private-keys`
 > adds an explicit `private/` manifest for the fixed server key/certificate
 > set to either directory or tar backups; restore requires the separate
-> `--restore-private-keys` opt-in, validates and stages private files before
-> the database, and applies them after a successful database/bookshelf
-> restore. Without that flag, existing target keys are left untouched.
+> `--restore-private-keys` opt-in, validates and preflights/stages every
+> private destination before the database, and applies them as a set after a
+> successful database/bookshelf restore with rollback on ordinary commit
+> failure. `--private-only --restore-private-keys` retries keys without
+> replaying metadata. Without that flag, existing target keys are left
+> untouched. The default backup is key-**file**-free, not DB-secret-free:
+> database-backed secrets (including the object-store secret in `kvpair`) are
+> always in the database dump. An existing destination cannot be extended; a
+> new backup in a new destination is required for keys.
 > `import-knife-backup` also supports both backends, writes cookbook blobs to a
 > local object-store root, and requires `--bookshelf-dir` with
 > `--database-url`. Explicit `--secrets-dir`/`--secrets-archive` sources migrate

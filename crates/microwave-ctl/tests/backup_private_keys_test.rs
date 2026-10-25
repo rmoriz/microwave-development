@@ -25,6 +25,7 @@ fn backup_child_dispatch() {
     let path = PathBuf::from(std::env::var("MW_BACKUP_TEST_PATH").expect("child path"));
     let tar = std::env::var("MW_BACKUP_TEST_TAR").as_deref() == Ok("1");
     let private = std::env::var("MW_BACKUP_TEST_PRIVATE").as_deref() == Ok("1");
+    let private_only = std::env::var("MW_BACKUP_TEST_PRIVATE_ONLY").as_deref() == Ok("1");
 
     let command = match action.as_str() {
         "backup" => CtlCommand::Backup {
@@ -39,6 +40,7 @@ fn backup_child_dispatch() {
             format: None,
             tar,
             restore_private_keys: private,
+            private_only,
         },
         other => panic!("unknown test action {other}"),
     };
@@ -53,6 +55,21 @@ fn backup_child_dispatch() {
 }
 
 fn run_ctl(config: &Path, action: &str, path: &Path, tar: bool, private: bool) -> Output {
+    run_ctl_with(config, action, path, tar, private, false)
+}
+
+fn run_private_only(config: &Path, path: &Path, tar: bool) -> Output {
+    run_ctl_with(config, "restore", path, tar, true, true)
+}
+
+fn run_ctl_with(
+    config: &Path,
+    action: &str,
+    path: &Path,
+    tar: bool,
+    private: bool,
+    private_only: bool,
+) -> Output {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", "backup_child_dispatch", "--nocapture"])
@@ -64,7 +81,11 @@ fn run_ctl(config: &Path, action: &str, path: &Path, tar: bool, private: bool) -
         .env("MW_BACKUP_TEST_ACTION", action)
         .env("MW_BACKUP_TEST_PATH", path)
         .env("MW_BACKUP_TEST_TAR", if tar { "1" } else { "0" })
-        .env("MW_BACKUP_TEST_PRIVATE", if private { "1" } else { "0" });
+        .env("MW_BACKUP_TEST_PRIVATE", if private { "1" } else { "0" })
+        .env(
+            "MW_BACKUP_TEST_PRIVATE_ONLY",
+            if private_only { "1" } else { "0" },
+        );
     command.output().unwrap()
 }
 
@@ -128,10 +149,28 @@ struct Installation {
 
 impl Installation {
     fn new(tls: bool) -> Self {
+        Self::new_with_data_dir(tls, false)
+    }
+
+    #[cfg(unix)]
+    fn with_symlinked_data_dir(tls: bool) -> Self {
+        Self::new_with_data_dir(tls, true)
+    }
+
+    fn new_with_data_dir(tls: bool, symlink_data_dir: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
+        let real_data_dir = root.join("data-real");
+        std::fs::create_dir_all(&real_data_dir).unwrap();
         let data_dir = root.join("data");
-        std::fs::create_dir_all(&data_dir).unwrap();
+        if symlink_data_dir {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&real_data_dir, &data_dir).unwrap();
+            #[cfg(not(unix))]
+            std::fs::create_dir_all(&data_dir).unwrap();
+        } else {
+            std::fs::create_dir_all(&data_dir).unwrap();
+        }
         let database = data_dir.join("microwave.db");
         let config = root.join("microwave.toml");
         let tls_cert = root.join("tls/cert.pem");
@@ -156,6 +195,63 @@ impl Installation {
             tls_cert,
             tls_key,
         }
+    }
+
+    #[cfg(unix)]
+    fn use_letsencrypt_tls_layout(&mut self) {
+        let archive = self.root.join("tls/archive");
+        let live = self.root.join("tls/live");
+        std::fs::create_dir_all(&archive).unwrap();
+        std::fs::create_dir_all(&live).unwrap();
+        let cert_archive = archive.join("cert-1.pem");
+        let key_archive = archive.join("key-1.pem");
+        write_file(&cert_archive, TLS_CERT_CONTENT, 0o600);
+        write_file(&key_archive, TLS_KEY_CONTENT, 0o644);
+        std::os::unix::fs::symlink(Path::new("../archive/cert-1.pem"), live.join("cert.pem"))
+            .unwrap();
+        std::os::unix::fs::symlink(Path::new("../archive/key-1.pem"), live.join("key.pem"))
+            .unwrap();
+        self.tls_cert = live.join("cert.pem");
+        self.tls_key = live.join("key.pem");
+        let text = format!(
+            "[paths]\ndata_dir = \"{}\"\n[server.tls]\ncert_path = \"{}\"\nkey_path = \"{}\"\n",
+            self.data_dir.display(),
+            self.tls_cert.display(),
+            self.tls_key.display()
+        );
+        std::fs::write(&self.config, text).unwrap();
+    }
+
+    fn write_bookshelf_sentinel(&self) {
+        write_file(
+            &self.data_dir.join("bookshelf/org/sentinel"),
+            "BOOKSHELF-SENTINEL",
+            0o600,
+        );
+    }
+
+    fn seed_live_marker(&self) -> Vec<u8> {
+        self.seed_database(DB_SECRET);
+        self.write_bookshelf_sentinel();
+        std::fs::read(&self.database).unwrap()
+    }
+
+    fn assert_live_marker_untouched(&self, before: &[u8]) {
+        assert_eq!(
+            self.database_secret().as_deref(),
+            Some(DB_SECRET),
+            "live database marker changed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(self.data_dir.join("bookshelf/org/sentinel")).unwrap(),
+            "BOOKSHELF-SENTINEL",
+            "live bookshelf sentinel changed"
+        );
+        assert_eq!(
+            std::fs::read(&self.database).unwrap(),
+            before,
+            "live database bytes changed"
+        );
     }
 
     fn seed_database(&self, value: &str) {
@@ -253,7 +349,7 @@ fn directory_backup_includes_private_files_only_on_request() {
     assert_no_secret_contents(&output);
     let text = stdout(&output);
     assert!(
-        text.contains("included 4 private file(s)") && text.contains("2 private, 2 public"),
+        text.contains("included 4 private payload file(s)") && text.contains("2 private, 2 public"),
         "stdout: {text}"
     );
 
@@ -340,7 +436,7 @@ fn directory_restore_private_files_round_trip_with_modes() {
         "output: {text}"
     );
     assert!(
-        text.contains("restored 4 private file(s)"),
+        text.contains("restored 4 private payload file(s)"),
         "output: {text}"
     );
 
@@ -454,13 +550,12 @@ fn symlinked_data_dir_candidates_are_rejected() {
 #[test]
 fn symlinked_private_payload_is_rejected_before_metadata_restore() {
     let installation = Installation::new(false);
-    installation.seed_database(DB_SECRET);
+    let before = installation.seed_live_marker();
     installation.write_data_file("pivotal.pem", PIVOTAL_CONTENT, 0o600);
 
     let backup = installation.root.join("backup");
     let output = run_ctl(&installation.config, "backup", &backup, false, true);
     assert_success(&output);
-    let before = std::fs::read(&installation.database).unwrap();
 
     let outside = installation.root.join("outside.pem");
     write_file(&outside, "OUTSIDE-CONTENT", 0o600);
@@ -474,18 +569,17 @@ fn symlinked_private_payload_is_rejected_before_metadata_restore() {
         "stderr: {}",
         stderr(&output)
     );
-    assert_eq!(std::fs::read(&installation.database).unwrap(), before);
+    installation.assert_live_marker_untouched(&before);
 }
 
 #[test]
 fn restore_requires_a_private_manifest_when_the_flag_is_given() {
     let installation = Installation::new(false);
-    installation.seed_database(DB_SECRET);
+    let before = installation.seed_live_marker();
 
     let backup = installation.root.join("backup");
     let output = run_ctl(&installation.config, "backup", &backup, false, false);
     assert_success(&output);
-    let before = std::fs::read(&installation.database).unwrap();
 
     let output = run_ctl(&installation.config, "restore", &backup, false, true);
     assert_failure(&output);
@@ -494,19 +588,18 @@ fn restore_requires_a_private_manifest_when_the_flag_is_given() {
         "stderr: {}",
         stderr(&output)
     );
-    assert_eq!(std::fs::read(&installation.database).unwrap(), before);
+    installation.assert_live_marker_untouched(&before);
 }
 
 #[test]
 fn malformed_private_manifests_fail_before_touching_metadata() {
     let installation = Installation::new(true);
-    installation.seed_database(DB_SECRET);
+    let before = installation.seed_live_marker();
     installation.write_secrets();
 
     let backup = installation.root.join("backup");
     let output = run_ctl(&installation.config, "backup", &backup, false, true);
     assert_success(&output);
-    let before = std::fs::read(&installation.database).unwrap();
     let manifest_path = backup.join("private/manifest.json");
     let valid = std::fs::read(&manifest_path).unwrap();
 
@@ -543,19 +636,21 @@ fn malformed_private_manifests_fail_before_touching_metadata() {
             "case {name}: stderr: {}",
             stderr(&output)
         );
-        assert_eq!(
-            std::fs::read(&installation.database).unwrap(),
-            before,
-            "case {name} touched the live database"
-        );
+        installation.assert_live_marker_untouched(&before);
     }
 
-    // A missing referenced payload is also a preflight failure.
+    // A missing referenced payload is also a preflight failure, and the error
+    // names the missing payload path.
     std::fs::write(&manifest_path, &valid).unwrap();
     std::fs::remove_file(backup.join("private/files/pivotal.pem")).unwrap();
     let output = run_ctl(&installation.config, "restore", &backup, false, true);
     assert_failure(&output);
-    assert_eq!(std::fs::read(&installation.database).unwrap(), before);
+    assert!(
+        stderr(&output).contains("private/files/pivotal.pem"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    installation.assert_live_marker_untouched(&before);
 
     // And an unreferenced payload is rejected rather than silently ignored.
     let mut value: serde_json::Value = serde_json::from_slice(&valid).unwrap();
@@ -569,7 +664,7 @@ fn malformed_private_manifests_fail_before_touching_metadata() {
         "stderr: {}",
         stderr(&output)
     );
-    assert_eq!(std::fs::read(&installation.database).unwrap(), before);
+    installation.assert_live_marker_untouched(&before);
 }
 
 #[test]
@@ -577,8 +672,7 @@ fn tar_restore_rejects_hostile_entries_before_touching_metadata() {
     use tar::{Builder, EntryType, Header};
 
     let installation = Installation::new(false);
-    installation.seed_database(DB_SECRET);
-    let before = std::fs::read(&installation.database).unwrap();
+    let before = installation.seed_live_marker();
 
     let database_bytes = before.clone();
     let cases: Vec<(&str, Vec<u8>, EntryType, Option<&str>)> = vec![
@@ -652,12 +746,346 @@ fn tar_restore_rejects_hostile_entries_before_touching_metadata() {
                 || message.contains("not a regular file or directory"),
             "case {name}: stderr: {message}"
         );
-        assert_eq!(
-            std::fs::read(&installation.database).unwrap(),
-            before,
-            "case {name} touched the live database"
+        installation.assert_live_marker_untouched(&before);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_data_dir_private_round_trip() {
+    let installation = Installation::with_symlinked_data_dir(true);
+    let before = installation.seed_live_marker();
+    installation.write_secrets();
+    assert!(std::fs::symlink_metadata(&installation.data_dir)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+
+    let backup = installation.root.join("backup");
+    let output = run_ctl(&installation.config, "backup", &backup, false, true);
+    assert_success(&output);
+    assert_no_secret_contents(&output);
+
+    installation.seed_database("LIVE-DATABASE");
+    installation.replace_live_secrets();
+
+    let output = run_ctl(&installation.config, "restore", &backup, false, true);
+    assert_success(&output);
+    assert_no_secret_contents(&output);
+    assert_eq!(installation.database_secret().as_deref(), Some(DB_SECRET));
+    assert_eq!(
+        std::fs::read_to_string(installation.data_dir.join("pivotal.pem")).unwrap(),
+        PIVOTAL_CONTENT
+    );
+    assert_eq!(
+        std::fs::read_to_string(&installation.tls_key).unwrap(),
+        TLS_KEY_CONTENT
+    );
+    assert!(
+        std::fs::symlink_metadata(&installation.data_dir)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "restore must preserve the configured data_dir symlink"
+    );
+    assert_eq!(
+        std::fs::read_to_string(installation.data_dir.join("bookshelf/org/sentinel")).unwrap(),
+        "BOOKSHELF-SENTINEL"
+    );
+    let _ = before;
+}
+
+#[cfg(unix)]
+#[test]
+fn letsencrypt_tls_symlink_targets_are_replaced_at_their_canonical_files() {
+    let mut installation = Installation::new(true);
+    installation.use_letsencrypt_tls_layout();
+    installation.seed_live_marker();
+
+    let backup = installation.root.join("backup");
+    let output = run_ctl(&installation.config, "backup", &backup, false, true);
+    assert_success(&output);
+    let manifest = read_manifest(&backup);
+    let targets = manifest_entries(&manifest)
+        .iter()
+        .filter_map(|entry| entry["target"].as_str())
+        .collect::<Vec<_>>();
+    assert!(targets.contains(&"tls-cert"));
+    assert!(targets.contains(&"tls-key"));
+
+    let archive_cert = installation.root.join("tls/archive/cert-1.pem");
+    let archive_key = installation.root.join("tls/archive/key-1.pem");
+    write_file(&archive_cert, "LIVE-CERT", 0o600);
+    write_file(&archive_key, "LIVE-KEY", 0o644);
+    installation.seed_database("LIVE-DATABASE");
+
+    let output = run_ctl(&installation.config, "restore", &backup, false, true);
+    assert_success(&output);
+    assert_no_secret_contents(&output);
+
+    assert_eq!(
+        std::fs::read_to_string(&archive_cert).unwrap(),
+        TLS_CERT_CONTENT
+    );
+    assert_eq!(
+        std::fs::read_to_string(&archive_key).unwrap(),
+        TLS_KEY_CONTENT
+    );
+    assert_eq!(mode(&archive_cert), 0o644);
+    assert_eq!(mode(&archive_key), 0o600);
+    for link in [&installation.tls_cert, &installation.tls_key] {
+        assert!(
+            std::fs::symlink_metadata(link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "restore must preserve the configured TLS symlink {link:?}"
         );
     }
+    assert_eq!(installation.database_secret().as_deref(), Some(DB_SECRET));
+}
+
+#[test]
+fn private_only_restores_keys_without_replaying_metadata() {
+    let installation = Installation::new(true);
+    installation.seed_database(DB_SECRET);
+    installation.write_secrets();
+    installation.write_bookshelf_sentinel();
+
+    let backup = installation.root.join("backup");
+    let output = run_ctl(&installation.config, "backup", &backup, false, true);
+    assert_success(&output);
+
+    installation.seed_database("LIVE-DATABASE");
+    write_file(
+        &installation.data_dir.join("bookshelf/org/sentinel"),
+        "LIVE-SENTINEL",
+        0o600,
+    );
+    installation.replace_live_secrets();
+
+    let output = run_private_only(&installation.config, &backup, false);
+    assert_success(&output);
+    assert_no_secret_contents(&output);
+    let text = combined(&output);
+    assert!(
+        text.contains("The database and bookshelf will NOT be restored"),
+        "output: {text}"
+    );
+
+    assert_eq!(
+        installation.database_secret().as_deref(),
+        Some("LIVE-DATABASE")
+    );
+    assert_eq!(
+        std::fs::read_to_string(installation.data_dir.join("bookshelf/org/sentinel")).unwrap(),
+        "LIVE-SENTINEL"
+    );
+    assert_eq!(
+        std::fs::read_to_string(installation.data_dir.join("pivotal.pem")).unwrap(),
+        PIVOTAL_CONTENT
+    );
+    assert_eq!(
+        std::fs::read_to_string(&installation.tls_key).unwrap(),
+        TLS_KEY_CONTENT
+    );
+}
+
+#[test]
+fn private_only_tar_restore_does_not_replay_metadata() {
+    let installation = Installation::new(true);
+    installation.seed_database(DB_SECRET);
+    installation.write_secrets();
+
+    let archive = installation.root.join("backup.tar");
+    let output = run_ctl(&installation.config, "backup", &archive, true, true);
+    assert_success(&output);
+
+    installation.seed_database("LIVE-DATABASE");
+    installation.replace_live_secrets();
+
+    let output = run_private_only(&installation.config, &archive, true);
+    assert_success(&output);
+    assert_eq!(
+        installation.database_secret().as_deref(),
+        Some("LIVE-DATABASE")
+    );
+    assert_eq!(
+        std::fs::read_to_string(installation.data_dir.join("pivotal.pem")).unwrap(),
+        PIVOTAL_CONTENT
+    );
+    assert_eq!(
+        std::fs::read_to_string(&installation.tls_key).unwrap(),
+        TLS_KEY_CONTENT
+    );
+}
+
+#[test]
+fn private_only_requires_restore_private_keys() {
+    let installation = Installation::new(false);
+    installation.seed_database(DB_SECRET);
+    let backup = installation.root.join("backup");
+    let output = run_ctl(&installation.config, "backup", &backup, false, true);
+    assert_success(&output);
+
+    let output = run_ctl_with(&installation.config, "restore", &backup, false, false, true);
+    assert_failure(&output);
+    assert!(
+        stderr(&output).contains("--private-only requires --restore-private-keys"),
+        "stderr: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn default_backup_only_replaces_a_recognized_private_tree() {
+    let installation = Installation::new(false);
+    installation.seed_database(DB_SECRET);
+
+    let recognized = installation.root.join("recognized");
+    write_file(
+        &recognized.join("private/manifest.json"),
+        r#"{"format":"microwave-ctl-private-files","version":1,"entries":[]}"#,
+        0o600,
+    );
+    std::fs::create_dir_all(recognized.join("private/files")).unwrap();
+    let output = run_ctl(&installation.config, "backup", &recognized, false, false);
+    assert_success(&output);
+    assert!(!recognized.join("private").exists());
+    assert!(recognized.join("microwave.db").is_file());
+
+    let unrelated = installation.root.join("unrelated");
+    write_file(&unrelated.join("private/keep-me.txt"), "USER-DATA", 0o600);
+    let output = run_ctl(&installation.config, "backup", &unrelated, false, false);
+    assert_failure(&output);
+    assert!(
+        stderr(&output).contains("not a recognizable microwave-ctl private backup tree"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(
+        std::fs::read_to_string(unrelated.join("private/keep-me.txt")).unwrap(),
+        "USER-DATA"
+    );
+    assert!(!unrelated.join("microwave.db").exists());
+}
+
+#[test]
+fn every_allowlisted_private_filename_is_backed_up_with_its_mode() {
+    const ALLOWLIST: [(&str, bool); 13] = [
+        ("pivotal.pem", true),
+        ("pivotal.password", true),
+        ("objectstore.secret", true),
+        ("private-chef-secrets.json", true),
+        ("private_chef_secrets.json", true),
+        ("webui_priv.pem", true),
+        ("webui_pub.pem", false),
+        ("oc_id_priv.pem", true),
+        ("oc_id_pub.pem", false),
+        ("ocid_priv.pem", true),
+        ("ocid_pub.pem", false),
+        ("oc-id.pem", true),
+        ("oc_id.pem", true),
+    ];
+
+    let installation = Installation::new(false);
+    installation.seed_database(DB_SECRET);
+    for (name, _) in ALLOWLIST {
+        installation.write_data_file(name, &format!("CONTENT-{name}"), 0o644);
+    }
+
+    let backup = installation.root.join("backup");
+    let output = run_ctl(&installation.config, "backup", &backup, false, true);
+    assert_success(&output);
+    assert_no_secret_contents(&output);
+
+    let manifest = read_manifest(&backup);
+    let entries = manifest_entries(&manifest);
+    assert_eq!(entries.len(), ALLOWLIST.len());
+    for (name, private) in ALLOWLIST {
+        let entry = entries
+            .iter()
+            .find(|entry| entry["target"] == name)
+            .unwrap_or_else(|| panic!("manifest is missing {name}"));
+        let expected_mode = if private { 0o600 } else { 0o644 };
+        assert_eq!(entry["mode"], expected_mode, "{name}");
+        assert_eq!(
+            mode(&backup.join(entry["path"].as_str().unwrap())),
+            expected_mode,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn an_empty_private_set_does_not_claim_key_material_was_included() {
+    let installation = Installation::new(false);
+    installation.seed_database(DB_SECRET);
+
+    let backup = installation.root.join("backup");
+    let output = run_ctl(&installation.config, "backup", &backup, false, true);
+    assert_success(&output);
+    let text = stdout(&output);
+    assert!(
+        text.contains("no allowlisted private key/certificate payload files were present"),
+        "stdout: {text}"
+    );
+    assert!(
+        !text.contains("contains unencrypted key material"),
+        "stdout: {text}"
+    );
+    let manifest = read_manifest(&backup);
+    assert!(manifest_entries(&manifest).is_empty());
+}
+
+#[test]
+fn tar_restore_rejects_oversized_private_entries_before_extraction() {
+    use tar::{Builder, EntryType, Header};
+
+    let installation = Installation::new(false);
+    let before = installation.seed_live_marker();
+    let database_bytes = before.clone();
+
+    let archive_path = installation.root.join("oversized-private.tar");
+    let file = std::fs::File::create(&archive_path).unwrap();
+    let mut builder = Builder::new(file);
+
+    let mut database_header = Header::new_gnu();
+    database_header.set_size(database_bytes.len() as u64);
+    database_header.set_mode(0o600);
+    database_header.set_mtime(0);
+    database_header.set_uid(0);
+    database_header.set_gid(0);
+    database_header.set_entry_type(EntryType::Regular);
+    database_header.set_cksum();
+    builder
+        .append_data(
+            &mut database_header,
+            "microwave.db",
+            database_bytes.as_slice(),
+        )
+        .unwrap();
+
+    let mut header = Header::new_gnu();
+    header.set_path("private/files/huge.pem").unwrap();
+    header.set_size(17 * 1024 * 1024);
+    header.set_mode(0o600);
+    header.set_mtime(0);
+    header.set_uid(0);
+    header.set_gid(0);
+    header.set_entry_type(EntryType::Regular);
+    header.set_cksum();
+    builder.append(&header, std::io::empty()).unwrap();
+    builder.finish().unwrap();
+
+    let output = run_ctl(&installation.config, "restore", &archive_path, true, false);
+    assert_failure(&output);
+    assert!(
+        stderr(&output).contains("exceeds the 16777216-byte file limit"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    installation.assert_live_marker_untouched(&before);
 }
 
 fn tar_entries(path: &Path) -> Vec<(PathBuf, tar::EntryType)> {

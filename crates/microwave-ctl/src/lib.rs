@@ -178,12 +178,14 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
             format,
             tar,
             restore_private_keys,
+            private_only,
         } => backup::restore(
             &context,
             &path,
             yes,
             if tar { Some(BackupFormat::Tar) } else { format },
             restore_private_keys,
+            private_only,
         ),
         Command::MigrateFromLegacy { input, yes } => {
             commands::migrate_from_legacy(&context, &input, yes)

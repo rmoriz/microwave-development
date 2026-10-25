@@ -316,6 +316,10 @@ pub enum Command {
         /// `private/` subtree. Restoring keys can invalidate existing clients.
         #[arg(long)]
         restore_private_keys: bool,
+        /// Restore only the `private/` subtree; do not replace the database or
+        /// bookshelf. Requires `--restore-private-keys`.
+        #[arg(long, requires = "restore_private_keys")]
+        private_only: bool,
     },
 
     /// Edit a user's profile, email, admin flag, or password. Without
@@ -589,9 +593,37 @@ mod tests {
                 tar: true,
                 yes: true,
                 restore_private_keys: true,
+                private_only: false,
                 ..
             }
         ));
+
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "restore",
+            "out",
+            "--yes",
+            "--restore-private-keys",
+            "--private-only",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Restore {
+                yes: true,
+                restore_private_keys: true,
+                private_only: true,
+                ..
+            }
+        ));
+        assert!(Cli::try_parse_from([
+            "microwave-ctl",
+            "restore",
+            "out",
+            "--yes",
+            "--private-only",
+        ])
+        .is_err());
     }
 
     #[test]

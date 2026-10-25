@@ -790,43 +790,67 @@ observable to the same UID or root; treat backups and the host account
 accordingly. Other connection parameters (host, port, user, database,
 `sslmode`) are preserved.
 
-By default it does **not** include:
+By default it does **not** include private key/certificate **files**:
 
-- private key/certificate material (`pivotal.pem`, `pivotal.password`,
-  `objectstore.secret`, `private-chef-secrets.json`, WebUI/oc-id keys, or TLS
-  files). Pass `--include-private-keys` to add them (see below);
+- `pivotal.pem`, `pivotal.password`, `objectstore.secret`,
+  `private-chef-secrets.json`/`private_chef_secrets.json`, WebUI/oc-id keys, or
+  TLS files. Pass `--include-private-keys` to add them (see below).
+
+The default backup is key-file-free, **not** DB-secret-free. Database-backed
+secrets are always inside the database dump and are restored with it. That
+includes the object-store secret copied into `kvpair`; file-level
+`--include-private-keys` does not control database secrets.
+
+It also does not include:
+
 - S3/Garage objects when an external object store is configured;
 - the OpenSearch index (it is derived data);
 - `microwave.toml` or systemd drop-ins.
 
 `--include-private-keys` adds a fixed, explicitly manifested `private/`
-subtree to either the directory or tar format:
+subtree to either the directory or tar format. Use a **new destination**; an
+existing backup cannot be extended with keys:
 
 ```sh
+# Default: database + bookshelf, no private key files.
 sudo -u microwave microwave-ctl --config /etc/microwave/microwave.toml \
-  backup /var/backups/microwave/2026-10-24 --include-private-keys
+  backup /var/backups/microwave/2026-10-24-db
+
+# Full: also include the fixed private key/certificate file set.
+sudo -u microwave microwave-ctl --config /etc/microwave/microwave.toml \
+  backup /var/backups/microwave/2026-10-24-full --include-private-keys
 ```
 
-The backup contains `private/manifest.json` and `private/files/`, with entries
-only for these data-directory files when present:
+The full backup contains `private/manifest.json` and `private/files/`, with
+entries only for these data-directory files when present:
 
 - `pivotal.pem`, `pivotal.password`, `objectstore.secret`,
-  `private-chef-secrets.json`;
+  `private-chef-secrets.json`, `private_chef_secrets.json`;
 - `webui_priv.pem`, `webui_pub.pem`, `oc_id_priv.pem`, `oc_id_pub.pem`,
-  `ocid_priv.pem`, `ocid_pub.pem`.
+  `ocid_priv.pem`, `ocid_pub.pem`, `oc-id.pem`, `oc_id.pem`.
 
 It also includes the configured `server.tls.cert_path` and
 `server.tls.key_path`; those paths may be outside the data directory. There is
-no directory glob: unknown files are never read. Data-directory candidates
-that are symlinks are refused, while explicitly configured TLS paths may be
-managed symlinks. The manifest records a logical kind, the suggested target
-(a data-relative name or `tls-cert`/`tls-key`), and the canonical mode (`0600`
-for private files, `0644` for public files such as certificates and public
-keys). File contents are never printed; the command reports only counts.
+no directory glob: unknown files are never read. A configured `data_dir` that
+is itself a symlink is resolved to its canonical directory, matching server
+startup. Data-directory payload candidates that are symlinks are refused.
+Explicitly configured TLS paths may be final-target managed symlinks (for
+example Let's Encrypt `live/.../cert.pem`); backup follows them, and restore
+replaces the canonical regular-file target while preserving the symlink.
 
-The resulting backup is even more sensitive than a default backup: it contains
-unencrypted server credentials. Protect the destination and its transport
-accordingly.
+The manifest records a logical kind, the suggested target (a data-relative
+name or `tls-cert`/`tls-key`), and the canonical mode (`0600` for private
+files, `0644` for public files such as certificates and public keys). File
+contents are never printed; the command reports only payload counts. When no
+allowlisted private file exists, it writes an empty manifest and does not
+claim that key material was included.
+
+A full backup is even more sensitive than a default backup: it contains
+unencrypted private key files in addition to the database secrets. Protect the
+destination and its transport accordingly. When the default format writes over
+a destination that already has `private/`, it only replaces a recognizable
+microwave-ctl private tree (expected manifest format/version plus
+`private/files/`); an unrelated directory is refused rather than deleted.
 
 The bookshelf copy and private-file collection are not atomic with the
 database snapshot. Uploads or key rotations in flight during the copy can be
@@ -863,7 +887,7 @@ and bookshelf restore:
 ```sh
 sudo systemctl stop microwave-server
 sudo -u microwave microwave-ctl --config /etc/microwave/microwave.toml \
-  restore /var/backups/microwave/2026-10-24 --restore-private-keys
+  restore /var/backups/microwave/2026-10-24-full --restore-private-keys
 sudo systemctl start microwave-server
 ```
 
@@ -871,15 +895,32 @@ Without `--restore-private-keys`, a backup containing `private/` is restored
 for database and bookshelf only: the private files are skipped with a warning
 and existing target key files are left untouched. With the flag, the manifest
 is validated (fixed format/version, allowlisted targets, canonical modes,
-referenced files present, no unreferenced files, no symlinks or traversal)
-before live metadata is modified. Private payloads are staged in a private
-temporary directory under the data directory, the database and bookshelf are
-restored, and only then are the private files applied to the configured data
-directory and TLS paths. Parent directories created by the restore are mode
-`0700`; private files are `0600` and public files `0644`. If applying private
-files fails, the command reports the error and leaves the already-restored
-database and bookshelf intact; restore the private files again after fixing the
-problem.
+referenced files present, no unreferenced files, no symlinks or traversal) and
+**every private destination is preflighted before live metadata is modified**.
+That preflight resolves the data-directory root (which may itself be a
+symlink), resolves a configured final TLS target symlink to its canonical
+regular file, rejects symlinked data-dir payload targets and unsafe parent
+types, creates missing parents with mode `0700`, and verifies writability by
+staging each payload and a temporary copy of any previous target beside the
+canonical destination. The database and bookshelf are restored next, and only
+then are the private files committed as a set. Private files are `0600` and
+public files `0644`.
+
+If an ordinary private commit fails, files already applied in that run are
+rolled back from their temporary copies, and the error reports `applied X of
+Y`, the failing target, and any rollback failure that leaves partial private
+state. The already-restored database and bookshelf remain intact. To retry just
+the keys without replaying metadata and bookshelf, use:
+
+```sh
+sudo -u microwave microwave-ctl --config /etc/microwave/microwave.toml \
+  restore /var/backups/microwave/2026-10-24-full \
+  --restore-private-keys --private-only
+```
+
+`--private-only` still validates the manifest/tar entries and requires
+`--restore-private-keys` and the normal confirmation. It leaves the database
+and bookshelf untouched.
 
 Restoring `pivotal.pem`, WebUI/oc-id keys, or TLS material can invalidate
 existing clients, break a running server until restart, or make the configured
@@ -1076,10 +1117,13 @@ by default and included with `--include-private-keys`; remote object-store
 objects and the search index are never archived. The snapshot and archive still
 contain password hashes, public keys, ACLs, and user data, so even a safe export
 is sensitive. `microwave-ctl backup` is a database-file/dump plus bookshelf
-backup by default; pass `--include-private-keys` for the fixed server
-key/certificate set, and `--restore-private-keys` on restore. The
-`microwave-migrate` archive remains the path for a cross-installation migration
-that also carries metadata secrets.
+backup by default, so it always contains database-backed secrets (including
+the object-store secret in `kvpair`) but no private key files. Pass
+`--include-private-keys` for the fixed server key/certificate file set, use a
+new destination (an existing backup cannot be extended), and pass
+`--restore-private-keys` on restore. The `microwave-migrate` archive remains
+the path for a cross-installation migration that also carries metadata
+secrets.
 
 ## 10. Migration from a legacy server
 
