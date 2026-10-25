@@ -9,7 +9,7 @@ use std::path::PathBuf;
 )]
 pub struct Cli {
     /// Path to a TOML configuration file.
-    #[arg(long, global = true, value_name = "PATH")]
+    #[arg(long, global = true, value_name = "PATH", allow_hyphen_values = true)]
     pub config: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -253,8 +253,9 @@ pub enum Command {
         tags: Vec<String>,
     },
 
-    /// Manage the systemd service. Requires `systemctl` (and `journalctl` for
-    /// `tail`); there is no built-in process supervisor.
+    /// Manage the service through systemd, or run the server in the foreground
+    /// for containers. Requires `systemctl` (and `journalctl` for `tail`) unless
+    /// `start --foreground` is used.
     Service {
         /// Service action.
         action: ServiceAction,
@@ -268,6 +269,13 @@ pub enum Command {
         /// Follow the journal for `tail`.
         #[arg(long)]
         follow: bool,
+        /// Run `microwave-server serve` in this process instead of calling
+        /// systemd. Only valid for `start`. On Unix the CLI is replaced by the
+        /// server via `exec`, so signals and the PID behave as if the server
+        /// were started directly. `MW_SERVICE_FOREGROUND=1` is equivalent for
+        /// `start`.
+        #[arg(long)]
+        foreground: bool,
     },
 
     /// Create a consistent metadata and bookshelf backup. SQLite uses
@@ -369,6 +377,7 @@ mod tests {
                 unit,
                 lines,
                 follow,
+                ..
             } => {
                 assert_eq!(action, ServiceAction::Tail);
                 assert_eq!(unit.as_deref(), Some("custom.service"));
@@ -377,6 +386,70 @@ mod tests {
             }
             _ => panic!("expected service command"),
         }
+    }
+
+    #[test]
+    fn parses_service_start_foreground_with_a_config() {
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "service",
+            "start",
+            "--foreground",
+            "--config",
+            "/etc/microwave/microwave.toml",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.config.as_deref(),
+            Some(std::path::Path::new("/etc/microwave/microwave.toml"))
+        );
+        match cli.command {
+            Command::Service {
+                action, foreground, ..
+            } => {
+                assert_eq!(action, ServiceAction::Start);
+                assert!(foreground);
+            }
+            _ => panic!("expected service command"),
+        }
+
+        // `--config` is a global option and also works before the subcommand.
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "--config",
+            "/etc/microwave/microwave.toml",
+            "service",
+            "start",
+            "--foreground",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.config.as_deref(),
+            Some(std::path::Path::new("/etc/microwave/microwave.toml"))
+        );
+        assert!(matches!(
+            cli.command,
+            Command::Service {
+                foreground: true,
+                ..
+            }
+        ));
+
+        // A hyphen-leading path is accepted as a value, not treated as an
+        // option, so it can be forwarded safely to the server.
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "service",
+            "start",
+            "--foreground",
+            "--config",
+            "-microwave.toml",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.config.as_deref(),
+            Some(std::path::Path::new("-microwave.toml"))
+        );
     }
 
     #[test]

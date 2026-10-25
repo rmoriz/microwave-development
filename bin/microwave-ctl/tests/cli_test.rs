@@ -19,6 +19,8 @@ fn ctl(dir: &Path) -> Command {
         .env_remove("MW_DATABASE__DRIVER")
         .env_remove("MW_DATABASE__URL")
         .env_remove("MW_AUTH__SUPERUSER_NAME")
+        .env_remove("MW_SERVER_BIN")
+        .env_remove("MW_SERVICE_FOREGROUND")
         .env("MW_PATHS__DATA_DIR", dir);
     command
 }
@@ -770,6 +772,23 @@ fn help_lists_the_operational_surface() {
     }
 }
 
+#[test]
+fn service_help_documents_foreground_and_the_config_path() {
+    let output = Command::cargo_bin("microwave-ctl")
+        .unwrap()
+        .args(["service", "start", "--help"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let text = stdout(&output);
+    for expected in ["--foreground", "--config", "--unit", "start"] {
+        assert!(
+            text.contains(expected),
+            "service help is missing {expected}: {text}"
+        );
+    }
+}
+
 #[cfg(unix)]
 mod operational_process_tests {
     use super::{assert_success, ctl, run, stderr, stdout};
@@ -879,6 +898,7 @@ mod operational_process_tests {
         let text = stderr(&unavailable);
         assert!(text.contains("no systemd service manager"));
         assert!(text.contains("microwave-server serve"));
+        assert!(text.contains("service start --foreground"));
     }
 
     #[test]
@@ -937,6 +957,200 @@ mod operational_process_tests {
             .unwrap();
         assert!(!invalid.status.success());
         assert!(stderr(&invalid).contains("greater than zero"));
+    }
+
+    #[test]
+    fn service_start_foreground_execs_the_server_with_direct_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = fake_tool(dir.path(), "microwave-server");
+        let log = dir.path().join("server.log");
+        // A space in the path proves the config is passed as one argument
+        // rather than concatenated into a shell command.
+        let config = dir.path().join("config with space.toml");
+        std::fs::write(&config, "[server]\nbind = \"127.0.0.1:8000\"\n").unwrap();
+
+        let output = ctl(dir.path())
+            .env("MW_SERVER_BIN", &server)
+            .env("MW_TEST_LOG", &log)
+            .args([
+                "service",
+                "start",
+                "--foreground",
+                "--config",
+                config.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert_success(&output);
+        assert_eq!(
+            pedant_tags(&log),
+            vec![
+                "serve".to_string(),
+                format!("--config={}", config.display())
+            ]
+        );
+
+        // The CLI execs the fake server, so its exit status is the command's.
+        let failed = ctl(dir.path())
+            .env("MW_SERVER_BIN", &server)
+            .env("MW_TEST_LOG", &log)
+            .env("MW_TEST_EXIT", "7")
+            .args([
+                "service",
+                "start",
+                "--foreground",
+                "--config",
+                config.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(failed.status.code(), Some(7));
+        assert!(stdout(&failed).is_empty());
+    }
+
+    #[test]
+    fn service_start_foreground_accepts_a_config_path_starting_with_a_dash() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = fake_tool(dir.path(), "microwave-server");
+        let log = dir.path().join("server.log");
+        let config_name = "-microwave.toml";
+        std::fs::write(
+            dir.path().join(config_name),
+            "[server]\nbind = \"127.0.0.1:8000\"\n",
+        )
+        .unwrap();
+
+        // The global --config accepts a hyphen-leading value and the CLI
+        // forwards it as one attached `--config=<path>` argument.
+        let output = ctl(dir.path())
+            .current_dir(dir.path())
+            .env("MW_SERVER_BIN", &server)
+            .env("MW_TEST_LOG", &log)
+            .args(["service", "start", "--foreground", "--config", config_name])
+            .output()
+            .unwrap();
+        assert_success(&output);
+        assert_eq!(
+            pedant_tags(&log),
+            vec!["serve".to_string(), format!("--config={config_name}")]
+        );
+    }
+
+    #[test]
+    fn service_start_honours_the_foreground_environment_alternative() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = fake_tool(dir.path(), "microwave-server");
+        let log = dir.path().join("server.log");
+        let config = dir.path().join("microwave.toml");
+        std::fs::write(&config, "[server]\nbind = \"127.0.0.1:8000\"\n").unwrap();
+
+        let output = ctl(dir.path())
+            .env("MW_SERVER_BIN", &server)
+            .env("MW_SERVICE_FOREGROUND", "1")
+            .env("MW_TEST_LOG", &log)
+            .args(["--config", config.to_str().unwrap(), "service", "start"])
+            .output()
+            .unwrap();
+        assert_success(&output);
+        assert_eq!(
+            pedant_tags(&log),
+            vec![
+                "serve".to_string(),
+                format!("--config={}", config.display())
+            ]
+        );
+    }
+
+    #[test]
+    fn service_foreground_is_rejected_for_non_start_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let systemctl = fake_tool(dir.path(), "systemctl");
+        let server = fake_tool(dir.path(), "microwave-server");
+        let log = dir.path().join("tool.log");
+
+        for action in ["stop", "restart", "status", "tail"] {
+            let output = ctl(dir.path())
+                .env("MW_SYSTEMCTL", &systemctl)
+                .env("MW_SERVER_BIN", &server)
+                .env("MW_SERVICE_FOREGROUND", "1")
+                .env("MW_TEST_LOG", &log)
+                .args(["service", action, "--foreground"])
+                .output()
+                .unwrap();
+            assert!(
+                !output.status.success(),
+                "{action} --foreground should fail: {}",
+                stdout(&output)
+            );
+            assert!(
+                stderr(&output).contains("only valid for `service start`"),
+                "unexpected stderr for {action}: {}",
+                stderr(&output)
+            );
+        }
+        assert!(
+            !log.exists(),
+            "no tool should run when --foreground is rejected"
+        );
+
+        // The environment alternative is scoped to `start`, so setting it in a
+        // container image must not break systemd control commands.
+        let status = ctl(dir.path())
+            .env("MW_SYSTEMCTL", &systemctl)
+            .env("MW_SERVICE_FOREGROUND", "1")
+            .env("MW_TEST_LOG", &log)
+            .args(["service", "status", "--unit", "demo.service"])
+            .output()
+            .unwrap();
+        assert_success(&status);
+        assert_eq!(
+            pedant_tags(&log),
+            vec!["status".to_string(), "demo.service".to_string()]
+        );
+    }
+
+    #[test]
+    fn service_foreground_reports_bad_server_binary_and_config_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = fake_tool(dir.path(), "microwave-server");
+        let log = dir.path().join("server.log");
+
+        let missing_binary = ctl(dir.path())
+            .env("MW_SERVER_BIN", "/definitely/not/here/microwave-server")
+            .env("MW_TEST_LOG", &log)
+            .args(["service", "start", "--foreground"])
+            .output()
+            .unwrap();
+        assert!(!missing_binary.status.success());
+        assert!(stderr(&missing_binary).contains("MW_SERVER_BIN"));
+
+        let missing_config = ctl(dir.path())
+            .env("MW_SERVER_BIN", &server)
+            .env("MW_TEST_LOG", &log)
+            .args([
+                "service",
+                "start",
+                "--foreground",
+                "--config",
+                dir.path().join("missing.toml").to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!missing_config.status.success());
+        assert!(stderr(&missing_config).contains("cannot read --config"));
+        assert!(
+            !log.exists(),
+            "the server must not start with an unreadable config"
+        );
+
+        let unit = ctl(dir.path())
+            .env("MW_SERVER_BIN", &server)
+            .env("MW_TEST_LOG", &log)
+            .args(["service", "start", "--foreground", "--unit", "demo.service"])
+            .output()
+            .unwrap();
+        assert!(!unit.status.success());
+        assert!(stderr(&unit).contains("--unit is not valid"));
     }
 
     #[test]

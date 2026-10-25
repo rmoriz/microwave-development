@@ -9,6 +9,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Time allowed to drain in-flight requests after SIGTERM/SIGINT on the TLS
+/// listener. Plain HTTP uses axum's graceful shutdown, which waits for active
+/// requests without a separate timer.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Parser)]
 #[command(name = "microwave-server", version, about = "Microwave Server")]
 struct Cli {
@@ -87,6 +92,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 spawn_periodic_reloader(tls_reloader.clone(), reload_interval_seconds);
             }
 
+            // Register SIGTERM/SIGINT before database bootstrap and the
+            // listener bind. The notification is retained if a signal arrives
+            // before the server waits for it, so `docker stop` during startup
+            // still drains instead of being a default terminate.
+            let shutdown = Arc::new(tokio::sync::Notify::new());
+            spawn_shutdown_handler(shutdown.clone());
+
             let database_url = config.resolved_database_url();
             let compression = store_compression(config.storage.compression);
             let (store, sqlite): (Arc<dyn MetadataStore>, Option<Arc<SqliteStore>>) =
@@ -161,12 +173,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match tls_config {
                 Some(rustls_config) => {
                     let listener = listener.into_std()?;
+                    let handle = axum_server::Handle::new();
+                    let shutdown_handle = handle.clone();
+                    tokio::spawn(async move {
+                        shutdown.notified().await;
+                        shutdown_handle.graceful_shutdown(Some(SHUTDOWN_GRACE));
+                    });
                     axum_server::from_tcp_rustls(listener, rustls_config)?
+                        .handle(handle)
                         .serve(router(state).into_make_service())
                         .await?;
                 }
                 None => {
-                    axum::serve(listener, router(state)).await?;
+                    let shutdown = shutdown.clone();
+                    axum::serve(listener, router(state))
+                        .with_graceful_shutdown(async move {
+                            shutdown.notified().await;
+                        })
+                        .await?;
                 }
             }
         }
@@ -357,6 +381,63 @@ fn spawn_sighup_handler(reloader: Arc<TlsReloader>) {
 
     #[cfg(not(unix))]
     let _ = reloader;
+}
+
+/// Install SIGTERM and SIGINT handlers before database bootstrap and the
+/// listener bind. The notification is retained if a signal arrives before the
+/// server starts waiting, so a container stop during startup still drains.
+fn spawn_shutdown_handler(shutdown: Arc<tokio::sync::Notify>) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        match (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::interrupt()),
+        ) {
+            (Ok(mut terminate), Ok(mut interrupt)) => {
+                tracing::info!("installed SIGTERM/SIGINT shutdown handlers");
+                tokio::spawn(async move {
+                    let signal = tokio::select! {
+                        _ = terminate.recv() => "SIGTERM",
+                        _ = interrupt.recv() => "SIGINT",
+                    };
+                    tracing::info!(
+                        signal,
+                        "shutdown signal received; draining in-flight requests"
+                    );
+                    shutdown.notify_one();
+                });
+            }
+            (Err(error), _) | (_, Err(error)) => {
+                tracing::warn!(
+                    %error,
+                    "failed to install SIGTERM/SIGINT handlers; the process will terminate without draining"
+                );
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::spawn(async move {
+            match tokio::signal::ctrl_c().await {
+                Ok(()) => {
+                    tracing::info!(
+                        signal = "SIGINT",
+                        "shutdown signal received; draining in-flight requests"
+                    );
+                    shutdown.notify_one();
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "failed to wait for Ctrl-C; the process will terminate without draining"
+                    );
+                }
+            }
+        });
+    }
 }
 
 /// Poll the configured certificate/key files. The first tick is immediate and

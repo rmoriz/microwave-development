@@ -328,7 +328,18 @@ Image properties:
   `true`) when the health probe cannot verify the certificate (self-signed or
   not valid for the probe hostname); any other value keeps verification on;
 - no `ENTRYPOINT`, so `docker run <image> microwave-ctl ...` and
-  `docker compose exec microwave microwave-ctl ...` work.
+  `docker compose exec microwave microwave-ctl ...` work;
+- the default command is `microwave-ctl service start --foreground --config
+  /etc/microwave/microwave.toml`. The CLI validates the config path, resolves
+  `microwave-server` from `MW_SERVER_BIN`, its own directory, or `PATH`, and
+  `exec`s `microwave-server serve --config ...`. The result is that the server
+  is PID 1, exactly as with a direct `exec`, so `docker stop`/`docker kill`
+  signals reach it. `SIGTERM` and `SIGINT` trigger graceful shutdown;
+  `SIGHUP` still reloads the TLS pair. `MW_SERVICE_FOREGROUND=1` is the
+  environment alternative to `--foreground` for `service start`. The previous
+  direct command
+  `microwave-server serve --config /etc/microwave/microwave.toml` still works
+  as a `command:`/`docker run` override.
 
 ```sh
 docker build -t microwave-server:local .
@@ -342,6 +353,27 @@ docker exec microwave microwave-ctl status
 docker exec microwave cat /var/lib/microwave/pivotal.password
 curl -fsS http://127.0.0.1:8000/_status
 ```
+
+The image's default command is the supported container entrypoint. It can also
+be passed explicitly, which is useful when a `docker run`/Compose `command:`
+overrides the image default:
+
+```sh
+docker run -d --name microwave \
+  -p 8000:8000 \
+  -v microwave-data:/var/lib/microwave \
+  -v "$PWD/packaging/microwave.toml.example:/etc/microwave/microwave.toml:ro" \
+  microwave-server:local \
+  microwave-ctl service start --foreground --config /etc/microwave/microwave.toml
+```
+
+Set `MW_SERVICE_FOREGROUND=1` instead of `--foreground` if that suits the
+deployment template. `--foreground` is valid only for `start`; the other
+actions still control a systemd unit. `microwave-ctl` validates the config
+path and `exec`s the server, so the container's PID 1 is `microwave-server`.
+The direct form
+`microwave-server serve --config /etc/microwave/microwave.toml` remains
+supported and behaves the same apart from skipping the CLI's path validation.
 
 To serve HTTPS directly from the container, mount the certificate and key
 read-only and enable TLS with environment variables. The files must be
@@ -380,14 +412,16 @@ docker logs --tail 5 microwave-tls   # "reloaded TLS certificate and key"
 curl -kfsS https://127.0.0.1:8443/_status
 ```
 
-`docker kill --signal=HUP` delivers the signal to PID 1 of the container,
-which is `microwave-server` because the image has no entrypoint wrapper.
-Alternatively set `MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS=60` and let the
-server poll the mounted files. Docker secrets are materialized as files, so
-rotating a secret requires recreating the container (or a periodic
-`docker service update`); bind mounts and Kubernetes projected volumes update
-in place and can be reloaded with SIGHUP. A failed reload keeps the previous
-certificate and logs an error without dropping the listener.
+`docker kill --signal=HUP` delivers the signal to PID 1 of the container.
+The default `microwave-ctl service start --foreground` command `exec`s
+`microwave-server`, so PID 1 is the server itself even though the command line
+starts with `microwave-ctl`. Alternatively set
+`MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS=60` and let the server poll the mounted
+files. Docker secrets are materialized as files, so rotating a secret requires
+recreating the container (or a periodic `docker service update`); bind mounts
+and Kubernetes projected volumes update in place and can be reloaded with
+SIGHUP. A failed reload keeps the previous certificate and logs an error
+without dropping the listener.
 
 Use `--build-arg RUST_VERSION=<x.y>` to pin the compiler instead of tracking
 the latest stable `rust:1-*` image.
@@ -505,9 +539,22 @@ control characters, or `/` is rejected so an environment override cannot become
 an option. The systemd exit status is preserved. `tail` only requires
 `journalctl`. If `systemctl` is not installed, the command fails with an
 actionable error; it does not attempt to track or signal a process started
-elsewhere. Use your container runtime (for example
-`docker compose stop microwave`) or run `microwave-server serve` under your
-platform's supervisor in that case.
+elsewhere. For a container or any host without systemd, use the foreground
+mode (`service start --foreground`, or `MW_SERVICE_FOREGROUND=1 service start`)
+or a direct `microwave-server serve` under your platform's supervisor. The
+foreground mode resolves the binary from `MW_SERVER_BIN`, the directory of the
+running `microwave-ctl`, or `PATH`, validates `--config`, and `exec`s
+`microwave-server serve` on Unix so signals and the PID behave as a direct
+launch.
+
+The foreground/container mode is a launch convenience, not a replacement for
+the hardened unit below. It does not apply `User`/`Group`, `StateDirectory`,
+`UMask=0077`, `NoNewPrivileges`, `ProtectSystem`/`ReadWritePaths`,
+`PrivateTmp`/`PrivateDevices`, the syscall/namespace filters, or the capability
+bounds. In a container those controls must come from the image user and the
+container runtime; on a host without systemd, run the foreground process under
+a supervisor that supplies equivalent isolation. Keep the systemd unit for
+normal host deployments.
 
 If you bind a privileged port inside the unit, add a drop-in with
 `AmbientCapabilities=CAP_NET_BIND_SERVICE` and
@@ -1014,8 +1061,10 @@ relational counts or backfills a remote search cluster; see
 (tags are passed as separate arguments, output is streamed, and the harness exit
 status is preserved; set `MW_PEDANT_SCRIPT` when the script is not in the
 current tree or beside the binary, and discovery stops at the repository root).
-`service` controls the systemd unit, or fails clearly when systemd is
-unavailable. `backup`/`restore` use `VACUUM INTO`
+`service` controls the systemd unit; in a container or on a host without
+systemd, `service start --foreground` (or `MW_SERVICE_FOREGROUND=1`) runs
+`microwave-server serve` in the foreground instead. `backup`/`restore` use
+`VACUUM INTO`
 for SQLite and `pg_dump`/`pg_restore` for PostgreSQL, in directory or tar
 format. `microwave-migrate` exports and imports both backends; see
 [Backup and restore](#9-backup-and-restore).
@@ -1033,9 +1082,16 @@ docker compose logs -f microwave
 ```
 
 There is no file logging or in-process rotation; use journald or the container
-log driver. The process exits immediately on `SIGTERM` (no graceful-shutdown
-handler is installed). SQLite WAL is crash-safe, but in-flight requests are
-dropped — drain traffic at the load balancer before stopping or restarting.
+log driver. `SIGTERM` and `SIGINT` trigger graceful shutdown: the listener
+stops accepting new connections and in-flight requests are allowed to finish.
+The TLS listener caps the drain at 5 seconds; plain HTTP waits for active
+requests to complete. `SIGTERM`/`SIGINT` exit with status 0 when the drain
+finishes, so `docker stop` does not need to escalate to `SIGKILL`. Process
+teardown can also wait for one in-progress background keypair generation to
+finish (the keygen workers are joined, which is CPU-bounded). SQLite WAL is
+crash-safe, but still drain traffic at the load balancer before stopping or
+restarting. `SIGHUP` remains the TLS reload signal and does not shut down the
+server.
 
 ## 12. Maintenance caveats
 
@@ -1066,9 +1122,14 @@ dropped — drain traffic at the load balancer before stopping or restarting.
 - **Backup consistency.** The database snapshot is consistent; the bookshelf
   copy is not atomic with it. S3 blobs are not in the backup. The tar format
   wraps the same payload and does not add atomicity.
-- **Service management is systemd-only.** `microwave-ctl service` delegates to
-  `systemctl`/`journalctl` and fails clearly when they are missing. It does not
-  supervise Docker, launchd, or a foreground process.
+- **Service management is systemd-based or explicit foreground.** `microwave-ctl
+  service` delegates to `systemctl`/`journalctl` and fails clearly when they are
+  missing. `service start --foreground` (also `MW_SERVICE_FOREGROUND=1`) runs
+  `microwave-server serve` in the foreground for containers; on Unix the CLI
+  `exec`s the server so PID 1/signal handling is direct. It does not reproduce
+  the systemd unit's user, filesystem, capability, or syscall hardening; in a
+  container that isolation comes from the image and runtime. There is no
+  detached process supervisor for Docker daemons or launchd.
 - **Local object store URLs** are derived from `server.bind` and the listener
   scheme (`http`/`https`), not from request headers. Use S3/Garage behind a
   proxy or NAT.
@@ -1111,4 +1172,4 @@ requires restoring that backup.
 | Search returns no rows after switching backends | Run `microwave-ctl reindex` to backfill the remote cluster; check `search.url`, `search.timeout_ms`, and the cluster health. Add `--purge` only when stale documents for already-deleted objects must be removed. |
 | `maintenance on` still serves requests | Check `microwave-ctl maintenance status` and that all replicas share the same database; `/_status` and `/_stats` are intentionally exempt. |
 | `psql` fails with `failed to run sqlite3` | Install `sqlite3` on the host (present in the container image). |
-| Server stops instantly on `SIGTERM` | Expected: no graceful-shutdown handler. Drain traffic before stopping. |
+| Server takes seconds to stop or `docker stop` waits | Active requests are draining after `SIGTERM`/`SIGINT`. The TLS listener caps the drain at 5 seconds; plain HTTP waits for active requests. Check for a hung handler rather than disabling graceful shutdown. |

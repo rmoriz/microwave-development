@@ -269,7 +269,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
   - [x] Key Rotation commands: `add-client-key`, `add-user-key`, `list-client-keys`, `list-user-keys`, `delete-client-key`, `delete-user-key`.
   - [x] Search & Maintenance commands: `reindex` (embedded count verification and remote backfill) and `maintenance`.
   - [x] Secrets & Config commands: `show-secret`, `set-secret`, `remove-secret`, `check-config`, and `reconfigure`.
-  - [x] Lifecycle & Diagnostics: `status`, `ha-status`, `version`, `psql`, `backup`, `restore`, `pedant` (the `test` equivalent), and systemd-only `service start|stop|restart|status|tail`. Directory and tar backup formats are supported for SQLite and PostgreSQL.
+  - [x] Lifecycle & Diagnostics: `status`, `ha-status`, `version`, `psql`, `backup`, `restore`, `pedant` (the `test` equivalent), and `service start|stop|restart|status|tail` (systemd, plus `start --foreground` for containers). Directory and tar backup formats are supported for SQLite and PostgreSQL.
 
 ### 5.4 Legacy Data Migration Tool (`microwave-migrate`)
 > **Backend status:** export and import support both SQLite and PostgreSQL
