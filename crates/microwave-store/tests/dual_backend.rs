@@ -262,6 +262,10 @@ mod suite {
             .ensure_global_group(&read_access_name)
             .await
             .expect("create org read access group");
+        store
+            .ensure_global_group("server-admins")
+            .await
+            .expect("ensure server admins");
         let child = store
             .create_group_for_org(&org.id, "admins")
             .await
@@ -302,6 +306,14 @@ mod suite {
             Err(StoreError::NotFound(_)) => {}
             Err(error) => panic!("read access ACL rows after delete: {error}"),
         }
+        assert!(
+            store
+                .find_global_group("server-admins")
+                .await
+                .expect("find server admins after org deletion")
+                .is_some(),
+            "server-admins must survive org deletion"
+        );
         Vec::new()
     }
 

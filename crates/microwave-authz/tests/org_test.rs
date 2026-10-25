@@ -297,4 +297,8 @@ async fn deleting_an_organization_removes_its_global_read_access_group_and_acl_r
         Err(StoreError::NotFound(_)) => {}
         Err(error) => panic!("ACL rows after org deletion: {error}"),
     }
+    assert!(
+        store.find_global_group("server-admins").unwrap().is_some(),
+        "server-admins must survive org deletion"
+    );
 }

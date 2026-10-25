@@ -1080,38 +1080,7 @@ impl AuthzRepository for PostgresStore {
 
     async fn delete_global_group(&self, name: &str) -> Result<(), StoreError> {
         let mut transaction = self.pool().begin().await.map_err(db)?;
-        let authz_id: Option<String> =
-            sqlx::query_scalar("DELETE FROM global_groups WHERE name = $1 RETURNING authz_id")
-                .bind(name)
-                .fetch_optional(&mut *transaction)
-                .await
-                .map_err(db)?;
-        let Some(authz_id) = authz_id else {
-            transaction.commit().await.map_err(db)?;
-            return Ok(());
-        };
-
-        for statement in [
-            "DELETE FROM authz_acl_actor
-             WHERE target_authz_id = $1 OR actor_authz_id = $1",
-            "DELETE FROM authz_acl_group
-             WHERE target_authz_id = $1 OR group_authz_id = $1",
-            "DELETE FROM authz_group_actors
-             WHERE group_authz_id = $1 OR actor_authz_id = $1",
-            "DELETE FROM authz_group_groups
-             WHERE parent_group_authz_id = $1 OR child_group_authz_id = $1",
-        ] {
-            sqlx::query(statement)
-                .bind(&authz_id)
-                .execute(&mut *transaction)
-                .await
-                .map_err(db)?;
-        }
-        sqlx::query("DELETE FROM authz_entities WHERE authz_id = $1")
-            .bind(&authz_id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(db)?;
+        delete_global_group_in_transaction(&mut transaction, name).await?;
         transaction.commit().await.map_err(db)?;
         Ok(())
     }
@@ -1210,12 +1179,12 @@ impl AuthzRepository for PostgresStore {
     }
 
     async fn delete_org(&self, org_id: &str) -> Result<(), StoreError> {
+        let mut transaction = self.pool().begin().await.map_err(db)?;
         let name: Option<String> = sqlx::query_scalar("SELECT name FROM orgs WHERE id = $1")
             .bind(org_id)
-            .fetch_optional(self.pool())
+            .fetch_optional(&mut *transaction)
             .await
             .map_err(db)?;
-        let mut transaction = self.pool().begin().await.map_err(db)?;
 
         // `cookbook_version_checksums` and
         // `cookbook_artifact_version_checksums` reference `checksums` with
@@ -1249,13 +1218,57 @@ impl AuthzRepository for PostgresStore {
                 .map_err(db)?;
         }
 
-        transaction.commit().await.map_err(db)?;
         if let Some(name) = name {
-            self.delete_global_group(&format!("{name}_read_access_group"))
-                .await?;
+            // Keep the org row, its dependents and the global read-access
+            // group in one transaction. A failure here rolls the org delete
+            // back instead of leaving an unrecoverable half-deleted org.
+            delete_global_group_in_transaction(
+                &mut transaction,
+                &format!("{name}_read_access_group"),
+            )
+            .await?;
         }
+        transaction.commit().await.map_err(db)?;
         Ok(())
     }
+}
+
+async fn delete_global_group_in_transaction(
+    transaction: &mut Transaction<'_, Postgres>,
+    name: &str,
+) -> Result<(), StoreError> {
+    let authz_id: Option<String> =
+        sqlx::query_scalar("DELETE FROM global_groups WHERE name = $1 RETURNING authz_id")
+            .bind(name)
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(db)?;
+    let Some(authz_id) = authz_id else {
+        return Ok(());
+    };
+
+    for statement in [
+        "DELETE FROM authz_acl_actor
+         WHERE target_authz_id = $1 OR actor_authz_id = $1",
+        "DELETE FROM authz_acl_group
+         WHERE target_authz_id = $1 OR group_authz_id = $1",
+        "DELETE FROM authz_group_actors
+         WHERE group_authz_id = $1 OR actor_authz_id = $1",
+        "DELETE FROM authz_group_groups
+         WHERE parent_group_authz_id = $1 OR child_group_authz_id = $1",
+    ] {
+        sqlx::query(statement)
+            .bind(&authz_id)
+            .execute(&mut **transaction)
+            .await
+            .map_err(db)?;
+    }
+    sqlx::query("DELETE FROM authz_entities WHERE authz_id = $1")
+        .bind(&authz_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(db)?;
+    Ok(())
 }
 
 async fn resolve_actor_authz_id(

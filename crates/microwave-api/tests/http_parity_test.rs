@@ -414,7 +414,9 @@ async fn cleanup_store(store: &dyn MetadataStore, run: &str) -> Result<(), Strin
         .count();
     if remaining_orgs > 0 || remaining_users > 0 || remaining_apps > 0 || remaining_groups > 0 {
         return Err(format!(
-            "cleanup postcondition failed for {run}: orgs={remaining_orgs},              users={remaining_users}, oauth_apps={remaining_apps},              global_groups={remaining_groups}"
+            "cleanup postcondition failed for {run}: \
+             orgs={remaining_orgs}, users={remaining_users}, \
+             oauth_apps={remaining_apps}, global_groups={remaining_groups}"
         ));
     }
 
@@ -1138,6 +1140,22 @@ async fn scenario_identity(h: &Harness) -> Vec<Step> {
     assert_eq!(step.json()["name"], "renamed");
     steps.push(step);
 
+    let alice_id = h
+        .store
+        .find_user(&alice_renamed)
+        .await
+        .expect("find user before delete")
+        .expect("user exists")
+        .id;
+    assert_eq!(
+        h.store
+            .find_actor_keys(&alice_id, ActorType::User)
+            .await
+            .expect("list user keys before delete")
+            .len(),
+        1
+    );
+
     let step = h
         .send(
             "delete user",
@@ -1149,6 +1167,14 @@ async fn scenario_identity(h: &Harness) -> Vec<Step> {
         .await
         .expect_ok();
     assert_eq!(step.json(), &json!({}));
+    assert!(
+        h.store
+            .find_actor_keys(&alice_id, ActorType::User)
+            .await
+            .expect("list user keys after delete")
+            .is_empty(),
+        "deleted user still has actor keys"
+    );
     steps.push(step);
 
     let step = h
@@ -2583,6 +2609,23 @@ async fn scenario_content(h: &Harness) -> Vec<Step> {
         .expect("find org read access group")
         .expect("org read access group exists")
         .authz_id;
+    let clients = h
+        .store
+        .list_clients(&org_id)
+        .await
+        .expect("list org clients before delete");
+    let mut client_keys = Vec::new();
+    for client in clients {
+        for key in h
+            .store
+            .find_actor_keys(&client.id, ActorType::Client)
+            .await
+            .expect("list client keys before delete")
+        {
+            client_keys.push((client.id.clone(), key.key_name));
+        }
+    }
+    assert!(!client_keys.is_empty(), "expected the validator client key");
 
     let step = h
         .send(
@@ -2650,6 +2693,35 @@ async fn scenario_content(h: &Harness) -> Vec<Step> {
         .await
         .expect("nodes after delete")
         .is_empty());
+    for (actor_id, _) in &client_keys {
+        assert!(
+            h.store
+                .find_actor_keys(actor_id, ActorType::Client)
+                .await
+                .expect("client keys after delete")
+                .is_empty(),
+            "deleted org still has client keys for {actor_id}"
+        );
+    }
+    assert!(!h
+        .store
+        .sandbox_exists(&org_id, &sandbox_id)
+        .await
+        .expect("sandbox after delete"));
+    assert!(h
+        .store
+        .sandbox_checksums(&org_id, &sandbox_id)
+        .await
+        .expect("sandbox checksums after delete")
+        .is_empty());
+    assert!(
+        h.store
+            .find_global_group("server-admins")
+            .await
+            .expect("find server-admins")
+            .is_some(),
+        "server-admins must survive org deletion"
+    );
 
     let step = h
         .send(
@@ -3268,7 +3340,22 @@ async fn scenario_membership(h: &Harness) -> Vec<Step> {
             &format!("/id/v1/users/{bob}"),
             b"",
             "",
-            &[(header::AUTHORIZATION.as_str(), bearer)],
+            &[(header::AUTHORIZATION.as_str(), bearer.clone())],
+        )
+        .await
+        .expect_ok();
+    assert_eq!(step.json()["id"], bob);
+    assert_eq!(step.json()["username"], bob);
+    steps.push(step);
+
+    let step = h
+        .send_anon(
+            "oauth v1 user by id",
+            "GET",
+            &format!("/id/v1/users/{}", bob_user.id),
+            b"",
+            "",
+            &[(header::AUTHORIZATION.as_str(), bearer.clone())],
         )
         .await
         .expect_ok();

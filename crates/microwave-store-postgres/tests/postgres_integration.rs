@@ -1808,6 +1808,114 @@ async fn deleting_org_removes_its_read_access_global_group_and_acl_rows() {
 }
 
 #[tokio::test]
+async fn org_deletion_rolls_back_when_global_group_cleanup_fails() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let org = store
+        .create_org(&format!("rollback-org-{}", suffix()), "Rollback Org")
+        .await
+        .expect("create org");
+    let read_access_name = format!("{}_read_access_group", org.name);
+    store
+        .ensure_global_group(&read_access_name)
+        .await
+        .expect("create read access group");
+    store
+        .ensure_global_group("server-admins")
+        .await
+        .expect("ensure server admins");
+    let suffix = suffix();
+    let function = format!("fail_read_group_{suffix}");
+    let trigger = format!("fail_read_group_trigger_{suffix}");
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE OR REPLACE FUNCTION {function}() RETURNS trigger AS $$
+         BEGIN
+             RAISE EXCEPTION 'injected read-access group delete failure';
+         END;
+         $$ LANGUAGE plpgsql"
+    )))
+    .execute(store.pool())
+    .await
+    .expect("create failure-injection function");
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE TRIGGER {trigger}
+         BEFORE DELETE ON global_groups
+         FOR EACH ROW WHEN (OLD.name = '{read_access_name}')
+         EXECUTE FUNCTION {function}()"
+    )))
+    .execute(store.pool())
+    .await
+    .expect("create failure-injection trigger");
+
+    let error = store
+        .delete_org(&org.id)
+        .await
+        .expect_err("injected global-group failure must abort delete_org");
+    assert!(
+        error
+            .to_string()
+            .contains("injected read-access group delete failure"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        store
+            .find_org(&org.name)
+            .await
+            .expect("find org after rollback"),
+        Some(org.clone()),
+        "organization deletion must roll back"
+    );
+    assert!(
+        store
+            .find_global_group(&read_access_name)
+            .await
+            .expect("find read group after rollback")
+            .is_some(),
+        "read access group must survive the rollback"
+    );
+    assert!(
+        store
+            .find_global_group("server-admins")
+            .await
+            .expect("find server admins")
+            .is_some(),
+        "server-admins must not be touched"
+    );
+
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP TRIGGER {trigger} ON global_groups"
+    )))
+    .execute(store.pool())
+    .await
+    .expect("drop failure-injection trigger");
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP FUNCTION {function}()")))
+        .execute(store.pool())
+        .await
+        .expect("drop failure-injection function");
+
+    store
+        .delete_org(&org.id)
+        .await
+        .expect("delete org after rollback");
+    assert!(store
+        .find_org(&org.name)
+        .await
+        .expect("find deleted org")
+        .is_none());
+    assert!(store
+        .find_global_group(&read_access_name)
+        .await
+        .expect("find deleted read group")
+        .is_none());
+    assert!(store
+        .find_global_group("server-admins")
+        .await
+        .expect("find server admins after delete")
+        .is_some());
+}
+
+#[tokio::test]
 async fn keeps_empty_sandboxes_and_supports_later_uploads() {
     let Some(store) = test_store().await else {
         return;

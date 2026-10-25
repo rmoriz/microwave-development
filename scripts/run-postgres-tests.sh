@@ -13,13 +13,15 @@
 #                              Set to 1 to explicitly skip CLI backup/restore/
 #                              psql coverage when host pg_dump/pg_restore/psql
 #                              are unavailable. Without it, missing tools fail.
-#   MICROWAVE_REQUIRE_POSTGRES Set to 1 to turn the Docker/client-tool
-#                              SKIP paths into hard failures. The script also
-#                              exports this for the test processes.
+#   MICROWAVE_REQUIRE_POSTGRES Set to 1 or true to turn the Docker SKIP paths
+#                              into hard failures. The script also exports this
+#                              for the test processes. An explicit
+#                              MICROWAVE_TEST_SKIP_PG_CLIENT_TOOLS=1 remains an
+#                              intentional opt-out of only the CLI-tool check.
 #
 # The script exits 0 with a SKIP message when Docker or its daemon is not
-# available, so CI without Docker stays green unless MICROWAVE_REQUIRE_POSTGRES=1
-# is set, in which case the same conditions fail. The tests themselves also
+# available, so CI without Docker stays green unless MICROWAVE_REQUIRE_POSTGRES
+# is 1/true, in which case the same conditions fail. The tests themselves also
 # skip cleanly when MICROWAVE_TEST_POSTGRES_URL is unset.
 
 set -euo pipefail
@@ -29,10 +31,12 @@ CONTAINER="microwave-postgres-test-$$"
 KEEP="${MICROWAVE_KEEP_POSTGRES:-0}"
 
 skip() {
-    if [[ "${MICROWAVE_REQUIRE_POSTGRES:-0}" == "1" ]]; then
-        echo "ERROR: $* (MICROWAVE_REQUIRE_POSTGRES=1 requires PostgreSQL)" >&2
-        exit 1
-    fi
+    case "${MICROWAVE_REQUIRE_POSTGRES:-0}" in
+        1|[Tt][Rr][Uu][Ee])
+            echo "ERROR: $* (MICROWAVE_REQUIRE_POSTGRES requires PostgreSQL)" >&2
+            exit 1
+            ;;
+    esac
     echo "SKIP: $*" >&2
     exit 0
 }
