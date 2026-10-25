@@ -54,7 +54,17 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
             unit,
             lines,
             follow,
-        } => return service::run(action, unit.as_deref(), lines, follow),
+            foreground,
+        } => {
+            return service::run(
+                action,
+                unit.as_deref(),
+                lines,
+                follow,
+                cli.config.as_deref(),
+                foreground,
+            )
+        }
         _ => {}
     }
 

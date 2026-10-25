@@ -102,4 +102,12 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 # No ENTRYPOINT on purpose: `docker run <image> microwave-ctl ...` and
 # `docker compose exec microwave microwave-ctl ...` both work without an
 # entrypoint override.
-CMD ["microwave-server", "serve", "--config", "/etc/microwave/microwave.toml"]
+#
+# The default command goes through the CLI's foreground mode. `microwave-ctl`
+# validates the configuration path, resolves `microwave-server`, and then
+# `exec`s it on Unix, so the server becomes PID 1 and receives Docker's
+# SIGTERM/SIGHUP directly. `MW_SERVICE_FOREGROUND=1` is the environment
+# alternative to `--foreground`. The previous direct command
+# `microwave-server serve --config /etc/microwave/microwave.toml` still works
+# and can be used as a `command:`/`docker run` override.
+CMD ["microwave-ctl", "service", "start", "--foreground", "--config", "/etc/microwave/microwave.toml"]

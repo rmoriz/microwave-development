@@ -22,6 +22,20 @@ services:
         RUST_VERSION: ${RUST_VERSION:-1}
     image: ${MW_IMAGE:-microwave-server:local}
     restart: unless-stopped
+    # Supported container entrypoint: the CLI validates the config path and
+    # execs `microwave-server serve`, leaving the server as PID 1 so Docker
+    # signals reach it directly. Replace with
+    # `["microwave-server", "serve", "--config", "..."]` to skip the wrapper;
+    # `MW_SERVICE_FOREGROUND=1` is the environment alternative to --foreground.
+    command:
+      [
+        "microwave-ctl",
+        "service",
+        "start",
+        "--foreground",
+        "--config",
+        "/etc/microwave/microwave.toml",
+      ]
     ports:
       - "${MW_PORT:-8000}:8000"
     environment:
