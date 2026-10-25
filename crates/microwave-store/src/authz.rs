@@ -241,6 +241,21 @@ impl SqliteStore {
              VALUES (?1, 'group', NULL, ?2)",
             params![authz_id, now],
         )?;
+        // Concurrent first-user/first-org startup can race here. One writer
+        // wins the unique name; the losers discard their authz entity and
+        // return the winner instead of surfacing a spurious conflict.
+        let inserted = transaction.execute(
+            "INSERT OR IGNORE INTO global_groups (id, authz_id, name, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![id, authz_id, name, now],
+        )?;
+        if inserted == 0 {
+            transaction.rollback()?;
+            drop(connection);
+            return self.find_global_group(name)?.ok_or_else(|| {
+                StoreError::Conflict(format!("group {name} was created concurrently"))
+            });
+        }
         for permission in Permission::ALL {
             transaction.execute(
                 "INSERT INTO authz_acl_actor (target_authz_id, permission, actor_authz_id)
@@ -248,15 +263,6 @@ impl SqliteStore {
                 params![authz_id, permission.as_str(), authz_id],
             )?;
         }
-        transaction
-            .execute(
-                "INSERT INTO global_groups (id, authz_id, name, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?4)",
-                params![id, authz_id, name, now],
-            )
-            .map_err(|error| {
-                crate::identity::conflict(error, format!("group {name} already exists"))
-            })?;
         transaction.commit()?;
         Ok(Group {
             id,

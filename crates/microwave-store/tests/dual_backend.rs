@@ -14,7 +14,7 @@ use microwave_store::{
     ActorType, GroupMembers, MetadataStore, NewNode, Org, Permission, SqliteStore, StoreError,
     UserPatch, UserProfile,
 };
-use std::sync::Once;
+use std::sync::{Arc, Once, OnceLock};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -22,10 +22,7 @@ use uuid::Uuid;
 // ---------------------------------------------------------------------------
 
 fn test_postgres_url() -> Option<String> {
-    let url = std::env::var("MICROWAVE_TEST_POSTGRES_URL")
-        .ok()
-        .filter(|url| !url.trim().is_empty());
-    if url.is_none() {
+    let Some(value) = std::env::var_os("MICROWAVE_TEST_POSTGRES_URL") else {
         static WARN: Once = Once::new();
         WARN.call_once(|| {
             eprintln!(
@@ -34,31 +31,74 @@ fn test_postgres_url() -> Option<String> {
                  of the dual-backend matrix"
             );
         });
-    }
-    url
+        return None;
+    };
+    let url = value
+        .into_string()
+        .expect("MICROWAVE_TEST_POSTGRES_URL must be valid UTF-8");
+    assert!(
+        !url.trim().is_empty(),
+        "MICROWAVE_TEST_POSTGRES_URL is set but empty; unset it to skip PostgreSQL \
+         or provide a connection URL"
+    );
+    Some(url)
 }
 
-async fn sqlite_store() -> Option<Box<dyn MetadataStore>> {
-    Some(Box::new(
-        SqliteStore::open_in_memory().expect("open in-memory SQLite store"),
-    ))
+/// A backend store plus the PostgreSQL handle needed for test cleanup.
+struct TestStore {
+    metadata: Arc<dyn MetadataStore>,
+    postgres: Option<microwave_store_postgres::PostgresStore>,
+}
+
+impl TestStore {
+    async fn cleanup_global_groups(&self, names: &[String]) {
+        let Some(postgres) = &self.postgres else {
+            return;
+        };
+        for name in names {
+            let authz_id: Option<String> =
+                sqlx::query_scalar("DELETE FROM global_groups WHERE name = $1 RETURNING authz_id")
+                    .bind(name)
+                    .fetch_optional(postgres.pool())
+                    .await
+                    .unwrap_or_else(|error| panic!("delete test global group {name}: {error}"));
+            if let Some(authz_id) = authz_id {
+                sqlx::query("DELETE FROM authz_entities WHERE authz_id = $1")
+                    .bind(authz_id)
+                    .execute(postgres.pool())
+                    .await
+                    .unwrap_or_else(|error| {
+                        panic!("delete test global group authz entity {name}: {error}")
+                    });
+            }
+        }
+    }
+}
+
+async fn sqlite_store() -> Option<TestStore> {
+    Some(TestStore {
+        metadata: Arc::new(SqliteStore::open_in_memory().expect("open in-memory SQLite store")),
+        postgres: None,
+    })
 }
 
 /// Apply the embedded schema exactly once per test binary.
 ///
 /// Each `#[tokio::test]` owns its runtime, so a shared `sqlx` pool cannot be
-/// reused across tests. A process-wide `Once` still lets every test call the
-/// normal connect-and-migrate path exactly once without running migration DDL
-/// concurrently with another suite's DML, which can deadlock on PostgreSQL.
+/// reused across tests. A process-wide `OnceLock` still lets every test call
+/// the normal connect-and-migrate path exactly once without running migration
+/// DDL concurrently with another suite's DML, which can deadlock on
+/// PostgreSQL. The result is cached instead of panicking inside `Once`, so
+/// every test reports the original connection or migration error.
 fn ensure_postgres_schema(url: &str) {
-    static MIGRATED: Once = Once::new();
-    MIGRATED.call_once(|| {
+    static MIGRATED: OnceLock<Result<(), String>> = OnceLock::new();
+    let result = MIGRATED.get_or_init(|| {
         let url = url.to_string();
-        let result = std::thread::spawn(move || {
+        std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .expect("build migration runtime");
+                .map_err(|error| format!("build migration runtime: {error}"))?;
             runtime.block_on(async move {
                 microwave_store_postgres::PostgresStore::connect(&url)
                     .await
@@ -66,19 +106,18 @@ fn ensure_postgres_schema(url: &str) {
                     .map_err(|error| error.to_string())
             })
         })
-        .join();
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => panic!(
-                "MICROWAVE_TEST_POSTGRES_URL is set but connecting or migrating the \
-                 test database failed: {error}"
-            ),
-            Err(_) => panic!("PostgreSQL migration thread panicked"),
-        }
+        .join()
+        .unwrap_or_else(|_| Err("PostgreSQL migration thread panicked".to_string()))
     });
+    if let Err(error) = result {
+        panic!(
+            "MICROWAVE_TEST_POSTGRES_URL is set but connecting or migrating the \
+             test database failed: {error}"
+        );
+    }
 }
 
-async fn postgres_store() -> Option<Box<dyn MetadataStore>> {
+async fn postgres_store() -> Option<TestStore> {
     let url = test_postgres_url()?;
     ensure_postgres_schema(&url);
     let store = microwave_store_postgres::PostgresStore::connect_existing(&url)
@@ -89,7 +128,10 @@ async fn postgres_store() -> Option<Box<dyn MetadataStore>> {
                  test database failed: {error}"
             )
         });
-    Some(Box::new(store))
+    Some(TestStore {
+        metadata: Arc::new(store.clone()),
+        postgres: Some(store),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +164,32 @@ fn unique(prefix: &str) -> String {
 
 fn checksum() -> String {
     Uuid::new_v4().simple().to_string()
+}
+
+/// Run `count` futures as independent Tokio tasks released together by a
+/// barrier. The matrix tests use a multi-thread runtime so this exercises real
+/// database concurrency instead of polling two futures sequentially.
+async fn run_concurrently<T, F, Fut>(count: usize, f: F) -> Vec<T>
+where
+    T: Send + 'static,
+    F: Fn(usize) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = T> + Send + 'static,
+{
+    let barrier = Arc::new(tokio::sync::Barrier::new(count));
+    let mut handles = Vec::with_capacity(count);
+    for index in 0..count {
+        let barrier = Arc::clone(&barrier);
+        let future = f(index);
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            future.await
+        }));
+    }
+    let mut results = Vec::with_capacity(count);
+    for handle in handles {
+        results.push(handle.await.expect("concurrent matrix task panicked"));
+    }
+    results
 }
 
 fn is_32_hex(value: &str) -> bool {
@@ -183,8 +251,8 @@ async fn create_user<S: MetadataStore + ?Sized>(store: &S, prefix: &str) -> micr
 mod suite {
     use super::*;
 
-    pub async fn identity<S: MetadataStore + ?Sized>(store: &S) {
-        let fixture = fixture(store).await;
+    pub async fn identity(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let fixture = fixture(store.as_ref()).await;
         let org = &fixture.org;
 
         assert_eq!(store.find_org(&org.name).await.unwrap().as_ref(), Some(org));
@@ -265,7 +333,7 @@ mod suite {
             .await;
         assert!(matches!(duplicate, Err(StoreError::Conflict(_))));
 
-        let peer = create_user(store, "peer").await;
+        let peer = create_user(store.as_ref(), "peer").await;
         assert!(!store
             .users_share_org(&user.id, &peer.id)
             .await
@@ -562,11 +630,12 @@ mod suite {
             .delete_user(&peer.username)
             .await
             .expect("delete peer");
-        cleanup_org(store, &org.id).await;
+        cleanup_org(store.as_ref(), &org.id).await;
+        Vec::new()
     }
 
-    pub async fn authz<S: MetadataStore + ?Sized>(store: &S) {
-        let fixture = fixture(store).await;
+    pub async fn authz(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let fixture = fixture(store.as_ref()).await;
         let org = &fixture.org;
 
         // Entity id primitives.
@@ -634,7 +703,7 @@ mod suite {
             .create_container_for_org(&org.id, &target_name)
             .await
             .expect("create ACL target");
-        let user = create_user(store, "acl-user").await;
+        let user = create_user(store.as_ref(), "acl-user").await;
         let client_name = unique("acl-client");
         let client = store
             .create_client(&org.id, &client_name, false, false)
@@ -785,15 +854,30 @@ mod suite {
         );
 
         // Global groups are addressable as `::name` and nested into org groups.
-        // Concurrent bootstrap calls must converge on one row.
+        // Concurrent bootstrap calls must converge on one row. Eight real
+        // Tokio tasks are released by a barrier; reverting the atomic-insert
+        // implementation in either backend makes at least one caller observe
+        // a spurious conflict.
         let concurrent_group = unique("concurrent-global-group");
-        let (left, right) = tokio::join!(
-            store.ensure_global_group(&concurrent_group),
-            store.ensure_global_group(&concurrent_group),
+        let results = run_concurrently(8, {
+            let store = Arc::clone(store);
+            let name = concurrent_group.clone();
+            move |_| {
+                let store = Arc::clone(&store);
+                let name = name.clone();
+                async move { store.ensure_global_group(&name).await }
+            }
+        })
+        .await;
+        let groups: Vec<_> = results
+            .into_iter()
+            .map(|result| result.expect("concurrent ensure_global_group"))
+            .collect();
+        let first = groups.first().expect("at least one global group");
+        assert!(
+            groups.iter().all(|group| group == first),
+            "all concurrent calls must return the same global group"
         );
-        let left = left.expect("left concurrent global group");
-        let right = right.expect("right concurrent global group");
-        assert_eq!(left, right);
         let global = store
             .ensure_global_group(&unique("global-group"))
             .await
@@ -860,7 +944,7 @@ mod suite {
 
         // Direct (non-invitation) association also lands in the users group
         // and receives the org read ACE when the read group exists.
-        let direct = create_user(store, "direct").await;
+        let direct = create_user(store.as_ref(), "direct").await;
         let read_group = format!("{}_read_access_group", org.name);
         store
             .ensure_global_group(&read_group)
@@ -920,15 +1004,15 @@ mod suite {
             .delete_user(&direct.username)
             .await
             .expect("delete direct user");
-        cleanup_org(store, &org.id).await;
+        cleanup_org(store.as_ref(), &org.id).await;
+        vec![concurrent_group, global.name, read_group]
     }
 
-    pub async fn objects<S: MetadataStore + ?Sized>(store: &S) {
-        let fixture = fixture(store).await;
+    pub async fn objects(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let fixture = fixture(store.as_ref()).await;
         let org = &fixture.org;
         let creator = &fixture.creator_authz_id;
 
-        let nodes_before = store.count_nodes().await.expect("count nodes before");
         let node_name = unique("node");
         let node_body = format!(r#"{{"name":"{node_name}","run_list":[]}}"#);
         let node = store
@@ -952,7 +1036,14 @@ mod suite {
             Some(&node)
         );
         assert!(store.list_nodes(&org.id).await.unwrap().contains(&node));
-        assert!(store.count_nodes().await.expect("count nodes after") > nodes_before);
+        assert_eq!(
+            store
+                .list_nodes(&org.id)
+                .await
+                .expect("list org nodes")
+                .len(),
+            1
+        );
         assert!(matches!(
             store
                 .create_node(
@@ -1149,11 +1240,12 @@ mod suite {
         assert!(store.list_data_bags(&org.id).await.unwrap().is_empty());
         assert!(store.list_roles(&org.id).await.unwrap().is_empty());
         assert!(store.list_environments(&org.id).await.unwrap().is_empty());
-        cleanup_org(store, &org.id).await;
+        cleanup_org(store.as_ref(), &org.id).await;
+        Vec::new()
     }
 
-    pub async fn cookbooks<S: MetadataStore + ?Sized>(store: &S) {
-        let fixture = fixture(store).await;
+    pub async fn cookbooks(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let fixture = fixture(store.as_ref()).await;
         let org = &fixture.org;
         let creator = &fixture.creator_authz_id;
         let cookbook_name = unique("cookbook");
@@ -1371,11 +1463,12 @@ mod suite {
             Err(StoreError::NotFound(_))
         ));
 
-        cleanup_org(store, &org.id).await;
+        cleanup_org(store.as_ref(), &org.id).await;
+        Vec::new()
     }
 
-    pub async fn policies<S: MetadataStore + ?Sized>(store: &S) {
-        let fixture = fixture(store).await;
+    pub async fn policies(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let fixture = fixture(store.as_ref()).await;
         let org = &fixture.org;
         let creator = &fixture.creator_authz_id;
         let policy_name = unique("policy");
@@ -1570,11 +1663,12 @@ mod suite {
             Err(StoreError::NotFound(_))
         ));
 
-        cleanup_org(store, &org.id).await;
+        cleanup_org(store.as_ref(), &org.id).await;
+        Vec::new()
     }
 
-    pub async fn artifacts<S: MetadataStore + ?Sized>(store: &S) {
-        let fixture = fixture(store).await;
+    pub async fn artifacts(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let fixture = fixture(store.as_ref()).await;
         let org = &fixture.org;
         let creator = &fixture.creator_authz_id;
         let name = unique("artifact");
@@ -1703,11 +1797,12 @@ mod suite {
             Err(StoreError::NotFound(_))
         ));
 
-        cleanup_org(store, &org.id).await;
+        cleanup_org(store.as_ref(), &org.id).await;
+        Vec::new()
     }
 
-    pub async fn membership<S: MetadataStore + ?Sized>(store: &S) {
-        let fixture = fixture(store).await;
+    pub async fn membership(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let fixture = fixture(store.as_ref()).await;
         let org = &fixture.org;
         let users_group = store
             .find_group(&org.id, "users")
@@ -1725,9 +1820,9 @@ mod suite {
             .await
             .expect("ensure org read access group");
 
-        let user = create_user(store, "member").await;
-        let other = create_user(store, "invitee").await;
-        let third = create_user(store, "rejected").await;
+        let user = create_user(store.as_ref(), "member").await;
+        let other = create_user(store.as_ref(), "invitee").await;
+        let third = create_user(store.as_ref(), "rejected").await;
 
         store
             .add_user_to_org(&org.id, &user.id)
@@ -1925,7 +2020,7 @@ mod suite {
         ));
 
         // Direct association helper also grants the read ACE.
-        let direct = create_user(store, "direct-member").await;
+        let direct = create_user(store.as_ref(), "direct-member").await;
         store
             .associate_user_org(&org.id, &direct.id)
             .await
@@ -1944,7 +2039,7 @@ mod suite {
             .groups
             .contains(&format!("::{read_group}")));
 
-        cleanup_org(store, &org.id).await;
+        cleanup_org(store.as_ref(), &org.id).await;
         for username in [
             &user.username,
             &other.username,
@@ -1956,10 +2051,11 @@ mod suite {
                 .await
                 .expect("delete matrix member");
         }
+        vec![read_group]
     }
 
-    pub async fn oauth<S: MetadataStore + ?Sized>(store: &S) {
-        let owner = create_user(store, "oauth-owner").await;
+    pub async fn oauth(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let owner = create_user(store.as_ref(), "oauth-owner").await;
         let app_name = unique("oauth-app");
         let app = store
             .create_oauth_application(
@@ -2149,21 +2245,22 @@ mod suite {
             .create_password_reset_token(&owner.username)
             .await
             .expect("create concurrent reset token");
-        let (left, right) = tokio::join!(
-            store.consume_password_reset_token(&concurrent),
-            store.consume_password_reset_token(&concurrent)
-        );
-        let left = left.expect("first concurrent consumer");
-        let right = right.expect("second concurrent consumer");
-        assert_eq!(
-            [left.is_some(), right.is_some()]
-                .iter()
-                .filter(|won| **won)
-                .count(),
-            1,
-            "exactly one reset consumer must win"
-        );
-        assert!(left.is_some() || right.is_some());
+        let results = run_concurrently(8, {
+            let store = Arc::clone(store);
+            let token = concurrent.clone();
+            move |_| {
+                let store = Arc::clone(&store);
+                let token = token.clone();
+                async move { store.consume_password_reset_token(&token).await }
+            }
+        })
+        .await;
+        let winners = results
+            .into_iter()
+            .map(|result| result.expect("concurrent reset consumer"))
+            .filter(Option::is_some)
+            .count();
+        assert_eq!(winners, 1, "exactly one reset consumer must win");
 
         // Deleting the application cascades grants and tokens.
         store
@@ -2195,9 +2292,16 @@ mod suite {
             .delete_user(&owner.username)
             .await
             .expect("delete oauth owner");
+        Vec::new()
     }
 
-    pub async fn kv_secrets<S: MetadataStore + ?Sized>(store: &S) {
+    pub async fn kv_secrets(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        // The maintenance flag is global to the database. Serialize the test
+        // inside this binary; separate processes must not run their
+        // maintenance assertions against the same database concurrently.
+        static MAINTENANCE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _maintenance_lock = MAINTENANCE_LOCK.lock().await;
+
         let key = unique("matrix:kv");
         assert_eq!(store.get_kv(&key).await.expect("missing kv"), None);
         store.set_kv(&key, "one").await.expect("set kv");
@@ -2217,27 +2321,40 @@ mod suite {
             .maintenance_enabled()
             .await
             .expect("read maintenance flag");
-        store
-            .set_maintenance_enabled(!maintenance_was)
-            .await
-            .expect("toggle maintenance");
-        assert_eq!(
-            store
-                .maintenance_enabled()
+        // Run the toggled assertions in a child task so the parent can restore
+        // the flag before propagating a panic. If the toggle fails before it
+        // takes effect, restoring the original value is harmless.
+        let maintenance_store = Arc::clone(store);
+        let toggled = tokio::spawn(async move {
+            maintenance_store
+                .set_maintenance_enabled(!maintenance_was)
                 .await
-                .expect("read toggled maintenance"),
-            !maintenance_was
-        );
+                .expect("toggle maintenance");
+            assert_eq!(
+                maintenance_store
+                    .maintenance_enabled()
+                    .await
+                    .expect("read toggled maintenance"),
+                !maintenance_was
+            );
+        })
+        .await;
         store
             .set_maintenance_enabled(maintenance_was)
             .await
             .expect("restore maintenance flag");
+        match toggled {
+            Ok(()) => {}
+            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+            Err(error) => panic!("maintenance worker failed: {error}"),
+        }
         assert_eq!(
             store
                 .maintenance_enabled()
                 .await
                 .expect("read restored maintenance"),
-            maintenance_was
+            maintenance_was,
+            "maintenance flag must be restored"
         );
 
         let group = "matrix-secrets";
@@ -2308,13 +2425,32 @@ mod suite {
             Some("first".into())
         );
         let race_name = format!("{absent}-race");
-        let (left, right) = tokio::join!(
-            store.set_secret_if_absent(group, &race_name, "left"),
-            store.set_secret_if_absent(group, &race_name, "right"),
+        let results = run_concurrently(8, {
+            let store = Arc::clone(store);
+            let race_name = race_name.clone();
+            move |index| {
+                let store = Arc::clone(&store);
+                let race_name = race_name.clone();
+                let value = format!("value-{index}");
+                async move { store.set_secret_if_absent(group, &race_name, &value).await }
+            }
+        })
+        .await;
+        let values: Vec<_> = results
+            .into_iter()
+            .map(|result| result.expect("concurrent bootstrap insert"))
+            .collect();
+        assert!(
+            values.iter().all(|value| value == &values[0]),
+            "concurrent bootstrap must converge: {values:?}"
         );
-        let left = left.expect("left bootstrap race");
-        let right = right.expect("right bootstrap race");
-        assert_eq!(left, right, "concurrent bootstrap must converge");
+        assert_eq!(
+            store
+                .get_secret(group, &race_name)
+                .await
+                .expect("raced bootstrap secret"),
+            Some(values[0].clone())
+        );
         store
             .remove_secret(group, &race_name)
             .await
@@ -2323,6 +2459,7 @@ mod suite {
             .remove_secret(group, &absent)
             .await
             .expect("remove bootstrap secret");
+        Vec::new()
     }
 }
 
@@ -2336,12 +2473,13 @@ macro_rules! matrix {
             use super::*;
 
             $(
-                #[tokio::test]
+                #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
                 async fn $test() {
-                    let Some(store) = $make().await else {
+                    let Some(backend) = $make().await else {
                         return;
                     };
-                    suite::$test(store.as_ref()).await;
+                    let global_groups = suite::$test(&backend.metadata).await;
+                    backend.cleanup_global_groups(&global_groups).await;
                 }
             )+
         }

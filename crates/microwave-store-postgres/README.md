@@ -91,15 +91,26 @@ The dual-backend matrix lives in
 [`../microwave-store/tests/dual_backend.rs`](../microwave-store/tests/dual_backend.rs)
 and covers identity, authz/ACLs, objects, sandboxes/cookbooks, policies,
 artifacts, membership/invitations, OAuth, and KV/secrets. Names, checksums and
-organizations are unique per run and org-scoped fixtures are deleted, so the
-matrix and the crate tests can run in parallel against one database.
+organizations are unique per run, assertions are scoped to the fixture
+organization, and org-scoped fixtures plus test-created global groups are
+deleted afterwards. The shared `server-admins` group and maintenance KV flag
+remain. This lets the matrix and the crate tests run in parallel against one
+database.
 
 Because every `#[tokio::test]` owns its runtime, the matrix cannot share one
 pool across tests. It applies the embedded schema once per test binary (in a
 dedicated thread) and then opens a fresh pool per test with
 `connect_existing`. This avoids running migration DDL concurrently with suite
 DML, which PostgreSQL can deadlock on even though the migration itself is
-advisory-locked.
+advisory-locked. The cached migration result is retained so every test reports
+the original connection or migration error rather than a poisoned `Once`.
+
+The concurrency cases (global-group bootstrap, password-reset consumption, and
+secret bootstrap) use eight barrier-released Tokio tasks on a multi-thread
+runtime, so they exercise real database races. The maintenance flag is global
+to the database: the test serializes access within the binary and restores the
+flag before propagating a panic. Separate processes running maintenance
+assertions against the same database must be serialized externally.
 
 ### Parity fixes found by the matrix
 
@@ -110,9 +121,10 @@ advisory-locked.
   backend.
 - `create_client_with_acl` now grants a non-validator client all permissions on
   itself, matching SQLite.
-- `ensure_global_group` is race-safe: concurrent first-user/first-org startup
-  inserts `ON CONFLICT (name) DO NOTHING`, rolls back the losing authz entity,
-  and returns the winning group instead of a spurious conflict.
+- `ensure_global_group` is race-safe in both backends: concurrent
+  first-user/first-org startup uses an atomic insert, rolls back the losing
+  authz entity, and returns the winning group instead of a spurious conflict.
+  The matrix releases eight tasks together to pin this behavior.
 
 ## Runtime integration
 

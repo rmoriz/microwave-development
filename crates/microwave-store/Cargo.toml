@@ -18,5 +18,6 @@ uuid.workspace = true
 
 [dev-dependencies]
 microwave-store-postgres = { path = "../microwave-store-postgres" }
+sqlx.workspace = true
 tempfile.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync"] }

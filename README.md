@@ -77,9 +77,14 @@ SQLite always runs in-memory. The PostgreSQL half runs when
 `MICROWAVE_TEST_POSTGRES_URL` is set and is skipped only when the variable is
 unset; a configured database that cannot connect or migrate fails the test.
 `scripts/run-postgres-tests.sh` exports the URL and runs the matrix as part of
-the PostgreSQL gate. Names and checksums are unique per run, and org-scoped
-fixtures are deleted afterwards, so the suite can share a database with the
-existing PostgreSQL tests and run in parallel.
+the PostgreSQL gate. Names and checksums are unique per run, assertions that
+could see other rows (such as node counts) are scoped to the fixture
+organization, and org-scoped fixtures plus test-created global groups are
+deleted afterwards. The shared `server-admins` group and the global maintenance
+KV flag are intentionally left in place. The maintenance test is serialized
+within the test binary and restores the previous flag even when an assertion
+panics; separate processes sharing one database must not run their maintenance
+assertions concurrently.
 
 ## Deployment
 
