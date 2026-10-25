@@ -359,9 +359,22 @@ fn migrate_from_legacy_imports_a_snapshot() {
     microwave_migrate::export(source.path(), &snapshot).unwrap();
 
     let target = tempfile::tempdir().unwrap();
-    let imported = run(
+    let refused = run(
         target.path(),
         &["migrate-from-legacy", "--input", snapshot.to_str().unwrap()],
+    );
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("--yes"));
+    assert!(!target.path().join("microwave.db").exists());
+
+    let imported = run(
+        target.path(),
+        &[
+            "migrate-from-legacy",
+            "--input",
+            snapshot.to_str().unwrap(),
+            "--yes",
+        ],
     );
     assert_success(&imported);
     assert!(stdout(&imported).contains("Imported migration snapshot"));
@@ -905,7 +918,12 @@ fn migrate_from_legacy_rejects_unsupported_snapshots() {
     let target = tempfile::tempdir().unwrap();
     let imported = run(
         target.path(),
-        &["migrate-from-legacy", "--input", snapshot.to_str().unwrap()],
+        &[
+            "migrate-from-legacy",
+            "--input",
+            snapshot.to_str().unwrap(),
+            "--yes",
+        ],
     );
     assert!(!imported.status.success());
     assert!(stderr(&imported).contains("unsupported snapshot version 99"));
@@ -1324,7 +1342,12 @@ fn postgres_migrate_from_legacy_imports_a_sqlite_snapshot() {
     let imported = run_pg(
         target.path(),
         &url,
-        &["migrate-from-legacy", "--input", snapshot.to_str().unwrap()],
+        &[
+            "migrate-from-legacy",
+            "--input",
+            snapshot.to_str().unwrap(),
+            "--yes",
+        ],
     );
     assert_success(&imported);
     assert!(stdout(&imported).contains("configured PostgreSQL database"));

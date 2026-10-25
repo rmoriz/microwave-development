@@ -1,7 +1,9 @@
 use clap::{Parser, Subcommand};
 use microwave_migrate::{
-    export, export_postgres, from_api_with_options, import, import_postgres, FromApiOptions,
+    export, export_postgres, from_api_with_options, import, import_postgres, redacted_database_url,
+    FromApiOptions, MigrateError, DATABASE_FILE,
 };
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -58,6 +60,10 @@ enum Command {
             required_unless_present = "data_dir"
         )]
         database_url: Option<String>,
+        /// Skip the interactive confirmation. Required when stdin is not a
+        /// terminal.
+        #[arg(long)]
+        yes: bool,
         /// Snapshot file to read.
         #[arg(long, value_name = "FILE")]
         input: PathBuf,
@@ -96,8 +102,9 @@ fn main() -> ExitCode {
         Command::Import {
             data_dir,
             database_url,
+            yes,
             input,
-        } => import_command(data_dir, database_url, &input),
+        } => import_command(data_dir, database_url, yes, &input),
         Command::FromApi {
             url,
             client_name,
@@ -127,7 +134,7 @@ fn export_command(
     data_dir: Option<PathBuf>,
     database_url: Option<String>,
     output: &std::path::Path,
-) -> Result<(), microwave_migrate::MigrateError> {
+) -> Result<(), MigrateError> {
     match (data_dir, database_url) {
         (Some(data_dir), None) => export(&data_dir, output)
             .map(|()| println!("Exported snapshot to {}", output.display())),
@@ -140,13 +147,48 @@ fn export_command(
 fn import_command(
     data_dir: Option<PathBuf>,
     database_url: Option<String>,
+    yes: bool,
     input: &std::path::Path,
-) -> Result<(), microwave_migrate::MigrateError> {
+) -> Result<(), MigrateError> {
     match (data_dir, database_url) {
-        (Some(data_dir), None) => import(&data_dir, input)
-            .map(|()| println!("Imported snapshot from {}", input.display())),
-        (None, Some(database_url)) => import_postgres(&database_url, input)
-            .map(|()| println!("Imported snapshot from {}", input.display())),
+        (Some(data_dir), None) => {
+            let target = data_dir.join(DATABASE_FILE);
+            println!("Import target: sqlite:{}", target.display());
+            confirm_import(yes)?;
+            import(&data_dir, input)
+                .map(|()| println!("Imported snapshot from {}", input.display()))
+        }
+        (None, Some(database_url)) => {
+            println!("Import target: {}", redacted_database_url(&database_url));
+            confirm_import(yes)?;
+            import_postgres(&database_url, input)
+                .map(|()| println!("Imported snapshot from {}", input.display()))
+        }
         _ => unreachable!("clap requires exactly one of --data-dir and --database-url"),
+    }
+}
+
+fn confirm_import(yes: bool) -> Result<(), MigrateError> {
+    if yes {
+        return Ok(());
+    }
+    if !std::io::stdin().is_terminal() {
+        return Err(MigrateError::Confirmation(
+            "import merges into live metadata and stdin is not a terminal; re-run with --yes after verifying the target"
+                .into(),
+        ));
+    }
+    print!("Type 'yes' to continue: ");
+    std::io::stdout()
+        .flush()
+        .map_err(|error| MigrateError::Confirmation(error.to_string()))?;
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| MigrateError::Confirmation(error.to_string()))?;
+    if answer.trim() == "yes" {
+        Ok(())
+    } else {
+        Err(MigrateError::Confirmation("import cancelled".into()))
     }
 }

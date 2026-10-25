@@ -1,4 +1,4 @@
-use crate::pg::PgTarget;
+use crate::pg::{normalize_database_name, PgTarget};
 use crate::{context::Context, CtlError};
 use microwave_config::DatabaseDriver;
 use microwave_store::SqliteStore;
@@ -140,7 +140,7 @@ fn restore_sqlite(context: &Context, path: &Path, yes: bool) -> Result<(), CtlEr
     confirm_restore(
         &format!("sqlite:{}", database_path.display()),
         None,
-        "",
+        None,
         yes,
     )?;
 
@@ -242,30 +242,49 @@ fn archive_database(toc: &str) -> Option<&str> {
 fn confirm_restore(
     target: &str,
     archive_database: Option<&str>,
-    target_database: &str,
+    target_database: Option<&str>,
     yes: bool,
 ) -> Result<(), CtlError> {
     println!("Restore target: {target}");
     if let Some(archive_database) = archive_database {
+        let archive_database = normalize_database_name(archive_database);
         println!("Backup database: {archive_database}");
-        if archive_database != target_database {
-            if !yes {
-                return Err(CtlError::message(format!(
-                    "backup was created from database {archive_database:?} but the target is {target_database:?}; re-run with --yes only after verifying the target"
-                )));
+        if let Some(target_database) = target_database {
+            let target_database = normalize_database_name(target_database);
+            if !database_names_match(&archive_database, &target_database) {
+                if !yes {
+                    return Err(CtlError::message(format!(
+                        "backup was created from database {archive_database:?} but the target is {target_database:?}; re-run with --yes only after verifying the target"
+                    )));
+                }
+                eprintln!(
+                    "warning: backup database {archive_database:?} differs from target {target_database:?}; continuing because --yes was given"
+                );
             }
-            eprintln!(
-                "warning: backup database {archive_database:?} differs from target {target_database:?}; continuing because --yes was given"
-            );
+        } else {
+            println!("Target database: client default (archive source is {archive_database})");
         }
     }
+    confirm_destructive("restore", yes)
+}
+
+fn database_names_match(archive_database: &str, target_database: &str) -> bool {
+    normalize_database_name(archive_database) == normalize_database_name(target_database)
+}
+
+/// Require an explicit confirmation for an operation that replaces or merges
+/// into live metadata.
+///
+/// The caller prints a credential-free target first. In non-interactive
+/// environments this fails unless `yes` (the `--yes` flag) is set.
+pub(crate) fn confirm_destructive(action: &str, yes: bool) -> Result<(), CtlError> {
     if yes {
         return Ok(());
     }
     if !std::io::stdin().is_terminal() {
-        return Err(CtlError::message(
-            "restore is destructive and stdin is not a terminal; re-run with --yes after verifying the target",
-        ));
+        return Err(CtlError::message(format!(
+            "{action} is destructive or merges into live metadata and stdin is not a terminal; re-run with --yes after verifying the target"
+        )));
     }
     print!("Type 'yes' to continue: ");
     std::io::stdout().flush()?;
@@ -274,7 +293,7 @@ fn confirm_restore(
     if answer.trim() == "yes" {
         Ok(())
     } else {
-        Err(CtlError::message("restore cancelled"))
+        Err(CtlError::message(format!("{action} cancelled")))
     }
 }
 
@@ -342,4 +361,22 @@ fn copy_dir_all(source: &Path, destination: &Path) -> Result<(), CtlError> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{archive_database, database_names_match};
+
+    #[test]
+    fn reads_the_database_name_from_a_pg_restore_toc() {
+        let toc = ";     dbname: microwave%2Dprod\n;     TOC Entries: 12\n";
+        assert_eq!(archive_database(toc), Some("microwave%2Dprod"));
+    }
+
+    #[test]
+    fn compares_normalized_database_names() {
+        assert!(database_names_match("microwave%2Dprod", "microwave-prod"));
+        assert!(database_names_match("/microwave", "microwave"));
+        assert!(!database_names_match("microwave", "other"));
+    }
 }

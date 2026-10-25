@@ -57,12 +57,24 @@ fn export_and_import_round_trip_through_the_cli() {
     assert!(snapshot.is_file());
 
     let target = tempfile::tempdir().unwrap();
+    let refused = run(&[
+        "import",
+        "--data-dir",
+        target.path().to_str().unwrap(),
+        "--input",
+        snapshot.to_str().unwrap(),
+    ]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("--yes"));
+    assert!(!database(target.path()).exists());
+
     let imported = run(&[
         "import",
         "--data-dir",
         target.path().to_str().unwrap(),
         "--input",
         snapshot.to_str().unwrap(),
+        "--yes",
     ]);
     assert!(
         imported.status.success(),
@@ -95,6 +107,7 @@ fn import_rejects_an_unsupported_snapshot_version() {
         target.path().to_str().unwrap(),
         "--input",
         snapshot.to_str().unwrap(),
+        "--yes",
     ]);
     assert!(!output.status.success());
     assert!(stderr(&output).contains("unsupported snapshot version 2"));
@@ -214,6 +227,7 @@ fn postgres_export_and_import_round_trip_through_the_cli() {
             &target_url,
             "--input",
             snapshot.to_str().unwrap(),
+            "--yes",
         ]);
         assert!(
             imported.status.success(),

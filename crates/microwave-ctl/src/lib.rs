@@ -127,6 +127,8 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
         Command::Reindex { org } => commands::reindex(org.as_deref()),
         Command::Backup { path } => backup::backup(&context, &path),
         Command::Restore { path, yes } => backup::restore(&context, &path, yes),
-        Command::MigrateFromLegacy { input } => commands::migrate_from_legacy(&context, &input),
+        Command::MigrateFromLegacy { input, yes } => {
+            commands::migrate_from_legacy(&context, &input, yes)
+        }
     }
 }

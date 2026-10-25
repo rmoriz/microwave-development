@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+use url::form_urlencoded;
+use url::Url;
 
 mod from_api;
 
@@ -112,6 +114,8 @@ pub enum MigrateError {
     Crypto(#[from] microwave_crypto::CryptoError),
     #[error("failed to build tokio runtime: {0}")]
     Runtime(String),
+    #[error("{0}")]
+    Confirmation(String),
 }
 
 /// Export the store under `data_dir` to a JSON snapshot at `output`.
@@ -168,6 +172,10 @@ pub fn import_database(database: &Path, input: &Path) -> Result<(), MigrateError
 /// This connects without applying the embedded schema, so it works with a
 /// read-only database role. The schema must already exist (the server creates
 /// it on startup). The connection URL is never written to the snapshot.
+///
+/// The function is synchronous and owns a current-thread Tokio runtime. Do not
+/// call it from inside an existing Tokio runtime; use the async
+/// [`PostgresStore`] methods directly in that case.
 pub fn export_postgres(database_url: &str, output: &Path) -> Result<(), MigrateError> {
     let runtime = runtime()?;
     let store = runtime.block_on(PostgresStore::connect_existing(database_url))?;
@@ -191,12 +199,56 @@ pub fn export_postgres(database_url: &str, output: &Path) -> Result<(), MigrateE
 /// The import runs in one database transaction and preserves source ids,
 /// authz ids, timestamps, hashes, and keys. Importing the same snapshot twice
 /// is idempotent.
+///
+/// The function is synchronous and owns a current-thread Tokio runtime. Do not
+/// call it from inside an existing Tokio runtime; use the async
+/// [`PostgresStore`] methods directly in that case.
 pub fn import_postgres(database_url: &str, input: &Path) -> Result<(), MigrateError> {
     let snapshot = read_snapshot(input)?;
     let runtime = runtime()?;
     let store = runtime.block_on(PostgresStore::connect(database_url))?;
     runtime.block_on(store.import_snapshot(&snapshot.data))?;
     Ok(())
+}
+
+/// Return a connection URL with authority and query-string passwords removed.
+///
+/// Used by command-line confirmation output so a `password`/`sslpassword`
+/// query parameter is never echoed.
+pub fn redacted_database_url(database_url: &str) -> String {
+    let Ok(mut parsed) = Url::parse(database_url) else {
+        return textual_redaction(database_url);
+    };
+    let _ = parsed.set_password(None);
+    let remaining = parsed
+        .query_pairs()
+        .filter(|(key, _)| key != "password" && key != "sslpassword")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    if remaining.is_empty() {
+        parsed.set_query(None);
+    } else {
+        let mut serializer = form_urlencoded::Serializer::new(String::new());
+        for (key, value) in &remaining {
+            serializer.append_pair(key, value);
+        }
+        parsed.set_query(Some(&serializer.finish()));
+    }
+    parsed.to_string()
+}
+
+fn textual_redaction(database_url: &str) -> String {
+    let Some((scheme, rest)) = database_url.split_once("://") else {
+        return database_url.to_string();
+    };
+    let Some((userinfo, remainder)) = rest.split_once('@') else {
+        return database_url.to_string();
+    };
+    let user = userinfo
+        .split_once(':')
+        .map(|(user, _)| user)
+        .unwrap_or(userinfo);
+    format!("{scheme}://{user}:***@{remainder}")
 }
 
 /// Run a PostgreSQL snapshot operation on a current-thread Tokio runtime.
@@ -320,4 +372,31 @@ fn data_dir_of(database: &Path) -> String {
         .unwrap_or_else(|| Path::new("."))
         .display()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redacted_database_url;
+
+    #[test]
+    fn removes_authority_and_query_passwords() {
+        let redacted = redacted_database_url(
+            "postgres://user:authority-secret@db/microwave?password=query-secret&sslmode=require",
+        );
+        assert!(!redacted.contains("authority-secret"));
+        assert!(!redacted.contains("query-secret"));
+        assert!(!redacted.contains("password="));
+        assert!(redacted.contains("sslmode=require"));
+        assert!(redacted.contains("db/microwave"));
+    }
+
+    #[test]
+    fn removes_sslpassword_from_the_query() {
+        let redacted = redacted_database_url(
+            "postgres://host/microwave?sslpassword=ssl-secret&sslmode=verify-full",
+        );
+        assert!(!redacted.contains("ssl-secret"));
+        assert!(!redacted.contains("sslpassword"));
+        assert!(redacted.contains("sslmode=verify-full"));
+    }
 }

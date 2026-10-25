@@ -225,10 +225,15 @@ pub enum Command {
 
     /// Import a Microwave migration snapshot (produced by the
     /// `microwave-migrate` binary) into the configured SQLite or PostgreSQL
-    /// store.
+    /// store. This merges into live metadata and asks for confirmation unless
+    /// `--yes` is given.
     MigrateFromLegacy {
         /// Snapshot JSON file to import.
         #[arg(long, value_name = "FILE")]
         input: PathBuf,
+        /// Skip the interactive confirmation. Required when stdin is not a
+        /// terminal.
+        #[arg(long)]
+        yes: bool,
     },
 }

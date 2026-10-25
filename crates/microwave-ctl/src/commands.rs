@@ -240,10 +240,12 @@ pub fn reindex(org: Option<&str>) -> Result<(), CtlError> {
     Ok(())
 }
 
-pub fn migrate_from_legacy(context: &Context, input: &Path) -> Result<(), CtlError> {
+pub fn migrate_from_legacy(context: &Context, input: &Path, yes: bool) -> Result<(), CtlError> {
     match context.config.database.driver {
         microwave_config::DatabaseDriver::Sqlite => {
             let database_path = context.sqlite_path()?;
+            println!("Import target: sqlite:{}", database_path.display());
+            crate::backup::confirm_destructive("import", yes)?;
             microwave_migrate::import_database(database_path, input)?;
             println!(
                 "Imported migration snapshot from {} into {}",
@@ -252,6 +254,11 @@ pub fn migrate_from_legacy(context: &Context, input: &Path) -> Result<(), CtlErr
             );
         }
         microwave_config::DatabaseDriver::Postgres => {
+            println!(
+                "Import target: PostgreSQL {}",
+                microwave_migrate::redacted_database_url(&context.database_url)
+            );
+            crate::backup::confirm_destructive("import", yes)?;
             microwave_migrate::import_postgres(&context.database_url, input)?;
             println!(
                 "Imported migration snapshot from {} into the configured PostgreSQL database",

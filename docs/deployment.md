@@ -473,9 +473,14 @@ not already contain `microwave.db`; for PostgreSQL it must not already contain
 - `bookshelf/` — a recursive copy of the local blob store, if present.
 
 PostgreSQL backup requires `pg_dump` to be installed and on `PATH`. The
-password is removed from the URL in the child process arguments and supplied
-through `PGPASSWORD` instead, so it does not appear in process listings. Other
-connection parameters (host, port, user, database, `sslmode`) are preserved.
+password is removed from the child process command line. A `password` query
+parameter or authority password is supplied through `PGPASSWORD`; an
+`sslpassword` is written to a temporary libpq service file with mode `0600`
+and referenced through `PGSERVICEFILE`/`PGSERVICE`. Depending on the platform
+and hardening, a child's environment or temporary files may still be
+observable to the same UID or root; treat backups and the host account
+accordingly. Other connection parameters (host, port, user, database,
+`sslmode`) are preserved.
 
 It does **not** include:
 
@@ -541,7 +546,7 @@ objects. Restore those from your separate copies.
 
 ```sh
 microwave-migrate export --data-dir /var/lib/microwave --output /var/backups/snapshot.json
-microwave-migrate import --data-dir /var/lib/microwave-new --input /var/backups/snapshot.json
+microwave-migrate import --data-dir /var/lib/microwave-new --input /var/backups/snapshot.json --yes
 
 # PostgreSQL source and target
 microwave-migrate export \
@@ -549,8 +554,13 @@ microwave-migrate export \
   --output /var/backups/snapshot.json
 microwave-migrate import \
   --database-url postgres://microwave:secret@db/microwave-new \
-  --input /var/backups/snapshot.json
+  --input /var/backups/snapshot.json \
+  --yes
 ```
+
+`import` merges into live metadata and asks for confirmation. Use `--yes` in
+scripts and other non-interactive environments. The target is printed without
+authority or query-string passwords.
 
 The snapshot is versioned JSON (`format: microwave-server-snapshot`,
 `version: 1`) containing users (including password hashes), organizations,
@@ -601,11 +611,12 @@ snapshot or need to stage the copy yourself:
 3. **Import into the configured database:**
    ```sh
    microwave-ctl --config /etc/microwave/microwave.toml \
-     migrate-from-legacy --input /var/backups/acme-snapshot.json
+     migrate-from-legacy --input /var/backups/acme-snapshot.json --yes
    ```
-   `microwave-migrate import --data-dir ... --input ...` is equivalent for
-   SQLite. For PostgreSQL without a config file, use
-   `microwave-migrate import --database-url postgres://... --input ...`.
+   `microwave-migrate import --data-dir ... --input ... --yes` is equivalent
+   for SQLite. For PostgreSQL without a config file, use
+   `microwave-migrate import --database-url postgres://... --input ... --yes`.
+   Both import paths ask for confirmation unless `--yes` is given.
 4. **Copy cookbook blobs.** The snapshot is metadata only. Place files under
    the object key layout `organization-<org_id>/checksum-<md5>` in
    `/var/lib/microwave/bookshelf/` for the local backend, or upload them to the

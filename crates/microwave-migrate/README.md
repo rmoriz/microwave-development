@@ -18,12 +18,13 @@ microwave-migrate export \
   --output migration.json
 
 # Create or merge into ./new-data/microwave.db
-microwave-migrate import --data-dir ./new-data --input migration.json
+microwave-migrate import --data-dir ./new-data --input migration.json --yes
 
 # Import into PostgreSQL (one transaction, ids and timestamps preserved)
 microwave-migrate import \
   --database-url postgres://microwave:secret@db/microwave \
-  --input migration.json
+  --input migration.json \
+  --yes
 
 # Crawl a live legacy server as a superuser
 microwave-migrate from-api \
@@ -42,8 +43,11 @@ microwave-migrate from-api \
   --output acme.json
 
 # Import through the operational CLI (uses the configured database path)
-microwave-ctl migrate-from-legacy --input migration.json
+microwave-ctl migrate-from-legacy --input migration.json --yes
 ```
+
+`import` merges into live metadata and asks for confirmation; `--yes` is
+required in scripts and other non-interactive environments.
 
 `import` validates the envelope before touching the database. Invalid JSON,
 an unexpected `format`, or an unsupported `version` exit non-zero and do not
