@@ -71,9 +71,60 @@ fn keygen_settings_can_be_overridden_from_toml_and_env() {
     let mut c = Config::default();
     assert!(c.apply_env().is_err());
 
+    std::env::set_var("MW_KEYGEN__SIZE", "2");
+    std::env::set_var("MW_KEYGEN__WORKERS", "3");
+    let mut c = Config::default();
+    assert!(
+        c.apply_env().is_err(),
+        "workers above size must be rejected"
+    );
+
+    std::env::set_var("MW_KEYGEN__SIZE", "2048");
+    std::env::set_var("MW_KEYGEN__WORKERS", "1");
+    let mut c = Config::default();
+    assert!(c.apply_env().is_err(), "oversized cache must be rejected");
+
     std::env::remove_var("MW_KEYGEN__SIZE");
     std::env::remove_var("MW_KEYGEN__WORKERS");
     std::env::remove_var("MW_KEYGEN__WARM_UP");
+}
+
+#[test]
+fn keygen_rejects_invalid_toml_combinations() {
+    assert!(Config::from_toml_str(
+        r#"
+        [keygen]
+        size = 2048
+    "#
+    )
+    .is_err());
+
+    assert!(Config::from_toml_str(
+        r#"
+        [keygen]
+        size = 2
+        workers = 3
+    "#
+    )
+    .is_err());
+
+    assert!(Config::from_toml_str(
+        r#"
+        [keygen]
+        size = 0
+        warm_up = true
+    "#
+    )
+    .is_err());
+
+    assert!(Config::from_toml_str(
+        r#"
+        [keygen]
+        size = 4
+        workers = 9
+    "#
+    )
+    .is_err());
 }
 
 #[test]

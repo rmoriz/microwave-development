@@ -65,8 +65,71 @@ async fn status_reports_keygen_cache_state() {
     assert_eq!(body["keygen"]["workers"], 1);
     assert_eq!(body["keygen"]["worker_healthy"], true);
     assert_eq!(body["keygen"]["worker_failures"], 0);
+    assert_eq!(body["keygen"]["warm_up_failures"], 0);
     assert_eq!(body["keygen"]["generated_on_demand"], 0);
     assert_eq!(body["indexing"]["mode"], "embedded");
+}
+
+#[tokio::test]
+async fn key_creation_falls_back_to_the_blocking_pool_when_the_cache_is_empty() {
+    let mut config = Config::default();
+    config.keygen.size = 0;
+    config.keygen.workers = 0;
+    let state = support::state_with_keygen(config);
+    let keygen = state.keygen.clone();
+    let app = support::app(state);
+
+    create_user_with_public_key(&app, "alice").await;
+    let (status, created) = send(
+        &app,
+        "POST",
+        "/users/alice/keys",
+        br#"{"name":"generated","create_key":true,"expiration_date":"infinity"}"#,
+        "pivotal",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(!created["private_key"].as_str().unwrap().is_empty());
+    assert_eq!(keygen.status().generated_on_demand, 1);
+}
+
+#[tokio::test]
+async fn organization_and_client_key_creation_take_from_the_cache() {
+    let mut config = Config::default();
+    config.keygen.size = 2;
+    config.keygen.workers = 0;
+    config.keygen.warm_up = true;
+    let state = support::state_with_keygen(config);
+    let keygen = state.keygen.clone();
+    let app = support::app(state);
+    assert_eq!(keygen.status().cached, 2);
+
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/organizations",
+        br#"{"name":"cacheorg","full_name":"Cache Org"}"#,
+        "pivotal",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/organizations/cacheorg/clients",
+        br#"{"name":"web1","create_key":true}"#,
+        "pivotal",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let status = keygen.status();
+    assert_eq!(status.cached, 0, "both cached keypairs were consumed");
+    assert_eq!(
+        status.generated_on_demand, 0,
+        "organization and client key creation must use the cache"
+    );
 }
 
 #[tokio::test]

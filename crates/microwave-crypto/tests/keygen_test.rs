@@ -1,5 +1,6 @@
 use microwave_crypto::{parse_private_key_pem, parse_public_key_pem, KeygenCache, KeygenStatus};
 use rsa::traits::PublicKeyParts;
+use std::collections::HashSet;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -68,4 +69,41 @@ fn workers_are_capped_at_capacity() {
     assert_eq!(cache.status().workers, 1);
     wait_for_cached(&cache, 1);
     assert!(cache.status().worker_healthy);
+}
+
+#[test]
+fn oversized_capacity_is_clamped_without_a_large_allocation() {
+    let cache = KeygenCache::new(usize::MAX, 0);
+    assert_eq!(
+        cache.capacity(),
+        microwave_crypto::keygen::MAX_CACHE_CAPACITY
+    );
+    assert_eq!(cache.status().workers, 0);
+}
+
+#[test]
+fn concurrent_takers_receive_distinct_keypairs() {
+    let cache = KeygenCache::new(1, 1);
+    cache.warm_up();
+    assert_eq!(cache.cached(), 1);
+
+    let pairs = thread::scope(|scope| {
+        let handles: Vec<_> = (0..2)
+            .map(|_| scope.spawn(|| cache.take().unwrap()))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+
+    let mut private_keys = HashSet::new();
+    for pair in &pairs {
+        assert_valid_keypair(pair);
+        assert!(
+            private_keys.insert(pair.0.clone()),
+            "concurrent takers must not receive the same keypair"
+        );
+    }
+    assert_eq!(private_keys.len(), 2);
 }

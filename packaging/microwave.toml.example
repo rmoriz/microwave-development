@@ -93,13 +93,14 @@ superuser_name = "pivotal"
 # in-memory cache so `create_key`, client/user creation, and organization
 # validator provisioning do not block on RSA generation.
 #
-# Maximum number of ready keypairs. 0 disables caching and generates on demand.
+# Maximum number of ready keypairs (0-1024). 0 disables caching and generates
+# on demand.
 size = 3
-# Background generator threads, capped at `size`. 0 leaves refilling to warm_up
-# and on-demand generation.
+# Background generator threads (0-8), and never more than `size`. 0 leaves
+# refilling to warm_up and on-demand generation.
 workers = 1
-# Fill the cache synchronously at startup. The default keeps startup fast and
-# lets workers fill the cache in the background.
+# Fill the cache synchronously at startup. Requires size > 0. The default keeps
+# startup fast and lets workers fill the cache in the background.
 warm_up = false
 
 [data_collector]

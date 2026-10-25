@@ -143,6 +143,7 @@ impl microwave_oauth::ProvidesOAuthState for AppState {
         microwave_oauth::OAuthState {
             store: self.store.clone(),
             config: self.config.clone(),
+            keygen: self.keygen.clone(),
         }
     }
 }

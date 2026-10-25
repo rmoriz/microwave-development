@@ -36,11 +36,17 @@ pub fn state_with_keygen(config: Config) -> AppState {
     build_state(config, true)
 }
 
+/// Disable background/pre-generated key generation for test fixtures that do
+/// not exercise the cache. API paths still fall back to on-demand generation.
+pub fn disable_keygen(config: &mut Config) {
+    config.keygen.size = 0;
+    config.keygen.workers = 0;
+    config.keygen.warm_up = false;
+}
+
 fn build_state(mut config: Config, keygen_enabled: bool) -> AppState {
     if !keygen_enabled {
-        config.keygen.size = 0;
-        config.keygen.workers = 0;
-        config.keygen.warm_up = false;
+        disable_keygen(&mut config);
     }
     let store = Arc::new(SqliteStore::open_in_memory().unwrap());
     let user = store

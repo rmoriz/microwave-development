@@ -110,6 +110,7 @@ async fn status(State(state): State<AppState>) -> Json<Value> {
             "workers": keygen.workers,
             "worker_healthy": keygen.worker_healthy,
             "worker_failures": keygen.worker_failures,
+            "warm_up_failures": keygen.warm_up_failures,
             "generated_on_demand": keygen.generated_on_demand,
         },
         "indexing": { "mode": state.search.name() }

@@ -18,6 +18,10 @@ struct Fixture {
 }
 
 async fn fixture() -> Fixture {
+    fixture_with_keygen(0, 0, false).await
+}
+
+async fn fixture_with_keygen(size: usize, workers: usize, warm_up: bool) -> Fixture {
     let store = Arc::new(SqliteStore::open_in_memory().unwrap());
     let hash = hash_password(PASSWORD).unwrap();
     let admin = store
@@ -58,6 +62,10 @@ async fn fixture() -> Fixture {
     store.add_user_to_org(&org.id, &alice.id).unwrap();
 
     let mut config = microwave_config::Config::default();
+    support::disable_keygen(&mut config);
+    config.keygen.size = size;
+    config.keygen.workers = workers;
+    config.keygen.warm_up = warm_up;
     config.object_store.secret = Some("test".into());
     let object_store: Arc<dyn microwave_objectstore::ObjectStore + Send + Sync> =
         Arc::new(microwave_objectstore::LocalObjectStore::new(
@@ -610,6 +618,36 @@ async fn changes_password_and_regenerates_a_key() {
         .await
         .unwrap();
     assert!(String::from_utf8_lossy(&private_key).contains("BEGIN PRIVATE KEY"));
+}
+
+#[tokio::test]
+async fn regen_key_takes_a_keypair_from_the_cache() {
+    let fixture = fixture_with_keygen(1, 0, true).await;
+    let keygen = fixture.state.keygen.clone();
+    assert_eq!(keygen.status().cached, 1);
+    let app = app(&fixture);
+    let (_, session) = sign_in(&app, "alice", PASSWORD).await;
+    let cookie = cookie_from(&session);
+
+    let response = request(
+        &app,
+        "POST",
+        "/id/profile/regen_key",
+        "",
+        "",
+        &[(header::COOKIE.as_str(), cookie)],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let private_key = body_text(response).await;
+    assert!(private_key.contains("BEGIN PRIVATE KEY"));
+
+    let status = keygen.status();
+    assert_eq!(status.cached, 0, "the cached keypair was consumed");
+    assert_eq!(
+        status.generated_on_demand, 0,
+        "OAuth key regeneration must not generate inline when the cache is full"
+    );
 }
 
 #[tokio::test]

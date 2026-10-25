@@ -101,6 +101,7 @@ async fn pg_app_with_store(store: PostgresStore) -> PgApp {
     }
 
     let mut config = Config::default();
+    support::disable_keygen(&mut config);
     config.database.driver = DatabaseDriver::Postgres;
     config.object_store.secret = Some("pg-http-secret".into());
     let object_dir = tempfile::tempdir().expect("create object-store temp dir");

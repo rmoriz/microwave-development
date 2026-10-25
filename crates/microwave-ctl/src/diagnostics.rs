@@ -116,6 +116,14 @@ pub fn check_config(context: &Context) -> Result<(), CtlError> {
         ));
     }
 
+    match config.keygen.validate() {
+        Ok(()) => checks.push(format!(
+            "keygen size {} workers {} warm_up {}",
+            config.keygen.size, config.keygen.workers, config.keygen.warm_up
+        )),
+        Err(reason) => problems.push(reason),
+    }
+
     if let Some(root_url) = non_empty(config.data_collector.root_url.as_deref()) {
         match parse_http_url(root_url) {
             Some(url) => checks.push(format!("data_collector.root_url {}", redacted_url(&url))),

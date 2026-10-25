@@ -22,7 +22,19 @@ pub struct Config {
 impl Config {
     /// Parse configuration from a TOML string.
     pub fn from_toml_str(input: &str) -> Result<Self, ConfigError> {
-        toml::from_str(input).map_err(ConfigError::Parse)
+        let config: Self = toml::from_str(input).map_err(ConfigError::Parse)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Validate cross-field bounds that TOML types alone cannot express.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        self.keygen
+            .validate()
+            .map_err(|message| ConfigError::InvalidValue {
+                key: "keygen".into(),
+                value: message,
+            })
     }
 
     /// Load configuration from an explicit path, `MW_CONFIG`, `./microwave.toml`,
@@ -195,7 +207,7 @@ impl Config {
         if let Ok(value) = std::env::var("MW_TELEMETRY__INTERVAL_SECONDS") {
             self.telemetry.interval_seconds = parse_value("MW_TELEMETRY__INTERVAL_SECONDS", value)?;
         }
-        Ok(())
+        self.validate()
     }
 
     /// Resolve the database URL. When no URL is configured, SQLite lives under the
@@ -386,6 +398,41 @@ pub struct KeygenConfig {
     pub workers: usize,
     /// Fill the cache synchronously at startup instead of in the background.
     pub warm_up: bool,
+}
+
+impl KeygenConfig {
+    /// Hard upper bound for `size`. Mirrors the cache's defensive cap.
+    pub const MAX_SIZE: usize = 1024;
+    /// Hard upper bound for `workers`. Mirrors the cache's defensive cap.
+    pub const MAX_WORKERS: usize = 8;
+
+    /// Reject combinations that would make startup allocate or spawn too much.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.size > Self::MAX_SIZE {
+            return Err(format!(
+                "keygen.size must be at most {} (got {})",
+                Self::MAX_SIZE,
+                self.size
+            ));
+        }
+        if self.workers > Self::MAX_WORKERS {
+            return Err(format!(
+                "keygen.workers must be at most {} (got {})",
+                Self::MAX_WORKERS,
+                self.workers
+            ));
+        }
+        if self.workers > self.size {
+            return Err(format!(
+                "keygen.workers must not exceed keygen.size ({} > {})",
+                self.workers, self.size
+            ));
+        }
+        if self.size == 0 && self.warm_up {
+            return Err("keygen.warm_up requires keygen.size > 0".into());
+        }
+        Ok(())
+    }
 }
 
 impl Default for KeygenConfig {

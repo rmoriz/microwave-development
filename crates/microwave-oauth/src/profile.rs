@@ -8,7 +8,7 @@ use axum::extract::{Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
-use microwave_crypto::{generate_rsa_keypair, hash_password, verify_password, PasswordHash};
+use microwave_crypto::{hash_password, verify_password, PasswordHash};
 use microwave_store::{ActorType, UserPatch};
 use serde_json::json;
 
@@ -218,7 +218,7 @@ pub async fn regen_key(
     headers: HeaderMap,
 ) -> Result<Response, OAuthError> {
     let user = require_user(&state, &headers).await?;
-    let (private_key, public_key) = generate_rsa_keypair().map_err(|_| OAuthError::internal())?;
+    let (private_key, public_key) = state.generate_keypair().await?;
 
     match state
         .store
