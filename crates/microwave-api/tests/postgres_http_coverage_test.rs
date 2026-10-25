@@ -659,13 +659,15 @@ async fn user_and_client_key_lifecycles_work_against_postgresql() {
     .unwrap();
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let expected = format!("http://0.0.0.0:8000/users/{alice}/keys/alt");
-    assert_eq!(created["uri"], expected);
-    assert_eq!(created["name"], "alt");
-    assert_eq!(created["public_key"], support::PUBLIC_KEY.trim());
-    assert_eq!(created["expiration_date"], "infinity");
+    // POST only reports the key location (plus generated private material).
+    assert_eq!(created, json!({ "uri": expected }));
+    assert!(created.get("name").is_none());
+    assert!(created.get("public_key").is_none());
+    assert!(created.get("expiration_date").is_none());
     assert!(created.get("private_key").is_none());
     assert_eq!(headers.get(header::LOCATION).unwrap(), expected.as_str());
 
+    // GET returns the full key record, including the exact stored public key.
     let fetched = ok(
         &pg,
         "GET",
@@ -674,10 +676,14 @@ async fn user_and_client_key_lifecycles_work_against_postgresql() {
         "pivotal",
     )
     .await;
-    assert_eq!(fetched, created);
+    assert_eq!(fetched["uri"], expected);
+    assert_eq!(fetched["name"], "alt");
+    assert_eq!(fetched["public_key"], support::PUBLIC_KEY);
+    assert_eq!(fetched["expiration_date"], "infinity");
+    assert!(fetched.get("private_key").is_none());
 
     // Renaming returns 201 and a fresh Location; expiration-only updates
-    // return 200.
+    // return 200. Both echo only the fields present in the request.
     let (status, headers, renamed) = send_with_headers(
         &pg,
         "PUT",
@@ -689,7 +695,13 @@ async fn user_and_client_key_lifecycles_work_against_postgresql() {
     .unwrap();
     assert_eq!(status, StatusCode::CREATED, "{renamed}");
     let renamed_uri = format!("http://0.0.0.0:8000/users/{alice}/keys/renamed");
-    assert_eq!(renamed["uri"], renamed_uri);
+    assert_eq!(
+        renamed,
+        json!({
+            "name": "renamed",
+            "expiration_date": "2050-12-24T21:00:00Z",
+        })
+    );
     assert_eq!(headers.get(header::LOCATION).unwrap(), renamed_uri.as_str());
     let (status, _) = send(
         &pg,
@@ -700,6 +712,17 @@ async fn user_and_client_key_lifecycles_work_against_postgresql() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    let renamed_key = ok(
+        &pg,
+        "GET",
+        &format!("/users/{alice}/keys/renamed"),
+        b"",
+        "pivotal",
+    )
+    .await;
+    assert_eq!(renamed_key["uri"], renamed_uri);
+    assert_eq!(renamed_key["name"], "renamed");
+    assert_eq!(renamed_key["expiration_date"], "2050-12-24T21:00:00Z");
 
     let (status, value) = send(
         &pg,
@@ -710,7 +733,7 @@ async fn user_and_client_key_lifecycles_work_against_postgresql() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
-    assert_eq!(value["expiration_date"], "infinity");
+    assert_eq!(value, json!({ "expiration_date": "infinity" }));
 
     let deleted = ok(
         &pg,
@@ -720,7 +743,10 @@ async fn user_and_client_key_lifecycles_work_against_postgresql() {
         "pivotal",
     )
     .await;
+    assert_eq!(deleted["uri"], renamed_uri);
     assert_eq!(deleted["name"], "renamed");
+    assert_eq!(deleted["public_key"], support::PUBLIC_KEY);
+    assert_eq!(deleted["expiration_date"], "infinity");
     let keys = ok(&pg, "GET", &format!("/users/{alice}/keys"), b"", "pivotal").await;
     assert_eq!(keys.as_array().unwrap().len(), 1);
     assert_eq!(keys[0]["name"], "default");
@@ -767,11 +793,28 @@ async fn user_and_client_key_lifecycles_work_against_postgresql() {
     .unwrap();
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let client_key_uri = format!("http://0.0.0.0:8000/organizations/{org}/clients/web1/keys/alt");
-    assert_eq!(created["uri"], client_key_uri);
+    assert_eq!(created, json!({ "uri": client_key_uri }));
+    assert!(created.get("name").is_none());
+    assert!(created.get("public_key").is_none());
+    assert!(created.get("expiration_date").is_none());
+    assert!(created.get("private_key").is_none());
     assert_eq!(
         headers.get(header::LOCATION).unwrap(),
         client_key_uri.as_str()
     );
+
+    let fetched = ok(
+        &pg,
+        "GET",
+        &format!("/organizations/{org}/clients/web1/keys/alt"),
+        b"",
+        "pivotal",
+    )
+    .await;
+    assert_eq!(fetched["uri"], client_key_uri);
+    assert_eq!(fetched["name"], "alt");
+    assert_eq!(fetched["public_key"], support::PUBLIC_KEY);
+    assert_eq!(fetched["expiration_date"], "infinity");
 
     let (status, value) = send(
         &pg,
@@ -782,7 +825,7 @@ async fn user_and_client_key_lifecycles_work_against_postgresql() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
-    assert_eq!(value["expiration_date"], "2050-12-24T21:00:00Z");
+    assert_eq!(value, json!({ "expiration_date": "2050-12-24T21:00:00Z" }));
 
     let deleted = ok(
         &pg,
@@ -792,7 +835,9 @@ async fn user_and_client_key_lifecycles_work_against_postgresql() {
         "pivotal",
     )
     .await;
+    assert_eq!(deleted["uri"], client_key_uri);
     assert_eq!(deleted["name"], "alt");
+    assert_eq!(deleted["public_key"], support::PUBLIC_KEY);
     let (status, _) = send(
         &pg,
         "GET",
