@@ -4,7 +4,7 @@ use microwave_store::StoreError;
 /// Credentials that can be managed through the CLI. The names mirror the
 /// upstream `chef-server-ctl` groups plus the `object_store` group introduced
 /// by Microwave's local `/bookshelf` endpoint.
-const KNOWN_CREDENTIALS: &[(&str, &[&str])] = &[
+pub(crate) const KNOWN_CREDENTIALS: &[(&str, &[&str])] = &[
     ("object_store", &["secret"]),
     (
         "bookshelf",
