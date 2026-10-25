@@ -315,7 +315,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
   - [ ] Evaluate arbitrary Ruby in `metadata.rb` and import blobs into S3/Garage. The current parser is a tested DSL subset and blobs target the local object store.
 - [x] Implement **Mode 2: Live API Crawler:**
   - [x] Crawl a running upstream server using `pivotal` credentials for metadata, ACLs, policies, nodes, roles, environments, data bags, and public keys.
-  - [ ] Crawl cookbook blobs from the legacy bookshelf layout (still manual; use bucket replication or a layout converter).
+  - [x] Crawl cookbook blobs from the legacy bookshelf layout with `--bookshelf-dir`: collect unique `(org_id, checksum, url)` pairs, skip existing local blobs, resolve relative URLs against the legacy base while signing them, fetch absolute presigned URLs directly, verify MD5, write atomically into `organization-<org_id>/checksum-<md5>`, and cap each blob at 64 MiB and each crawl at 4 GiB. Blob files without a `url` stay metadata-only. Use bucket replication for sources that do not expose per-file URLs.
 - [ ] Trigger full search reindex and verify object counts and checksum integrity post-migration.
 
 ### 5.5 Full Pedant Verification, HA & Performance Benchmarks

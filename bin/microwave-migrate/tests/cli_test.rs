@@ -1,7 +1,12 @@
 use assert_cmd::Command;
 use microwave_store::{NewNode, SqliteStore};
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Output;
+use std::sync::Arc;
+
+const PRIVATE_KEY: &str =
+    include_str!("../../../crates/microwave-crypto/tests/fixtures/test_key.pem");
 
 fn migrate() -> Command {
     let mut command = Command::cargo_bin("microwave-migrate").unwrap();
@@ -685,6 +690,147 @@ fn from_api_reports_a_missing_key_without_writing_a_file() {
     assert!(!output.exists());
 }
 
+/// Serve a tiny metadata-only legacy API for the CLI crawl test.
+///
+/// The real test suite validates request signatures separately; this server
+/// only needs to return JSON and blob bytes over HTTP.
+fn start_mock_legacy_server(routes: Vec<(&'static str, Vec<u8>)>) -> String {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let routes: Arc<HashMap<String, Vec<u8>>> = Arc::new(
+        routes
+            .into_iter()
+            .map(|(path, body)| (path.to_string(), body))
+            .collect(),
+    );
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                continue;
+            };
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        request.extend_from_slice(&chunk[..read]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let request = String::from_utf8_lossy(&request);
+            let path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .map(|target| target.split('?').next().unwrap_or(target))
+                .unwrap_or("/");
+            let (status, body) = match routes.get(path) {
+                Some(body) => ("200 OK", body.clone()),
+                None => ("404 Not Found", br#"{"error":"not found"}"#.to_vec()),
+            };
+            let header = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(header.as_bytes());
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+        }
+    });
+    format!("http://{address}")
+}
+
+#[test]
+fn from_api_downloads_cookbook_blobs_into_bookshelf_dir() {
+    const BLOB: &[u8] = b"cli cookbook blob\n";
+    // MD5 of the blob above.
+    const BLOB_CHECKSUM: &str = "cdeca7093b5660802bcc96f48c90aabd";
+    let version = serde_json::json!({
+        "name": "app-1.2.3",
+        "cookbook": "app",
+        "version": "1.2.3",
+        "frozen?": false,
+        "metadata": {"name": "app", "version": "1.2.3"},
+        "files": [{
+            "name": "cli.txt",
+            "path": "files/cli.txt",
+            "checksum": BLOB_CHECKSUM,
+            "url": "/blobs/cli"
+        }]
+    })
+    .to_string();
+    let cookbook = serde_json::json!({
+        "url": "/organizations/acme/cookbooks/app",
+        "versions": {
+            "1.2.3": [
+                {"version": "1.2.3", "url": "/organizations/acme/cookbooks/app/1.2.3"}
+            ]
+        }
+    });
+    let cookbooks = serde_json::json!({"app": cookbook.clone()}).to_string();
+    let server = start_mock_legacy_server(vec![
+        (
+            "/organizations/acme",
+            br#"{"name":"acme","full_name":"Acme","guid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#
+                .to_vec(),
+        ),
+        ("/organizations/acme/cookbooks", cookbooks.into_bytes()),
+        (
+            "/organizations/acme/cookbooks/app",
+            cookbook.to_string().into_bytes(),
+        ),
+        (
+            "/organizations/acme/cookbooks/app/1.2.3",
+            version.into_bytes(),
+        ),
+        ("/blobs/cli", BLOB.to_vec()),
+    ]);
+
+    let dir = tempfile::tempdir().unwrap();
+    let key = dir.path().join("migrator.pem");
+    std::fs::write(&key, PRIVATE_KEY).unwrap();
+    let output = dir.path().join("snapshot.json");
+    let bookshelf = dir.path().join("bookshelf");
+    let args = [
+        "from-api",
+        "--url",
+        server.as_str(),
+        "--client-name",
+        "migrator",
+        "--key",
+        key.to_str().unwrap(),
+        "--org",
+        "acme",
+        "--output",
+        output.to_str().unwrap(),
+        "--bookshelf-dir",
+        bookshelf.to_str().unwrap(),
+    ];
+
+    let first = run(&args);
+    assert!(first.status.success(), "{}", stderr(&first));
+    let text = stdout(&first);
+    assert!(text.contains(&format!("Bookshelf: {}", bookshelf.display())));
+    assert!(text.contains("Cookbook blobs: 1 downloaded, 0 already present"));
+    let blob = bookshelf
+        .join("organization-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        .join(format!("checksum-{BLOB_CHECKSUM}"));
+    assert_eq!(std::fs::read(&blob).unwrap(), BLOB);
+
+    let second = run(&args);
+    assert!(second.status.success(), "{}", stderr(&second));
+    assert!(stdout(&second).contains("Cookbook blobs: 0 downloaded, 1 already present"));
+    assert_eq!(std::fs::read(&blob).unwrap(), BLOB);
+}
+
 #[test]
 fn import_help_lists_compression_options() {
     let output = run(&["import", "--help"]);
@@ -716,6 +862,7 @@ fn from_api_help_lists_org_and_api_version() {
     let message = stdout(&output);
     assert!(message.contains("--org"));
     assert!(message.contains("--api-version"));
+    assert!(message.contains("--bookshelf-dir"));
     assert!(message.contains("Crawl a live legacy Chef Infra Server"));
 }
 

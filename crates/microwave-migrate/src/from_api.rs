@@ -17,6 +17,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chrono::{SecondsFormat, Utc};
 use microwave_crypto::{sign_request, CanonicalRequest, SignVersion};
+use microwave_objectstore::{md5_hex, LocalObjectStore, ObjectStore};
 use microwave_store::{
     parse_version, ActorKeyRow, AuthzAclActorRow, AuthzAclGroupRow, AuthzEntityRow,
     AuthzGroupActorRow, AuthzGroupGroupRow, ChecksumRow, ClientRow, CookbookRow,
@@ -26,8 +27,13 @@ use microwave_store::{
 };
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+
+/// Largest single cookbook blob the live crawler will download.
+const MAX_BLOB_BYTES: u64 = 64 * 1024 * 1024;
+/// Largest total volume of cookbook blobs downloaded in one crawl.
+const MAX_TOTAL_BLOB_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 /// Options for [`from_api_with_options`].
 #[derive(Debug, Clone)]
@@ -45,10 +51,17 @@ pub struct FromApiOptions {
     pub org: Option<String>,
     /// Value sent in `X-Ops-Server-API-Version` (default `2`).
     pub api_version: u32,
+    /// Local object-store root used to copy cookbook file blobs.
+    ///
+    /// When `None` the crawl only records metadata and checksums. When set,
+    /// each unique cookbook file is written to
+    /// `<bookshelf_dir>/organization-<org_id>/checksum-<md5>`.
+    pub bookshelf_dir: Option<PathBuf>,
 }
 
 impl FromApiOptions {
-    /// Build options with API version 2 and no organization filter.
+    /// Build options with API version 2, no organization filter, and no
+    /// bookshelf blob copy.
     pub fn new(
         url: impl Into<String>,
         client_name: impl Into<String>,
@@ -62,33 +75,68 @@ impl FromApiOptions {
             output: output.into(),
             org: None,
             api_version: 2,
+            bookshelf_dir: None,
         }
     }
 }
 
+/// Counts from the optional cookbook blob copy during a live crawl.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BlobDownloadSummary {
+    /// Blobs written to the local object store.
+    pub downloaded: usize,
+    /// Blobs that already existed locally and were not requested again.
+    pub skipped: usize,
+}
+
 /// Crawl a live legacy Chef Infra Server and write a snapshot.
 pub fn from_api_with_options(options: &FromApiOptions) -> Result<(), MigrateError> {
-    let snapshot = crawl_from_api(options)?;
-    write_snapshot(&snapshot, &options.output)
+    from_api_with_options_with_summary(options).map(|_| ())
+}
+
+/// Crawl a live legacy Chef Infra Server, write a snapshot, and return the
+/// counts from the optional cookbook blob copy.
+pub fn from_api_with_options_with_summary(
+    options: &FromApiOptions,
+) -> Result<BlobDownloadSummary, MigrateError> {
+    let (snapshot, summary) = crawl_from_api_with_summary(options)?;
+    write_snapshot(&snapshot, &options.output)?;
+    Ok(summary)
 }
 
 /// Crawl a live legacy Chef Infra Server and return the snapshot without
 /// writing it.
 pub fn crawl_from_api(options: &FromApiOptions) -> Result<Snapshot, MigrateError> {
+    crawl_from_api_with_summary(options).map(|(snapshot, _)| snapshot)
+}
+
+/// Crawl a live legacy Chef Infra Server and return the snapshot plus the
+/// optional cookbook blob counts without writing the snapshot.
+pub fn crawl_from_api_with_summary(
+    options: &FromApiOptions,
+) -> Result<(Snapshot, BlobDownloadSummary), MigrateError> {
     let mut crawler = Crawler::new(options)?;
     crawler.crawl(options.org.as_deref())?;
-    Ok(Snapshot {
-        format: SNAPSHOT_FORMAT.to_string(),
-        version: SNAPSHOT_VERSION,
-        generated_at: crawler.generated_at.clone(),
-        source: SnapshotSource {
-            kind: SnapshotSourceKind::LegacyApi,
-            url: Some(crawler.base_url.clone()),
-            data_dir: None,
+    let data_dir = crawler
+        .bookshelf_dir
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let summary = crawler.blob_summary;
+    Ok((
+        Snapshot {
+            format: SNAPSHOT_FORMAT.to_string(),
+            version: SNAPSHOT_VERSION,
+            generated_at: crawler.generated_at.clone(),
+            source: SnapshotSource {
+                kind: SnapshotSourceKind::LegacyApi,
+                url: Some(crawler.base_url.clone()),
+                data_dir,
+            },
+            secrets_included: false,
+            data: crawler.data,
         },
-        secrets_included: false,
-        data: crawler.data,
-    })
+        summary,
+    ))
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +171,11 @@ struct Crawler {
     seen_checksums: HashSet<(String, String)>,
     seen_cookbook_versions: HashSet<(String, String)>,
     pending_acls: Vec<AclRequest>,
+    bookshelf_dir: Option<PathBuf>,
+    bookshelf: Option<LocalObjectStore>,
+    pending_blobs: HashMap<(String, String), String>,
+    blob_summary: BlobDownloadSummary,
+    downloaded_blob_bytes: u64,
 }
 
 struct AclRequest {
@@ -149,6 +202,11 @@ impl Crawler {
             .build()
             .new_agent();
 
+        let bookshelf_dir = options.bookshelf_dir.clone();
+        let bookshelf = bookshelf_dir
+            .as_ref()
+            .map(|dir| LocalObjectStore::new(dir.clone(), "", "http://localhost"));
+
         Ok(Self {
             agent,
             base_url,
@@ -166,6 +224,11 @@ impl Crawler {
             seen_checksums: HashSet::new(),
             seen_cookbook_versions: HashSet::new(),
             pending_acls: Vec::new(),
+            bookshelf_dir,
+            bookshelf,
+            pending_blobs: HashMap::new(),
+            blob_summary: BlobDownloadSummary::default(),
+            downloaded_blob_bytes: 0,
         })
     }
 
@@ -184,7 +247,8 @@ impl Crawler {
                 }
             }
         }
-        self.apply_pending_acls()
+        self.apply_pending_acls()?;
+        self.download_blobs()
     }
 
     // ------------------------------------------------------------------
@@ -896,7 +960,7 @@ impl Crawler {
             updated_at: self.generated_at.clone(),
         });
 
-        for checksum in cookbook_checksums(value) {
+        for (checksum, file_url) in cookbook_files(value) {
             if self
                 .seen_checksums
                 .insert((org.id.clone(), checksum.clone()))
@@ -912,9 +976,93 @@ impl Crawler {
                 .push(CookbookVersionChecksumRow {
                     cookbook_version_id: version_id.clone(),
                     org_id: org.id.clone(),
-                    checksum,
+                    checksum: checksum.clone(),
                 });
+            if self.bookshelf.is_some() {
+                if let Some(file_url) = file_url {
+                    self.pending_blobs
+                        .entry((org.id.clone(), checksum))
+                        .or_insert(file_url);
+                }
+            }
         }
+    }
+
+    /// Copy every collected cookbook blob that is not already in the target
+    /// local object store. Runs after the metadata crawl so a failed crawl
+    /// never leaves a half-populated bookshelf behind.
+    fn download_blobs(&mut self) -> Result<(), MigrateError> {
+        let Some(store) = self.bookshelf.clone() else {
+            return Ok(());
+        };
+        let mut pending: Vec<((String, String), String)> = std::mem::take(&mut self.pending_blobs)
+            .into_iter()
+            .collect();
+        pending.sort_by(|left, right| left.0.cmp(&right.0));
+
+        for ((org_id, checksum), reference) in pending {
+            if store.exists(&org_id, &checksum) {
+                self.blob_summary.skipped += 1;
+                continue;
+            }
+
+            let bytes = self.fetch_blob(&reference)?;
+            let actual = md5_hex(&bytes);
+            if !actual.eq_ignore_ascii_case(&checksum) {
+                return Err(MigrateError::InvalidApiResponse {
+                    url: redacted_url(&reference),
+                    message: format!(
+                        "cookbook blob checksum mismatch for organization {org_id}: expected {checksum}, got {actual}"
+                    ),
+                });
+            }
+
+            let total = self.downloaded_blob_bytes + bytes.len() as u64;
+            if total > MAX_TOTAL_BLOB_BYTES {
+                return Err(MigrateError::Config(format!(
+                    "cookbook blob download would exceed the {} GiB total limit; reduce the --org scope or copy the bookshelf separately",
+                    MAX_TOTAL_BLOB_BYTES / (1024 * 1024 * 1024)
+                )));
+            }
+
+            // LocalObjectStore::put verifies the MD5 again and writes through a
+            // temporary `.part` file before renaming, so no partial final blob
+            // is ever visible.
+            store.put(&org_id, &checksum, &bytes)?;
+            self.downloaded_blob_bytes = total;
+            self.blob_summary.downloaded += 1;
+        }
+        Ok(())
+    }
+
+    fn fetch_blob(&self, reference: &str) -> Result<Vec<u8>, MigrateError> {
+        let absolute = is_absolute_url(reference);
+        let resolved = if absolute {
+            reference.to_string()
+        } else {
+            self.resolve_url(reference)
+        };
+        let redacted = redacted_url(&resolved);
+        let (status, bytes) = if absolute {
+            self.unsigned_get_bytes(&resolved, &redacted)?
+        } else {
+            self.signed_get_bytes(&resolved, &redacted)?
+        };
+
+        if !(200..300).contains(&status) {
+            return Err(MigrateError::Api {
+                url: redacted,
+                status,
+                message: format!("cookbook blob download failed with HTTP {status}"),
+            });
+        }
+        if bytes.is_empty() {
+            return Err(MigrateError::InvalidApiResponse {
+                url: redacted,
+                message: "cookbook blob response was empty".to_string(),
+            });
+        }
+        Ok(bytes)
     }
 
     // ------------------------------------------------------------------
@@ -1249,20 +1397,23 @@ impl Crawler {
         }
         if !(200..300).contains(&status) {
             return Err(MigrateError::Api {
-                url: url.to_string(),
+                url: redacted_url(url),
                 status,
                 message: api_message(status, &body),
             });
         }
         let value =
             serde_json::from_str(&body).map_err(|error| MigrateError::InvalidApiResponse {
-                url: url.to_string(),
+                url: redacted_url(url),
                 message: error.to_string(),
             })?;
         Ok(Some((value, body)))
     }
 
-    fn signed_get(&self, url: &str) -> Result<(u16, String), MigrateError> {
+    fn signed_request(
+        &self,
+        url: &str,
+    ) -> Result<ureq::RequestBuilder<ureq::typestate::WithoutBody>, MigrateError> {
         let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
         let path = path_for_signing(url);
         let request = CanonicalRequest {
@@ -1290,26 +1441,58 @@ impl Crawler {
         for (index, chunk) in encoded.as_bytes().chunks(60).enumerate() {
             let chunk =
                 std::str::from_utf8(chunk).map_err(|error| MigrateError::InvalidApiResponse {
-                    url: url.to_string(),
+                    url: redacted_url(url),
                     message: error.to_string(),
                 })?;
             request = request.header(format!("X-Ops-Authorization-{}", index + 1).as_str(), chunk);
         }
+        Ok(request)
+    }
 
-        match request.call() {
+    fn signed_get(&self, url: &str) -> Result<(u16, String), MigrateError> {
+        match self.signed_request(url)?.call() {
             Ok(mut response) => {
                 let status = response.status().as_u16();
                 let body = response.body_mut().read_to_string().map_err(|error| {
                     MigrateError::InvalidApiResponse {
-                        url: url.to_string(),
+                        url: redacted_url(url),
                         message: error.to_string(),
                     }
                 })?;
                 Ok((status, body))
             }
             Err(error) => Err(MigrateError::Transport {
-                url: url.to_string(),
+                url: redacted_url(url),
                 message: error.to_string(),
+            }),
+        }
+    }
+
+    fn signed_get_bytes(&self, url: &str, redacted: &str) -> Result<(u16, Vec<u8>), MigrateError> {
+        match self.signed_request(url)?.call() {
+            Ok(response) => read_blob_response(response, redacted),
+            Err(error) => Err(MigrateError::Transport {
+                url: redacted.to_string(),
+                message: error.to_string().replace(url, redacted),
+            }),
+        }
+    }
+
+    fn unsigned_get_bytes(
+        &self,
+        url: &str,
+        redacted: &str,
+    ) -> Result<(u16, Vec<u8>), MigrateError> {
+        match self
+            .agent
+            .get(url)
+            .header("Accept", "application/octet-stream")
+            .call()
+        {
+            Ok(response) => read_blob_response(response, redacted),
+            Err(error) => Err(MigrateError::Transport {
+                url: redacted.to_string(),
+                message: error.to_string().replace(url, redacted),
             }),
         }
     }
@@ -1553,7 +1736,10 @@ fn cookbook_versions(value: &Value) -> Vec<(String, Option<String>)> {
     output
 }
 
-fn cookbook_checksums(value: &Value) -> Vec<String> {
+/// Return each unique cookbook file checksum and the first URL advertised for
+/// it. The legacy API usually provides a presigned bookshelf/S3 URL, but some
+/// server versions return a relative path or omit the URL entirely.
+fn cookbook_files(value: &Value) -> Vec<(String, Option<String>)> {
     const FILE_KEYS: &[&str] = &[
         "recipes",
         "definitions",
@@ -1565,19 +1751,26 @@ fn cookbook_checksums(value: &Value) -> Vec<String> {
         "providers",
         "root_files",
     ];
-    let mut checksums = Vec::new();
+    let mut files: BTreeMap<String, Option<String>> = BTreeMap::new();
     for key in FILE_KEYS {
-        if let Some(files) = value.get(key).and_then(Value::as_array) {
-            for file in files {
-                if let Some(checksum) = string_field(file, "checksum") {
-                    checksums.push(checksum);
-                }
+        if let Some(entries) = value.get(key).and_then(Value::as_array) {
+            for file in entries {
+                let Some(checksum) = string_field(file, "checksum") else {
+                    continue;
+                };
+                let url = url_field(file);
+                files
+                    .entry(checksum)
+                    .and_modify(|existing| {
+                        if existing.is_none() {
+                            *existing = url.clone();
+                        }
+                    })
+                    .or_insert(url);
             }
         }
     }
-    checksums.sort();
-    checksums.dedup();
-    checksums
+    files.into_iter().collect()
 }
 
 fn policy_revisions(value: &Value) -> Vec<String> {
@@ -1622,6 +1815,65 @@ fn path_for_signing(url: &str) -> &str {
         }
         None => "/",
     }
+}
+
+fn is_absolute_url(reference: &str) -> bool {
+    reference.starts_with("http://") || reference.starts_with("https://")
+}
+
+/// Remove the query string and fragment from a URL before printing it.
+///
+/// Bookshelf/S3 URLs carry their credentials in query parameters, so an error
+/// must never echo the raw URL.
+fn redacted_url(url: &str) -> String {
+    let base = url.split(['?', '#']).next().unwrap_or(url);
+    if base.len() == url.len() {
+        base.to_string()
+    } else {
+        format!("{base}?<redacted>")
+    }
+}
+
+/// Read a bounded cookbook blob response. Non-2xx responses are returned with
+/// an empty body so the caller can report the status without echoing a
+/// server-supplied payload that may contain a signed URL.
+fn read_blob_response(
+    mut response: ureq::http::Response<ureq::Body>,
+    redacted: &str,
+) -> Result<(u16, Vec<u8>), MigrateError> {
+    let status = response.status().as_u16();
+    if !(200..300).contains(&status) {
+        return Ok((status, Vec::new()));
+    }
+
+    let declared = response
+        .headers()
+        .get("content-length")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok());
+    if declared.is_some_and(|length| length > MAX_BLOB_BYTES) {
+        return Err(MigrateError::InvalidApiResponse {
+            url: redacted.to_string(),
+            message: format!(
+                "cookbook blob is larger than the {} MiB per-file limit",
+                MAX_BLOB_BYTES / (1024 * 1024)
+            ),
+        });
+    }
+
+    let body = response
+        .body_mut()
+        .with_config()
+        .limit(MAX_BLOB_BYTES)
+        .read_to_vec()
+        .map_err(|error| MigrateError::InvalidApiResponse {
+            url: redacted.to_string(),
+            message: format!(
+                "could not read cookbook blob (limit {} MiB): {error}",
+                MAX_BLOB_BYTES / (1024 * 1024)
+            ),
+        })?;
+    Ok((status, body))
 }
 
 fn api_message(status: u16, body: &str) -> String {

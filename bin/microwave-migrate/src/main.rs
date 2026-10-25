@@ -4,7 +4,7 @@ use microwave_migrate::{
     apply_knife_backup_plan_postgres_with_options, apply_knife_backup_plan_sqlite_with_options,
     apply_server_secrets, archive_secrets_included, export_archive_postgres_with_private_keys,
     export_archive_with_private_keys, export_postgres_with_options, export_with_options,
-    from_api_with_options, import_archive_postgres_with_private_keys,
+    from_api_with_options_with_summary, import_archive_postgres_with_private_keys,
     import_archive_with_private_keys, import_postgres_with_compression, import_with_compression,
     prepare_knife_backup, prepare_server_secrets, read_snapshot, redacted_postgres_url,
     validate_postgres_url, Compression, FromApiOptions, KnifeBackupApplyOptions, KnifeBackupPlan,
@@ -231,6 +231,13 @@ enum Command {
         /// X-Ops-Server-API-Version to send with every request.
         #[arg(long, value_name = "VERSION", default_value_t = 2)]
         api_version: u32,
+        /// Download cookbook file blobs into this local object-store root.
+        ///
+        /// Files are written as organization-<org_id>/checksum-<md5>.
+        /// Existing blobs are skipped. Without this flag only metadata and
+        /// checksum references are crawled.
+        #[arg(long, value_name = "DIR")]
+        bookshelf_dir: Option<PathBuf>,
     },
 }
 
@@ -323,12 +330,22 @@ fn main() -> ExitCode {
             output,
             org,
             api_version,
+            bookshelf_dir,
         } => {
             let mut options = FromApiOptions::new(&url, &client_name, &key, &output);
             options.org = org;
             options.api_version = api_version;
-            from_api_with_options(&options)
-                .map(|()| println!("Wrote legacy API snapshot to {}", output.display()))
+            options.bookshelf_dir = bookshelf_dir;
+            from_api_with_options_with_summary(&options).map(|summary| {
+                println!("Wrote legacy API snapshot to {}", output.display());
+                if let Some(dir) = &options.bookshelf_dir {
+                    println!("Bookshelf: {}", dir.display());
+                    println!(
+                        "Cookbook blobs: {} downloaded, {} already present",
+                        summary.downloaded, summary.skipped
+                    );
+                }
+            })
         }
     };
 

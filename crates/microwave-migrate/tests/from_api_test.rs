@@ -6,8 +6,10 @@ use microwave_crypto::{
     decode_signature, parse_sign_header, verify_request, AuthHeaders, CanonicalRequest,
 };
 use microwave_migrate::{
-    crawl_from_api, from_api_with_options, import, FromApiOptions, MigrateError,
+    crawl_from_api, from_api_with_options, from_api_with_options_with_summary, import,
+    FromApiOptions, MigrateError,
 };
+use microwave_objectstore::md5_hex;
 use microwave_store::{ActorType, Permission, SqliteStore};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -16,6 +18,7 @@ use std::sync::{Arc, Mutex};
 const PUBLIC_KEY: &str = include_str!("../../microwave-crypto/tests/fixtures/test_key_pub.pem");
 const PRIVATE_KEY: &str = include_str!("../../microwave-crypto/tests/fixtures/test_key.pem");
 const CHECKSUM: &str = "0123456789abcdef0123456789abcdef";
+const ORG_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 const NODE_BODY: &str = r#"{"name":"web1","json_class":"Chef::Node","chef_type":"node","chef_environment":"_default","run_list":["role[web]"],"normal":{"tags":["blue"]}}"#;
 const ROLE_BODY: &str = r#"{"name":"web","json_class":"Chef::Role","chef_type":"role","run_list":["recipe[app::default]"],"default_attributes":{},"override_attributes":{}}"#;
@@ -34,7 +37,7 @@ struct AppState {
 #[derive(Clone)]
 struct Route {
     status: u16,
-    body: String,
+    body: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,11 +52,18 @@ struct Recorded {
 fn json_route(value: Value) -> Route {
     Route {
         status: 200,
-        body: serde_json::to_string(&value).unwrap(),
+        body: serde_json::to_string(&value).unwrap().into_bytes(),
     }
 }
 
 fn text_route(status: u16, body: impl Into<String>) -> Route {
+    Route {
+        status,
+        body: body.into().into_bytes(),
+    }
+}
+
+fn bytes_route(status: u16, body: impl Into<Vec<u8>>) -> Route {
     Route {
         status,
         body: body.into(),
@@ -477,6 +487,282 @@ fn full_routes() -> Vec<(&'static str, Route)> {
             json_route(acl(&["alice"], &["admins"])),
         ),
     ]
+}
+
+/// Minimal metadata routes for a single `acme` organization with one cookbook
+/// version. Optional collections and ACLs fall through to 404 and are skipped.
+fn blob_crawl_routes(version_body: Value) -> Vec<(&'static str, Route)> {
+    let cookbook = json!({
+        "url": "/organizations/acme/cookbooks/app",
+        "versions": {
+            "1.2.3": [
+                {"version": "1.2.3", "url": "/organizations/acme/cookbooks/app/1.2.3"}
+            ]
+        }
+    });
+    vec![
+        (
+            "/organizations/acme",
+            json_route(json!({
+                "name": "acme",
+                "full_name": "Acme Corp",
+                "guid": ORG_ID
+            })),
+        ),
+        (
+            "/organizations/acme/cookbooks",
+            json_route(json!({"app": cookbook.clone()})),
+        ),
+        ("/organizations/acme/cookbooks/app", json_route(cookbook)),
+        (
+            "/organizations/acme/cookbooks/app/1.2.3",
+            json_route(version_body),
+        ),
+    ]
+}
+
+fn cookbook_version_with_files(files: Value) -> Value {
+    json!({
+        "name": "app-1.2.3",
+        "cookbook": "app",
+        "version": "1.2.3",
+        "frozen?": false,
+        "metadata": {"name": "app", "version": "1.2.3"},
+        "files": files,
+        "chef_type": "cookbook_version",
+        "json_class": "Chef::CookbookVersion"
+    })
+}
+
+fn org_blob_path(bookshelf: &std::path::Path, checksum: &str) -> std::path::PathBuf {
+    bookshelf
+        .join(format!("organization-{ORG_ID}"))
+        .join(format!("checksum-{checksum}"))
+}
+
+fn blob_request_count(records: &Arc<Mutex<Vec<Recorded>>>, path: &str) -> usize {
+    records
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|record| record.path == path)
+        .count()
+}
+
+#[test]
+fn downloads_absolute_cookbook_blobs_into_the_local_object_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = b"first cookbook file\n".to_vec();
+    let second = b"second cookbook file\n".to_vec();
+    let first_md5 = md5_hex(&first);
+    let second_md5 = md5_hex(&second);
+
+    let (blob_url, blob_records) = start_server(vec![
+        ("/blobs/first", bytes_route(200, first.clone())),
+        ("/blobs/second", bytes_route(200, second.clone())),
+    ]);
+    let version = cookbook_version_with_files(json!([
+        {
+            "name": "first.txt",
+            "path": "files/first.txt",
+            "checksum": first_md5.clone(),
+            "url": format!("{blob_url}/blobs/first?X-Amz-Signature=blob-secret")
+        },
+        {
+            "name": "second.txt",
+            "path": "root_files/second.txt",
+            "checksum": second_md5.clone(),
+            "url": format!("{blob_url}/blobs/second?X-Amz-Credential=blob-credential")
+        }
+    ]));
+
+    let (url, _records) = start_server(blob_crawl_routes(version));
+    let mut options = options(&url, dir.path());
+    options.org = Some("acme".to_string());
+    let bookshelf = dir.path().join("bookshelf");
+    options.bookshelf_dir = Some(bookshelf.clone());
+
+    let summary = from_api_with_options_with_summary(&options).unwrap();
+    assert_eq!(summary.downloaded, 2);
+    assert_eq!(summary.skipped, 0);
+
+    assert_eq!(
+        std::fs::read(org_blob_path(&bookshelf, &first_md5)).unwrap(),
+        first
+    );
+    assert_eq!(
+        std::fs::read(org_blob_path(&bookshelf, &second_md5)).unwrap(),
+        second
+    );
+
+    let text = std::fs::read_to_string(dir.path().join("snapshot.json")).unwrap();
+    let document: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        document["source"]["data_dir"],
+        Value::String(bookshelf.display().to_string())
+    );
+
+    assert_eq!(blob_request_count(&blob_records, "/blobs/first"), 1);
+    assert_eq!(blob_request_count(&blob_records, "/blobs/second"), 1);
+    // Absolute presigned URLs are fetched directly, without Chef signing.
+    let records = blob_records.lock().unwrap();
+    assert!(records
+        .iter()
+        .all(|record| !record.headers.contains_key("x-ops-sign")));
+}
+
+#[test]
+fn a_second_crawl_skips_existing_cookbook_blobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = b"idempotent cookbook file\n".to_vec();
+    let checksum = md5_hex(&body);
+    let (blob_url, blob_records) =
+        start_server(vec![("/blobs/one", bytes_route(200, body.clone()))]);
+    let version = cookbook_version_with_files(json!([
+        {
+            "name": "one.txt",
+            "path": "files/one.txt",
+            "checksum": checksum.clone(),
+            "url": format!("{blob_url}/blobs/one")
+        }
+    ]));
+
+    let (url, _records) = start_server(blob_crawl_routes(version));
+    let mut options = options(&url, dir.path());
+    options.org = Some("acme".to_string());
+    options.bookshelf_dir = Some(dir.path().join("bookshelf"));
+
+    let first = from_api_with_options_with_summary(&options).unwrap();
+    assert_eq!(first.downloaded, 1);
+    assert_eq!(first.skipped, 0);
+    assert_eq!(blob_request_count(&blob_records, "/blobs/one"), 1);
+
+    let second = from_api_with_options_with_summary(&options).unwrap();
+    assert_eq!(second.downloaded, 0);
+    assert_eq!(second.skipped, 1);
+    assert_eq!(
+        blob_request_count(&blob_records, "/blobs/one"),
+        1,
+        "an existing blob must not be requested again"
+    );
+    assert_eq!(
+        std::fs::read(org_blob_path(&dir.path().join("bookshelf"), &checksum)).unwrap(),
+        body
+    );
+}
+
+#[test]
+fn a_checksum_mismatch_aborts_without_leaving_a_blob_or_leaking_the_url() {
+    let dir = tempfile::tempdir().unwrap();
+    let returned = b"tampered cookbook file\n".to_vec();
+    let expected = md5_hex(b"expected cookbook file\n");
+    let (blob_url, _blob_records) =
+        start_server(vec![("/blobs/tampered", bytes_route(200, returned))]);
+    let version = cookbook_version_with_files(json!([
+        {
+            "name": "tampered.txt",
+            "path": "files/tampered.txt",
+            "checksum": expected.clone(),
+            "url": format!(
+                "{blob_url}/blobs/tampered?X-Amz-Signature=super-secret-token"
+            )
+        }
+    ]));
+
+    let (url, _records) = start_server(blob_crawl_routes(version));
+    let mut options = options(&url, dir.path());
+    options.org = Some("acme".to_string());
+    let bookshelf = dir.path().join("bookshelf");
+    options.bookshelf_dir = Some(bookshelf.clone());
+
+    let error = from_api_with_options(&options).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("checksum mismatch"), "{message}");
+    assert!(message.contains(&expected), "{message}");
+    assert!(!message.contains("super-secret-token"), "{message}");
+    assert!(!message.contains("X-Amz-Signature"), "{message}");
+    assert!(!message.contains("?<redacted>="), "{message}");
+
+    assert!(!org_blob_path(&bookshelf, &expected).exists());
+    assert!(!dir.path().join("snapshot.json").exists());
+    if bookshelf.is_dir() {
+        let mut entries = std::fs::read_dir(&bookshelf).unwrap();
+        assert!(
+            entries.next().is_none(),
+            "a failed blob must not leave a file"
+        );
+    }
+}
+
+#[test]
+fn metadata_only_crawl_does_not_request_or_write_cookbook_blobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = b"metadata only cookbook file\n".to_vec();
+    let checksum = md5_hex(&body);
+    let (blob_url, blob_records) = start_server(vec![("/blobs/unused", bytes_route(200, body))]);
+    let version = cookbook_version_with_files(json!([
+        {
+            "name": "unused.txt",
+            "path": "files/unused.txt",
+            "checksum": checksum.clone(),
+            "url": format!("{blob_url}/blobs/unused")
+        }
+    ]));
+
+    let (url, _records) = start_server(blob_crawl_routes(version));
+    let mut options = options(&url, dir.path());
+    options.org = Some("acme".to_string());
+
+    let snapshot = crawl_from_api(&options).unwrap();
+    assert_eq!(snapshot.data.cookbook_version_checksums.len(), 1);
+    assert_eq!(
+        snapshot.data.cookbook_version_checksums[0].checksum,
+        checksum
+    );
+    assert!(snapshot.source.data_dir.is_none());
+    assert!(!dir.path().join("bookshelf").exists());
+    assert!(blob_records.lock().unwrap().is_empty());
+}
+
+#[test]
+fn resolves_a_relative_cookbook_blob_url_against_the_base_url() {
+    let dir = tempfile::tempdir().unwrap();
+    let body = b"relative cookbook file\n".to_vec();
+    let checksum = md5_hex(&body);
+    let version = cookbook_version_with_files(json!([
+        {
+            "name": "relative.txt",
+            "path": "files/relative.txt",
+            "checksum": checksum.clone(),
+            "url": "/blobs/relative"
+        }
+    ]));
+
+    let mut routes = blob_crawl_routes(version);
+    routes.push(("/blobs/relative", bytes_route(200, body.clone())));
+    let (url, records) = start_server(routes);
+    let mut options = options(&url, dir.path());
+    options.org = Some("acme".to_string());
+    let bookshelf = dir.path().join("bookshelf");
+    options.bookshelf_dir = Some(bookshelf.clone());
+
+    let summary = from_api_with_options_with_summary(&options).unwrap();
+    assert_eq!(summary.downloaded, 1);
+    assert_eq!(
+        std::fs::read(org_blob_path(&bookshelf, &checksum)).unwrap(),
+        body
+    );
+
+    let records = records.lock().unwrap();
+    let blob_record = records
+        .iter()
+        .find(|record| record.path == "/blobs/relative")
+        .expect("relative blob URL was requested from the base server");
+    assert!(
+        blob_record.verified,
+        "a relative blob URL must use Chef signing: {:?}",
+        blob_record.verification_error
+    );
 }
 
 #[test]
