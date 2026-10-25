@@ -4,8 +4,13 @@ use microwave_crypto::{
     CanonicalRequest, PasswordHash, SignVersion,
 };
 use microwave_store::{ActorType, SqliteStore};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::process::Output;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
 
 fn ctl(dir: &Path) -> Command {
     let mut command = Command::cargo_bin("microwave-ctl").unwrap();
@@ -330,6 +335,177 @@ fn status_reports_storage_and_superuser_state() {
     assert!(text.contains("superuser: pivotal (present)"));
 }
 
+struct MockSearchServer {
+    base_url: String,
+    shutdown: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl MockSearchServer {
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let flag = shutdown.clone();
+        let handle = thread::spawn(move || loop {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            if flag.load(Ordering::SeqCst) {
+                break;
+            }
+            let (header, body) = read_http_request(&mut stream);
+            let path = header
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or_default();
+            match path {
+                "/chef/_delete_by_query" => write_http_response(
+                    &mut stream,
+                    "200 OK",
+                    r#"{"timed_out":false,"total":0,"deleted":0,"version_conflicts":0,"noops":0,"failures":[]}"#,
+                ),
+                "/_bulk" => write_http_response(&mut stream, "200 OK", &bulk_response(&body)),
+                "/chef/_refresh" => write_http_response(
+                    &mut stream,
+                    "200 OK",
+                    r#"{"_shards":{"total":1,"successful":1,"failed":0}}"#,
+                ),
+                _ => write_http_response(&mut stream, "404 Not Found", r#"{"error":"not found"}"#),
+            }
+        });
+        Self {
+            base_url: format!("http://{address}"),
+            shutdown,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for MockSearchServer {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        let address = self.base_url.trim_start_matches("http://");
+        let _ = TcpStream::connect(address);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn read_http_request(stream: &mut TcpStream) -> (String, String) {
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+        }
+
+        let Some(header_end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
+            continue;
+        };
+        let header = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+        let content_length = header
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if !name.eq_ignore_ascii_case("content-length") {
+                    return None;
+                }
+                value.trim().parse::<usize>().ok()
+            })
+            .unwrap_or(0);
+        let body_start = header_end + 4;
+        while buffer.len() < body_start + content_length {
+            match stream.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+            }
+        }
+        let body_end = (body_start + content_length).min(buffer.len());
+        return (
+            header,
+            String::from_utf8_lossy(&buffer[body_start..body_end]).to_string(),
+        );
+    }
+    (String::new(), String::new())
+}
+
+fn write_http_response(stream: &mut TcpStream, status: &str, body: &str) {
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+}
+
+fn bulk_response(body: &str) -> String {
+    let ids: Vec<&str> = body
+        .lines()
+        .step_by(2)
+        .filter_map(|line| {
+            let start = line.find("\"_id\":\"")? + "\"_id\":\"".len();
+            let rest = &line[start..];
+            let end = rest.find('"')?;
+            Some(&rest[..end])
+        })
+        .collect();
+    let items = ids
+        .iter()
+        .map(|id| format!(r#"{{"index":{{"_index":"chef","_id":"{id}","status":201}}}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(r#"{{"errors":false,"items":[{items}]}}"#)
+}
+
+#[test]
+fn reindex_purge_reports_completed_remote_work() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_success(&run(
+        dir.path(),
+        &["user-create", "bob", "--password", "bob-password"],
+    ));
+    assert_success(&run(
+        dir.path(),
+        &["org-create", "acme", "--creator", "bob"],
+    ));
+    create_client(dir.path(), "acme", "web");
+
+    let server = MockSearchServer::start();
+    let config = dir.path().join("opensearch.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[search]\nbackend = \"opensearch\"\nurl = \"{}\"\n",
+            server.base_url
+        ),
+    )
+    .unwrap();
+    let output = ctl(dir.path())
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "reindex",
+            "--org",
+            "acme",
+            "--purge",
+        ])
+        .output()
+        .unwrap();
+
+    assert_success(&output);
+    let text = stdout(&output);
+    assert!(text.contains("search_backend: opensearch"));
+    assert!(text.contains("organization: acme"));
+    assert!(text.contains("purged_organizations: 1"));
+    assert!(text.contains("documents_acknowledged: 2"));
+    assert!(text.contains("completed without reported delete failures"));
+    assert!(text.contains("verify search results"));
+}
+
 #[test]
 fn reindex_reports_relational_authority_for_the_embedded_backend() {
     let dir = tempfile::tempdir().unwrap();
@@ -356,6 +532,15 @@ fn reindex_reports_relational_authority_for_the_embedded_backend() {
     assert_success(&scoped);
     assert!(stdout(&scoped).contains("organization: acme"));
     assert!(stdout(&scoped).contains("documents_acknowledged: 2"));
+
+    // `--purge` is accepted for the embedded backend, but there is no remote
+    // index to delete or refresh, so no purge is claimed.
+    let purged = run(dir.path(), &["reindex", "--org", "acme", "--purge"]);
+    assert_success(&purged);
+    let purged_text = stdout(&purged);
+    assert!(purged_text.contains("relational search is authoritative"));
+    assert!(!purged_text.contains("purged_organizations:"));
+    assert!(!purged_text.contains("--purge deleted"));
 
     let missing = run(dir.path(), &["reindex", "--org", "missing"]);
     assert!(!missing.status.success());

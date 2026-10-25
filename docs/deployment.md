@@ -117,6 +117,7 @@ A complete annotated example is
 | `storage.compression` | `MW_STORAGE__COMPRESSION` | `zlib` | `zlib` stores new `serialized_object` rows as `mwz1:` + base64(zlib(JSON)); `none` stores plain JSON. Reads accept both formats either way, so existing databases keep working. |
 | `search.backend` | `MW_SEARCH__BACKEND` | `embedded` | `embedded`, `opensearch`, `elasticsearch`. |
 | `search.url` | `MW_SEARCH__URL` | unset | Required for the remote backends, e.g. `http://opensearch:9200`. |
+| `search.timeout_ms` | `MW_SEARCH__TIMEOUT_MS` | `30000` | Request timeout for remote backend HTTP calls. Must be greater than zero; bounds `_bulk`, `_delete_by_query`, and `_refresh` so an unresponsive cluster cannot blackhole the server or CLI. |
 | `object_store.backend` | `MW_OBJECT_STORE__BACKEND` | `local` | `local`, `s3`, `garage`. |
 | `object_store.bucket` | `MW_OBJECT_STORE__BUCKET` | unset | Required for `s3`/`garage`. |
 | `object_store.endpoint` | `MW_OBJECT_STORE__ENDPOINT` | unset | Required for `s3`/`garage`. See the reachability caveat below. |
@@ -542,24 +543,36 @@ of truth:
 ```sh
 microwave-ctl --config /etc/microwave/microwave.toml reindex
 microwave-ctl --config /etc/microwave/microwave.toml reindex --org acme
+microwave-ctl --config /etc/microwave/microwave.toml reindex --org acme --purge
 ```
 
 It indexes nodes, roles, environments, clients, and every data bag item for
 all organizations (or the selected one) and prints per-type acknowledged
-counts. Bulk responses are checked item by item: HTTP 200 with `errors:true`
-or any failed item/status aborts the command, so it cannot silently report
-success when the cluster rejected documents, and rejected documents are not
-counted. Indexing uses one bulk write per document, so very large installations
-take time; run it during a maintenance window. With
-`search.backend = "embedded"` it prints the relational document counts and
-reports that relational search is authoritative instead of doing wasted work.
+counts. Documents are sent through `index_many` in `_bulk` requests of up to
+500 documents, and `POST /chef/_refresh` runs when the rebuild finishes so the
+results are immediately searchable. Bulk responses are checked item by item:
+HTTP 200 with `errors:true` or any failed item/status aborts the command, so it
+cannot silently report success when the cluster rejected documents, and
+rejected documents are not counted. With `search.backend = "embedded"` it
+prints the relational document counts and reports that relational search is
+authoritative instead of doing wasted work.
 
-The reindex adds or replaces documents by store id. It does **not** delete
-documents for objects that were removed while the remote backend was inactive.
-To purge those, stop the server, delete the remote `chef` index, and run the
-reindex before resuming traffic. Running a reindex while the server is serving
-is safe but concurrent writes may be indexed by the server as well; both paths
-converge on the same document id.
+By default the reindex adds or replaces documents by store id. It does **not**
+delete documents for objects that were removed while the remote backend was
+inactive. Pass `--purge` to delete each visited organization's existing remote
+documents with `_delete_by_query` before rebuilding them. A missing `chef`
+index is treated as nothing to purge. The delete response is checked for
+`timed_out`, `failures`, version conflicts, and fewer deleted documents than
+matched; any of those aborts the command before the purge is reported as
+complete. Purging is destructive: if the command is interrupted after the
+delete, that organization stays unsearchable until the reindex is run again.
+Running a reindex while the server is serving is supported, but concurrent
+writes may be indexed by the server as well; both paths converge on the same
+document id.
+
+Remote backend HTTP calls use `search.timeout_ms` (default 30 seconds), so an
+unreachable or stalled cluster fails the command instead of hanging
+indefinitely.
 
 ### Object store
 
@@ -1036,10 +1049,13 @@ dropped — drain traffic at the load balancer before stopping or restarting.
   OpenSearch/Elasticsearch cluster from the relational store and reports
   per-type acknowledged counts; it fails loudly on the first transport error or
   failed bulk item, including when `_bulk` returns HTTP 200 with `errors:true`.
-  It does not delete documents for objects removed while the remote backend was
-  inactive. To purge stale documents, stop the server, delete the remote
-  `chef` index, and reindex before resuming traffic. With the embedded backend
-  it only prints relational counts, because the store is the index.
+  By default it does not delete documents for objects removed while the remote
+  backend was inactive. Pass `--purge` to delete each visited organization's
+  remote documents with `_delete_by_query` before rebuilding; the command
+  refreshes the index when it finishes. Purging is destructive, so an
+  interrupted run leaves that organization unsearchable until it is re-run.
+  With the embedded backend it only prints relational counts, because the store
+  is the index.
 - **PostgreSQL client tools.** `microwave-ctl backup`/`restore` shell out to
   `pg_dump`/`pg_restore`; install the matching major version on the host or run
   them from a maintenance container. `psql` likewise needs the client tool.
@@ -1092,7 +1108,7 @@ requires restoring that backup.
 | Sandbox completion returns `503` | The object store reports the uploaded checksum as missing. Check `endpoint` reachability from the server and bucket permissions. |
 | Cookbook download URLs point at `0.0.0.0` or an internal name | Local object store uses `server.bind`; switch to S3/Garage or bind a client-reachable address. |
 | `401` from `chef-client` after migration | Client/server clock skew beyond `auth.skew_seconds`, or the client key was not imported. Check `microwave-ctl list-user-keys` / `list-client-keys`. |
-| Search returns no rows after switching backends | Run `microwave-ctl reindex` to backfill the remote cluster; check `search.url` and the cluster health. Reindex does not purge documents for already-deleted objects. |
+| Search returns no rows after switching backends | Run `microwave-ctl reindex` to backfill the remote cluster; check `search.url`, `search.timeout_ms`, and the cluster health. Add `--purge` only when stale documents for already-deleted objects must be removed. |
 | `maintenance on` still serves requests | Check `microwave-ctl maintenance status` and that all replicas share the same database; `/_status` and `/_stats` are intentionally exempt. |
 | `psql` fails with `failed to run sqlite3` | Install `sqlite3` on the host (present in the container image). |
 | Server stops instantly on `SIGTERM` | Expected: no graceful-shutdown handler. Drain traffic before stopping. |

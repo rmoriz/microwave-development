@@ -42,7 +42,14 @@ impl Config {
             .map_err(|message| ConfigError::InvalidValue {
                 key: "server.tls".into(),
                 value: message,
-            })
+            })?;
+        if self.search.timeout_ms == 0 {
+            return Err(ConfigError::InvalidValue {
+                key: "search.timeout_ms".into(),
+                value: "0".into(),
+            });
+        }
+        Ok(())
     }
 
     /// Load configuration from an explicit path, `MW_CONFIG`, `./microwave.toml`,
@@ -80,7 +87,7 @@ impl Config {
     /// - `MW_PATHS__DATA_DIR`
     /// - `MW_DATABASE__DRIVER`, `MW_DATABASE__URL`
     /// - `MW_STORAGE__COMPRESSION`
-    /// - `MW_SEARCH__BACKEND`, `MW_SEARCH__URL`
+    /// - `MW_SEARCH__BACKEND`, `MW_SEARCH__URL`, `MW_SEARCH__TIMEOUT_MS`
     /// - `MW_OBJECT_STORE__BACKEND`, `MW_OBJECT_STORE__BUCKET`, `MW_OBJECT_STORE__ENDPOINT`
     /// - `MW_OBJECT_STORE__REGION`, `MW_OBJECT_STORE__ACCESS_KEY`,
     ///   `MW_OBJECT_STORE__SECRET_KEY`, `MW_OBJECT_STORE__PATH_STYLE`
@@ -159,6 +166,9 @@ impl Config {
         }
         if let Ok(value) = std::env::var("MW_SEARCH__URL") {
             self.search.url = Some(value);
+        }
+        if let Ok(value) = std::env::var("MW_SEARCH__TIMEOUT_MS") {
+            self.search.timeout_ms = parse_value("MW_SEARCH__TIMEOUT_MS", value)?;
         }
         if let Ok(value) = std::env::var("MW_OBJECT_STORE__BACKEND") {
             self.object_store.backend = match value.to_ascii_lowercase().as_str() {
@@ -433,6 +443,12 @@ pub enum StorageCompression {
 pub struct SearchConfig {
     pub backend: SearchBackend,
     pub url: Option<String>,
+    /// Request timeout in milliseconds for remote backends.
+    ///
+    /// A bounded timeout keeps `_bulk`, `_delete_by_query`, and `_refresh`
+    /// requests from hanging forever when the cluster is unreachable or
+    /// unresponsive. Must be greater than zero.
+    pub timeout_ms: u64,
 }
 
 impl Default for SearchConfig {
@@ -440,6 +456,7 @@ impl Default for SearchConfig {
         Self {
             backend: SearchBackend::Embedded,
             url: None,
+            timeout_ms: 30_000,
         }
     }
 }

@@ -8,7 +8,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 >
 > **Verified:** `cargo test --workspace`, clippy with `-D warnings`, and `cargo fmt --check` are green. PostgreSQL integration covers the store, HTTP runtime, operational CLI, and snapshot export/import against PostgreSQL 18, and the server can be started with `MW_DATABASE__DRIVER=postgres`. The Debian trixie container image builds and both binaries start. Core pedant: 651 passed / 1 failed / 8 pending; the single failure is the known plain-HTTP `header_spec.rb` artifact. Extended pedant (final, after PostgreSQL runtime, operations, TLS, keygen cache, compression, CLI surface, TLS reload, and dual-backend matrix): 3,280 passed / 0 failed / 7 pending; all eleven extended tags pass. A strict stock `chef-client` converge now passes with both compatibility shims disabled (`MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0`), including validator registration.
 >
-> **Still open:** keeping the extended pedant suite green in CI; purging stale documents during a remote search reindex (the remote rebuild backfills but does not delete orphaned documents); expanding the store-level dual-backend matrix to full HTTP-route parity; OpenSearch 3.x evaluation; HA/performance validation; outbound telemetry export (intentionally disabled, no phone-home); data-collector mutation action notifications; and non-systemd service supervision. `reconfigure`, remote `reindex`, the pedant runner, systemd `service` management, and the tar backup format are implemented. Data Collector forwarding, `required_recipe`, maintenance 503, metrics/`_stats`, transparent compression, TLS (including SIGHUP/periodic certificate rotation), and the keygen cache are implemented.
+> **Still open:** keeping the extended pedant suite green in CI; expanding the store-level dual-backend matrix to full HTTP-route parity; OpenSearch 3.x evaluation; HA/performance validation; outbound telemetry export (intentionally disabled, no phone-home); data-collector mutation action notifications; and non-systemd service supervision. `reconfigure`, remote `reindex` (batched `_bulk`, refresh, and optional `--purge`), the pedant runner, systemd `service` management, and the tar backup format are implemented. Data Collector forwarding, `required_recipe`, maintenance 503, metrics/`_stats`, transparent compression, TLS (including SIGHUP/periodic certificate rotation), and the keygen cache are implemented.
 
 ---
 
@@ -258,9 +258,10 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 > tools for PostgreSQL. A directory or a single tar archive can be used for
 > either backend. `reconfigure` validates, initializes/migrates, and reports
 > without restarting a server. `reindex` prints relational counts for the
-> embedded backend and backfills remote OpenSearch/Elasticsearch documents,
-> counting only acknowledged bulk items; it does not purge remote documents for
-> already-deleted objects.
+> embedded backend and backfills remote OpenSearch/Elasticsearch documents in
+> chunked `_bulk` requests, counting only acknowledged items and refreshing the
+> index when done. `reindex --purge` first deletes each visited organization's
+> remote documents; without it the reindex stays additive.
 - [ ] Full upstream command/flag parity. The clap surface is implemented; the remaining gaps are `user-edit`, `cleanup`, `cleanup-bifrost`, `filtered-dump`, `rotate-credentials`, `rotate-all-credentials`, `rotate-shared-secrets`, `oc-id-show-app`, and `gather-logs`.
   - [x] Install `chef-server-ctl` as a compatibility alias to `microwave-ctl`.
   - [x] Org & User commands: `user-list`, `user-show`, `user-create`, `user-delete`, `org-list`, `org-show`, `org-create`, `org-delete`, `org-user-add`, `org-user-remove`, `password`.

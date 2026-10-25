@@ -142,7 +142,7 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
         Command::Reconfigure => commands::reconfigure(&context),
         Command::HaStatus => diagnostics::ha_status(&context),
         Command::Psql { args } => diagnostics::psql(&context, &args),
-        Command::Reindex { org } => commands::reindex(&context, org.as_deref()),
+        Command::Reindex { org, purge } => commands::reindex(&context, org.as_deref(), purge),
         Command::Backup { path, format, tar } => backup::backup(
             &context,
             &path,

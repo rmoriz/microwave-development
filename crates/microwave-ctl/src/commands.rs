@@ -228,7 +228,7 @@ pub fn password(context: &Context, username: &str) -> Result<(), CtlError> {
     Ok(())
 }
 
-pub fn reindex(context: &Context, org: Option<&str>) -> Result<(), CtlError> {
+pub fn reindex(context: &Context, org: Option<&str>, purge: bool) -> Result<(), CtlError> {
     let store = context.open_metadata_store()?;
     let backend =
         microwave_api::search::build_search_backend(&context.config.search, store.store_arc())
@@ -239,6 +239,7 @@ pub fn reindex(context: &Context, org: Option<&str>) -> Result<(), CtlError> {
             backend.as_ref(),
             store.store(),
             org,
+            purge,
         ))
         .map_err(|error| CtlError::message(format!("reindex failed: {error}")))?;
 
@@ -247,7 +248,8 @@ pub fn reindex(context: &Context, org: Option<&str>) -> Result<(), CtlError> {
         Some(org) => println!("organization: {org}"),
         None => println!("organizations: {}", report.organizations),
     }
-    if backend.name() == "embedded" {
+    let embedded = backend.name() == "embedded";
+    if embedded {
         println!(
             "relational search is authoritative; the embedded backend reads the store directly, so there is no external index to rebuild"
         );
@@ -259,10 +261,17 @@ pub fn reindex(context: &Context, org: Option<&str>) -> Result<(), CtlError> {
     println!("clients: {}", report.clients);
     println!("data_bags: {}", report.data_bags);
     println!("data_bag_items: {}", report.data_bag_items);
-    if backend.name() != "embedded" {
-        println!(
-            "note: reindex adds or replaces documents by id; documents for deleted objects remain in the remote index until it is rebuilt from scratch"
-        );
+    if !embedded {
+        if purge {
+            println!("purged_organizations: {}", report.purged_organizations);
+            println!(
+                "note: --purge completed without reported delete failures and the rebuilt index was refreshed; verify search results before resuming traffic"
+            );
+        } else {
+            println!(
+                "note: reindex adds or replaces documents by id; documents for deleted objects remain in the remote index. Re-run with --purge to delete each organization's existing remote documents before reindexing"
+            );
+        }
     }
     Ok(())
 }

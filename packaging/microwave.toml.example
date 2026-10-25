@@ -70,13 +70,20 @@ backend = "embedded"
 # --- OpenSearch / Elasticsearch (HA profiles) -----------------------------
 # backend = "opensearch"
 # url = "http://opensearch:9200"
+# Request timeout in milliseconds for remote `_bulk`, `_delete_by_query`, and
+# `_refresh` calls. Must be greater than zero.
+# timeout_ms = 30000
 # The backend writes to the `chef` index and sends the organization and
 # object-type constraints as a filter query, matching upstream.
 #
 # Switching a populated installation from `embedded` to a remote backend does
-# not backfill documents: `microwave-ctl reindex` is a no-op today, so only
-# objects written after the switch are indexed. Plan a maintenance window and
-# re-push cookbooks/nodes, or wait for the reindex implementation.
+# not backfill documents automatically. Run `microwave-ctl reindex` to rebuild
+# them from the relational store. The default reindex adds or replaces
+# documents by id and leaves documents for deleted objects in place; pass
+# `--purge` to delete each organization's existing remote documents first.
+# `--purge` is destructive: an interrupted run can leave the organization
+# unsearchable until the reindex is run again. Run reindex during a maintenance
+# window.
 
 [object_store]
 # `local` serves /bookshelf from <data_dir>/bookshelf.
