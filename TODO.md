@@ -8,7 +8,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 >
 > **Verified:** `cargo test --workspace`, clippy with `-D warnings`, and `cargo fmt --check` are green. PostgreSQL integration: 16 store tests plus 2 HTTP runtime tests pass against PostgreSQL 18, and the server can be started with `MW_DATABASE__DRIVER=postgres`. The Debian trixie container image builds and both binaries start. Core pedant: 651 passed / 1 failed / 8 pending; the single failure is the known plain-HTTP `header_spec.rb` artifact. Extended pedant (final, after PostgreSQL runtime): 3,280 passed / 0 failed / 7 pending; all eleven extended tags pass. A strict stock `chef-client` converge now passes with both compatibility shims disabled (`MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0`), including validator registration.
 >
-> **Still open:** keeping the extended pedant suite green in CI; the remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup); TLS listener, keygen cache, transparent compression, and the dual-backend test matrix; OpenSearch 3.x evaluation; HA/performance validation; and Data Collector/`required_recipe` plus telemetry export.
+> **Still open:** keeping the extended pedant suite green in CI; the remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup); TLS listener, keygen cache, transparent compression, and the dual-backend test matrix; OpenSearch 3.x evaluation; HA/performance validation; outbound telemetry export (intentionally disabled, no phone-home); and data-collector mutation action notifications. Data Collector forwarding, `required_recipe`, maintenance 503, and metrics/`_stats` are implemented.
 
 ---
 
@@ -244,10 +244,12 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [ ] Verify against `oc-chef-pedant/spec/api/oc_id_spec.rb`.
 
 ### 5.2 Data Collector & Required Recipe (`microwave-api`)
-- [ ] Implement `POST /organizations/:org/data-collector` endpoint (token & signature validation, upstream HTTP forwarding pool).
-- [ ] Implement optional `oc_chef_action` mutation webhook notifications to data collector.
-- [ ] Implement `required_recipe` support if enabled in config (`required_recipe_spec.rb`).
-- [ ] Verify against `compliance_proxy_spec.rb` and `required_recipe_spec.rb`.
+- [x] Implement `POST /organizations/:org/data-collector` endpoint (token & signature validation, bounded upstream `reqwest` forwarding, status/body preservation).
+- [ ] Implement optional `oc_chef_action` mutation webhook notifications to data collector. (Forwarding of client-submitted payloads is complete; server-side mutation notifications remain.)
+- [x] Implement `required_recipe` support if enabled in config (`required_recipe_spec.rb`).
+- [x] Verify `required_recipe_spec.rb` under pedant (6 examples, 0 failures). Rust integration tests cover both enabled and disabled behavior; no vendored data-collector pedant spec exists.
+- [ ] Compliance-profile proxy forwarding (`compliance_proxy_spec.rb`) remains a separate feature from data-collector payload forwarding.
+- [x] Parse `data_collector` (`root_url`, `token`, `timeout`) and `telemetry` configuration with `MW_*` overrides. Telemetry defaults to disabled and has no external sender; the `telemetry` table exists in both SQLite and PostgreSQL.
 
 ### 5.3 Control CLI (`microwave-ctl`, `chef-server-ctl` compatibility alias)
 - [ ] Implement CLI argument parser (`clap`) matching `chef-server-ctl` command and flag syntax:

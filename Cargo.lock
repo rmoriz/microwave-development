@@ -1348,6 +1348,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "chrono",
+ "libc",
  "microwave-authz",
  "microwave-config",
  "microwave-crypto",
@@ -1359,6 +1360,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "subtle",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -1414,6 +1416,7 @@ dependencies = [
  "microwave-store",
  "thiserror 2.0.21",
  "tokio",
+ "url",
  "uuid",
 ]
 

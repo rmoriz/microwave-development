@@ -16,6 +16,11 @@ fn defaults_are_safe_and_local() {
     assert_eq!(c.object_store.backend, ObjectStoreBackend::Local);
     assert_eq!(c.auth.skew_seconds, 900);
     assert_eq!(c.auth.superuser_name, "pivotal");
+    assert!(!c.data_collector.is_configured());
+    assert_eq!(c.data_collector.timeout, 30_000);
+    assert!(!c.required_recipe.enabled);
+    assert!(!c.telemetry.enabled);
+    assert_eq!(c.telemetry.interval_seconds, 86_400);
 }
 
 #[test]
@@ -156,4 +161,99 @@ fn env_overrides_s3_settings() {
     let result = c.apply_env();
     std::env::remove_var("MW_OBJECT_STORE__PATH_STYLE");
     assert!(result.is_err());
+}
+
+#[test]
+fn toml_configures_data_collector_required_recipe_and_telemetry() {
+    let c = Config::from_toml_str(
+        r#"
+        [data_collector]
+        root_url = "https://automate.example.com/data-collector/v0/"
+        token = "shared-secret"
+        timeout = 1500
+
+        [required_recipe]
+        enable = true
+        path = "/etc/microwave/required_recipe.rb"
+
+        [telemetry]
+        enabled = false
+        reporting_url = "https://telemetry.example.com/ingest"
+        interval_seconds = 3600
+    "#,
+    )
+    .unwrap();
+
+    assert!(c.data_collector.is_configured());
+    assert_eq!(
+        c.data_collector.root_url.as_deref(),
+        Some("https://automate.example.com/data-collector/v0/")
+    );
+    assert_eq!(c.data_collector.token.as_deref(), Some("shared-secret"));
+    assert_eq!(c.data_collector.timeout, 1500);
+    assert!(c.required_recipe.enabled);
+    assert_eq!(
+        c.required_recipe.path.as_deref(),
+        Some("/etc/microwave/required_recipe.rb")
+    );
+    assert!(!c.telemetry.enabled);
+    assert_eq!(
+        c.telemetry.reporting_url.as_deref(),
+        Some("https://telemetry.example.com/ingest")
+    );
+    assert_eq!(c.telemetry.interval_seconds, 3600);
+}
+
+#[test]
+fn env_overrides_data_collector_required_recipe_and_telemetry() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    for (key, value) in [
+        (
+            "MW_DATA_COLLECTOR__ROOT_URL",
+            "http://127.0.0.1:9999/ingest",
+        ),
+        ("MW_DATA_COLLECTOR__TOKEN", "env-token"),
+        ("MW_DATA_COLLECTOR__TIMEOUT", "2500"),
+        ("MW_REQUIRED_RECIPE__ENABLE", "true"),
+        ("MW_REQUIRED_RECIPE__PATH", "/tmp/recipe.rb"),
+        ("MW_TELEMETRY__ENABLED", "true"),
+        (
+            "MW_TELEMETRY__REPORTING_URL",
+            "https://telemetry.example.com",
+        ),
+        ("MW_TELEMETRY__INTERVAL_SECONDS", "120"),
+    ] {
+        std::env::set_var(key, value);
+    }
+
+    let mut c = Config::default();
+    c.apply_env().unwrap();
+
+    for key in [
+        "MW_DATA_COLLECTOR__ROOT_URL",
+        "MW_DATA_COLLECTOR__TOKEN",
+        "MW_DATA_COLLECTOR__TIMEOUT",
+        "MW_REQUIRED_RECIPE__ENABLE",
+        "MW_REQUIRED_RECIPE__PATH",
+        "MW_TELEMETRY__ENABLED",
+        "MW_TELEMETRY__REPORTING_URL",
+        "MW_TELEMETRY__INTERVAL_SECONDS",
+    ] {
+        std::env::remove_var(key);
+    }
+
+    assert_eq!(
+        c.data_collector.root_url.as_deref(),
+        Some("http://127.0.0.1:9999/ingest")
+    );
+    assert_eq!(c.data_collector.token.as_deref(), Some("env-token"));
+    assert_eq!(c.data_collector.timeout, 2500);
+    assert!(c.required_recipe.enabled);
+    assert_eq!(c.required_recipe.path.as_deref(), Some("/tmp/recipe.rb"));
+    assert!(c.telemetry.enabled);
+    assert_eq!(
+        c.telemetry.reporting_url.as_deref(),
+        Some("https://telemetry.example.com")
+    );
+    assert_eq!(c.telemetry.interval_seconds, 120);
 }

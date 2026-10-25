@@ -136,6 +136,24 @@ impl ApiError {
         }
     }
 
+    pub fn bad_gateway(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            message: message.into(),
+            not_found_kind: None,
+            error_as_string: false,
+        }
+    }
+
+    pub fn gateway_timeout(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::GATEWAY_TIMEOUT,
+            message: message.into(),
+            not_found_kind: None,
+            error_as_string: false,
+        }
+    }
+
     pub fn precondition_failed(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::PRECONDITION_FAILED,

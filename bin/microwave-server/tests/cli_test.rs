@@ -28,6 +28,35 @@ fn config_prints_json_defaults() {
 }
 
 #[test]
+fn config_redacts_database_data_collector_and_object_store_credentials() {
+    let output = Command::cargo_bin("microwave-server")
+        .unwrap()
+        .arg("config")
+        .env(
+            "MW_DATABASE__URL",
+            "postgres://microwave:s3cr3t@db.example.com/microwave",
+        )
+        .env("MW_DATA_COLLECTOR__TOKEN", "collector-token")
+        .env("MW_OBJECT_STORE__SECRET", "bookshelf-secret")
+        .env("MW_OBJECT_STORE__ACCESS_KEY", "access-key")
+        .env("MW_OBJECT_STORE__SECRET_KEY", "secret-key")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(!text.contains("s3cr3t"));
+    assert!(!text.contains("collector-token"));
+    assert!(!text.contains("bookshelf-secret"));
+    assert!(!text.contains("access-key"));
+    assert!(!text.contains("secret-key"));
+    assert!(text.contains("postgres://microwave:***@db.example.com/microwave"));
+    assert!(text.contains("\"token\": \"***\""));
+    assert!(text.contains("\"secret\": \"***\""));
+    assert!(text.contains("\"access_key\": \"***\""));
+    assert!(text.contains("\"secret_key\": \"***\""));
+}
+
+#[test]
 fn serve_check_reports_configuration_and_exits_successfully() {
     let dir = tempfile::tempdir().unwrap();
     let output = Command::cargo_bin("microwave-server")

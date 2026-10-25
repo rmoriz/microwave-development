@@ -87,3 +87,29 @@ skew_seconds = 900
 # use `users.admin` for server-admin privileges; this name identifies the
 # account that cannot be demoted.
 superuser_name = "pivotal"
+
+[data_collector]
+# Setting root_url enables POST /organizations/:org/data-collector and forwards
+# the JSON payload to Automate or another collector. Leave unset to disable the
+# endpoint (it then returns 404, which chef-client treats as normal).
+# root_url = "https://automate.example.com/data-collector/v0/"
+# Shared token accepted from clients and sent upstream. It may also be stored
+# as the `data_collector.token` secret with:
+#   microwave-ctl set-secret data_collector token <token>
+# token = "replace-with-a-long-random-token"
+# Forwarding timeout in milliseconds (upstream default 30000). `timeout_ms` is
+# accepted as an alias.
+timeout = 30000
+
+[required_recipe]
+# Serve a server-enforced recipe at GET /organizations/:org/required_recipe.
+# The endpoint is absent (404 for every method) while disabled.
+enabled = false
+# path = "/etc/microwave/required_recipe.rb"
+
+[telemetry]
+# Reserved for compatibility. Microwave never phones home: telemetry is
+# disabled by default and no outbound sender is implemented.
+enabled = false
+# reporting_url = "https://telemetry.example.com/ingest"
+interval_seconds = 86400

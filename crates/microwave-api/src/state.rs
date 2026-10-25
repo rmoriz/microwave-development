@@ -4,6 +4,7 @@ use microwave_config::Config;
 use microwave_objectstore::ObjectStore;
 use microwave_store::{MetadataStore, Org, Principal, SqliteStore};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -18,6 +19,9 @@ pub struct AppState {
     pub search: Arc<dyn SearchBackend>,
     /// Process-local request metrics served by `GET /_stats`.
     pub metrics: Arc<Metrics>,
+    /// Shared connection pool for outbound compatibility forwards. Per-request
+    /// deadlines are applied by each caller so the pool can be reused safely.
+    pub(crate) http_client: reqwest::Client,
 }
 
 impl AppState {
@@ -29,6 +33,7 @@ impl AppState {
         object_store: Arc<dyn ObjectStore + Send + Sync>,
     ) -> Result<Self, SearchError> {
         let search = build_search_backend(&config.search, store.clone())?;
+        let http_client = build_http_client(&config)?;
         Ok(Self {
             store,
             sqlite: None,
@@ -36,6 +41,7 @@ impl AppState {
             object_store,
             search,
             metrics: Arc::new(Metrics::new()),
+            http_client,
         })
     }
 
@@ -50,6 +56,7 @@ impl AppState {
         object_store: Arc<dyn ObjectStore + Send + Sync>,
     ) -> Result<Self, SearchError> {
         let search = build_search_backend(&config.search, store.clone())?;
+        let http_client = build_http_client(&config)?;
         Ok(Self {
             store: store.clone(),
             sqlite: Some(store),
@@ -57,6 +64,7 @@ impl AppState {
             object_store,
             search,
             metrics: Arc::new(Metrics::new()),
+            http_client,
         })
     }
 
@@ -71,6 +79,22 @@ impl AppState {
             .as_deref()
             .expect("AppState::sqlite() called while running against a non-SQLite backend")
     }
+}
+
+fn build_http_client(config: &Config) -> Result<reqwest::Client, SearchError> {
+    let request_timeout = Duration::from_millis(config.data_collector.timeout.max(1));
+    reqwest::Client::builder()
+        .connect_timeout(request_timeout.min(Duration::from_secs(10)))
+        // `read_timeout` is what aborts a stalled response body after headers
+        // have arrived; the total deadline is applied per request.
+        .read_timeout(request_timeout)
+        // Compatibility forwards preserve upstream redirects rather than
+        // following them, matching nginx's proxy behavior.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| {
+            SearchError::Configuration(format!("failed to build shared HTTP client: {error}"))
+        })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -90,5 +114,16 @@ impl microwave_oauth::ProvidesOAuthState for AppState {
             store: self.store.clone(),
             config: self.config.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_http_client;
+    use microwave_config::Config;
+
+    #[test]
+    fn builds_a_shared_http_client_from_defaults() {
+        assert!(build_http_client(&Config::default()).is_ok());
     }
 }

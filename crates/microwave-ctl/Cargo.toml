@@ -15,4 +15,5 @@ microwave-migrate = { path = "../microwave-migrate" }
 microwave-store = { path = "../microwave-store" }
 thiserror.workspace = true
 tokio.workspace = true
+url.workspace = true
 uuid.workspace = true
