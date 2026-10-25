@@ -49,7 +49,10 @@ pub use archive::{
     ARCHIVE_BOOKSHELF_PREFIX, ARCHIVE_SECRETS_FILES_PREFIX, ARCHIVE_SECRETS_MANIFEST,
     ARCHIVE_SECRETS_PREFIX, ARCHIVE_SNAPSHOT_ENTRY,
 };
-pub use from_api::{crawl_from_api, from_api_with_options, read_private_key, FromApiOptions};
+pub use from_api::{
+    crawl_from_api, crawl_from_api_with_summary, from_api_with_options,
+    from_api_with_options_with_summary, read_private_key, BlobDownloadSummary, FromApiOptions,
+};
 pub use knife_backup::{
     apply_knife_backup_plan_postgres, apply_knife_backup_plan_postgres_with_options,
     apply_knife_backup_plan_sqlite, apply_knife_backup_plan_sqlite_with_options,

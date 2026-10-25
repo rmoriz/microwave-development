@@ -1034,6 +1034,13 @@ the legacy API never returns). `microwave-ctl migrate-from-legacy --input
 <snapshot>` imports that snapshot into the configured SQLite or PostgreSQL
 database.
 
+Pass `--bookshelf-dir DIR` to also copy cookbook file blobs into a local
+object-store tree at `DIR/organization-<org_id>/checksum-<md5>`. Existing
+checksums are skipped, relative file URLs are signed and resolved against
+`--url`, absolute presigned URLs are fetched directly, and every payload is
+MD5-verified before an atomic write. A blob is limited to 64 MiB and one crawl
+to 4 GiB. Without the flag `from-api` remains metadata-only.
+
 ### Importing a `knife ec backup` repository
 
 If the legacy server was backed up with `knife ec backup`, import that
@@ -1170,11 +1177,14 @@ snapshot or need to stage the copy yourself:
    `microwave-migrate import --database-url postgres://... --input ... --yes`
    with the same compression flags. Both import paths ask for confirmation
    unless `--yes` is given.
-4. **Copy cookbook blobs.** If the source is a local-bookshelf Microwave
-   installation, use `microwave-migrate export --archive` / `import --archive`
-   to carry `snapshot.json` plus `bookshelf/` in one validated archive. For a
-   `knife ec backup` source, `import-knife-backup` copies cookbook blobs into
-   the local object store itself. For other snapshot sources, place files under
+4. **Copy cookbook blobs.** For a live legacy server, pass
+   `--bookshelf-dir /var/lib/microwave/bookshelf` to `from-api` so the crawl
+   copies and verifies local blobs. If the source is a local-bookshelf
+   Microwave installation, use `microwave-migrate export --archive` /
+   `import --archive` to carry `snapshot.json` plus `bookshelf/` in one
+   validated archive. For a `knife ec backup` source, `import-knife-backup`
+   copies cookbook blobs into the local object store itself. For other
+   snapshot sources, place files under
    the object key layout `organization-<org_id>/checksum-<md5>` in
    `/var/lib/microwave/bookshelf/` for the local backend, or upload them to the
    configured S3 bucket under the same keys. The legacy Chef Server bookshelf

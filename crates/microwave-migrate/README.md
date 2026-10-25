@@ -72,6 +72,15 @@ microwave-migrate from-api \
   --api-version 2 \
   --output acme.json
 
+# Crawl metadata and copy cookbook file blobs into a local bookshelf tree
+microwave-migrate from-api \
+  --url https://chef.example.com \
+  --client-name migrator \
+  --key migrator.pem \
+  --org acme \
+  --bookshelf-dir /var/lib/microwave/bookshelf \
+  --output acme.json
+
 # Import a knife ec backup directory into SQLite and ./data/bookshelf
 microwave-migrate import-knife-backup \
   --input /var/backups/chef-knife \
@@ -130,6 +139,21 @@ create or modify the target database.
 and writes the snapshot atomically with owner-only permissions. It never
 writes the private key or a plaintext user password. If a request fails
 authentication, the crawl aborts and no output file is written.
+
+With `--bookshelf-dir DIR`, the crawler also copies cookbook file blobs. It
+collects each unique `(organization id, checksum)` pair while reading cookbook
+versions, skips a checksum when the target local object store already contains
+it, and writes through the local object store so files land at
+`DIR/organization-<org_id>/checksum-<md5>`. Relative file `url` values are
+resolved against `--url` and requested with the same Chef signature as
+metadata; absolute presigned bookshelf/S3 URLs are fetched directly. Bytes are
+verified with MD5 before the atomic write, so a failed download, non-2xx
+response, empty body, or checksum mismatch aborts the crawl without leaving a
+final blob. Error messages redact URL query parameters. One blob is capped at
+64 MiB and one crawl at 4 GiB. A second crawl against the same directory
+downloads only checksums that are still missing. `source.data_dir` records the
+bookshelf root when the flag is used. Cookbook files whose JSON entry has no
+`url` remain metadata-only and are not downloaded.
 
 ## Snapshot format
 
@@ -203,7 +227,7 @@ written without `--include-secrets` contains empty secret collections.
 | `generated_at` | RFC 3339 UTC export time. |
 | `source.kind` | `local-store` for local exports, `legacy-api` for crawler output. |
 | `source.url` | Legacy API URL for `legacy-api`; `null` otherwise. |
-| `source.data_dir` | Local data directory the snapshot was exported from. |
+| `source.data_dir` | Local data directory the snapshot was exported from, or the `--bookshelf-dir` root for a `from-api` crawl that copied blobs. |
 | `secrets_included` | `true` only when `--include-secrets` was used. Older snapshots without the field are treated as `false`. |
 | `data` | Table-shaped store rows, described below. |
 
@@ -632,10 +656,13 @@ web-UI keypair or parse/merge the private-chef secret document at runtime.
 ## Live legacy API crawler
 
 `from-api` reads the legacy server through its read-only HTTP API. It supports
-`--org NAME` to limit the crawl to one organization and `--api-version N`
-(default `2`) to set `X-Ops-Server-API-Version`. Every request is signed with
-`X-Ops-Sign: algorithm=sha256;version=1.3;` and the canonical path, body hash,
-user id, timestamp, and API version required by Chef's signature protocol.
+`--org NAME` to limit the crawl to one organization, `--api-version N`
+(default `2`) to set `X-Ops-Server-API-Version`, and `--bookshelf-dir DIR` to
+copy cookbook file blobs into a local object-store tree. Every request is
+signed with `X-Ops-Sign: algorithm=sha256;version=1.3;` and the canonical
+path, body hash, user id, timestamp, and API version required by Chef's
+signature protocol. Relative blob URLs use that signature; absolute presigned
+bookshelf/S3 URLs are fetched directly without adding Chef auth headers.
 
 ### What is crawled
 
@@ -646,7 +673,8 @@ user id, timestamp, and API version required by Chef's signature protocol.
 - groups and their actor/group membership
 - nodes, roles, and environments
 - data bags and data bag items
-- cookbooks and cookbook versions, including file checksums and metadata
+- cookbooks and cookbook versions, including file checksums and metadata;
+  with `--bookshelf-dir`, the referenced cookbook file blobs too
 - policies, policy revisions, policy groups, and group-to-revision assignments
 - object ACLs for organizations, users, clients, groups, nodes, roles,
   environments, data bags, cookbooks, policies, and policy groups
@@ -676,7 +704,9 @@ the client is preferred because ACLs are organization scoped.
 
 This slice does not crawl containers, cookbook artifacts (Policyfile
 artifacts), sandboxes/sandboxed checksums, OAuth applications, invitation
-records, search indexes, or cookbook blobs. It also does not copy user
-password hashes, which the legacy API never returns; users will need a
-password reset or an external identity provider after migration. Copy
-cookbook blobs/bookshelf data separately and let the search index rebuild.
+records, or search indexes. It also does not copy user password hashes, which
+the legacy API never returns; users will need a password reset or an external
+identity provider after migration. Cookbook file blobs are copied only with
+`--bookshelf-dir`; files whose JSON entry has no `url` remain metadata-only.
+Without the flag the crawl records metadata and checksum references exactly as
+before. The search index is derived data and rebuilds after import.
