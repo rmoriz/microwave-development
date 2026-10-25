@@ -56,7 +56,21 @@ microwave-migrate import-knife-backup \
   --bookshelf-dir /var/lib/microwave-new/bookshelf \
   --yes
 
-# Parse and count without touching the database or object store
+# Also import server-owned private material from an operator-managed directory
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --data-dir ./new-data \
+  --secrets-dir /root/chef-server-secrets \
+  --yes
+
+# The same material can be supplied as a bounded .tar/.tar.gz
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --data-dir ./new-data \
+  --secrets-archive /root/chef-server-secrets.tar.gz \
+  --yes
+
+# Parse and count without touching the database, object store, or secrets
 microwave-migrate import-knife-backup \
   --input /var/backups/chef-knife \
   --data-dir ./new-data \
@@ -291,6 +305,47 @@ Cookbooks are ChefFS directories, not server manifests. The importer:
 Environment `cookbook_versions` constraints are preserved in the environment
 body, so the existing dependency solver applies them unchanged.
 
+### Server-side private material
+
+Chef Infra Server (Erlang) stores only public keys for users and clients. A
+user's or client's private key is owned by that user/client and is not in a
+`knife ec backup` repository. This importer therefore cannot migrate client
+private keys; clients keep or regenerate their own keys and must be configured
+with the new server URL separately. Only server-owned private material can be
+migrated, and only when the operator explicitly supplies it.
+
+Use `--secrets-dir DIR` or `--secrets-archive FILE.tar[.gz]`. Without one of
+those flags no private server file is read or written. The importer maps:
+
+| Source | Default target | Mode |
+|---|---|---|
+| `pivotal.pem` | `<data>/pivotal.pem` | `0600` |
+| `pivotal.password` | `<data>/pivotal.password` | `0600` |
+| `webui_priv.pem` | `<data>/webui_priv.pem` | `0600` |
+| `webui_pub.pem` | `<data>/webui_pub.pem` | `0644` |
+| `objectstore.secret` | `<data>/objectstore.secret` | `0600` |
+| `private-chef-secrets.json` or `private_chef_secrets.json` | `<data>/private-chef-secrets.json` | `0600` |
+| `ssl/cert.pem` (preferred) or `cert.pem` | configured `server.tls.cert_path`, `--tls-cert`, or the same relative path under `<data>` | `0644` |
+| `ssl/key.pem` (preferred) or `key.pem` | configured `server.tls.key_path`, `--tls-key`, or the same relative path under `<data>` | `0600` |
+| `ca/**`, `nginx/ca/**` | `<data>/<same relative path>` | `0644` |
+
+`<data>` is `--data-dir` for SQLite, or `--secrets-target-dir` when supplied.
+With `--database-url`, the default is `paths.data_dir` from `--config`
+(otherwise the configured default, normally `./data`). Newly created parent
+directories are mode `0700`; existing directories are left unchanged.
+
+Existing target files are refused unless `--force` is supplied. Symlink
+targets are always refused, and writes use a temporary file plus rename so a
+failed write never leaves a partial secret file. The command prints counts,
+target paths, and modes only; it never prints file contents, password hashes,
+or key bytes.
+
+`--secrets-archive` accepts `.tar`, `.tar.gz`, and `.tgz`. Only regular files
+and directories are allowed. Paths must be relative with no `..` component,
+the archive must contain only the names in the table above (plus safe `ca/`
+and `nginx/ca/` trees), and symlinks, hardlinks, devices, and FIFOs are
+rejected. Directory entries outside those allowlisted prefixes are rejected.
+
 ### Intentional gaps
 
 - No HTTP, `--purge`, or deletion sync. Import merges/upserts; objects removed
@@ -304,6 +359,10 @@ body, so the existing dependency solver applies them unchanged.
   and OAuth registrations when the snapshot contains them.
 - Only the local object store is supported for blobs in this pass. Importing
   into an S3/Garage-backed deployment requires a separate blob upload.
+- Server-secret import is a validated file copy. It does not verify that a TLS
+  certificate/key pair matches, rotate or generate keys, or restart a running
+  server. Archives are not decrypted; wrapper tooling must protect the
+  operator-supplied archive at rest.
 - Cookbook files are buffered in memory while the directory is parsed. Very
   large multi-gigabyte backups should be split by organization or handled with
   a streaming importer in a future pass.

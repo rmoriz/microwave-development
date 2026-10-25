@@ -276,15 +276,18 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 > **Backend status:** export and import support both SQLite and PostgreSQL
 > through the shared versioned JSON snapshot. `import-knife-backup` also
 > supports both backends, writes cookbook blobs to a local object-store root,
-> and requires `--bookshelf-dir` with `--database-url`. The snapshot
-> intentionally omits `kvpair` secrets; use `microwave-ctl backup` for a full
-> database copy.
+> and requires `--bookshelf-dir` with `--database-url`. Explicit
+> `--secrets-dir`/`--secrets-archive` sources migrate server-owned private
+> material; client/user private keys are not stored server-side and remain
+> client-owned. The snapshot intentionally omits `kvpair` secrets; use
+> `microwave-ctl backup` for a full database copy.
 - [x] Implement **Mode 1: Archive / Backup Importer (`knife-ec-backup` directory):**
   - [x] `microwave-migrate import-knife-backup` parses a ChefFS backup directory offline, supports `--dry-run`, and requires confirmation/`--yes`.
   - [x] Import users (profiles, admin flag, legacy password hashes/salts from `key_dump.json`), organizations, associations, and invites.
   - [x] Import clients and multi-key records from `key_table_dump.json`/inline public keys (`actor_keys`), preserving key names, versions, and expiry.
   - [x] Import containers, groups, group nesting, and ACL graphs, including user ACLs, granular `users`/`clients`, and the standard global `server-admins`/read-access graph.
   - [x] Import nodes, roles, environments, data bags/items, and ChefFS cookbooks (metadata, frozen status, MD5 checksums, and local bookshelf blobs). Environment constraints are preserved in the environment bodies.
+  - [x] Import explicitly supplied server-owned private material (`pivotal.pem`/`pivotal.password`, web UI keys, `objectstore.secret`, `private-chef-secrets.json`, TLS certificate/key, and CA files) with `--secrets-dir` or allowlisted `.tar`/`.tar.gz`, overwrite protection, modes, and no content logging. Client/user private keys are not recoverable from the server.
   - [ ] Import cookbook artifacts, policies/policy groups, and `oc-id` OAuth applications. These are not present in a knife backup; snapshot import already handles them when a snapshot contains them.
   - [ ] Evaluate arbitrary Ruby in `metadata.rb` and import blobs into S3/Garage. The current parser is a tested DSL subset and blobs target the local object store.
 - [x] Implement **Mode 2: Live API Crawler:**

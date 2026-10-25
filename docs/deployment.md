@@ -78,6 +78,9 @@ The data directory contains:
 | `pivotal.pem` | Superuser private key, created on first start, mode `0600`. |
 | `pivotal.password` | Generated superuser password, created on first start, mode `0600`. |
 | `objectstore.secret` | Local `/bookshelf` HMAC secret, created on first start, mode `0600`. |
+| `webui_priv.pem` / `webui_pub.pem` | Optional legacy web-UI keypair migrated by `import-knife-backup --secrets-dir`; `0600` / `0644`. |
+| `private-chef-secrets.json` | Optional migrated upstream secret document, mode `0600`. |
+| `ssl/cert.pem`, `ssl/key.pem`, `ca/**` | Optional migrated TLS/CA material; copied to configured TLS paths or this data directory. |
 
 Nothing outside the data directory is written at runtime. The process does not
 need root, a home directory, or a local search service, Java, or Erlang stack.
@@ -948,6 +951,43 @@ microwave-migrate import-knife-backup \
   --dry-run
 ```
 
+Server-owned private material is not part of a knife backup. Supply it
+explicitly with `--secrets-dir` or `--secrets-archive` when migrating an
+existing installation's `pivotal.pem`, `pivotal.password`, web UI keys,
+`objectstore.secret`, `private-chef-secrets.json`, TLS certificate/key, and CA
+files:
+
+```sh
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --data-dir /var/lib/microwave \
+  --secrets-dir /root/chef-server-secrets \
+  --yes
+
+# target paths for TLS normally come from --config server.tls.cert_path/key_path
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --database-url postgres://microwave:secret@db/microwave \
+  --bookshelf-dir /var/lib/microwave/bookshelf \
+  --secrets-target-dir /var/lib/microwave \
+  --secrets-archive /root/chef-server-secrets.tar.gz \
+  --config /etc/microwave/microwave.toml \
+  --yes
+```
+
+Private files are written `0600`, public certificates/keys `0644`, and newly
+created parent directories `0700`. Existing targets are refused unless
+`--force` is supplied. `.tar`/`.tar.gz` archives are allowlisted and reject
+absolute paths, `..`, symlinks, hardlinks, devices, and FIFOs. No file
+contents are printed. Without a secrets source the importer reads and writes
+no private files.
+
+**Client/user private keys remain client-owned.** Chef Infra Server stores
+only public keys for clients and users, so no migration tool can recover their
+private keys from the server. Clients keep their existing keys or generate new
+ones, then point at the new server URL; update their local client configuration
+separately.
+
 The supported layout covers users and user ACLs, optional
 `key_dump.json`/`key_table_dump.json`, organizations, members/invitations,
 clients, containers, groups, nodes, roles, environments, data bags/items,
@@ -956,7 +996,9 @@ per-object ACLs, and ChefFS cookbook directories (`metadata.rb`/`metadata.json`,
 [`microwave-migrate` README](../crates/microwave-migrate/README.md#knife-ec-backup-directory-import)
 for the exact supported subset and remaining gaps (arbitrary Ruby in
 `metadata.rb`, cookbook artifacts/policies/policy groups, OAuth applications,
-S3/Garage blobs, and purge semantics).
+S3/Garage blobs, purge semantics, and the absence of client/user private keys).
+Server-secret import copies explicitly supplied files; it does not validate a
+TLS certificate/key pairing or restart a running server.
 
 The command merges/upserts into an existing store, so it asks for an
 interactive `yes` or `--yes`. Re-importing the same backup is idempotent.
