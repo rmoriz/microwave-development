@@ -74,10 +74,13 @@ cargo test -p microwave-store-postgres
 
 # Cross-backend matrix: SQLite always, PostgreSQL when the URL is set:
 cargo test -p microwave-store --test dual_backend
+cargo test -p microwave-api --test http_parity_test
+# CI can make a missing URL a hard failure instead of a skip:
+MICROWAVE_REQUIRE_POSTGRES=1 cargo test -p microwave-api --test http_parity_test
 
 # Start a disposable PostgreSQL container and run the whole PostgreSQL gate
-# (crate integration tests, dual-backend matrix, HTTP runtime/coverage, CLI,
-# and snapshot import/export):
+# (crate integration tests, dual-backend and HTTP parity matrices, HTTP
+# runtime/coverage, CLI, and snapshot import/export):
 scripts/run-postgres-tests.sh
 ```
 
@@ -85,17 +88,47 @@ scripts/run-postgres-tests.sh
 the matrix skip with an explicit `SKIP:` message when it is unset; when it is
 set, a connection or migration failure is a hard test failure. The script also
 skips only when Docker or its daemon is unavailable, so
-`cargo test --workspace` remains green on machines without Docker.
+`cargo test --workspace` remains green on machines without Docker. Set
+`MICROWAVE_REQUIRE_POSTGRES=1` (or `true`) in CI to turn the unset-URL,
+missing-Docker and missing-client-tool skip paths into hard failures. An
+explicit `MICROWAVE_TEST_SKIP_PG_CLIENT_TOOLS=1` remains the intentional
+opt-out for only the CLI-tool check.
 
 The dual-backend matrix lives in
 [`../microwave-store/tests/dual_backend.rs`](../microwave-store/tests/dual_backend.rs)
-and covers identity, authz/ACLs, objects, sandboxes/cookbooks, policies,
+and covers organization deletion (including the global read-access group and
+ACL rows), identity, authz/ACLs, objects, sandboxes/cookbooks, policies,
 artifacts, membership/invitations, OAuth, and KV/secrets. Names, checksums and
 organizations are unique per run, assertions are scoped to the fixture
 organization, and org-scoped fixtures plus test-created global groups are
 deleted afterwards. The shared `server-admins` group and maintenance KV flag
 remain. This lets the matrix and the crate tests run in parallel against one
 database.
+
+The HTTP parity matrix lives in
+[`../microwave-api/tests/http_parity_test.rs`](../microwave-api/tests/http_parity_test.rs).
+Each scenario runs once against in-memory SQLite and once against PostgreSQL
+through the real router, authentication middleware, object store and metadata
+store. The two transcripts must match on status code, `Location` and
+content-type headers, and response body. Only volatile values are normalized:
+generated ids/timestamps, generated key material, OAuth secrets/tokens, and the
+organization id/HMAC token embedded in bookshelf URLs. Coverage includes users,
+organizations, clients, keys, nodes, roles, environments, data bags, groups,
+containers, search, sandboxes, cookbooks, cookbook artifacts, depsolver,
+policies/policy groups, user/org/object/data-bag/artifact ACLs,
+membership/invitations, user deletion, OAuth application/token and v1
+identity/user routes, credential authentication, system recovery, organization
+deletion, license, status and stats. The PostgreSQL half skips only when
+`MICROWAVE_TEST_POSTGRES_URL` is unset; a configured but unreachable database
+fails loudly, and `MICROWAVE_REQUIRE_POSTGRES=1`/`true` turns the unset case
+into a hard failure for CI. It uses unique names per run, asserts every cleanup
+deletion, verifies client keys and sandbox rows are gone after an HTTP org
+deletion, checks that `server-admins` survives, sweeps every run-named global
+group and its ACL/authz rows, verifies the postcondition, and has a panic-safe
+PostgreSQL drop guard that reconnects on a dedicated thread and cleans the
+run's rows. OAuth HTML session/profile pages and remote
+OpenSearch/Elasticsearch remain covered by their dedicated suites rather than
+this matrix.
 
 Because every `#[tokio::test]` owns its runtime, the matrix cannot share one
 pool across tests. It applies the embedded schema once per test binary (in a
@@ -114,6 +147,25 @@ assertions against the same database must be serialized externally.
 
 ### Parity fixes found by the matrix
 
+- `delete_org` now removes the organization's
+  `<name>_read_access_group` global group, its authz entity and its ACL/
+  membership rows in both backends, in the same transaction as the org and its
+  dependent rows. A failure in global-group cleanup rolls the org deletion
+  back. `AuthzRepository` gained `list_global_groups` and
+  `delete_global_group` for that cleanup and for test postconditions.
+  PostgreSQL has a trigger-based failure-injection test that proves rollback
+  and `server-admins` preservation; SQLite and dual-backend tests prove the
+  successful atomic path. Previously every organization deletion left the
+  global read-access group behind.
+- `delete_org` now clears `cookbook_version_checksums`,
+  `cookbook_artifact_version_checksums`, cookbook/artifact version rows,
+  sandbox/checksum rows and client `actor_keys` in one transaction before the
+  organization cascade. Previously PostgreSQL returned an error whenever the
+  organization still owned a cookbook or artifact with uploaded checksums,
+  because those checksum foreign keys are `ON DELETE RESTRICT`; SQLite
+  succeeded. The HTTP parity matrix deletes an organization with a
+  checksum-backed cookbook and artifact and now gets the same `200 {}` as
+  SQLite.
 - `create_user_with_profile` now adds the default self grant and the
   `server-admins` group ACL entries (all permissions except `grant`), and adds
   admin users to that group, matching SQLite. Previously PostgreSQL users had

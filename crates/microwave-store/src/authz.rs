@@ -270,7 +270,44 @@ impl SqliteStore {
             name: name.into(),
         })
     }
+}
 
+fn delete_global_group_in_transaction(
+    transaction: &Transaction<'_>,
+    name: &str,
+) -> Result<(), StoreError> {
+    let authz_id: Option<String> = transaction
+        .query_row(
+            "SELECT authz_id FROM global_groups WHERE name = ?1",
+            [name],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(authz_id) = authz_id else {
+        return Ok(());
+    };
+
+    for statement in [
+        "DELETE FROM authz_acl_actor
+         WHERE target_authz_id = ?1 OR actor_authz_id = ?1",
+        "DELETE FROM authz_acl_group
+         WHERE target_authz_id = ?1 OR group_authz_id = ?1",
+        "DELETE FROM authz_group_actors
+         WHERE group_authz_id = ?1 OR actor_authz_id = ?1",
+        "DELETE FROM authz_group_groups
+         WHERE parent_group_authz_id = ?1 OR child_group_authz_id = ?1",
+    ] {
+        transaction.execute(statement, [&authz_id])?;
+    }
+    transaction.execute(
+        "DELETE FROM authz_entities WHERE authz_id = ?1",
+        [&authz_id],
+    )?;
+    transaction.execute("DELETE FROM global_groups WHERE name = ?1", [name])?;
+    Ok(())
+}
+
+impl SqliteStore {
     pub fn find_global_group(&self, name: &str) -> Result<Option<Group>, StoreError> {
         let connection = self.connection();
         Ok(connection
@@ -286,6 +323,35 @@ impl SqliteStore {
                 },
             )
             .optional()?)
+    }
+
+    pub fn list_global_groups(&self) -> Result<Vec<Group>, StoreError> {
+        let connection = self.connection();
+        let mut statement =
+            connection.prepare("SELECT id, authz_id, name FROM global_groups ORDER BY name")?;
+        let groups = statement
+            .query_map([], |row| {
+                Ok(Group {
+                    id: row.get(0)?,
+                    authz_id: row.get(1)?,
+                    name: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(groups)
+    }
+
+    /// Remove a global group and every row that references its authz entity.
+    ///
+    /// The explicit ACL/membership deletes keep this reliable even when a
+    /// caller opens SQLite without `foreign_keys = ON`; the store itself
+    /// normally enables cascades.
+    pub fn delete_global_group(&self, name: &str) -> Result<(), StoreError> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        delete_global_group_in_transaction(&transaction, name)?;
+        transaction.commit()?;
+        Ok(())
     }
 
     /// Resolve an ACL group name in the syntax used by Chef Server:
@@ -683,8 +749,27 @@ impl SqliteStore {
     }
 
     pub fn delete_org(&self, org_id: &str) -> Result<(), StoreError> {
-        let connection = self.connection();
-        connection.execute("DELETE FROM orgs WHERE id = ?1", params![org_id])?;
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        let name: Option<String> = transaction
+            .query_row("SELECT name FROM orgs WHERE id = ?1", [org_id], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        transaction.execute(
+            "DELETE FROM actor_keys
+             WHERE actor_type = 'client'
+               AND actor_id IN (SELECT id FROM clients WHERE org_id = ?1)",
+            params![org_id],
+        )?;
+        transaction.execute("DELETE FROM orgs WHERE id = ?1", params![org_id])?;
+        if let Some(name) = name {
+            // Keep the org row, its dependents and the global read-access
+            // group in one transaction. A failure here rolls the org delete
+            // back instead of leaving an unrecoverable half-deleted org.
+            delete_global_group_in_transaction(&transaction, &format!("{name}_read_access_group"))?;
+        }
+        transaction.commit()?;
         Ok(())
     }
 

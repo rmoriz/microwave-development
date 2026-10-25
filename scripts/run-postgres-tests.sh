@@ -13,10 +13,16 @@
 #                              Set to 1 to explicitly skip CLI backup/restore/
 #                              psql coverage when host pg_dump/pg_restore/psql
 #                              are unavailable. Without it, missing tools fail.
+#   MICROWAVE_REQUIRE_POSTGRES Set to 1 or true to turn the Docker SKIP paths
+#                              into hard failures. The script also exports this
+#                              for the test processes. An explicit
+#                              MICROWAVE_TEST_SKIP_PG_CLIENT_TOOLS=1 remains an
+#                              intentional opt-out of only the CLI-tool check.
 #
 # The script exits 0 with a SKIP message when Docker or its daemon is not
-# available, so CI without Docker stays green. The tests themselves also skip
-# cleanly when MICROWAVE_TEST_POSTGRES_URL is unset.
+# available, so CI without Docker stays green unless MICROWAVE_REQUIRE_POSTGRES
+# is 1/true, in which case the same conditions fail. The tests themselves also
+# skip cleanly when MICROWAVE_TEST_POSTGRES_URL is unset.
 
 set -euo pipefail
 
@@ -25,6 +31,12 @@ CONTAINER="microwave-postgres-test-$$"
 KEEP="${MICROWAVE_KEEP_POSTGRES:-0}"
 
 skip() {
+    case "${MICROWAVE_REQUIRE_POSTGRES:-0}" in
+        1|[Tt][Rr][Uu][Ee])
+            echo "ERROR: $* (MICROWAVE_REQUIRE_POSTGRES requires PostgreSQL)" >&2
+            exit 1
+            ;;
+    esac
     echo "SKIP: $*" >&2
     exit 0
 }
@@ -83,6 +95,9 @@ if [[ -z "$PORT" ]]; then
 fi
 
 export MICROWAVE_TEST_POSTGRES_URL="postgres://microwave:microwave@127.0.0.1:${PORT}/microwave_test"
+# CI gate: the parity matrix must not silently fall back to SQLite-only when
+# this script has already provisioned PostgreSQL.
+export MICROWAVE_REQUIRE_POSTGRES=1
 echo "PostgreSQL ready at 127.0.0.1:${PORT}; running tests..." >&2
 
 cargo test -p microwave-store-postgres "$@"
@@ -93,6 +108,9 @@ cargo test -p microwave-store --test dual_backend "$@"
 # they must run with the same disposable database.
 cargo test -p microwave-api --test postgres_runtime_test "$@"
 cargo test -p microwave-api --test postgres_http_coverage_test "$@"
+# The HTTP parity matrix re-runs the same signed scenarios against SQLite and
+# PostgreSQL and compares status, headers and normalized bodies.
+cargo test -p microwave-api --test http_parity_test "$@"
 # Operational CLI and snapshot tests run after the store suite because the
 # maintenance-flag assertions are global to the shared database.
 cargo test -p microwave-ctl-bin --test cli_test "$@"

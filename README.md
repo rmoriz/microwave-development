@@ -90,6 +90,27 @@ within the test binary and restores the previous flag even when an assertion
 panics; separate processes sharing one database must not run their maintenance
 assertions concurrently.
 
+### HTTP route parity
+
+[`crates/microwave-api/tests/http_parity_test.rs`](crates/microwave-api/tests/http_parity_test.rs)
+runs the same signed HTTP scenarios through SQLite and PostgreSQL and compares
+status, `Location`/content-type headers, and normalized bodies for users
+(including deletion), organizations, clients, keys, nodes, roles, environments,
+data bags, groups, containers, sandboxes, cookbooks, cookbook artifacts,
+policies/policy groups, search, user/org/object/data-bag/artifact ACLs,
+membership/invitations, OAuth application/token and v1 identity/user routes,
+credential authentication, system recovery, organization deletion (including
+dependent checksum, client-key, sandbox, ACL and global read-access-group rows,
+with atomic rollback and `server-admins` preservation), license, status/stats,
+and depsolver. The PostgreSQL half skips only when
+`MICROWAVE_TEST_POSTGRES_URL` is unset; set `MICROWAVE_REQUIRE_POSTGRES=1` or
+`true` to make an unset URL, missing Docker, or missing client tools a hard
+failure. Cleanup asserts every deletion, checks captured client keys and
+sandbox rows, verifies no run-named organizations, users, OAuth applications,
+or global groups survive, and keeps a panic-safe PostgreSQL drop guard.
+Remaining parity gaps are OAuth HTML session/profile pages and remote
+OpenSearch/Elasticsearch search, which rely on their dedicated suites.
+
 ## Deployment
 
 Docker, Docker Compose, systemd, backup/restore, migration, and the supported
@@ -132,7 +153,6 @@ supported as a `command:`/`docker run` override.
 - Keep the full extended `oc-chef-pedant` suite green in CI. All eleven extended tags pass; the remaining 7 pending examples are Pedant's own skips. The core suite is also near-green, with only the known plain-HTTP header artifact.
 - PostgreSQL operational tooling. The HTTP runtime, OAuth, authorization, search, bootstrap, `microwave-ctl`, `microwave-migrate`, and backup/restore run against PostgreSQL. PostgreSQL backups use `pg_dump`/`pg_restore` and require the matching client tools on the host. Remaining gaps are the snapshot's intentional omission of `kvpair` secrets, no multi-replica HA load validation, and no automated failover.
 - Service-management and reindex gaps. Remote search reindexing purges stale documents only when `--purge` is passed; the default remains additive. Service management is systemd-based (`systemctl`/`journalctl`) or an explicit foreground/container mode (`service start --foreground`); there is no built-in supervisor for Docker daemons, launchd, or detached processes. The pedant runner invokes the repository harness and therefore expects the checkout or a separately installed script.
-- Full HTTP-route dual-backend parity. The store-level matrix covers all eleven repository traits; HTTP-route parity relies on the existing SQLite API suites plus the PostgreSQL runtime and HTTP coverage tests.
 - OpenSearch 3.x evaluation and multi-node HA/performance validation.
 - Outbound telemetry export. The `telemetry` table (SQLite and PostgreSQL) and `telemetry.*` / `MW_TELEMETRY__*` configuration exist, but the sender is intentionally not implemented and defaults to disabled: Microwave never phones home. Operators can enable the flag for forward compatibility, but no background worker or external endpoint is contacted.
 - Optional data-collector mutation action notifications (`oc_chef_action`). The `POST /organizations/:org/data-collector` forwarding path itself is implemented.
