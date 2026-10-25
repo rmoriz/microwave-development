@@ -347,6 +347,11 @@ fn import_knife_backup_command(
         None => compression_from_config(&loaded),
     };
 
+    if replace_user_credentials && !merge_users {
+        return Err(MigrateError::Config(
+            "--replace-user-credentials requires --merge-users".into(),
+        ));
+    }
     if secrets_dir.is_none()
         && secrets_archive.is_none()
         && (tls_cert.is_some() || tls_key.is_some())
@@ -403,9 +408,12 @@ fn import_knife_backup_command(
             print_knife_summary(&plan);
             print_server_secrets_summary(secrets_plan.as_ref());
             if dry_run {
-                println!("Dry run: no changes were made; nothing was written");
+                println!(
+                    "Dry run: nothing was written; no metadata, bookshelf blobs, or server secrets were changed"
+                );
                 return Ok(());
             }
+            print_knife_confirmation_scope(replace_acls, replace_user_credentials);
             confirm_import(yes)?;
             apply_knife_backup_plan_sqlite_with_options(
                 &data_dir,
@@ -438,7 +446,9 @@ fn import_knife_backup_command(
             print_knife_summary(&plan);
             print_server_secrets_summary(secrets_plan.as_ref());
             if dry_run {
-                println!("Dry run: no changes were made; nothing was written");
+                println!(
+                    "Dry run: nothing was written; no metadata, bookshelf blobs, or server secrets were changed"
+                );
                 return Ok(());
             }
             let Some(bookshelf) = bookshelf_dir else {
@@ -447,6 +457,7 @@ fn import_knife_backup_command(
                         .into(),
                 ));
             };
+            print_knife_confirmation_scope(replace_acls, replace_user_credentials);
             confirm_import(yes)?;
             apply_knife_backup_plan_postgres_with_options(
                 &database_url,
@@ -492,6 +503,19 @@ fn print_server_secrets_summary(plan: Option<&ServerSecretsPlan>) {
             "  Server secret target: {} (mode {:04o})",
             write.target.display(),
             write.mode
+        );
+    }
+}
+
+fn print_knife_confirmation_scope(replace_acls: bool, replace_user_credentials: bool) {
+    if replace_acls {
+        println!(
+            "Confirmation scope: --replace-acls will replace ACLs and group membership for backup targets."
+        );
+    }
+    if replace_user_credentials {
+        println!(
+            "Confirmation scope: --replace-user-credentials will replace credentials/admin/profile/default keys for merged users."
         );
     }
 }

@@ -589,7 +589,7 @@ fn rejects_metadata_long_description_paths_outside_the_cookbook() {
         "name 'app'\nversion '1.2.3'\nlong_description IO.read(File.join(File.dirname(__FILE__), '../outside-README.txt'))\n",
     );
     let error = prepare_knife_backup(&backup).unwrap_err().to_string();
-    assert!(error.contains("single normal file"), "{error}");
+    assert!(error.contains("not a contained relative path"), "{error}");
 }
 
 #[cfg(unix)]
@@ -885,6 +885,42 @@ fn skips_empty_global_group_names() {
         .iter()
         .any(|group| group.name == "server-admins"));
     assert!(!plan
+        .summary
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("unknown group")));
+}
+
+#[test]
+fn user_acl_strips_global_prefix_and_skips_unknown_globals() {
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "global-prefix");
+    write_json(
+        &backup.join("user_acls/pivotal-global-prefix.json"),
+        &json!({
+            "read": {
+                "actors": ["pivotal-global-prefix"],
+                "groups": ["::admins", "::users", "::not-a-real-group"]
+            },
+            "create": { "actors": [], "groups": [] },
+            "update": { "actors": [], "groups": [] },
+            "delete": { "actors": [], "groups": [] },
+            "grant": { "actors": [], "groups": [] }
+        }),
+    );
+    let plan = prepare_knife_backup(&backup).unwrap();
+    let names: Vec<&str> = plan
+        .snapshot
+        .global_groups
+        .iter()
+        .map(|group| group.name.as_str())
+        .collect();
+    assert!(names.contains(&"server-admins"));
+    assert!(names.contains(&"users"));
+    assert!(!names.contains(&"::admins"));
+    assert!(!names.contains(&"::users"));
+    assert!(!names.contains(&"not-a-real-group"));
+    assert!(plan
         .summary
         .warnings
         .iter()
@@ -1286,4 +1322,380 @@ fn postgres_import_round_trip() {
     for checksum in cookbook.checksums {
         assert!(books.exists(&org.id, &checksum));
     }
+}
+
+#[test]
+fn merge_users_reconciles_server_admins_for_preserved_admin_state() {
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "admin-preserve");
+    let data = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let existing = store
+        .create_user(
+            "pivotal-admin-preserve",
+            "target-admin-preserve@example.com",
+            "bcrypt",
+            "target-hash",
+            "target-salt",
+            false,
+        )
+        .unwrap();
+    let server_admins = store.ensure_global_group("server-admins").unwrap();
+    store
+        .add_group_member(&server_admins.authz_id, &existing.authz_id)
+        .unwrap();
+    let other = store
+        .create_user(
+            "other-admin-preserve",
+            "other-admin-preserve@example.com",
+            "bcrypt",
+            "other-hash",
+            "other-salt",
+            true,
+        )
+        .unwrap();
+    store
+        .add_group_member(&server_admins.authz_id, &other.authz_id)
+        .unwrap();
+    drop(store);
+
+    let plan = prepare_knife_backup(&backup).unwrap();
+    apply_knife_backup_plan_sqlite_with_options(
+        data.path(),
+        &plan,
+        &data.path().join("bookshelf"),
+        Compression::None,
+        &KnifeBackupApplyOptions {
+            merge_users: true,
+            replace_acls: false,
+            replace_user_credentials: false,
+        },
+    )
+    .unwrap();
+
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let imported = store.find_user("pivotal-admin-preserve").unwrap().unwrap();
+    assert_eq!(imported.id, existing.id);
+    assert!(!imported.admin, "preserved target admin flag must win");
+    let members = store
+        .list_group_members("", &server_admins.authz_id)
+        .unwrap()
+        .users;
+    assert!(
+        !members.contains(&imported.username),
+        "non-admin merged user must not stay in server-admins"
+    );
+    assert!(
+        members.contains(&other.username),
+        "target-only admin membership must be preserved"
+    );
+}
+
+#[test]
+fn merge_users_with_replace_credentials_removes_stale_server_admin() {
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "admin-demote");
+    let key_dump_path = backup.join("key_dump.json");
+    let mut key_dump: Value =
+        serde_json::from_str(&std::fs::read_to_string(&key_dump_path).unwrap()).unwrap();
+    key_dump[0]["admin"] = json!(false);
+    write_json(&key_dump_path, &key_dump);
+
+    let data = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let existing = store
+        .create_user(
+            "pivotal-admin-demote",
+            "target-admin-demote@example.com",
+            "bcrypt",
+            "target-hash",
+            "target-salt",
+            true,
+        )
+        .unwrap();
+    let server_admins = store.ensure_global_group("server-admins").unwrap();
+    store
+        .add_group_member(&server_admins.authz_id, &existing.authz_id)
+        .unwrap();
+    drop(store);
+
+    let plan = prepare_knife_backup(&backup).unwrap();
+    apply_knife_backup_plan_sqlite_with_options(
+        data.path(),
+        &plan,
+        &data.path().join("bookshelf"),
+        Compression::None,
+        &KnifeBackupApplyOptions {
+            merge_users: true,
+            replace_acls: false,
+            replace_user_credentials: true,
+        },
+    )
+    .unwrap();
+
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let imported = store.find_user("pivotal-admin-demote").unwrap().unwrap();
+    assert_eq!(imported.id, existing.id);
+    assert!(!imported.admin);
+    let members = store
+        .list_group_members("", &server_admins.authz_id)
+        .unwrap()
+        .users;
+    assert!(
+        !members.contains(&imported.username),
+        "demoted merged user must be removed from server-admins"
+    );
+}
+
+#[test]
+fn replace_user_credentials_removes_target_default_key_when_backup_has_none() {
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "drop-default");
+    let user_path = backup.join("users/pivotal.json");
+    let mut value: Value =
+        serde_json::from_str(&std::fs::read_to_string(&user_path).unwrap()).unwrap();
+    value.as_object_mut().unwrap().remove("public_key");
+    write_json(&user_path, &value);
+
+    let data = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let existing = store
+        .create_user(
+            "pivotal-drop-default",
+            "target-drop-default@example.com",
+            "bcrypt",
+            "target-hash",
+            "target-salt",
+            false,
+        )
+        .unwrap();
+    store
+        .add_actor_key(
+            &existing.id,
+            ActorType::User,
+            "default",
+            "TARGET-DEFAULT-KEY",
+        )
+        .unwrap();
+    drop(store);
+
+    let plan = prepare_knife_backup(&backup).unwrap();
+    apply_knife_backup_plan_sqlite_with_options(
+        data.path(),
+        &plan,
+        &data.path().join("bookshelf"),
+        Compression::None,
+        &KnifeBackupApplyOptions {
+            merge_users: true,
+            replace_acls: false,
+            replace_user_credentials: true,
+        },
+    )
+    .unwrap();
+
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let imported = store.find_user("pivotal-drop-default").unwrap().unwrap();
+    assert_eq!(imported.id, existing.id);
+    assert_eq!(imported.password_hash, "pivotal-hash");
+    assert!(
+        store
+            .find_actor_key(&existing.id, ActorType::User, "default")
+            .unwrap()
+            .is_none(),
+        "revocation mode must drop a target default key the backup does not supply"
+    );
+}
+
+#[test]
+fn merged_user_key_preservation_does_not_affect_non_merged_users() {
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), "mixed-key");
+    let data = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let existing = store
+        .create_user(
+            "pivotal-mixed-key",
+            "target-mixed-key@example.com",
+            "bcrypt",
+            "target-hash",
+            "target-salt",
+            true,
+        )
+        .unwrap();
+    store
+        .add_actor_key(
+            &existing.id,
+            ActorType::User,
+            "default",
+            "TARGET-PIVOTAL-KEY",
+        )
+        .unwrap();
+    drop(store);
+
+    let plan = prepare_knife_backup(&backup).unwrap();
+    apply_knife_backup_plan_sqlite_with_options(
+        data.path(),
+        &plan,
+        &data.path().join("bookshelf"),
+        Compression::None,
+        &KnifeBackupApplyOptions {
+            merge_users: true,
+            replace_acls: false,
+            replace_user_credentials: false,
+        },
+    )
+    .unwrap();
+
+    // The second import sees the non-merged alice with the same id/authz. The
+    // merged-user-only preservation must not keep her stale default key.
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let alice = store.find_user("alice-mixed-key").unwrap().unwrap();
+    store
+        .update_actor_key(
+            &alice.id,
+            ActorType::User,
+            "default",
+            None,
+            Some("STALE-ALICE-KEY"),
+            None,
+        )
+        .unwrap();
+    drop(store);
+
+    apply_knife_backup_plan_sqlite_with_options(
+        data.path(),
+        &plan,
+        &data.path().join("bookshelf"),
+        Compression::None,
+        &KnifeBackupApplyOptions {
+            merge_users: true,
+            replace_acls: false,
+            replace_user_credentials: false,
+        },
+    )
+    .unwrap();
+
+    let store = SqliteStore::open(&database(data.path())).unwrap();
+    let alice = store.find_user("alice-mixed-key").unwrap().unwrap();
+    let alice_key = store
+        .find_actor_key(&alice.id, ActorType::User, "default")
+        .unwrap()
+        .expect("non-merged default key");
+    assert_eq!(
+        alice_key.public_key, PUBLIC_KEY,
+        "a non-merged user's planned default key must be applied"
+    );
+    let pivotal_key = store
+        .find_actor_key(&existing.id, ActorType::User, "default")
+        .unwrap()
+        .expect("merged default key");
+    assert_eq!(
+        pivotal_key.public_key, "TARGET-PIVOTAL-KEY",
+        "a merged user's target default key must be preserved"
+    );
+}
+
+#[test]
+fn replace_acls_restores_target_state_after_postgres_failure() {
+    use microwave_store::{AuthzRepository, IdentityRepository, ObjectRepository};
+
+    let Some(url) = postgres_url() else {
+        return;
+    };
+    let suffix = format!(
+        "pg-acl-fail-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let root = tempfile::tempdir().unwrap();
+    let backup = fixture(root.path(), &suffix);
+    let bookshelf = root.path().join("bookshelf");
+    microwave_migrate::import_knife_backup_postgres_with_compression(
+        &url,
+        &backup,
+        &bookshelf,
+        Compression::None,
+    )
+    .unwrap();
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let store = runtime
+        .block_on(microwave_store_postgres::PostgresStore::connect(&url))
+        .expect("connect to configured PostgreSQL");
+    let org_name = format!("acme-{suffix}");
+    let bob_name = format!("bob-{suffix}");
+    let org = runtime
+        .block_on(store.find_org(&org_name))
+        .unwrap()
+        .unwrap();
+    let bob = runtime
+        .block_on(store.find_user(&bob_name))
+        .unwrap()
+        .unwrap();
+    let node = runtime
+        .block_on(store.find_node(&org.id, "web1"))
+        .unwrap()
+        .unwrap();
+    let ops = runtime
+        .block_on(store.find_group(&org.id, "ops"))
+        .unwrap()
+        .unwrap();
+    runtime
+        .block_on(store.set_acl(
+            &node.authz_id,
+            Permission::Create,
+            Some(&bob.authz_id),
+            None,
+        ))
+        .unwrap();
+    runtime
+        .block_on(store.add_group_member(&ops.authz_id, &bob.authz_id))
+        .unwrap();
+    drop(store);
+
+    let mut plan = prepare_knife_backup(&backup).unwrap();
+    plan.snapshot.nodes[0].id = "conflicting-node-id".into();
+    let error = apply_knife_backup_plan_postgres_with_options(
+        &url,
+        &plan,
+        &bookshelf,
+        Compression::None,
+        &KnifeBackupApplyOptions {
+            merge_users: false,
+            replace_acls: true,
+            replace_user_credentials: false,
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(!error.is_empty());
+
+    let store = runtime
+        .block_on(microwave_store_postgres::PostgresStore::connect(&url))
+        .expect("reconnect to configured PostgreSQL");
+    let node = runtime
+        .block_on(store.find_node(&org.id, "web1"))
+        .unwrap()
+        .unwrap();
+    let entries = runtime
+        .block_on(store.get_acl_entries(&node.authz_id))
+        .unwrap();
+    let create = entries
+        .iter()
+        .find(|entry| entry.permission == Permission::Create)
+        .unwrap();
+    assert!(create.users.contains(&bob_name));
+    let ops = runtime
+        .block_on(store.find_group(&org.id, "ops"))
+        .unwrap()
+        .unwrap();
+    let members = runtime
+        .block_on(store.list_group_members(&org.id, &ops.authz_id))
+        .unwrap();
+    assert!(members.users.contains(&bob_name));
 }

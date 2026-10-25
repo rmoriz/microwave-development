@@ -983,9 +983,9 @@ Private detection is extension/PEM-marker based, not DER inference. Existing
 targets are refused unless `--force` is supplied. `.tar`/`.tar.gz` archives are
 allowlisted and reject absolute paths, `..`, symlinks, hardlinks, devices, and
 FIFOs; a single legacy top-level directory wrapper is accepted. File, archive,
-and expanded-total size limits are enforced while reading. No file contents
-are printed. Without a secrets source the importer reads and writes no private
-files.
+expanded-total size, and file-count (4096) limits are enforced while reading.
+No file contents are printed. Without a secrets source the importer reads and
+writes no private files.
 
 Secret files are staged before any target is replaced and rolled back as a set
 on an ordinary commit error. A process crash during commit can still leave a
@@ -1022,7 +1022,11 @@ id. The importer fails with a clear error by default; pass `--merge-users` to
 reuse the existing id/authz id. Merged users keep non-empty target
 credentials, admin/recovery state, profile fields, and an existing default key
 unless `--replace-user-credentials` is also passed; a warning reports merged
-users with no backup key material. ACL and group-membership import is
+users with no backup key material. The importer then reconciles the effective
+`server-admins` membership to each merged user's final admin flag. With
+`--replace-user-credentials`, a merged user for whom the backup supplies no
+default key loses the target default key so revocation is complete; that flag
+requires `--merge-users`. ACL and group-membership import is
 additive by default; pass `--replace-acls` to replace ACLs and membership for
 targets/groups present in the backup, which is required to remove revoked
 grants. Groups inferred by the importer, such as global `users`, are not

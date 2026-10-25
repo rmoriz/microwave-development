@@ -537,3 +537,30 @@ fn refuses_both_sources() {
     let error = prepare_server_secrets(&options).unwrap_err().to_string();
     assert!(error.contains("either"), "{error}");
 }
+
+#[test]
+fn rejects_archives_with_more_entries_than_the_limit() {
+    let root = tempfile::tempdir().unwrap();
+    let archive = root.path().join("too-many.tar");
+    let file = std::fs::File::create(&archive).unwrap();
+    let mut builder = Builder::new(file);
+    for index in 0..4097 {
+        append_file(
+            &mut builder,
+            &format!("ca/cert-{index}.pem"),
+            b"CA CERTIFICATE\n",
+        );
+    }
+    builder.finish().unwrap();
+
+    let options = ServerSecretsOptions {
+        source_dir: None,
+        source_archive: Some(archive),
+        target_data_dir: root.path().join("data"),
+        tls_cert_target: None,
+        tls_key_target: None,
+        force: false,
+    };
+    let error = prepare_server_secrets(&options).unwrap_err().to_string();
+    assert!(error.contains("more than 4096 entries"), "{error}");
+}

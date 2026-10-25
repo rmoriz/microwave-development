@@ -313,6 +313,15 @@ pub fn import_knife_backup_postgres_with_compression(
     apply_knife_backup_plan_postgres(database_url, &plan, bookshelf_dir, compression)
 }
 
+fn validate_apply_options(options: &KnifeBackupApplyOptions) -> Result<(), MigrateError> {
+    if options.replace_user_credentials && !options.merge_users {
+        return Err(MigrateError::Config(
+            "--replace-user-credentials requires --merge-users".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Apply an already-parsed backup to SQLite with default merge behavior.
 pub fn apply_knife_backup_plan_sqlite(
     data_dir: &Path,
@@ -337,6 +346,7 @@ pub fn apply_knife_backup_plan_sqlite_with_options(
     compression: Compression,
     options: &KnifeBackupApplyOptions,
 ) -> Result<KnifeBackupSummary, MigrateError> {
+    validate_apply_options(options)?;
     let store = microwave_store::SqliteStore::open_with_compression(
         &data_dir.join(DATABASE_FILE),
         compression,
@@ -358,9 +368,11 @@ pub fn apply_knife_backup_plan_sqlite_with_options(
         }
     }
     let plan = reconcile_global_groups(plan, &existing_groups);
-    let plan = reconcile_users(&plan, &existing_users, &existing_default_keys, options)?;
+    let (plan, merged_admins) =
+        reconcile_users(&plan, &existing_users, &existing_default_keys, options)?;
     write_blobs(bookshelf_dir, &plan.blobs)?;
     let runtime = runtime()?;
+    let admin_state = runtime.block_on(capture_server_admin_memberships(&store, &merged_admins))?;
     let acl_state = if options.replace_acls {
         Some(runtime.block_on(capture_existing_acl_state(&store, &plan))?)
     } else {
@@ -377,6 +389,16 @@ pub fn apply_knife_backup_plan_sqlite_with_options(
         }
         return Err(error.into());
     }
+    if let Err(error) = runtime.block_on(reconcile_server_admin_memberships(&store, &merged_admins))
+    {
+        return Err(restore_admin_after_failure(
+            &runtime,
+            &store,
+            &admin_state,
+            error,
+        ));
+    }
+    runtime.block_on(remove_replaced_default_keys(&store, &merged_admins))?;
     Ok(plan.summary)
 }
 
@@ -404,6 +426,7 @@ pub fn apply_knife_backup_plan_postgres_with_options(
     compression: Compression,
     options: &KnifeBackupApplyOptions,
 ) -> Result<KnifeBackupSummary, MigrateError> {
+    validate_apply_options(options)?;
     validate_postgres_url(database_url)?;
     let runtime = runtime()?;
     let store = runtime.block_on(
@@ -429,8 +452,10 @@ pub fn apply_knife_backup_plan_postgres_with_options(
         }
     }
     let plan = reconcile_global_groups(plan, &existing_groups);
-    let plan = reconcile_users(&plan, &existing_users, &existing_default_keys, options)?;
+    let (plan, merged_admins) =
+        reconcile_users(&plan, &existing_users, &existing_default_keys, options)?;
     write_blobs(bookshelf_dir, &plan.blobs)?;
+    let admin_state = runtime.block_on(capture_server_admin_memberships(&store, &merged_admins))?;
     let acl_state = if options.replace_acls {
         Some(runtime.block_on(capture_existing_acl_state(&store, &plan))?)
     } else {
@@ -447,6 +472,16 @@ pub fn apply_knife_backup_plan_postgres_with_options(
         }
         return Err(error.into());
     }
+    if let Err(error) = runtime.block_on(reconcile_server_admin_memberships(&store, &merged_admins))
+    {
+        return Err(restore_admin_after_failure(
+            &runtime,
+            &store,
+            &admin_state,
+            error,
+        ));
+    }
+    runtime.block_on(remove_replaced_default_keys(&store, &merged_admins))?;
     Ok(plan.summary)
 }
 
@@ -531,15 +566,60 @@ fn reconcile_global_groups(
 /// This rewrites the source user's id/authz id and every reference to them so
 /// snapshot import updates the existing row instead of colliding on the unique
 /// username. Without `merge`, a collision is an explicit error.
+#[derive(Debug, Clone)]
+struct MergedUserAdmin {
+    id: String,
+    authz_id: String,
+    username: String,
+    admin: bool,
+    remove_target_default_key: bool,
+}
+
+/// Final admin/default-key state for every planned user that already exists in
+/// the target. This is computed after id/authz rewriting, so `existing` rows
+/// can be looked up by their target id.
+fn merged_admin_states(
+    snapshot: &StoreSnapshot,
+    matched: &[User],
+    options: &KnifeBackupApplyOptions,
+) -> Vec<MergedUserAdmin> {
+    matched
+        .iter()
+        .map(|existing| {
+            let source = snapshot
+                .users
+                .iter()
+                .find(|user| user.id == existing.id)
+                .or_else(|| {
+                    snapshot
+                        .users
+                        .iter()
+                        .find(|user| user.username == existing.username)
+                });
+            let has_source_default = snapshot.actor_keys.iter().any(|key| {
+                key.actor_type == "user" && key.actor_id == existing.id && key.key_name == "default"
+            });
+            MergedUserAdmin {
+                id: existing.id.clone(),
+                authz_id: existing.authz_id.clone(),
+                username: existing.username.clone(),
+                admin: source.map(|user| user.admin).unwrap_or(existing.admin),
+                remove_target_default_key: options.replace_user_credentials && !has_source_default,
+            }
+        })
+        .collect()
+}
+
 fn reconcile_users(
     plan: &KnifeBackupPlan,
     existing: &[User],
     existing_default_keys: &HashSet<String>,
     options: &KnifeBackupApplyOptions,
-) -> Result<KnifeBackupPlan, MigrateError> {
+) -> Result<(KnifeBackupPlan, Vec<MergedUserAdmin>), MigrateError> {
     let mut id_replacements: HashMap<String, String> = HashMap::new();
     let mut authz_replacements: HashMap<String, String> = HashMap::new();
     let mut merged_users: Vec<User> = Vec::new();
+    let mut matched_users: Vec<User> = Vec::new();
     for planned in &plan.snapshot.users {
         let Some(existing) = existing
             .iter()
@@ -547,6 +627,7 @@ fn reconcile_users(
         else {
             continue;
         };
+        matched_users.push(existing.clone());
         if existing.id == planned.id && existing.authz_id == planned.authz_id {
             continue;
         }
@@ -564,9 +645,14 @@ fn reconcile_users(
         }
     }
     if id_replacements.is_empty() && authz_replacements.is_empty() {
-        return Ok(plan.clone());
+        let admins = merged_admin_states(&plan.snapshot, &matched_users, options);
+        return Ok((plan.clone(), admins));
     }
 
+    let merged_ids: HashSet<String> = merged_users
+        .iter()
+        .map(|existing| existing.id.clone())
+        .collect();
     let mut snapshot = plan.snapshot.clone();
     let mut acl_targets = plan.acl_targets.clone();
     let mut summary = plan.summary.clone();
@@ -599,11 +685,16 @@ fn reconcile_users(
         }
     }
     if !options.replace_user_credentials {
+        let before = snapshot.actor_keys.len();
         snapshot.actor_keys.retain(|key| {
             !(key.actor_type == "user"
                 && key.key_name == "default"
+                && merged_ids.contains(&key.actor_id)
                 && existing_default_keys.contains(&key.actor_id))
         });
+        summary.actor_keys = summary
+            .actor_keys
+            .saturating_sub(before.saturating_sub(snapshot.actor_keys.len()));
     }
     for existing in &merged_users {
         if !snapshot
@@ -641,14 +732,18 @@ fn reconcile_users(
     }
     summary.warnings.sort();
     summary.warnings.dedup();
+    let merged_admins = merged_admin_states(&snapshot, &matched_users, options);
 
-    Ok(KnifeBackupPlan {
-        snapshot,
-        blobs: plan.blobs.clone(),
-        summary,
-        acl_targets,
-        group_authz_ids: plan.group_authz_ids.clone(),
-    })
+    Ok((
+        KnifeBackupPlan {
+            snapshot,
+            blobs: plan.blobs.clone(),
+            summary,
+            acl_targets,
+            group_authz_ids: plan.group_authz_ids.clone(),
+        },
+        merged_admins,
+    ))
 }
 
 fn preserve_user_profile(user: &mut UserRow, existing: &User) {
@@ -681,6 +776,114 @@ fn preserve_option(target: &mut Option<String>, existing: &Option<String>) {
 struct CapturedAclState {
     targets: Vec<(String, Vec<AclEntry>)>,
     groups: Vec<(String, String, GroupMembers)>,
+}
+
+struct ServerAdminMembershipState {
+    group_authz_id: Option<String>,
+    memberships: Vec<(String, bool)>,
+}
+
+async fn capture_server_admin_memberships<S: AuthzRepository + ?Sized>(
+    store: &S,
+    merged_users: &[MergedUserAdmin],
+) -> Result<ServerAdminMembershipState, MigrateError> {
+    if merged_users.is_empty() {
+        return Ok(ServerAdminMembershipState {
+            group_authz_id: None,
+            memberships: Vec::new(),
+        });
+    }
+    let group = store.find_global_group("server-admins").await?;
+    let current_users = match &group {
+        Some(group) => store.list_group_members("", &group.authz_id).await?.users,
+        None => Vec::new(),
+    };
+    Ok(ServerAdminMembershipState {
+        group_authz_id: group.map(|group| group.authz_id),
+        memberships: merged_users
+            .iter()
+            .map(|user| {
+                (
+                    user.authz_id.clone(),
+                    current_users.contains(&user.username),
+                )
+            })
+            .collect(),
+    })
+}
+
+async fn reconcile_server_admin_memberships<S: AuthzRepository + ?Sized>(
+    store: &S,
+    merged_users: &[MergedUserAdmin],
+) -> Result<(), MigrateError> {
+    if merged_users.is_empty() {
+        return Ok(());
+    }
+    let mut group = store.find_global_group("server-admins").await?;
+    if group.is_none() && merged_users.iter().any(|user| user.admin) {
+        group = Some(store.ensure_global_group("server-admins").await?);
+    }
+    let Some(group) = group else {
+        return Ok(());
+    };
+    for user in merged_users {
+        if user.admin {
+            store
+                .add_group_member(&group.authz_id, &user.authz_id)
+                .await?;
+        } else {
+            store
+                .remove_group_member(&group.authz_id, &user.authz_id)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn remove_replaced_default_keys<S: IdentityRepository + ?Sized>(
+    store: &S,
+    merged_users: &[MergedUserAdmin],
+) -> Result<(), MigrateError> {
+    for user in merged_users {
+        if !user.remove_target_default_key {
+            continue;
+        }
+        match store
+            .delete_actor_key(&user.id, ActorType::User, "default")
+            .await
+        {
+            Ok(()) | Err(StoreError::NotFound(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+async fn restore_server_admin_memberships<S: AuthzRepository + ?Sized>(
+    store: &S,
+    state: &ServerAdminMembershipState,
+) -> Result<(), MigrateError> {
+    if state.memberships.is_empty() {
+        return Ok(());
+    }
+    let group_authz_id = match &state.group_authz_id {
+        Some(authz_id) => Some(authz_id.clone()),
+        None => store
+            .find_global_group("server-admins")
+            .await?
+            .map(|group| group.authz_id),
+    };
+    let Some(group_authz_id) = group_authz_id else {
+        return Ok(());
+    };
+    for (authz_id, was_member) in &state.memberships {
+        if *was_member {
+            store.add_group_member(&group_authz_id, authz_id).await?;
+        } else {
+            store.remove_group_member(&group_authz_id, authz_id).await?;
+        }
+    }
+    Ok(())
 }
 
 async fn capture_existing_acl_state<S: AuthzRepository + ?Sized>(
@@ -783,6 +986,20 @@ fn restore_after_failure<S: AuthzRepository + ?Sized>(
         Ok(()) => error,
         Err(restore_error) => MigrateError::AclRollback(format!(
             "import failed: {error}; restoring the previous ACL state also failed: {restore_error}"
+        )),
+    }
+}
+
+fn restore_admin_after_failure<S: AuthzRepository + ?Sized>(
+    runtime: &tokio::runtime::Runtime,
+    store: &S,
+    state: &ServerAdminMembershipState,
+    error: MigrateError,
+) -> MigrateError {
+    match runtime.block_on(restore_server_admin_memberships(store, state)) {
+        Ok(()) => error,
+        Err(restore_error) => MigrateError::AdminRollback(format!(
+            "server-admins reconciliation failed: {error}; restoring membership also failed: {restore_error}"
         )),
     }
 }
@@ -933,6 +1150,10 @@ impl Builder {
             return Ok(());
         }
         let rows = json_rows(read_json(&path)?);
+        if rows.is_empty() {
+            self.warn("key_dump.json is empty; legacy user password hashes cannot be imported");
+            return Ok(());
+        }
         for row in rows {
             let Some(username) = string_field(&row, "username") else {
                 self.warn("key_dump.json contains a row without a username");
@@ -1100,7 +1321,14 @@ impl Builder {
             );
             return Ok(());
         }
-        for row in json_rows(read_json(&path)?) {
+        let rows = json_rows(read_json(&path)?);
+        if rows.is_empty() {
+            self.warn(
+                "key_table_dump.json is empty; only inline default public keys can be imported",
+            );
+            return Ok(());
+        }
+        for row in rows {
             let Some(name) = string_field(&row, "name") else {
                 self.warn("key_table_dump.json contains a row without a name");
                 continue;
@@ -2330,15 +2558,12 @@ impl Builder {
 
             for group in groups {
                 let group = group.trim();
-                if group.is_empty()
-                    || group
-                        .strip_prefix("::")
-                        .is_some_and(|name| name.trim().is_empty())
-                {
+                let global_name = group.strip_prefix("::").unwrap_or(group).trim();
+                if global_name.is_empty() {
                     continue;
                 }
                 if let Some(group_authz) = if user_acl {
-                    self.resolve_global_group(group)
+                    self.resolve_global_group(global_name)
                 } else {
                     self.resolve_group_authz(org_name, group)
                 } {
@@ -2414,12 +2639,19 @@ impl Builder {
             return None;
         }
         // Upstream's global admins group maps to Microwave's server-admins
-        // flag/group. Preserve every other non-empty global group by name.
+        // flag/group. Only standard global groups and the per-org read-access
+        // group are reconstructed; unknown global names are skipped rather
+        // than becoming literal empty groups.
         let normalized = if name == "admins" {
             "server-admins"
         } else {
             name
         };
+        if !matches!(normalized, "server-admins" | "users" | "clients")
+            && !normalized.ends_with("_read_access_group")
+        {
+            return None;
+        }
         if let Some(authz_id) = self.global_group_authz.get(normalized) {
             return Some(authz_id.clone());
         }
@@ -3025,28 +3257,30 @@ fn read_cookbook_readme(
     filename: &str,
     metadata_path: &Path,
 ) -> Result<Option<String>, MigrateError> {
-    let mut name = None;
+    let mut relative = PathBuf::new();
     for component in Path::new(filename).components() {
         match component {
             Component::CurDir => {}
-            Component::Normal(value) if name.is_none() => name = Some(value),
+            Component::Normal(value) => relative.push(value),
             _ => {
                 return Err(MigrateError::InvalidBackup {
                     path: metadata_path.to_path_buf(),
                     message: format!(
-                        "long_description filename {filename:?} is not a single normal file"
+                        "long_description filename {filename:?} is not a contained relative path"
                     ),
                 })
             }
         }
     }
-    let Some(name) = name else {
+    if relative.as_os_str().is_empty() {
         return Err(MigrateError::InvalidBackup {
             path: metadata_path.to_path_buf(),
-            message: format!("long_description filename {filename:?} is not a single normal file"),
+            message: format!(
+                "long_description filename {filename:?} is not a contained relative path"
+            ),
         });
-    };
-    let candidate = cookbook_root.join(name);
+    }
+    let candidate = cookbook_root.join(&relative);
     let metadata = match std::fs::symlink_metadata(&candidate) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -3073,7 +3307,7 @@ fn read_cookbook_readme(
         path: candidate.clone(),
         source,
     })?;
-    if resolved.parent() != Some(cookbook_root) {
+    if !resolved.starts_with(cookbook_root) {
         return Err(MigrateError::InvalidBackup {
             path: metadata_path.to_path_buf(),
             message: format!("long_description file {filename:?} resolves outside the cookbook"),

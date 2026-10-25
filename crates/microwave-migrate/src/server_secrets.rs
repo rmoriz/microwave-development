@@ -25,6 +25,7 @@ const DIRECTORY_MODE: u32 = 0o700;
 const MAX_SECRET_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SECRET_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SECRET_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_SECRET_ENTRIES: usize = 4096;
 
 const BASE_FILES: [&str; 6] = [
     "pivotal.pem",
@@ -159,6 +160,11 @@ pub fn prepare_server_secrets(
     }
     if let Some(archive) = &options.source_archive {
         read_archive(archive, &mut sources, &mut total)?;
+    }
+    if sources.len() > MAX_SECRET_ENTRIES {
+        return Err(MigrateError::ServerSecrets(format!(
+            "server secrets contain more than {MAX_SECRET_ENTRIES} entries"
+        )));
     }
 
     let mut target_sources: BTreeMap<PathBuf, String> = BTreeMap::new();
@@ -310,7 +316,7 @@ pub fn apply_server_secrets(plan: &ServerSecretsPlan) -> Result<usize, MigrateEr
             Ok(()) => committed.push(staged_write),
             Err(error) => {
                 let rollback = rollback_committed(&committed);
-                cleanup_staged(&[staged_write]);
+                cleanup_failed_stage(&staged_write);
                 if let Err(rollback_error) = rollback {
                     return Err(MigrateError::ServerSecrets(format!(
                         "secret commit failed: {error}; rollback also failed: {rollback_error}"
@@ -448,6 +454,17 @@ fn rollback_committed(committed: &[StagedSecret]) -> Result<(), MigrateError> {
         }
     }
     Ok(())
+}
+
+fn cleanup_failed_stage(staged: &StagedSecret) {
+    let _ = std::fs::remove_file(&staged.temporary);
+    // If the target is missing, a Windows commit failed before restoring its
+    // backup. Keep that backup as the only old copy for operator recovery.
+    if staged.target.exists() {
+        if let Some(backup) = &staged.backup {
+            let _ = std::fs::remove_file(backup);
+        }
+    }
 }
 
 fn cleanup_staged(staged: &[StagedSecret]) {
@@ -831,6 +848,11 @@ fn read_archive(
                 "secrets archive contains an entry outside the allowlist: {relative:?}"
             )));
         };
+        if sources.len() >= MAX_SECRET_ENTRIES {
+            return Err(MigrateError::ServerSecrets(format!(
+                "server secrets contain more than {MAX_SECRET_ENTRIES} entries"
+            )));
+        }
         check_secret_size(archive, entry.size(), *total)?;
         let mut data = Vec::new();
         entry

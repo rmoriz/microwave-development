@@ -315,8 +315,8 @@ body, so the existing dependency solver applies them unchanged.
 
 The importer canonicalizes collection paths and rejects symlinked collection
 or intermediate directories. `long_description IO.read(...)` only accepts a
-single normal `README*` filename inside the canonical cookbook directory;
-absolute paths, `..`, prefixes, and symlinks are rejected.
+contained relative path inside the canonical cookbook directory (for example
+`docs/README.md`); absolute paths, `..`, prefixes, and symlinks are rejected.
 
 Legacy `expires_at` values (`YYYY-MM-DD HH:MM:SS UTC`, offset timestamps, and
 RFC 3339) are normalized to RFC 3339 so expired keys remain expired. An
@@ -330,12 +330,17 @@ clear error, and existing ACL grants/group members survive. Use
 bootstrapped `pivotal`). By default a merged user keeps non-empty target
 credentials, admin/recovery state, profile fields, and an existing target
 default key; the importer warns when the backup has no key material for that
-user. Pass `--replace-user-credentials` to apply credentials/admin/profile and
-the default key from the backup instead. `--replace-acls` replaces ACLs for
+user and then reconciles the effective `server-admins` membership to the final
+admin flag (excluding a non-admin target user and demoting a target admin).
+Pass `--replace-user-credentials` to apply credentials/admin/profile and the
+default key from the backup instead; if the backup supplies no default key for
+a merged user, the target default key is removed so revocation actually
+revokes. That flag requires `--merge-users`. `--replace-acls` replaces ACLs for
 targets present in the backup and membership only for groups read from group
 files, so target-only/synthesized groups such as global `users` are not
 cleared. Failed imports restore the captured previous ACL/group state. All
-flags affect only the selected import.
+flags affect only the selected import and are echoed in the confirmation
+prompt.
 
 ### Server-side private material
 
@@ -390,8 +395,9 @@ and `nginx/ca/` trees), and symlinks, hardlinks, devices, and FIFOs are
 rejected. Directory entries outside those allowlisted prefixes are rejected.
 A single legacy top-level directory wrapping the allowlisted tree (for example
 `chef-secrets/pivotal.pem`) is accepted. Individual files are limited to
-16 MiB, the archive to 128 MiB, and the expanded set to 64 MiB; the total is
-enforced while reading, before each file is buffered.
+16 MiB, the archive to 128 MiB, the expanded set to 64 MiB, and the source to
+at most 4096 files; limits are enforced while reading, before each file is
+buffered.
 
 `webui_priv.pem`/`webui_pub.pem` and `private-chef-secrets.json` are preserved
 for external tooling and operator reference. Microwave does not consume the

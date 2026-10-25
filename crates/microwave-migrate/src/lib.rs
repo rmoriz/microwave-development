@@ -133,6 +133,8 @@ pub enum MigrateError {
     ServerSecrets(String),
     #[error("ACL rollback failed: {0}")]
     AclRollback(String),
+    #[error("server-admins membership rollback failed: {0}")]
+    AdminRollback(String),
     #[error(
         "target store already has user {username:?} with a different id; re-run with --merge-users to reuse it"
     )]
