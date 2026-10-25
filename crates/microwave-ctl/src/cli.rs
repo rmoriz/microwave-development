@@ -290,6 +290,10 @@ pub enum Command {
         /// Shorthand for `--format tar`.
         #[arg(long, conflicts_with = "format")]
         tar: bool,
+        /// Also include the fixed server private-key/certificate set under
+        /// `private/`. The backup then contains unencrypted key material.
+        #[arg(long)]
+        include_private_keys: bool,
     },
     /// Restore metadata and bookshelf data from a backup directory or tar
     /// archive. SQLite restores the staged database file; PostgreSQL replays
@@ -308,6 +312,10 @@ pub enum Command {
         /// Shorthand for `--format tar`.
         #[arg(long, conflicts_with = "format")]
         tar: bool,
+        /// Also restore private key/certificate material from the backup's
+        /// `private/` subtree. Restoring keys can invalidate existing clients.
+        #[arg(long)]
+        restore_private_keys: bool,
     },
 
     /// Edit a user's profile, email, admin flag, or password. Without
@@ -542,6 +550,45 @@ mod tests {
                 format: None,
                 tar: true,
                 yes: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_private_key_backup_and_restore_flags() {
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "backup",
+            "out.tar",
+            "--tar",
+            "--include-private-keys",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Backup {
+                tar: true,
+                include_private_keys: true,
+                ..
+            }
+        ));
+
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "restore",
+            "out.tar",
+            "--tar",
+            "--yes",
+            "--restore-private-keys",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Restore {
+                tar: true,
+                yes: true,
+                restore_private_keys: true,
                 ..
             }
         ));

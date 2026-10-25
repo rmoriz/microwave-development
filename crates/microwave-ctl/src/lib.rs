@@ -157,7 +157,12 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
         Command::HaStatus => diagnostics::ha_status(&context),
         Command::Psql { args } => diagnostics::psql(&context, &args),
         Command::Reindex { org, purge } => commands::reindex(&context, org.as_deref(), purge),
-        Command::Backup { path, format, tar } => backup::backup(
+        Command::Backup {
+            path,
+            format,
+            tar,
+            include_private_keys,
+        } => backup::backup(
             &context,
             &path,
             if tar {
@@ -165,17 +170,20 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
             } else {
                 format.unwrap_or(BackupFormat::Directory)
             },
+            include_private_keys,
         ),
         Command::Restore {
             path,
             yes,
             format,
             tar,
+            restore_private_keys,
         } => backup::restore(
             &context,
             &path,
             yes,
             if tar { Some(BackupFormat::Tar) } else { format },
+            restore_private_keys,
         ),
         Command::MigrateFromLegacy { input, yes } => {
             commands::migrate_from_legacy(&context, &input, yes)

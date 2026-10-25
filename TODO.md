@@ -289,8 +289,12 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 > private files are pre-staged and committed as a set; partial-secret imports
 > warn; archives are capped at 1,000,000 entries. Use both secret flags for a
 > truly complete self-migration. Remote S3/Garage objects are outside the
-> archive; replicate the bucket. `microwave-ctl backup` remains a
-> database-file/dump plus bookshelf copy without private keys.
+> archive; replicate the bucket. `microwave-ctl backup --include-private-keys`
+> adds an explicit `private/` manifest for the fixed server key/certificate
+> set to either directory or tar backups; restore requires the separate
+> `--restore-private-keys` opt-in, validates and stages private files before
+> the database, and applies them after a successful database/bookshelf
+> restore. Without that flag, existing target keys are left untouched.
 > `import-knife-backup` also supports both backends, writes cookbook blobs to a
 > local object-store root, and requires `--bookshelf-dir` with
 > `--database-url`. Explicit `--secrets-dir`/`--secrets-archive` sources migrate
