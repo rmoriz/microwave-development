@@ -26,6 +26,28 @@ pub enum MaintenanceAction {
     Status,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum BackupFormat {
+    /// A directory containing the database snapshot/dump and a bookshelf copy.
+    Directory,
+    /// A single uncompressed tar archive with the same contents.
+    Tar,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ServiceAction {
+    /// Start the configured systemd unit.
+    Start,
+    /// Stop the configured systemd unit.
+    Stop,
+    /// Restart the configured systemd unit.
+    Restart,
+    /// Show the configured systemd unit's status.
+    Status,
+    /// Print recent journal entries for the configured systemd unit.
+    Tail,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Print the CLI version.
@@ -194,6 +216,10 @@ pub enum Command {
 
     /// Load configuration and run preflight checks.
     CheckConfig,
+    /// Validate the configuration, initialize or migrate the metadata backend,
+    /// and report the resolved backends. This does not restart a running
+    /// server or change existing data.
+    Reconfigure,
     /// Show the status of high-availability services.
     HaStatus,
     /// Open `sqlite3` (or `psql`) against the configured database.
@@ -203,24 +229,71 @@ pub enum Command {
         args: Vec<String>,
     },
 
-    /// Report the search reindex status.
+    /// Rebuild remote search documents from the metadata store, or verify the
+    /// embedded backend's authoritative relational counts.
     Reindex {
         /// Organization to reindex. Omit for all organizations.
+        #[arg(long, value_name = "ORG")]
         org: Option<String>,
     },
 
+    /// Run the vendored `oc-chef-pedant` suite through
+    /// `scripts/run-pedant.sh`. The script is located relative to the current
+    /// directory, the executable, or `MW_PEDANT_SCRIPT`.
+    #[command(alias = "test")]
+    Pedant {
+        /// Tags passed through to the harness. Omit for its default core set.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        tags: Vec<String>,
+    },
+
+    /// Manage the systemd service. Requires `systemctl` (and `journalctl` for
+    /// `tail`); there is no built-in process supervisor.
+    Service {
+        /// Service action.
+        action: ServiceAction,
+        /// systemd unit name. Defaults to `MW_SERVICE_UNIT` or
+        /// `microwave-server`.
+        #[arg(long, value_name = "UNIT")]
+        unit: Option<String>,
+        /// Number of journal lines for `tail`.
+        #[arg(long, value_name = "COUNT", default_value_t = 50)]
+        lines: usize,
+        /// Follow the journal for `tail`.
+        #[arg(long)]
+        follow: bool,
+    },
+
     /// Create a consistent metadata and bookshelf backup. SQLite uses
-    /// `VACUUM INTO`; PostgreSQL uses `pg_dump`.
-    Backup { path: PathBuf },
-    /// Restore metadata and bookshelf data from a backup. SQLite restores the
-    /// staged database file; PostgreSQL replays the `pg_dump` archive. This is
-    /// destructive and asks for confirmation unless `--yes` is given.
+    /// `VACUUM INTO`; PostgreSQL uses `pg_dump`. The default format is a
+    /// directory; `--format tar` writes a single tar archive.
+    Backup {
+        /// Destination directory, or tar file when the tar format is selected.
+        path: PathBuf,
+        /// Archive format. Defaults to a directory.
+        #[arg(long, value_enum, value_name = "FORMAT")]
+        format: Option<BackupFormat>,
+        /// Shorthand for `--format tar`.
+        #[arg(long, conflicts_with = "format")]
+        tar: bool,
+    },
+    /// Restore metadata and bookshelf data from a backup directory or tar
+    /// archive. SQLite restores the staged database file; PostgreSQL replays
+    /// the `pg_dump` archive. This is destructive and asks for confirmation
+    /// unless `--yes` is given.
     Restore {
+        /// Backup directory, or tar file when the tar format is selected.
         path: PathBuf,
         /// Skip the interactive confirmation. Required when stdin is not a
         /// terminal.
         #[arg(long)]
         yes: bool,
+        /// Backup format. Directories and files are auto-detected when omitted.
+        #[arg(long, value_enum, value_name = "FORMAT")]
+        format: Option<BackupFormat>,
+        /// Shorthand for `--format tar`.
+        #[arg(long, conflicts_with = "format")]
+        tar: bool,
     },
 
     /// Import a Microwave migration snapshot (produced by the
@@ -236,4 +309,115 @@ pub enum Command {
         #[arg(long)]
         yes: bool,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BackupFormat, Cli, Command, ServiceAction};
+    use clap::Parser;
+
+    #[test]
+    fn parses_the_new_operational_commands() {
+        let cli = Cli::try_parse_from(["microwave-ctl", "reconfigure"]).unwrap();
+        assert!(matches!(cli.command, Command::Reconfigure));
+
+        let cli = Cli::try_parse_from(["microwave-ctl", "reindex", "--org", "acme"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Reindex { org: Some(ref org) } if org == "acme"
+        ));
+
+        let cli = Cli::try_parse_from(["microwave-ctl", "pedant", "users", "nodes"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Pedant { ref tags } if tags == &["users", "nodes"]
+        ));
+
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "service",
+            "tail",
+            "--unit",
+            "custom.service",
+            "--lines",
+            "5",
+            "--follow",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Service {
+                action,
+                unit,
+                lines,
+                follow,
+            } => {
+                assert_eq!(action, ServiceAction::Tail);
+                assert_eq!(unit.as_deref(), Some("custom.service"));
+                assert_eq!(lines, 5);
+                assert!(follow);
+            }
+            _ => panic!("expected service command"),
+        }
+    }
+
+    #[test]
+    fn parses_both_tar_spellings() {
+        let cli =
+            Cli::try_parse_from(["microwave-ctl", "backup", "out.tar", "--format", "tar"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Backup {
+                format: Some(BackupFormat::Tar),
+                ..
+            }
+        ));
+
+        let cli = Cli::try_parse_from(["microwave-ctl", "backup", "out.tar", "--tar"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Backup {
+                format: None,
+                tar: true,
+                ..
+            }
+        ));
+
+        let cli =
+            Cli::try_parse_from(["microwave-ctl", "restore", "out.tar", "--tar", "--yes"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Restore {
+                format: None,
+                tar: true,
+                yes: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_conflicting_tar_flags() {
+        assert!(Cli::try_parse_from([
+            "microwave-ctl",
+            "backup",
+            "out.tar",
+            "--format",
+            "tar",
+            "--tar",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn backup_defaults_to_the_directory_format() {
+        let cli = Cli::try_parse_from(["microwave-ctl", "backup", "out"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Backup {
+                format: None,
+                tar: false,
+                ..
+            }
+        ));
+    }
 }

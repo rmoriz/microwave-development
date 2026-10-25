@@ -319,7 +319,7 @@ fn database_driver_name(driver: DatabaseDriver) -> &'static str {
     }
 }
 
-fn search_backend_name(backend: SearchBackend) -> &'static str {
+pub(crate) fn search_backend_name(backend: SearchBackend) -> &'static str {
     match backend {
         SearchBackend::Embedded => "embedded",
         SearchBackend::OpenSearch => "opensearch",
@@ -327,7 +327,7 @@ fn search_backend_name(backend: SearchBackend) -> &'static str {
     }
 }
 
-fn object_store_backend_name(backend: ObjectStoreBackend) -> &'static str {
+pub(crate) fn object_store_backend_name(backend: ObjectStoreBackend) -> &'static str {
     match backend {
         ObjectStoreBackend::Local => "local",
         ObjectStoreBackend::S3 => "s3",

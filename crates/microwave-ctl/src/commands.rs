@@ -228,15 +228,80 @@ pub fn password(context: &Context, username: &str) -> Result<(), CtlError> {
     Ok(())
 }
 
-pub fn reindex(org: Option<&str>) -> Result<(), CtlError> {
+pub fn reindex(context: &Context, org: Option<&str>) -> Result<(), CtlError> {
+    let store = context.open_metadata_store()?;
+    let backend =
+        microwave_api::search::build_search_backend(&context.config.search, store.store_arc())
+            .map_err(|error| CtlError::message(format!("search backend is not usable: {error}")))?;
+
+    let report = store
+        .run(microwave_api::search::reindex(
+            backend.as_ref(),
+            store.store(),
+            org,
+        ))
+        .map_err(|error| CtlError::message(format!("reindex failed: {error}")))?;
+
+    println!("search_backend: {}", backend.name());
     match org {
-        Some(org) => println!(
-            "reindex: search reindex is not implemented for the local store; no changes were made for organization {org}"
-        ),
+        Some(org) => println!("organization: {org}"),
+        None => println!("organizations: {}", report.organizations),
+    }
+    if backend.name() == "embedded" {
+        println!(
+            "relational search is authoritative; the embedded backend reads the store directly, so there is no external index to rebuild"
+        );
+    }
+    println!("documents_acknowledged: {}", report.acknowledged_documents);
+    println!("nodes: {}", report.nodes);
+    println!("roles: {}", report.roles);
+    println!("environments: {}", report.environments);
+    println!("clients: {}", report.clients);
+    println!("data_bags: {}", report.data_bags);
+    println!("data_bag_items: {}", report.data_bag_items);
+    if backend.name() != "embedded" {
+        println!(
+            "note: reindex adds or replaces documents by id; documents for deleted objects remain in the remote index until it is rebuilt from scratch"
+        );
+    }
+    Ok(())
+}
+
+/// Validate configuration, initialize or migrate the metadata backend, and
+/// report the resolved backends.
+///
+/// This never restarts a server and never deletes metadata. Opening the store
+/// applies the idempotent schema, so a fresh deployment is ready and an
+/// existing deployment is migrated forward.
+pub fn reconfigure(context: &Context) -> Result<(), CtlError> {
+    crate::diagnostics::check_config(context)?;
+
+    let store = context.open_metadata_store()?;
+    let users = store.run(store.store().list_users())?;
+    let orgs = store.run(store.store().list_orgs())?;
+
+    println!("reconfigure: configuration is valid and the metadata backend is ready");
+    println!("database_driver: {}", driver_name(&context.config));
+    match &context.database_path {
+        Some(path) => println!("database: {}", path.display()),
         None => println!(
-            "reindex: search reindex is not implemented for the local store; no changes were made"
+            "database: PostgreSQL {}",
+            microwave_migrate::redacted_postgres_url(&context.database_url)
         ),
     }
+    println!(
+        "search_backend: {}",
+        crate::diagnostics::search_backend_name(context.config.search.backend)
+    );
+    println!(
+        "object_store_backend: {}",
+        crate::diagnostics::object_store_backend_name(context.config.object_store.backend)
+    );
+    println!("users: {}", users.len());
+    println!("organizations: {}", orgs.len());
+    println!(
+        "note: a running microwave-server is not restarted; restart it to apply configuration changes."
+    );
     Ok(())
 }
 

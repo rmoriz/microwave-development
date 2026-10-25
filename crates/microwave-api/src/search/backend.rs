@@ -105,6 +105,16 @@ pub enum SearchError {
     Configuration(String),
 }
 
+/// Result of a single index write.
+///
+/// Remote backends may accept an HTTP request while rejecting individual bulk
+/// items. `acknowledged` is the number of documents the backend confirmed, not
+/// the number submitted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IndexOutcome {
+    pub acknowledged: usize,
+}
+
 /// Pluggable search implementation.
 #[async_trait]
 pub trait SearchBackend: Send + Sync {
@@ -115,7 +125,11 @@ pub trait SearchBackend: Send + Sync {
     async fn search(&self, request: &SearchRequest) -> Result<SearchHits, SearchError>;
 
     /// Adds or replaces a document.
-    async fn index(&self, document: &SearchDocument) -> Result<(), SearchError>;
+    ///
+    /// The returned [`IndexOutcome`] reports acknowledged documents. A backend
+    /// must return an error when a document was not accepted, even if the
+    /// transport-level request succeeded.
+    async fn index(&self, document: &SearchDocument) -> Result<IndexOutcome, SearchError>;
 
     /// Deletes a single document.
     async fn delete(&self, org_id: &str, id: &str) -> Result<(), SearchError>;
@@ -177,9 +191,10 @@ impl SearchBackend for EmbeddedSearch {
         })
     }
 
-    async fn index(&self, _document: &SearchDocument) -> Result<(), SearchError> {
-        // The embedded backend reads the store directly.
-        Ok(())
+    async fn index(&self, _document: &SearchDocument) -> Result<IndexOutcome, SearchError> {
+        // The embedded backend reads the store directly. The relational row is
+        // the authoritative document, so acknowledge the write.
+        Ok(IndexOutcome { acknowledged: 1 })
     }
 
     async fn delete(&self, _org_id: &str, _id: &str) -> Result<(), SearchError> {

@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 chrono.workspace = true
 clap.workspace = true
+microwave-api = { path = "../microwave-api" }
 microwave-authz = { path = "../microwave-authz" }
 microwave-config = { path = "../microwave-config" }
 microwave-crypto = { path = "../microwave-crypto" }
@@ -16,7 +17,11 @@ microwave-store = { path = "../microwave-store" }
 microwave-store-postgres = { path = "../microwave-store-postgres" }
 microwave-tls = { path = "../microwave-tls" }
 tempfile.workspace = true
+tar.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 url.workspace = true
 uuid.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

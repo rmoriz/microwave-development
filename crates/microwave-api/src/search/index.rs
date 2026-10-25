@@ -112,7 +112,7 @@ pub(crate) fn data_bag_item_document(
     ))
 }
 
-fn document_for_entry(
+pub(crate) fn document_for_entry(
     org_id: &str,
     kind: &IndexKind,
     object_type: &str,
@@ -334,7 +334,10 @@ pub(crate) fn unknown_index(index: &str) -> ApiError {
 /// than failing the write, matching the upstream asynchronous indexer.
 pub(crate) async fn index_node(state: &AppState, org: &Org, node: &StoredNode) {
     match node_document(&org.id, node) {
-        Ok(document) => log_error(state.search.index(&document).await, "node index"),
+        Ok(document) => log_error(
+            state.search.index(&document).await.map(|_| ()),
+            "node index",
+        ),
         Err(error) => tracing::warn!(%error.message, "node index document"),
     }
 }
@@ -346,7 +349,10 @@ pub(crate) async fn index_object(
     object: &StoredObject,
 ) {
     match object_document(&org.id, kind, object) {
-        Ok(document) => log_error(state.search.index(&document).await, "object index"),
+        Ok(document) => log_error(
+            state.search.index(&document).await.map(|_| ()),
+            "object index",
+        ),
         Err(error) => tracing::warn!(%error.message, "object index document"),
     }
 }
@@ -364,12 +370,18 @@ pub(crate) async fn index_client(state: &AppState, org: &Org, client: &Client) {
                 .map(|key| key.public_key.clone())
         });
     let document = client_document(&org.id, &org.name, client, public_key.as_deref());
-    log_error(state.search.index(&document).await, "client index");
+    log_error(
+        state.search.index(&document).await.map(|_| ()),
+        "client index",
+    );
 }
 
 pub(crate) async fn index_data_bag_item(state: &AppState, org: &Org, item: &StoredDataBagItem) {
     match data_bag_item_document(&org.id, item) {
-        Ok(document) => log_error(state.search.index(&document).await, "data bag index"),
+        Ok(document) => log_error(
+            state.search.index(&document).await.map(|_| ()),
+            "data bag index",
+        ),
         Err(error) => tracing::warn!(%error.message, "data bag index document"),
     }
 }

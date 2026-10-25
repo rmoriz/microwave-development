@@ -331,11 +331,598 @@ fn status_reports_storage_and_superuser_state() {
 }
 
 #[test]
-fn reindex_reports_that_it_is_not_implemented() {
+fn reindex_reports_relational_authority_for_the_embedded_backend() {
     let dir = tempfile::tempdir().unwrap();
+    assert_success(&run(
+        dir.path(),
+        &["user-create", "bob", "--password", "bob-password"],
+    ));
+    assert_success(&run(
+        dir.path(),
+        &["org-create", "acme", "--creator", "bob"],
+    ));
+    create_client(dir.path(), "acme", "web");
+
     let output = run(dir.path(), &["reindex"]);
     assert_success(&output);
-    assert!(stdout(&output).contains("not implemented"));
+    let text = stdout(&output);
+    assert!(text.contains("search_backend: embedded"));
+    assert!(text.contains("relational search is authoritative"));
+    assert!(text.contains("organizations: 1"));
+    assert!(text.contains("clients: 1"));
+    assert!(!text.contains("not implemented"));
+
+    let scoped = run(dir.path(), &["reindex", "--org", "acme"]);
+    assert_success(&scoped);
+    assert!(stdout(&scoped).contains("organization: acme"));
+    assert!(stdout(&scoped).contains("documents_acknowledged: 2"));
+
+    let missing = run(dir.path(), &["reindex", "--org", "missing"]);
+    assert!(!missing.status.success());
+    assert!(stderr(&missing).contains("does not exist"));
+}
+
+#[test]
+fn reindex_fails_loudly_when_a_remote_backend_is_unreachable() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_success(&run(
+        dir.path(),
+        &["user-create", "bob", "--password", "bob-password"],
+    ));
+    assert_success(&run(
+        dir.path(),
+        &["org-create", "acme", "--creator", "bob"],
+    ));
+
+    let config = dir.path().join("opensearch.toml");
+    std::fs::write(
+        &config,
+        "[search]\nbackend = \"opensearch\"\nurl = \"http://127.0.0.1:1\"\n",
+    )
+    .unwrap();
+    let output = ctl(dir.path())
+        .args(["--config", config.to_str().unwrap(), "reindex"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("reindex failed"));
+    assert!(!stdout(&output).contains("documents_acknowledged"));
+}
+
+#[test]
+fn reconfigure_validates_initializes_and_preserves_existing_data() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let first = run(dir.path(), &["reconfigure"]);
+    assert_success(&first);
+    let text = stdout(&first);
+    assert!(text.contains("configuration is valid"));
+    assert!(text.contains("database_driver: sqlite"));
+    assert!(text.contains("search_backend: embedded"));
+    assert!(text.contains("object_store_backend: local"));
+    assert!(text.contains("users: 0"));
+    assert!(text.contains("organizations: 0"));
+    assert!(text.contains("not restarted"));
+    assert!(dir.path().join("microwave.db").is_file());
+
+    assert_success(&run(
+        dir.path(),
+        &["user-create", "alice", "--password", "alice-password"],
+    ));
+
+    let second = run(dir.path(), &["reconfigure"]);
+    assert_success(&second);
+    assert!(stdout(&second).contains("users: 1"));
+
+    let listed = run(dir.path(), &["user-list"]);
+    assert_success(&listed);
+    assert!(stdout(&listed).contains("alice"));
+
+    let bad = dir.path().join("bad.toml");
+    std::fs::write(&bad, "[server]\nbind = \"not-an-address\"\n").unwrap();
+    let refused = ctl(dir.path())
+        .args(["--config", bad.to_str().unwrap(), "reconfigure"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("server.bind"));
+    assert!(!stdout(&refused).contains("metadata backend is ready"));
+}
+
+#[test]
+fn reconfigure_with_bad_config_does_not_create_the_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("bad.toml");
+    std::fs::write(&bad, "[server]\nbind = \"not-an-address\"\n").unwrap();
+
+    let output = ctl(dir.path())
+        .args(["--config", bad.to_str().unwrap(), "reconfigure"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("server.bind"));
+    assert!(
+        !dir.path().join("microwave.db").exists(),
+        "a failed reconfigure must not initialize the database"
+    );
+}
+
+#[test]
+fn tar_backup_and_restore_round_trip() {
+    let data = tempfile::tempdir().unwrap();
+    let backups = tempfile::tempdir().unwrap();
+    let archive = backups.path().join("snapshot.tar");
+
+    assert_success(&run(
+        data.path(),
+        &[
+            "user-create",
+            "persisted",
+            "--password",
+            "persisted-password",
+        ],
+    ));
+    let bookshelf = data.path().join("bookshelf");
+    std::fs::create_dir_all(&bookshelf).unwrap();
+    std::fs::write(bookshelf.join("blob"), b"cookbook-bytes").unwrap();
+
+    let backed_up = run(
+        data.path(),
+        &["backup", archive.to_str().unwrap(), "--format", "tar"],
+    );
+    assert_success(&backed_up);
+    assert!(archive.is_file());
+    let contents = std::fs::read(&archive).unwrap();
+    assert!(!contents.is_empty());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&archive).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    // A second backup must not silently replace an existing archive.
+    let again = run(
+        data.path(),
+        &["backup", archive.to_str().unwrap(), "--format", "tar"],
+    );
+    assert!(!again.status.success());
+    assert!(stderr(&again).contains("already exists"));
+
+    assert_success(&run(
+        data.path(),
+        &[
+            "user-create",
+            "transient",
+            "--password",
+            "transient-password",
+        ],
+    ));
+    std::fs::write(bookshelf.join("blob"), b"mutated").unwrap();
+    std::fs::write(bookshelf.join("extra"), b"extra").unwrap();
+
+    let refused = run(data.path(), &["restore", archive.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("--yes"));
+    assert!(stdout(&refused).contains("Restore target:"));
+
+    // The refused restore must not have removed or replaced live data.
+    let listed = run(data.path(), &["user-list"]);
+    assert_success(&listed);
+    assert!(stdout(&listed).contains("transient"));
+    assert_eq!(std::fs::read(bookshelf.join("blob")).unwrap(), b"mutated");
+
+    let restored = run(
+        data.path(),
+        &["restore", archive.to_str().unwrap(), "--yes"],
+    );
+    assert_success(&restored);
+    let listed = run(data.path(), &["user-list"]);
+    assert_success(&listed);
+    let text = stdout(&listed);
+    assert!(text.contains("persisted"));
+    assert!(!text.contains("transient"));
+    assert_eq!(
+        std::fs::read(bookshelf.join("blob")).unwrap(),
+        b"cookbook-bytes"
+    );
+    assert!(!bookshelf.join("extra").exists());
+    assert!(SqliteStore::verify_database(&data.path().join("microwave.db")).is_ok());
+}
+
+#[test]
+fn tar_restore_rejects_unexpected_archive_entries() {
+    let data = tempfile::tempdir().unwrap();
+    let backups = tempfile::tempdir().unwrap();
+    let archive = backups.path().join("hostile.tar");
+
+    let file = std::fs::File::create(&archive).unwrap();
+    let mut builder = tar::Builder::new(file);
+    let mut header = tar::Header::new_gnu();
+    header.set_size(4);
+    header.set_mode(0o600);
+    header.set_cksum();
+    builder
+        .append_data(&mut header, "pivotal.pem", &b"evil"[..])
+        .unwrap();
+    builder.finish().unwrap();
+
+    let output = run(
+        data.path(),
+        &["restore", archive.to_str().unwrap(), "--yes"],
+    );
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("unexpected entry"));
+    assert!(!data.path().join("pivotal.pem").exists());
+
+    let unknown_extension = backups.path().join("unknown.bin");
+    std::fs::write(&unknown_extension, b"not a tar archive").unwrap();
+    let output = run(
+        data.path(),
+        &[
+            "restore",
+            unknown_extension.to_str().unwrap(),
+            "--yes",
+            "--format",
+            "tar",
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(!stdout(&output).contains("Restored from"));
+}
+
+#[test]
+fn help_lists_the_operational_surface() {
+    let output = Command::cargo_bin("microwave-ctl")
+        .unwrap()
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let text = stdout(&output);
+    for command in ["reconfigure", "reindex", "pedant", "service", "backup"] {
+        assert!(text.contains(command), "help is missing {command}: {text}");
+    }
+}
+
+#[cfg(unix)]
+mod operational_process_tests {
+    use super::{assert_success, ctl, run, stderr, stdout};
+    use std::ffi::CString;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
+
+    fn fake_tool(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            "#!/bin/sh\n\
+             if [ -n \"$MW_TEST_LOG\" ]; then\n\
+               printf '%s\\n' \"$@\" >> \"$MW_TEST_LOG\"\n\
+             fi\n\
+             exit \"${MW_TEST_EXIT:-0}\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn pedant_tags(log: &Path) -> Vec<String> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn pedant_passes_tags_as_separate_arguments_and_propagates_the_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = fake_tool(dir.path(), "run-pedant.sh");
+        let log = dir.path().join("pedant.log");
+
+        let output = ctl(dir.path())
+            .env("MW_PEDANT_SCRIPT", &script)
+            .env("MW_TEST_LOG", &log)
+            .env("MW_TEST_EXIT", "3")
+            .args(["pedant", "users", "nodes", "core", "two words; rm -rf /"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(
+            pedant_tags(&log),
+            vec![
+                "users".to_string(),
+                "nodes".to_string(),
+                "core".to_string(),
+                "two words; rm -rf /".to_string(),
+            ]
+        );
+
+        let success = ctl(dir.path())
+            .env("MW_PEDANT_SCRIPT", &script)
+            .env("MW_TEST_LOG", &log)
+            .arg("pedant")
+            .output()
+            .unwrap();
+        assert_success(&success);
+
+        let missing = ctl(dir.path())
+            .env("MW_PEDANT_SCRIPT", dir.path().join("missing.sh"))
+            .arg("pedant")
+            .output()
+            .unwrap();
+        assert!(!missing.status.success());
+        assert!(stderr(&missing).contains("MW_PEDANT_SCRIPT"));
+    }
+
+    #[test]
+    fn service_delegates_to_systemctl_with_direct_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let systemctl = fake_tool(dir.path(), "systemctl");
+        let log = dir.path().join("systemctl.log");
+
+        let output = ctl(dir.path())
+            .env("MW_SYSTEMCTL", &systemctl)
+            .env("MW_TEST_LOG", &log)
+            .args(["service", "restart", "--unit", "demo.service"])
+            .output()
+            .unwrap();
+        assert_success(&output);
+        assert_eq!(
+            pedant_tags(&log),
+            vec!["restart".to_string(), "demo.service".to_string()]
+        );
+
+        let failed = ctl(dir.path())
+            .env("MW_SYSTEMCTL", &systemctl)
+            .env("MW_TEST_LOG", &log)
+            .env("MW_TEST_EXIT", "5")
+            .args(["service", "status", "--unit", "demo.service"])
+            .output()
+            .unwrap();
+        assert_eq!(failed.status.code(), Some(5));
+        assert!(stdout(&failed).is_empty());
+
+        let unavailable = ctl(dir.path())
+            .env("MW_SYSTEMCTL", "/definitely/not/here/systemctl")
+            .args(["service", "start"])
+            .output()
+            .unwrap();
+        assert!(!unavailable.status.success());
+        let text = stderr(&unavailable);
+        assert!(text.contains("no systemd service manager"));
+        assert!(text.contains("microwave-server serve"));
+    }
+
+    #[test]
+    fn service_rejects_option_like_units_before_running_systemctl() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = ctl(dir.path())
+            .env("MW_SYSTEMCTL", "/definitely/not/here/systemctl")
+            .env("MW_SERVICE_UNIT", "-injected.service")
+            .args(["service", "start"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let text = stderr(&output);
+        assert!(text.contains("must not start with '-'"), "stderr: {text}");
+        assert!(!text.contains("no systemd service manager"));
+    }
+
+    #[test]
+    fn service_tail_uses_journalctl_without_requiring_systemctl() {
+        let dir = tempfile::tempdir().unwrap();
+        let journalctl = fake_tool(dir.path(), "journalctl");
+        let log = dir.path().join("journalctl.log");
+
+        let output = ctl(dir.path())
+            .env("MW_SYSTEMCTL", "/definitely/not/here/systemctl")
+            .env("MW_JOURNALCTL", &journalctl)
+            .env("MW_TEST_LOG", &log)
+            .args([
+                "service",
+                "tail",
+                "--unit",
+                "demo.service",
+                "--lines",
+                "5",
+                "--follow",
+            ])
+            .output()
+            .unwrap();
+        assert_success(&output);
+        assert_eq!(
+            pedant_tags(&log),
+            vec![
+                "-u".to_string(),
+                "demo.service".to_string(),
+                "-n".to_string(),
+                "5".to_string(),
+                "-f".to_string()
+            ]
+        );
+
+        let invalid = ctl(dir.path())
+            .env("MW_SYSTEMCTL", "/definitely/not/here/systemctl")
+            .env("MW_JOURNALCTL", &journalctl)
+            .args(["service", "tail", "--lines", "0"])
+            .output()
+            .unwrap();
+        assert!(!invalid.status.success());
+        assert!(stderr(&invalid).contains("greater than zero"));
+    }
+
+    #[test]
+    fn tar_backup_rejects_symlinked_bookshelf_content() {
+        let data = tempfile::tempdir().unwrap();
+        let backups = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("outside-secret");
+        std::fs::write(&secret, b"do-not-archive").unwrap();
+
+        let bookshelf = data.path().join("bookshelf");
+        std::fs::create_dir_all(&bookshelf).unwrap();
+        std::os::unix::fs::symlink(&secret, bookshelf.join("leaked")).unwrap();
+        let archive = backups.path().join("booked.tar");
+
+        let mut command = ctl(data.path());
+        command.timeout(Duration::from_secs(30)).args([
+            "backup",
+            archive.to_str().unwrap(),
+            "--tar",
+        ]);
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(stderr(&output).contains("refusing to copy symlink"));
+        assert!(!archive.exists());
+
+        // The target must still be intact and was not archived anywhere.
+        assert_eq!(std::fs::read(&secret).unwrap(), b"do-not-archive");
+    }
+
+    #[test]
+    fn tar_backup_rejects_a_fifo_without_blocking() {
+        let data = tempfile::tempdir().unwrap();
+        let backups = tempfile::tempdir().unwrap();
+        let bookshelf = data.path().join("bookshelf");
+        std::fs::create_dir_all(&bookshelf).unwrap();
+        let fifo = bookshelf.join("pipe");
+        let fifo_c = CString::new(fifo.to_str().unwrap()).unwrap();
+        let result = unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) };
+        assert_eq!(
+            result,
+            0,
+            "mkfifo failed: {}",
+            std::io::Error::last_os_error()
+        );
+        let archive = backups.path().join("booked.tar");
+
+        let mut command = ctl(data.path());
+        command.timeout(Duration::from_secs(30)).args([
+            "backup",
+            archive.to_str().unwrap(),
+            "--tar",
+        ]);
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(stderr(&output).contains("not a regular file or directory"));
+        assert!(!archive.exists());
+    }
+
+    /// Create live data, take a directory backup, then mutate the live
+    /// installation so a failed restore would be visible.
+    fn seeded_directory_backup(data: &Path, backups: &Path) -> PathBuf {
+        let bookshelf = data.join("bookshelf");
+        std::fs::create_dir_all(&bookshelf).unwrap();
+        std::fs::write(bookshelf.join("blob"), b"live-original").unwrap();
+        assert_success(&run(
+            data,
+            &[
+                "user-create",
+                "persisted",
+                "--password",
+                "persisted-password",
+            ],
+        ));
+
+        let backup = backups.join("snapshot");
+        assert_success(&run(data, &["backup", backup.to_str().unwrap()]));
+
+        assert_success(&run(
+            data,
+            &[
+                "user-create",
+                "transient",
+                "--password",
+                "transient-password",
+            ],
+        ));
+        std::fs::write(bookshelf.join("blob"), b"live-mutated").unwrap();
+        std::fs::write(bookshelf.join("extra"), b"live-extra").unwrap();
+        backup
+    }
+
+    fn assert_live_data_unchanged(data: &Path) {
+        let listed = run(data, &["user-list"]);
+        assert_success(&listed);
+        let text = stdout(&listed);
+        assert!(text.contains("persisted"), "stdout: {text}");
+        assert!(text.contains("transient"), "stdout: {text}");
+
+        let bookshelf = data.join("bookshelf");
+        assert_eq!(
+            std::fs::read(bookshelf.join("blob")).unwrap(),
+            b"live-mutated"
+        );
+        assert_eq!(
+            std::fs::read(bookshelf.join("extra")).unwrap(),
+            b"live-extra"
+        );
+        assert!(!bookshelf.join("leaked").exists());
+    }
+
+    #[test]
+    fn directory_restore_rejects_a_symlink_before_touching_live_data() {
+        let data = tempfile::tempdir().unwrap();
+        let backups = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("outside-secret");
+        std::fs::write(&secret, b"do-not-restore").unwrap();
+
+        let backup = seeded_directory_backup(data.path(), backups.path());
+        std::os::unix::fs::symlink(&secret, backup.join("bookshelf").join("leaked")).unwrap();
+
+        let mut command = ctl(data.path());
+        command.timeout(Duration::from_secs(30)).args([
+            "restore",
+            backup.to_str().unwrap(),
+            "--yes",
+        ]);
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(
+            stderr(&output).contains("refusing to copy symlink"),
+            "stderr: {}",
+            stderr(&output)
+        );
+
+        assert_live_data_unchanged(data.path());
+        assert_eq!(std::fs::read(&secret).unwrap(), b"do-not-restore");
+    }
+
+    #[test]
+    fn directory_restore_rejects_a_fifo_before_touching_live_data() {
+        let data = tempfile::tempdir().unwrap();
+        let backups = tempfile::tempdir().unwrap();
+        let backup = seeded_directory_backup(data.path(), backups.path());
+        let fifo = backup.join("bookshelf").join("pipe");
+        let fifo_c = CString::new(fifo.to_str().unwrap()).unwrap();
+        let result = unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) };
+        assert_eq!(
+            result,
+            0,
+            "mkfifo failed: {}",
+            std::io::Error::last_os_error()
+        );
+
+        let mut command = ctl(data.path());
+        command.timeout(Duration::from_secs(30)).args([
+            "restore",
+            backup.to_str().unwrap(),
+            "--yes",
+        ]);
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(
+            stderr(&output).contains("not a regular file or directory"),
+            "stderr: {}",
+            stderr(&output)
+        );
+
+        assert_live_data_unchanged(data.path());
+    }
 }
 
 #[test]
@@ -1610,6 +2197,115 @@ fn postgres_backup_and_restore_round_trip() {
     let store = runtime
         .block_on(microwave_store_postgres::PostgresStore::connect(&url))
         .expect("connect after restore");
+    assert!(runtime
+        .block_on(store.find_user(&persisted))
+        .expect("find restored user")
+        .is_some());
+    assert!(runtime
+        .block_on(store.find_user(&transient))
+        .expect("find transient user")
+        .is_none());
+    drop(store);
+
+    drop_scratch_database(&base_url, &scratch);
+}
+
+#[test]
+fn postgres_reconfigure_initializes_and_reports_the_running_backend() {
+    let Some(base_url) = postgres_url() else {
+        eprintln!("SKIP: MICROWAVE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let (scratch, url) = scratch_database(&base_url, "ctl-reconfigure-db");
+    let dir = tempfile::tempdir().unwrap();
+
+    let output = run_pg(dir.path(), &url, &["reconfigure"]);
+    assert_success(&output);
+    let text = stdout(&output);
+    assert!(text.contains("database_driver: postgresql"));
+    assert!(text.contains("database: PostgreSQL"));
+    assert!(text.contains("not restarted"));
+    assert!(!text.contains("microwave:microwave"));
+
+    // A second run is idempotent and still reports the same backend.
+    let output = run_pg(dir.path(), &url, &["reconfigure"]);
+    assert_success(&output);
+    assert!(stdout(&output).contains("database_driver: postgresql"));
+
+    drop_scratch_database(&base_url, &scratch);
+}
+
+#[test]
+fn postgres_tar_backup_and_restore_round_trip() {
+    use microwave_store::IdentityRepository;
+
+    let Some(base_url) = postgres_url() else {
+        eprintln!("SKIP: MICROWAVE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    if !pg_client_tool_available("pg_dump") || !pg_client_tool_available("pg_restore") {
+        return;
+    }
+
+    let (scratch, url) = scratch_database(&base_url, "ctl-tar-db");
+    let runtime = pg_runtime();
+    let store = runtime
+        .block_on(microwave_store_postgres::PostgresStore::connect(&url))
+        .expect("connect to scratch PostgreSQL");
+    let persisted = unique("pg-tar-persisted");
+    runtime
+        .block_on(store.create_user(
+            &persisted,
+            &format!("{persisted}@example.com"),
+            "bcrypt",
+            "hash",
+            "salt",
+            false,
+        ))
+        .expect("create persisted user");
+    drop(store);
+
+    let data = tempfile::tempdir().unwrap();
+    let backups = tempfile::tempdir().unwrap();
+    let archive = backups.path().join("pg-backup.tar");
+    let output = run_pg(
+        data.path(),
+        &url,
+        &["backup", archive.to_str().unwrap(), "--tar"],
+    );
+    assert_success(&output);
+    assert!(archive.is_file());
+
+    let store = runtime
+        .block_on(microwave_store_postgres::PostgresStore::connect(&url))
+        .expect("reconnect to scratch PostgreSQL");
+    let transient = unique("pg-tar-transient");
+    runtime
+        .block_on(store.create_user(
+            &transient,
+            &format!("{transient}@example.com"),
+            "bcrypt",
+            "hash",
+            "salt",
+            false,
+        ))
+        .expect("create transient user");
+    drop(store);
+
+    let refused = run_pg(data.path(), &url, &["restore", archive.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("--yes"));
+
+    let restored = run_pg(
+        data.path(),
+        &url,
+        &["restore", archive.to_str().unwrap(), "--yes"],
+    );
+    assert_success(&restored);
+
+    let store = runtime
+        .block_on(microwave_store_postgres::PostgresStore::connect(&url))
+        .expect("connect after tar restore");
     assert!(runtime
         .block_on(store.find_user(&persisted))
         .expect("find restored user")

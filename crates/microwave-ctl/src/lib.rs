@@ -11,10 +11,12 @@ mod context;
 mod diagnostics;
 mod error;
 mod keys;
+mod pedant;
 mod pg;
 mod secrets;
+mod service;
 
-pub use cli::{Cli, Command, MaintenanceAction};
+pub use cli::{BackupFormat, Cli, Command, MaintenanceAction, ServiceAction};
 pub use error::CtlError;
 
 use clap::{CommandFactory, FromArgMatches};
@@ -38,15 +40,30 @@ pub fn run() -> Result<(), CtlError> {
 
 /// Execute an already-parsed command. Useful for tests and embedders.
 pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
-    if matches!(&cli.command, Command::Version) {
-        println!("microwave-ctl {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
+    // Commands that do not touch configuration must run even when the
+    // configured file is missing or invalid: a broken install still needs to
+    // be able to run the pedant harness or stop the service.
+    match cli.command {
+        Command::Version => {
+            println!("microwave-ctl {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Command::Pedant { tags } => return pedant::run(&tags),
+        Command::Service {
+            action,
+            unit,
+            lines,
+            follow,
+        } => return service::run(action, unit.as_deref(), lines, follow),
+        _ => {}
     }
 
     let context = context::Context::load(cli.config.as_deref())?;
 
     match cli.command {
         Command::Version => unreachable!("version was handled above"),
+        Command::Pedant { .. } => unreachable!("pedant was handled above"),
+        Command::Service { .. } => unreachable!("service was handled above"),
         Command::Status => commands::status(&context),
         Command::UserCreate {
             name,
@@ -122,11 +139,30 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
         Command::RemoveSecret { group, name } => secrets::remove_secret(&context, &group, &name),
         Command::Maintenance { action } => secrets::maintenance(&context, action),
         Command::CheckConfig => diagnostics::check_config(&context),
+        Command::Reconfigure => commands::reconfigure(&context),
         Command::HaStatus => diagnostics::ha_status(&context),
         Command::Psql { args } => diagnostics::psql(&context, &args),
-        Command::Reindex { org } => commands::reindex(org.as_deref()),
-        Command::Backup { path } => backup::backup(&context, &path),
-        Command::Restore { path, yes } => backup::restore(&context, &path, yes),
+        Command::Reindex { org } => commands::reindex(&context, org.as_deref()),
+        Command::Backup { path, format, tar } => backup::backup(
+            &context,
+            &path,
+            if tar {
+                BackupFormat::Tar
+            } else {
+                format.unwrap_or(BackupFormat::Directory)
+            },
+        ),
+        Command::Restore {
+            path,
+            yes,
+            format,
+            tar,
+        } => backup::restore(
+            &context,
+            &path,
+            yes,
+            if tar { Some(BackupFormat::Tar) } else { format },
+        ),
         Command::MigrateFromLegacy { input, yes } => {
             commands::migrate_from_legacy(&context, &input, yes)
         }

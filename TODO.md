@@ -4,11 +4,11 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 
 > **Status snapshot (2026-10-25):** The implementation is well beyond the checkbox state below. The original phase checklist is kept as a design trace; many completed items were never ticked. Treat the test, pedant, and e2e reports as authoritative.
 >
-> **Implemented:** the Rust workspace; TOML/`MW_*` configuration; X-Ops signing/verification 1.0/1.1/1.3; SQLite and PostgreSQL metadata backends behind one contract, with a shared dual-backend repository matrix, and the HTTP API, OAuth, embedded search, authorization policy, bootstrap, operational CLI, and snapshot migration running on either; authz/ACL engine and default org policy; HTTP edge and signed-auth middleware; users, organizations, clients, principals, keys, memberships/invitations; nodes, roles, environments, data bags; sandboxes, `/bookshelf`, local and S3/Garage object stores; cookbooks, cookbook artifacts, policyfiles/policy groups; full dependency solver; search with embedded and OpenSearch backends; `/id` OAuth; `microwave-ctl`/`chef-server-ctl`; snapshot migration and the live `from-api` crawler; Docker/Compose/systemd packaging; HA backend wiring; TLS listener with SIGHUP/periodic certificate rotation, pre-generated key cache, and transparent `serialized_object` compression.
+> **Implemented:** the Rust workspace; TOML/`MW_*` configuration; X-Ops signing/verification 1.0/1.1/1.3; SQLite and PostgreSQL metadata backends behind one contract, with a shared dual-backend repository matrix, and the HTTP API, OAuth, embedded search, authorization policy, bootstrap, operational CLI, and snapshot migration running on either; authz/ACL engine and default org policy; HTTP edge and signed-auth middleware; users, organizations, clients, principals, keys, memberships/invitations; nodes, roles, environments, data bags; sandboxes, `/bookshelf`, local and S3/Garage object stores; cookbooks, cookbook artifacts, policyfiles/policy groups; full dependency solver; search with embedded and OpenSearch backends; `/id` OAuth; `microwave-ctl`/`chef-server-ctl` including reconfigure, reindex, pedant runner, systemd service management, and tar backup; snapshot migration and the live `from-api` crawler; Docker/Compose/systemd packaging; HA backend wiring; TLS listener with SIGHUP/periodic certificate rotation, pre-generated key cache, and transparent `serialized_object` compression.
 >
 > **Verified:** `cargo test --workspace`, clippy with `-D warnings`, and `cargo fmt --check` are green. PostgreSQL integration covers the store, HTTP runtime, operational CLI, and snapshot export/import against PostgreSQL 18, and the server can be started with `MW_DATABASE__DRIVER=postgres`. The Debian trixie container image builds and both binaries start. Core pedant: 651 passed / 1 failed / 8 pending; the single failure is the known plain-HTTP `header_spec.rb` artifact. Extended pedant (final, after PostgreSQL runtime, operations, TLS, keygen cache, and compression): 3,280 passed / 0 failed / 7 pending; all eleven extended tags pass. A strict stock `chef-client` converge now passes with both compatibility shims disabled (`MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0`), including validator registration.
 >
-> **Still open:** keeping the extended pedant suite green in CI; the remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup); expanding the store-level dual-backend matrix to full HTTP-route parity; OpenSearch 3.x evaluation; HA/performance validation; outbound telemetry export (intentionally disabled, no phone-home); and data-collector mutation action notifications. Data Collector forwarding, `required_recipe`, maintenance 503, metrics/`_stats`, transparent compression, TLS (including SIGHUP/periodic certificate rotation), and the keygen cache are implemented.
+> **Still open:** keeping the extended pedant suite green in CI; purging stale documents during a remote search reindex (the remote rebuild backfills but does not delete orphaned documents); expanding the store-level dual-backend matrix to full HTTP-route parity; OpenSearch 3.x evaluation; HA/performance validation; outbound telemetry export (intentionally disabled, no phone-home); data-collector mutation action notifications; and non-systemd service supervision. `reconfigure`, remote `reindex`, the pedant runner, systemd `service` management, and the tar backup format are implemented. Data Collector forwarding, `required_recipe`, maintenance 503, metrics/`_stats`, transparent compression, TLS (including SIGHUP/periodic certificate rotation), and the keygen cache are implemented.
 
 ---
 
@@ -255,15 +255,20 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 > **Backend status:** the commands below that are implemented work against
 > both SQLite and PostgreSQL. `backup`/`restore` use `VACUUM INTO` for SQLite
 > and `pg_dump`/`pg_restore` for PostgreSQL; both require the matching client
-> tools for PostgreSQL. `reindex` remains a documented no-op.
-- [ ] Implement CLI argument parser (`clap`) matching `chef-server-ctl` command and flag syntax:
-  - [ ] Install `chef-server-ctl` as a compatibility alias to `microwave-ctl`.
-  - [ ] Org & User commands: `user-list`, `user-show`, `user-create`, `user-delete`, `user-edit`, `org-list`, `org-show`, `org-create`, `org-delete`, `org-user-add`, `org-user-remove`, `password`.
-  - [ ] Server Admin commands: `grant-server-admin-permissions`, `remove-server-admin-permissions`, `list-server-admins`.
-  - [ ] Key Rotation commands: `add-client-key`, `add-user-key`, `list-client-keys`, `list-user-keys`, `delete-client-key`, `delete-user-key`.
-  - [ ] Search & Maintenance commands: `reindex`, `maintenance`, `cleanup`, `cleanup-bifrost`, `filtered-dump`.
-  - [ ] Secrets & Config commands: `show-secret`, `set-secret`, `remove-secret`, `rotate-credentials`, `rotate-all-credentials`, `rotate-shared-secrets`, `oc-id-show-app`, `check-config`, `reconfigure`.
-  - [ ] Lifecycle & Diagnostics: `status`, `ha-status`, `version`, `psql`, `gather-logs`, `backup`, `restore`, `test` (runs `oc-chef-pedant`).
+> tools for PostgreSQL. A directory or a single tar archive can be used for
+> either backend. `reconfigure` validates, initializes/migrates, and reports
+> without restarting a server. `reindex` prints relational counts for the
+> embedded backend and backfills remote OpenSearch/Elasticsearch documents,
+> counting only acknowledged bulk items; it does not purge remote documents for
+> already-deleted objects.
+- [ ] Full upstream command/flag parity. The clap surface is implemented; the remaining gaps are `user-edit`, `cleanup`, `cleanup-bifrost`, `filtered-dump`, `rotate-credentials`, `rotate-all-credentials`, `rotate-shared-secrets`, `oc-id-show-app`, and `gather-logs`.
+  - [x] Install `chef-server-ctl` as a compatibility alias to `microwave-ctl`.
+  - [x] Org & User commands: `user-list`, `user-show`, `user-create`, `user-delete`, `org-list`, `org-show`, `org-create`, `org-delete`, `org-user-add`, `org-user-remove`, `password`.
+  - [x] Server Admin commands: `grant-server-admin-permissions`, `remove-server-admin-permissions`, `list-server-admins`.
+  - [x] Key Rotation commands: `add-client-key`, `add-user-key`, `list-client-keys`, `list-user-keys`, `delete-client-key`, `delete-user-key`.
+  - [x] Search & Maintenance commands: `reindex` (embedded count verification and remote backfill) and `maintenance`.
+  - [x] Secrets & Config commands: `show-secret`, `set-secret`, `remove-secret`, `check-config`, and `reconfigure`.
+  - [x] Lifecycle & Diagnostics: `status`, `ha-status`, `version`, `psql`, `backup`, `restore`, `pedant` (the `test` equivalent), and systemd-only `service start|stop|restart|status|tail`. Directory and tar backup formats are supported for SQLite and PostgreSQL.
 
 ### 5.4 Legacy Data Migration Tool (`microwave-migrate`)
 > **Backend status:** export and import support both SQLite and PostgreSQL
