@@ -272,6 +272,81 @@ impl SqliteStore {
     }
 }
 
+/// Predicate over `authz_entities` that matches an entity no organization,
+/// user, client, group, container, or stored object references.
+///
+/// Every column that stores an `authz_entities` primary key must appear here.
+/// The `authz_acl_*` and `authz_group_*` relation tables are intentionally
+/// excluded: they describe grants, and a grant whose target or actor no longer
+/// exists is exactly what cleanup removes.
+const ORPHAN_AUTHZ_ENTITY_PREDICATE: &str = "\
+    NOT EXISTS (SELECT 1 FROM orgs WHERE orgs.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM users WHERE users.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM clients WHERE clients.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM containers WHERE containers.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM groups WHERE groups.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM global_groups WHERE global_groups.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM nodes WHERE nodes.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM roles WHERE roles.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM environments WHERE environments.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM data_bags WHERE data_bags.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM cookbooks WHERE cookbooks.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM cookbook_artifacts WHERE cookbook_artifacts.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM policies WHERE policies.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM policy_groups WHERE policy_groups.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (\
+        SELECT 1 FROM policy_group_revision_associations association \
+        WHERE association.policy_group_authz_id = authz_entities.authz_id\
+    )";
+
+impl SqliteStore {
+    /// Count authorization entities that no identity or object table
+    /// references. See [`ORPHAN_AUTHZ_ENTITY_PREDICATE`] for the definition.
+    pub fn count_orphan_authz_entities(&self) -> Result<u64, StoreError> {
+        let connection = self.connection();
+        let count: i64 = connection.query_row(
+            &format!("SELECT COUNT(*) FROM authz_entities WHERE {ORPHAN_AUTHZ_ENTITY_PREDICATE}"),
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
+    }
+
+    /// Remove authorization entities that no identity or object table
+    /// references, plus any ACL or group-membership rows still pointing at
+    /// them.
+    ///
+    /// The relation deletes are explicit so cleanup stays correct even when a
+    /// connection was opened with `PRAGMA foreign_keys = OFF`; the schema's
+    /// cascades normally do the same work.
+    pub fn delete_orphan_authz_entities(&self) -> Result<u64, StoreError> {
+        let orphans =
+            format!("SELECT authz_id FROM authz_entities WHERE {ORPHAN_AUTHZ_ENTITY_PREDICATE}");
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        for (table, columns) in [
+            ("authz_acl_actor", ["target_authz_id", "actor_authz_id"]),
+            ("authz_acl_group", ["target_authz_id", "group_authz_id"]),
+            ("authz_group_actors", ["group_authz_id", "actor_authz_id"]),
+            (
+                "authz_group_groups",
+                ["parent_group_authz_id", "child_group_authz_id"],
+            ),
+        ] {
+            let predicates = columns
+                .map(|column| format!("{column} IN ({orphans})"))
+                .join(" OR ");
+            transaction.execute(&format!("DELETE FROM {table} WHERE {predicates}"), [])?;
+        }
+        let removed = transaction.execute(
+            &format!("DELETE FROM authz_entities WHERE {ORPHAN_AUTHZ_ENTITY_PREDICATE}"),
+            [],
+        )?;
+        transaction.commit()?;
+        Ok(removed as u64)
+    }
+}
+
 fn delete_global_group_in_transaction(
     transaction: &Transaction<'_>,
     name: &str,

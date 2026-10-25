@@ -3,9 +3,37 @@ use microwave_store::{
     Acl, AclEntry, AuthzRepository, Container, Group, GroupMembers, Permission, StoreError,
 };
 use sqlx::postgres::Postgres;
+use sqlx::AssertSqlSafe;
 use sqlx::{Row, Transaction};
 
 use crate::store::{db, new_id, now, unique, PostgresStore};
+
+/// Predicate over `authz_entities` that matches an entity no organization,
+/// user, client, group, container, or stored object references.
+///
+/// Keep in sync with the SQLite implementation and every column that stores an
+/// `authz_entities` primary key. The `authz_acl_*`/`authz_group_*` relation
+/// tables are deliberately excluded: a grant with no underlying actor or
+/// object is what cleanup removes.
+const ORPHAN_AUTHZ_ENTITY_PREDICATE: &str = "\
+    NOT EXISTS (SELECT 1 FROM orgs WHERE orgs.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM users WHERE users.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM clients WHERE clients.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM containers WHERE containers.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM groups WHERE groups.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM global_groups WHERE global_groups.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM nodes WHERE nodes.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM roles WHERE roles.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM environments WHERE environments.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM data_bags WHERE data_bags.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM cookbooks WHERE cookbooks.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM cookbook_artifacts WHERE cookbook_artifacts.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM policies WHERE policies.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM policy_groups WHERE policy_groups.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (\
+        SELECT 1 FROM policy_group_revision_associations association \
+        WHERE association.policy_group_authz_id = authz_entities.authz_id\
+    )";
 
 impl PostgresStore {
     async fn create_authz_entity(&self, entity_type: &str) -> Result<String, StoreError> {
@@ -1083,6 +1111,49 @@ impl AuthzRepository for PostgresStore {
         delete_global_group_in_transaction(&mut transaction, name).await?;
         transaction.commit().await.map_err(db)?;
         Ok(())
+    }
+
+    async fn count_orphan_authz_entities(&self) -> Result<u64, StoreError> {
+        let count: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
+            "SELECT COUNT(*) FROM authz_entities WHERE {ORPHAN_AUTHZ_ENTITY_PREDICATE}"
+        )))
+        .fetch_one(self.pool())
+        .await
+        .map_err(db)?;
+        Ok(count as u64)
+    }
+
+    async fn delete_orphan_authz_entities(&self) -> Result<u64, StoreError> {
+        let orphans =
+            format!("SELECT authz_id FROM authz_entities WHERE {ORPHAN_AUTHZ_ENTITY_PREDICATE}");
+        let mut transaction = self.pool().begin().await.map_err(db)?;
+        for (table, columns) in [
+            ("authz_acl_actor", ["target_authz_id", "actor_authz_id"]),
+            ("authz_acl_group", ["target_authz_id", "group_authz_id"]),
+            ("authz_group_actors", ["group_authz_id", "actor_authz_id"]),
+            (
+                "authz_group_groups",
+                ["parent_group_authz_id", "child_group_authz_id"],
+            ),
+        ] {
+            let predicates = columns
+                .map(|column| format!("{column} IN ({orphans})"))
+                .join(" OR ");
+            sqlx::query(AssertSqlSafe(format!(
+                "DELETE FROM {table} WHERE {predicates}"
+            )))
+            .execute(&mut *transaction)
+            .await
+            .map_err(db)?;
+        }
+        let result = sqlx::query(AssertSqlSafe(format!(
+            "DELETE FROM authz_entities WHERE {ORPHAN_AUTHZ_ENTITY_PREDICATE}"
+        )))
+        .execute(&mut *transaction)
+        .await
+        .map_err(db)?;
+        transaction.commit().await.map_err(db)?;
+        Ok(result.rows_affected())
     }
 
     async fn check_permission(
