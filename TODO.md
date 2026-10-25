@@ -8,7 +8,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 >
 > **Verified:** `cargo test --workspace`, clippy with `-D warnings`, and `cargo fmt --check` are green. PostgreSQL integration covers the store, HTTP runtime, operational CLI, and snapshot export/import against PostgreSQL 18, and the server can be started with `MW_DATABASE__DRIVER=postgres`. The Debian trixie container image builds and both binaries start. Core pedant: 651 passed / 1 failed / 8 pending; the single failure is the known plain-HTTP `header_spec.rb` artifact. Extended pedant (final, after PostgreSQL runtime): 3,280 passed / 0 failed / 7 pending; all eleven extended tags pass. A strict stock `chef-client` converge now passes with both compatibility shims disabled (`MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0`), including validator registration.
 >
-> **Still open:** keeping the extended pedant suite green in CI; the remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup); TLS listener, keygen cache, transparent compression, and the dual-backend test matrix; OpenSearch 3.x evaluation; HA/performance validation; outbound telemetry export (intentionally disabled, no phone-home); and data-collector mutation action notifications. Data Collector forwarding, `required_recipe`, maintenance 503, and metrics/`_stats` are implemented.
+> **Still open:** keeping the extended pedant suite green in CI; the remaining `chef-server-ctl` surface (`reconfigure`, real `reindex`, pedant runner, service management, full tar backup); TLS listener, keygen cache, and the dual-backend test matrix; OpenSearch 3.x evaluation; HA/performance validation; outbound telemetry export (intentionally disabled, no phone-home); and data-collector mutation action notifications. Data Collector forwarding, `required_recipe`, maintenance 503, metrics/`_stats`, and transparent `serialized_object` compression are implemented.
 
 ---
 
@@ -54,7 +54,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
   - [ ] `oauth_applications`, `oauth_access_grants`, `oauth_access_tokens`, `kvpair`, `telemetry`.
 - [ ] Implement SQLite backend (`WAL` journal mode, `foreign_keys = ON`, `busy_timeout = 5000`, serialized write connection + read pool).
 - [ ] Implement PostgreSQL backend (`sqlx::PgPool`, advisory lock helper for HA background tasks).
-- [ ] Implement transparent `zlib`/gzip compression and decompression for `serialized_object` columns (`chef_db_compression.erl` parity).
+- [x] Implement transparent zlib compression and decompression for `serialized_object` columns (`chef_db_compression.erl` parity). New rows use `mwz1:` + base64(zlib(JSON)); legacy plain JSON is still read. Configure with `storage.compression = "zlib" | "none"` / `MW_STORAGE__COMPRESSION`, default `zlib`.
 - [ ] Write dual-backend integration test macro running every repository test against both SQLite and PostgreSQL.
 
 ### 1.4 Authorization & ACL Engine (`microwave-authz`)

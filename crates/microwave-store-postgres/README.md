@@ -38,6 +38,12 @@ it when `database.driver = "postgres"`; SQLite remains the default.
 - **Chef documents are `TEXT`/JSON** (`serialized_object`, metadata, manifests).
   The SQLite schema stores them in `BLOB` columns but always writes UTF-8 JSON;
   PostgreSQL uses `TEXT` to avoid encode/decode at every boundary.
+- **`serialized_object` is compressed transparently** on both backends. New
+  writes use `mwz1:` + base64(zlib(JSON)); reads also accept legacy plain JSON,
+  and `storage.compression = "none"` / `MW_STORAGE__COMPRESSION=none` disables
+  new compression without invalidating existing rows. Decompression is bounded
+  to 64 MiB and corrupt values return `StoreError::Compression` instead of
+  panicking. Snapshot export always emits decoded JSON.
 - **Booleans are native `BOOLEAN`**, unlike SQLite's `INTEGER` checks.
 - **ACL and key maintenance stays in Rust transactions** — no triggers or
   PL/pgSQL, matching architectural guardrail 2 in the design document.

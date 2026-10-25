@@ -2,9 +2,9 @@ mod bootstrap;
 
 use clap::{Parser, Subcommand};
 use microwave_api::{router, AppState};
-use microwave_config::{Config, DatabaseDriver, ObjectStoreBackend};
+use microwave_config::{Config, DatabaseDriver, ObjectStoreBackend, StorageCompression};
 use microwave_objectstore::{LocalObjectStore, ObjectStore, S3Config, S3ObjectStore};
-use microwave_store::{MetadataStore, SqliteStore};
+use microwave_store::{Compression, MetadataStore, SqliteStore};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -59,11 +59,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Serve { config, check } => {
             let mut config = Config::load(config.as_deref())?;
             let database_url = config.resolved_database_url();
+            let compression = store_compression(config.storage.compression);
             let (store, sqlite): (Arc<dyn MetadataStore>, Option<Arc<SqliteStore>>) =
                 match config.database.driver {
                     DatabaseDriver::Sqlite => {
                         let path = sqlite_path(&database_url);
-                        let store = Arc::new(SqliteStore::open(Path::new(path))?);
+                        let store = Arc::new(SqliteStore::open_with_compression(
+                            Path::new(path),
+                            compression,
+                        )?);
                         (store.clone(), Some(store))
                     }
                     DatabaseDriver::Postgres => {
@@ -75,7 +79,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .into());
                         }
                         let store = Arc::new(
-                            microwave_store_postgres::PostgresStore::connect(&database_url).await?,
+                            microwave_store_postgres::PostgresStore::connect_with_compression(
+                                &database_url,
+                                compression,
+                            )
+                            .await?,
                         );
                         (store, None)
                     }
@@ -131,6 +139,13 @@ fn sqlite_path(database_url: &str) -> &str {
     database_url
         .strip_prefix("sqlite://")
         .unwrap_or(database_url)
+}
+
+fn store_compression(compression: StorageCompression) -> Compression {
+    match compression {
+        StorageCompression::Zlib => Compression::Zlib,
+        StorageCompression::None => Compression::None,
+    }
 }
 
 /// Hide credentials before printing configuration.

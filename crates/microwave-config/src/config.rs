@@ -9,6 +9,7 @@ pub struct Config {
     pub server: ServerConfig,
     pub paths: PathsConfig,
     pub database: DatabaseConfig,
+    pub storage: StorageConfig,
     pub search: SearchConfig,
     pub object_store: ObjectStoreConfig,
     pub auth: AuthConfig,
@@ -56,6 +57,7 @@ impl Config {
     /// - `MW_SERVER__BIND`
     /// - `MW_PATHS__DATA_DIR`
     /// - `MW_DATABASE__DRIVER`, `MW_DATABASE__URL`
+    /// - `MW_STORAGE__COMPRESSION`
     /// - `MW_SEARCH__BACKEND`, `MW_SEARCH__URL`
     /// - `MW_OBJECT_STORE__BACKEND`, `MW_OBJECT_STORE__BUCKET`, `MW_OBJECT_STORE__ENDPOINT`
     /// - `MW_OBJECT_STORE__REGION`, `MW_OBJECT_STORE__ACCESS_KEY`,
@@ -93,6 +95,18 @@ impl Config {
         }
         if let Ok(value) = std::env::var("MW_DATABASE__URL") {
             self.database.url = Some(value);
+        }
+        if let Ok(value) = std::env::var("MW_STORAGE__COMPRESSION") {
+            self.storage.compression = match value.to_ascii_lowercase().as_str() {
+                "zlib" => StorageCompression::Zlib,
+                "none" => StorageCompression::None,
+                _ => {
+                    return Err(ConfigError::InvalidValue {
+                        key: "MW_STORAGE__COMPRESSION".into(),
+                        value,
+                    })
+                }
+            };
         }
         if let Ok(value) = std::env::var("MW_SEARCH__BACKEND") {
             self.search.backend = match value.to_ascii_lowercase().as_str() {
@@ -278,6 +292,33 @@ pub enum DatabaseDriver {
     #[default]
     Sqlite,
     Postgres,
+}
+
+/// Metadata-storage behavior that applies to both database backends.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct StorageConfig {
+    /// Compression for new `serialized_object` writes. Existing values are
+    /// always readable, including after switching this to `none`.
+    pub compression: StorageCompression,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            compression: StorageCompression::Zlib,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageCompression {
+    /// `mwz1:` + base64(zlib(JSON)), the upstream-compatible compact form.
+    #[default]
+    Zlib,
+    /// Plain JSON text, for operators who need raw database visibility.
+    None,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

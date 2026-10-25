@@ -37,6 +37,13 @@ driver = "sqlite"
 # driver = "postgres"
 # url = "postgres://microwave:secret@db/microwave"
 
+[storage]
+# Compression for new `serialized_object` writes: "zlib" (default) stores
+# `mwz1:` + base64(zlib(JSON)); "none" stores plain JSON for easier database
+# inspection. Either setting reads both forms, so switching does not require a
+# rewrite and existing databases keep working.
+compression = "zlib"
+
 [search]
 # `embedded` reads the relational store directly and needs no extra service.
 backend = "embedded"

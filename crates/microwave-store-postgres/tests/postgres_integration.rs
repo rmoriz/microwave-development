@@ -9,7 +9,7 @@ use microwave_store::{
     ActorType, ArtifactRepository, AuthzRepository, CookbookRepository, GroupMembers,
     IdentityRepository, KvRepository, MembershipRepository, NewNode, OAuthRepository,
     ObjectRepository, Permission, PolicyRepository, SandboxRepository, SecretsRepository,
-    StoreError, UserProfile,
+    StoreError, UserProfile, COMPRESSED_PREFIX,
 };
 use microwave_store_postgres::PostgresStore;
 use sqlx::Row;
@@ -575,6 +575,84 @@ async fn performs_nodes_roles_environments_and_data_bag_crud() {
             .len(),
         0
     );
+}
+
+#[tokio::test]
+async fn serialized_objects_are_compressed_transparently() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let fixture = fixture(&store).await;
+    let name = format!("compressed-node-{}", suffix());
+    let body = format!(r#"{{"name":"{name}","run_list":[]}}"#);
+
+    store
+        .create_node(
+            &fixture.org_id,
+            NewNode {
+                name: &name,
+                body: &body,
+                environment: "_default",
+                policy_name: None,
+                policy_group: None,
+                creator_authz_id: &fixture.creator_authz_id,
+            },
+        )
+        .await
+        .expect("create compressed node");
+
+    let raw: String =
+        sqlx::query_scalar("SELECT serialized_object FROM nodes WHERE org_id = $1 AND name = $2")
+            .bind(&fixture.org_id)
+            .bind(&name)
+            .fetch_one(store.pool())
+            .await
+            .expect("read raw serialized_object");
+    assert!(raw.starts_with(COMPRESSED_PREFIX));
+    assert!(!raw.contains("run_list"));
+
+    let node = store
+        .find_node(&fixture.org_id, &name)
+        .await
+        .expect("find node")
+        .expect("node exists");
+    assert_eq!(node.serialized_object, body);
+
+    // Legacy plain JSON written by an older server remains readable.
+    sqlx::query("UPDATE nodes SET serialized_object = $3 WHERE org_id = $1 AND name = $2")
+        .bind(&fixture.org_id)
+        .bind(&name)
+        .bind(r#"{"name":"legacy-plain"}"#)
+        .execute(store.pool())
+        .await
+        .expect("write legacy plain value");
+    let legacy = store
+        .find_node(&fixture.org_id, &name)
+        .await
+        .expect("read legacy node")
+        .expect("node exists");
+    assert_eq!(legacy.serialized_object, r#"{"name":"legacy-plain"}"#);
+
+    // Corrupt compressed values fail as a store error rather than a panic.
+    sqlx::query("UPDATE nodes SET serialized_object = $3 WHERE org_id = $1 AND name = $2")
+        .bind(&fixture.org_id)
+        .bind(&name)
+        .bind("mwz1:not-base64!")
+        .execute(store.pool())
+        .await
+        .expect("write corrupt compressed value");
+    let error = store
+        .find_node(&fixture.org_id, &name)
+        .await
+        .expect_err("corrupt value must fail");
+    assert!(matches!(error, StoreError::Compression(_)));
+
+    // Do not leave an undecodable row behind for the snapshot suite, which
+    // exports every row in the shared test database.
+    store
+        .delete_node(&fixture.org_id, &name)
+        .await
+        .expect("delete corrupt test node");
 }
 
 #[tokio::test]
@@ -1757,5 +1835,10 @@ async fn retains_checksums_shared_between_versions() {
             .await
             .expect("read parity row");
     assert_eq!(row.try_get::<Option<String>, _>(0).expect("metadata"), None);
-    assert_eq!(row.try_get::<String, _>(1).expect("manifest"), manifest);
+    let stored = row.try_get::<String, _>(1).expect("manifest");
+    assert!(stored.starts_with(COMPRESSED_PREFIX));
+    assert_eq!(
+        microwave_store::decode_serialized(&stored).expect("manifest decodes"),
+        manifest
+    );
 }

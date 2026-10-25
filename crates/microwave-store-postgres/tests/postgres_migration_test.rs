@@ -7,7 +7,7 @@
 use microwave_store::{
     ActorType, ArtifactRepository, AuthzRepository, CookbookRepository, IdentityRepository,
     MembershipRepository, NewNode, OAuthRepository, ObjectRepository, PolicyRepository,
-    SandboxRepository,
+    SandboxRepository, COMPRESSED_PREFIX,
 };
 use microwave_store_postgres::PostgresStore;
 
@@ -193,6 +193,31 @@ async fn snapshot_round_trips_every_seeded_collection() {
 
     let before = store.export_snapshot().await.unwrap();
     assert!(before.orgs.iter().any(|row| row.name == org_name));
+    let exported_node = before
+        .nodes
+        .iter()
+        .find(|row| row.name == node_name)
+        .expect("node is in the snapshot");
+    assert_eq!(
+        exported_node.serialized_object.as_deref(),
+        Some(r#"{"name":"node","chef_environment":"_default"}"#)
+    );
+    assert!(before
+        .cookbook_artifact_versions
+        .iter()
+        .find(|row| row.identifier == "identifier-1")
+        .unwrap()
+        .serialized_object
+        .as_deref()
+        .is_some_and(|value| !value.starts_with(COMPRESSED_PREFIX)));
+    let raw_node: String =
+        sqlx::query_scalar("SELECT serialized_object FROM nodes WHERE org_id = $1 AND name = $2")
+            .bind(&org.id)
+            .bind(&node_name)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert!(raw_node.starts_with(COMPRESSED_PREFIX));
     assert!(before.users.iter().any(|row| row.id == user.id));
     assert!(before
         .cookbook_versions

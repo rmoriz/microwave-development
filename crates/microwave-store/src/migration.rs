@@ -6,6 +6,7 @@
 //! passwords and private keys are never stored by Microwave and therefore
 //! never exported.
 
+use crate::compression::{decode_serialized_optional, encode_serialized_optional, Compression};
 use crate::sqlite::{SqliteStore, StoreError};
 use rusqlite::{params, Connection, Row, Transaction};
 use serde::{Deserialize, Serialize};
@@ -404,7 +405,7 @@ impl SqliteStore {
     /// Read every migration-relevant table into a [`StoreSnapshot`].
     pub fn export_snapshot(&self) -> Result<StoreSnapshot, StoreError> {
         let connection = self.connection();
-        Ok(StoreSnapshot {
+        let mut snapshot = StoreSnapshot {
             orgs: collect(
                 &connection,
                 "SELECT id, authz_id, name, full_name, assigned_at, last_updated_by,
@@ -892,7 +893,9 @@ impl SqliteStore {
                     })
                 },
             )?,
-        })
+        };
+        decode_snapshot_serialized(&mut snapshot)?;
+        Ok(snapshot)
     }
 
     /// Import a snapshot into this store in one transaction.
@@ -902,7 +905,7 @@ impl SqliteStore {
     pub fn import_snapshot(&self, snapshot: &StoreSnapshot) -> Result<(), StoreError> {
         let mut connection = self.connection();
         let transaction = connection.transaction()?;
-        import_all(&transaction, snapshot)?;
+        import_all(&transaction, snapshot, self.compression())?;
         transaction.commit()?;
         Ok(())
     }
@@ -921,6 +924,43 @@ where
     Ok(values)
 }
 
+/// Snapshots always carry plain JSON, never the storage-level `mwz1:` form.
+fn decode_snapshot_serialized(snapshot: &mut StoreSnapshot) -> Result<(), StoreError> {
+    for row in &mut snapshot.nodes {
+        decode_optional(&mut row.serialized_object)?;
+    }
+    for row in &mut snapshot.roles {
+        decode_optional(&mut row.serialized_object)?;
+    }
+    for row in &mut snapshot.environments {
+        decode_optional(&mut row.serialized_object)?;
+    }
+    for row in &mut snapshot.data_bags {
+        decode_optional(&mut row.serialized_object)?;
+    }
+    for row in &mut snapshot.data_bag_items {
+        decode_optional(&mut row.serialized_object)?;
+    }
+    for row in &mut snapshot.cookbook_versions {
+        decode_optional(&mut row.serialized_object)?;
+    }
+    for row in &mut snapshot.cookbook_artifact_versions {
+        decode_optional(&mut row.serialized_object)?;
+    }
+    for row in &mut snapshot.policy_groups {
+        decode_optional(&mut row.serialized_object)?;
+    }
+    for row in &mut snapshot.policy_revisions {
+        decode_optional(&mut row.serialized_object)?;
+    }
+    Ok(())
+}
+
+fn decode_optional(value: &mut Option<String>) -> Result<(), StoreError> {
+    *value = decode_serialized_optional(value.as_deref())?;
+    Ok(())
+}
+
 fn named_object_from_row(row: &Row<'_>) -> rusqlite::Result<NamedObjectRow> {
     Ok(NamedObjectRow {
         id: row.get(0)?,
@@ -934,7 +974,11 @@ fn named_object_from_row(row: &Row<'_>) -> rusqlite::Result<NamedObjectRow> {
     })
 }
 
-fn import_all(transaction: &Transaction<'_>, snapshot: &StoreSnapshot) -> Result<(), StoreError> {
+fn import_all(
+    transaction: &Transaction<'_>,
+    snapshot: &StoreSnapshot,
+    compression: Compression,
+) -> Result<(), StoreError> {
     for row in &snapshot.orgs {
         transaction.execute(
             "INSERT INTO orgs
@@ -1239,7 +1283,7 @@ fn import_all(transaction: &Transaction<'_>, snapshot: &StoreSnapshot) -> Result
                 row.environment,
                 row.policy_name,
                 row.policy_group,
-                row.serialized_object,
+                encode_serialized_optional(row.serialized_object.as_deref(), compression)?,
                 row.last_updated_by,
                 row.created_at,
                 row.updated_at
@@ -1248,13 +1292,13 @@ fn import_all(transaction: &Transaction<'_>, snapshot: &StoreSnapshot) -> Result
     }
 
     for row in &snapshot.roles {
-        upsert_named_object(transaction, "roles", row)?;
+        upsert_named_object(transaction, "roles", row, compression)?;
     }
     for row in &snapshot.environments {
-        upsert_named_object(transaction, "environments", row)?;
+        upsert_named_object(transaction, "environments", row, compression)?;
     }
     for row in &snapshot.data_bags {
-        upsert_named_object(transaction, "data_bags", row)?;
+        upsert_named_object(transaction, "data_bags", row, compression)?;
     }
 
     for row in &snapshot.data_bag_items {
@@ -1276,7 +1320,7 @@ fn import_all(transaction: &Transaction<'_>, snapshot: &StoreSnapshot) -> Result
                 row.org_id,
                 row.data_bag_name,
                 row.item_name,
-                row.serialized_object,
+                encode_serialized_optional(row.serialized_object.as_deref(), compression)?,
                 row.last_updated_by,
                 row.created_at,
                 row.updated_at
@@ -1351,7 +1395,7 @@ fn import_all(transaction: &Transaction<'_>, snapshot: &StoreSnapshot) -> Result
                 row.meta_deps,
                 row.meta_long_desc,
                 row.metadata,
-                row.serialized_object,
+                encode_serialized_optional(row.serialized_object.as_deref(), compression)?,
                 row.last_updated_by,
                 row.created_at,
                 row.updated_at
@@ -1405,7 +1449,7 @@ fn import_all(transaction: &Transaction<'_>, snapshot: &StoreSnapshot) -> Result
                 row.org_id,
                 row.identifier,
                 row.metadata,
-                row.serialized_object,
+                encode_serialized_optional(row.serialized_object.as_deref(), compression)?,
                 row.created_at,
                 row.created_by
             ],
@@ -1468,7 +1512,7 @@ fn import_all(transaction: &Transaction<'_>, snapshot: &StoreSnapshot) -> Result
                 row.org_id,
                 row.name,
                 row.authz_id,
-                row.serialized_object,
+                encode_serialized_optional(row.serialized_object.as_deref(), compression)?,
                 row.last_updated_by,
                 row.created_at,
                 row.updated_at
@@ -1497,7 +1541,7 @@ fn import_all(transaction: &Transaction<'_>, snapshot: &StoreSnapshot) -> Result
                 row.policy_id,
                 row.revision_id,
                 row.name,
-                row.serialized_object,
+                encode_serialized_optional(row.serialized_object.as_deref(), compression)?,
                 row.last_updated_by,
                 row.created_at,
                 row.updated_at
@@ -1572,6 +1616,7 @@ fn upsert_named_object(
     transaction: &Transaction<'_>,
     table: &str,
     row: &NamedObjectRow,
+    compression: Compression,
 ) -> Result<(), StoreError> {
     let sql = format!(
         "INSERT INTO {table}
@@ -1593,7 +1638,7 @@ fn upsert_named_object(
             row.authz_id,
             row.org_id,
             row.name,
-            row.serialized_object,
+            encode_serialized_optional(row.serialized_object.as_deref(), compression)?,
             row.last_updated_by,
             row.created_at,
             row.updated_at

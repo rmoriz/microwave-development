@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use microwave_store::{
-    PolicyRepository, StoreError, StoredPolicy, StoredPolicyGroup, StoredPolicyGroupAssociation,
-    StoredPolicyRevision,
+    decode_serialized, encode_serialized, Compression, PolicyRepository, StoreError, StoredPolicy,
+    StoredPolicyGroup, StoredPolicyGroupAssociation, StoredPolicyRevision,
 };
 use serde_json::Value;
 use sqlx::postgres::Postgres;
@@ -26,6 +26,7 @@ impl PolicyRepository for PostgresStore {
 
         let timestamp = now();
         let revision_row_id = new_id();
+        let serialized_object = encode_serialized(body, self.compression())?;
         let mut transaction = self.pool().begin().await.map_err(db)?;
         let (policy_id, policy_authz_id) =
             ensure_policy(&mut transaction, org_id, name, creator_authz_id).await?;
@@ -36,7 +37,7 @@ impl PolicyRepository for PostgresStore {
             &policy_id,
             name,
             revision_id,
-            body,
+            &serialized_object,
             creator_authz_id,
             &timestamp,
         )
@@ -116,9 +117,11 @@ impl PolicyRepository for PostgresStore {
         .fetch_optional(self.pool())
         .await
         .map_err(db)?;
-        row.map(|row| policy_revision_from_row(&row))
+        let revision = row
+            .map(|row| policy_revision_from_row(&row))
             .transpose()
-            .map_err(db)
+            .map_err(db)?;
+        decode_policy_revision_option(revision)
     }
 
     async fn list_policy_revisions(
@@ -191,6 +194,7 @@ impl PolicyRepository for PostgresStore {
 
         let timestamp = now();
         let id = new_id();
+        let serialized_object = encode_serialized(body, self.compression())?;
         let mut transaction = self.pool().begin().await.map_err(db)?;
         let authz_id = crate::objects::create_object_authz(
             &mut transaction,
@@ -208,7 +212,7 @@ impl PolicyRepository for PostgresStore {
         .bind(org_id)
         .bind(name)
         .bind(&authz_id)
-        .bind(body)
+        .bind(&serialized_object)
         .bind(creator_authz_id)
         .bind(&timestamp)
         .execute(&mut *transaction)
@@ -238,9 +242,11 @@ impl PolicyRepository for PostgresStore {
         .fetch_optional(self.pool())
         .await
         .map_err(db)?;
-        row.map(|row| policy_group_from_row(&row))
+        let group = row
+            .map(|row| policy_group_from_row(&row))
             .transpose()
-            .map_err(db)
+            .map_err(db)?;
+        decode_policy_group_option(group)
     }
 
     async fn list_policy_groups(&self, org_id: &str) -> Result<Vec<StoredPolicyGroup>, StoreError> {
@@ -252,10 +258,12 @@ impl PolicyRepository for PostgresStore {
         .fetch_all(self.pool())
         .await
         .map_err(db)?;
-        rows.iter()
-            .map(policy_group_from_row)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(db)
+        decode_policy_groups(
+            rows.iter()
+                .map(policy_group_from_row)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?,
+        )
     }
 
     async fn delete_policy_group(&self, org_id: &str, name: &str) -> Result<(), StoreError> {
@@ -313,6 +321,7 @@ impl PolicyRepository for PostgresStore {
             group_name,
             group_body,
             creator_authz_id,
+            self.compression(),
         )
         .await?;
         let (revision_row_id, serialized_object) = ensure_policy_revision(
@@ -323,6 +332,7 @@ impl PolicyRepository for PostgresStore {
             revision_id,
             body,
             creator_authz_id,
+            self.compression(),
         )
         .await?;
 
@@ -415,9 +425,11 @@ impl PolicyRepository for PostgresStore {
         .fetch_optional(self.pool())
         .await
         .map_err(db)?;
-        row.map(|row| policy_group_association_from_row(&row))
+        let association = row
+            .map(|row| policy_group_association_from_row(&row))
             .transpose()
-            .map_err(db)
+            .map_err(db)?;
+        decode_policy_group_association_option(association)
     }
 
     async fn list_policy_group_associations(
@@ -439,10 +451,12 @@ impl PolicyRepository for PostgresStore {
         .fetch_all(self.pool())
         .await
         .map_err(db)?;
-        rows.iter()
-            .map(policy_group_association_from_row)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(db)
+        decode_policy_group_associations(
+            rows.iter()
+                .map(policy_group_association_from_row)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?,
+        )
     }
 
     async fn list_policy_groups_for_revision(
@@ -511,10 +525,12 @@ impl PostgresStore {
         .fetch_all(self.pool())
         .await
         .map_err(db)?;
-        rows.iter()
-            .map(policy_revision_from_row)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(db)
+        decode_policy_revisions(
+            rows.iter()
+                .map(policy_revision_from_row)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?,
+        )
     }
 }
 
@@ -564,6 +580,7 @@ async fn ensure_policy_group(
     name: &str,
     body: &str,
     creator_authz_id: &str,
+    compression: Compression,
 ) -> Result<(String, String), StoreError> {
     if let Some(group) = sqlx::query_as::<_, (String, String)>(
         "SELECT id, authz_id FROM policy_groups WHERE org_id = $1 AND name = $2",
@@ -582,6 +599,7 @@ async fn ensure_policy_group(
         crate::objects::create_object_authz(transaction, org_id, "policy_groups", creator_authz_id)
             .await?;
     let timestamp = now();
+    let serialized_object = encode_serialized(body, compression)?;
     sqlx::query(
         "INSERT INTO policy_groups
          (id, org_id, name, authz_id, serialized_object, last_updated_by, created_at, updated_at)
@@ -591,7 +609,7 @@ async fn ensure_policy_group(
     .bind(org_id)
     .bind(name)
     .bind(&authz_id)
-    .bind(body)
+    .bind(&serialized_object)
     .bind(creator_authz_id)
     .bind(&timestamp)
     .execute(&mut **transaction)
@@ -600,6 +618,7 @@ async fn ensure_policy_group(
     Ok((id, authz_id))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn ensure_policy_revision(
     transaction: &mut Transaction<'_, Postgres>,
     org_id: &str,
@@ -608,8 +627,9 @@ async fn ensure_policy_revision(
     revision_id: &str,
     body: &str,
     creator_authz_id: &str,
+    compression: Compression,
 ) -> Result<(String, String), StoreError> {
-    if let Some(revision) = sqlx::query_as::<_, (String, String)>(
+    if let Some((id, serialized_object)) = sqlx::query_as::<_, (String, String)>(
         "SELECT id, serialized_object FROM policy_revisions
          WHERE org_id = $1 AND name = $2 AND revision_id = $3",
     )
@@ -620,11 +640,12 @@ async fn ensure_policy_revision(
     .await
     .map_err(db)?
     {
-        return Ok(revision);
+        return Ok((id, decode_serialized(&serialized_object)?));
     }
 
     let id = new_id();
     let timestamp = now();
+    let serialized_object = encode_serialized(body, compression)?;
     insert_revision(
         transaction,
         &id,
@@ -632,7 +653,7 @@ async fn ensure_policy_revision(
         policy_id,
         name,
         revision_id,
-        body,
+        &serialized_object,
         creator_authz_id,
         &timestamp,
     )
@@ -648,7 +669,7 @@ async fn insert_revision(
     policy_id: &str,
     name: &str,
     revision_id: &str,
-    body: &str,
+    serialized_object: &str,
     creator_authz_id: &str,
     timestamp: &str,
 ) -> Result<(), StoreError> {
@@ -663,7 +684,7 @@ async fn insert_revision(
     .bind(policy_id)
     .bind(revision_id)
     .bind(name)
-    .bind(body)
+    .bind(serialized_object)
     .bind(creator_authz_id)
     .bind(timestamp)
     .execute(&mut **transaction)
@@ -741,4 +762,62 @@ fn policy_group_association_from_row(
         revision_id: row.try_get(4)?,
         serialized_object: row.try_get(5)?,
     })
+}
+
+fn decode_policy_revision(
+    mut revision: StoredPolicyRevision,
+) -> Result<StoredPolicyRevision, StoreError> {
+    revision.serialized_object = decode_serialized(&revision.serialized_object)?;
+    Ok(revision)
+}
+
+fn decode_policy_revision_option(
+    revision: Option<StoredPolicyRevision>,
+) -> Result<Option<StoredPolicyRevision>, StoreError> {
+    revision.map(decode_policy_revision).transpose()
+}
+
+fn decode_policy_revisions(
+    revisions: Vec<StoredPolicyRevision>,
+) -> Result<Vec<StoredPolicyRevision>, StoreError> {
+    revisions.into_iter().map(decode_policy_revision).collect()
+}
+
+fn decode_policy_group(mut group: StoredPolicyGroup) -> Result<StoredPolicyGroup, StoreError> {
+    group.serialized_object = decode_serialized(&group.serialized_object)?;
+    Ok(group)
+}
+
+fn decode_policy_group_option(
+    group: Option<StoredPolicyGroup>,
+) -> Result<Option<StoredPolicyGroup>, StoreError> {
+    group.map(decode_policy_group).transpose()
+}
+
+fn decode_policy_groups(
+    groups: Vec<StoredPolicyGroup>,
+) -> Result<Vec<StoredPolicyGroup>, StoreError> {
+    groups.into_iter().map(decode_policy_group).collect()
+}
+
+fn decode_policy_group_association(
+    mut association: StoredPolicyGroupAssociation,
+) -> Result<StoredPolicyGroupAssociation, StoreError> {
+    association.serialized_object = decode_serialized(&association.serialized_object)?;
+    Ok(association)
+}
+
+fn decode_policy_group_association_option(
+    association: Option<StoredPolicyGroupAssociation>,
+) -> Result<Option<StoredPolicyGroupAssociation>, StoreError> {
+    association.map(decode_policy_group_association).transpose()
+}
+
+fn decode_policy_group_associations(
+    associations: Vec<StoredPolicyGroupAssociation>,
+) -> Result<Vec<StoredPolicyGroupAssociation>, StoreError> {
+    associations
+        .into_iter()
+        .map(decode_policy_group_association)
+        .collect()
 }
