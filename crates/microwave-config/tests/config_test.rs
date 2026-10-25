@@ -272,7 +272,6 @@ fn tls_env_rejects_an_invalid_enable_flag() {
     std::env::remove_var("MW_SERVER__TLS__ENABLED");
     assert!(result.is_err());
 }
-}
 
 #[test]
 fn sqlite_url_is_derived_from_data_dir() {
