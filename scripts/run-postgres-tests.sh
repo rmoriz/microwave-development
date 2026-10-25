@@ -86,6 +86,9 @@ export MICROWAVE_TEST_POSTGRES_URL="postgres://microwave:microwave@127.0.0.1:${P
 echo "PostgreSQL ready at 127.0.0.1:${PORT}; running tests..." >&2
 
 cargo test -p microwave-store-postgres "$@"
+# The same contract suite runs against SQLite (always) and PostgreSQL (via the
+# environment above), so backend parity is part of the PostgreSQL gate.
+cargo test -p microwave-store --test dual_backend "$@"
 # The API runtime tests connect through AppState and the real HTTP router, so
 # they must run with the same disposable database.
 cargo test -p microwave-api --test postgres_runtime_test "$@"

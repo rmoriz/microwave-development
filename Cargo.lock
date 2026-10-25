@@ -1695,11 +1695,14 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "flate2",
+ "microwave-store-postgres",
  "rusqlite",
  "serde",
  "serde_json",
+ "sqlx",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
  "uuid",
 ]
 

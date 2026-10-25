@@ -1003,6 +1003,27 @@ impl AuthzRepository for PostgresStore {
         .execute(&mut *transaction)
         .await
         .map_err(db)?;
+        // Concurrent first-user/first-org startup can race here. One caller
+        // wins the unique name; the losers discard their authz entity and
+        // return the winner instead of surfacing a spurious conflict.
+        let inserted = sqlx::query(
+            "INSERT INTO global_groups (id, authz_id, name, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $4)
+             ON CONFLICT (name) DO NOTHING",
+        )
+        .bind(&id)
+        .bind(&authz_id)
+        .bind(name)
+        .bind(&timestamp)
+        .execute(&mut *transaction)
+        .await
+        .map_err(db)?;
+        if inserted.rows_affected() == 0 {
+            transaction.rollback().await.map_err(db)?;
+            return self.find_global_group(name).await?.ok_or_else(|| {
+                StoreError::Conflict(format!("group {name} was created concurrently"))
+            });
+        }
         for permission in Permission::ALL {
             sqlx::query(
                 "INSERT INTO authz_acl_actor (target_authz_id, permission, actor_authz_id)
@@ -1015,17 +1036,6 @@ impl AuthzRepository for PostgresStore {
             .await
             .map_err(db)?;
         }
-        sqlx::query(
-            "INSERT INTO global_groups (id, authz_id, name, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $4)",
-        )
-        .bind(&id)
-        .bind(&authz_id)
-        .bind(name)
-        .bind(&timestamp)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| unique(error, format!("group {name} already exists")))?;
         transaction.commit().await.map_err(db)?;
         Ok(Group {
             id,

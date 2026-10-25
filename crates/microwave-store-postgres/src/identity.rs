@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use microwave_store::{
-    ActorKey, ActorType, Client, IdentityRepository, Org, Principal, StoreError, User, UserPatch,
-    UserProfile,
+    ActorKey, ActorType, AuthzRepository, Client, IdentityRepository, Org, Permission, Principal,
+    StoreError, User, UserPatch, UserProfile,
 };
 use sqlx::postgres::PgRow;
 use sqlx::Row;
@@ -224,6 +224,10 @@ impl IdentityRepository for PostgresStore {
         let authz_id = new_id();
         let timestamp = now();
         let email = email.map(str::to_lowercase);
+        // Every user ACL includes the global server-admins group (except for
+        // grant), matching the SQLite backend. Ensure it exists before opening
+        // the write transaction.
+        let server_admins = self.ensure_global_group("server-admins").await?;
         let mut transaction = self.pool().begin().await.map_err(db)?;
 
         if let Some(email) = email.as_deref() {
@@ -280,6 +284,37 @@ impl IdentityRepository for PostgresStore {
         .execute(&mut *transaction)
         .await
         .map_err(db)?;
+        crate::objects::grant_actor_all(&mut transaction, &authz_id, &authz_id).await?;
+        for permission in [
+            Permission::Create,
+            Permission::Read,
+            Permission::Update,
+            Permission::Delete,
+        ] {
+            sqlx::query(
+                "INSERT INTO authz_acl_group (target_authz_id, permission, group_authz_id)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(&authz_id)
+            .bind(permission.as_str())
+            .bind(&server_admins.authz_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db)?;
+        }
+        if admin {
+            sqlx::query(
+                "INSERT INTO authz_group_actors (group_authz_id, actor_authz_id)
+                 VALUES ($1, $2)
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(&server_admins.authz_id)
+            .bind(&authz_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db)?;
+        }
 
         transaction.commit().await.map_err(db)?;
         Ok(User {
@@ -629,6 +664,12 @@ impl IdentityRepository for PostgresStore {
         .map_err(|error| unique(error, format!("client {name} already exists")))?;
         let granted = creator_authz_id.unwrap_or(&authz_id);
         crate::objects::grant_actor_all(&mut transaction, &authz_id, granted).await?;
+        // Non-validator clients are placed in their own ACL upstream; the
+        // creator's grants are additive, not a replacement. Validators have no
+        // self-service permissions. This mirrors the SQLite backend.
+        if !validator {
+            crate::objects::grant_actor_all(&mut transaction, &authz_id, &authz_id).await?;
+        }
         transaction.commit().await.map_err(db)?;
 
         Ok(Client {
