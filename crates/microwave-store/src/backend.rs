@@ -336,6 +336,23 @@ pub trait AuthzRepository: Send + Sync {
     /// authz entity. Missing groups are a no-op so cleanup stays idempotent.
     async fn delete_global_group(&self, name: &str) -> Result<(), StoreError>;
 
+    /// Count authorization entities that no organization, user, client,
+    /// group, container, or stored object references.
+    ///
+    /// ACL and group-membership rows alone do not keep an entity alive: a
+    /// grant whose underlying actor or object is gone is exactly what
+    /// `cleanup-bifrost` removes. Callers that only want a report should use
+    /// this estimate instead of [`Self::delete_orphan_authz_entities`].
+    async fn count_orphan_authz_entities(&self) -> Result<u64, StoreError>;
+
+    /// Delete authorization entities that no organization, user, client,
+    /// group, container, or stored object references, along with any ACL and
+    /// group-membership rows that still point at them.
+    ///
+    /// Returns the number of entities removed. Returns `0` when a previous run
+    /// already cleaned the database, so repeated runs are safe.
+    async fn delete_orphan_authz_entities(&self) -> Result<u64, StoreError>;
+
     async fn check_permission(
         &self,
         actor_authz_id: &str,

@@ -486,6 +486,14 @@ impl AuthzRepository for SqliteStore {
         self.delete_global_group(name)
     }
 
+    async fn count_orphan_authz_entities(&self) -> Result<u64, StoreError> {
+        self.count_orphan_authz_entities()
+    }
+
+    async fn delete_orphan_authz_entities(&self) -> Result<u64, StoreError> {
+        self.delete_orphan_authz_entities()
+    }
+
     async fn check_permission(
         &self,
         actor_authz_id: &str,
