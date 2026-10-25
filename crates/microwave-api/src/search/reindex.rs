@@ -101,7 +101,20 @@ pub async fn reindex(
         reindex_org(backend, store, &org, purge, &mut report).await?;
     }
     if report.organizations > 0 {
-        backend.refresh().await?;
+        if let Err(error) = backend.refresh().await {
+            let purge_detail = if purge {
+                format!(
+                    " and purged {} organization(s)",
+                    report.purged_organizations
+                )
+            } else {
+                String::new()
+            };
+            return Err(SearchError::Response(format!(
+                "reindex wrote {} document(s) across {} organization(s){purge_detail}, but index refresh failed: {error}",
+                report.acknowledged_documents, report.organizations
+            )));
+        }
     }
     Ok(report)
 }
@@ -113,7 +126,7 @@ async fn reindex_org(
     purge: bool,
     report: &mut ReindexReport,
 ) -> Result<(), SearchError> {
-    if purge {
+    if purge && backend.supports_purge() {
         backend.delete_index(&org.id).await?;
         report.purged_organizations += 1;
     }
@@ -177,7 +190,8 @@ fn api_error(error: ApiError) -> SearchError {
 mod tests {
     use super::{reindex, ReindexReport};
     use crate::search::{
-        IndexKind, IndexOutcome, SearchBackend, SearchDocument, SearchError, SearchHits,
+        EmbeddedSearch, IndexKind, IndexOutcome, SearchBackend, SearchDocument, SearchError,
+        SearchHits,
     };
     use async_trait::async_trait;
     use microwave_store::{NewNode, SqliteStore};
@@ -192,6 +206,8 @@ mod tests {
         index_many_calls: AtomicUsize,
         deleted_orgs: Mutex<Vec<String>>,
         refreshes: AtomicUsize,
+        fail_refresh: bool,
+        fail_delete: bool,
     }
 
     impl RecordingBackend {
@@ -205,6 +221,22 @@ mod tests {
         fn acknowledging(acknowledged: usize) -> Self {
             Self {
                 acknowledged,
+                ..Self::default()
+            }
+        }
+
+        fn failing_refresh() -> Self {
+            Self {
+                acknowledged: 1,
+                fail_refresh: true,
+                ..Self::default()
+            }
+        }
+
+        fn failing_delete() -> Self {
+            Self {
+                acknowledged: 1,
+                fail_delete: true,
                 ..Self::default()
             }
         }
@@ -252,6 +284,9 @@ mod tests {
 
         async fn refresh(&self) -> Result<(), SearchError> {
             self.refreshes.fetch_add(1, Ordering::SeqCst);
+            if self.fail_refresh {
+                return Err(SearchError::Response("refresh exploded".to_string()));
+            }
             Ok(())
         }
 
@@ -260,6 +295,9 @@ mod tests {
         }
 
         async fn delete_index(&self, org_id: &str) -> Result<(), SearchError> {
+            if self.fail_delete {
+                return Err(SearchError::Response("purge exploded".to_string()));
+            }
             self.deleted_orgs.lock().unwrap().push(org_id.to_string());
             Ok(())
         }
@@ -462,5 +500,51 @@ mod tests {
         let acme = store.find_org("acme").unwrap().unwrap();
         assert!(deleted.contains(&acme.id));
         assert!(deleted.contains(&other.id));
+    }
+
+    #[tokio::test]
+    async fn embedded_reindex_does_not_claim_a_purge() {
+        let store = populated_store();
+        let backend = EmbeddedSearch::new(store.clone());
+
+        let report = reindex(&backend, store.as_ref(), None, true).await.unwrap();
+
+        assert_eq!(report.organizations, 1);
+        assert_eq!(report.acknowledged_documents, 5);
+        assert_eq!(report.purged_organizations, 0);
+    }
+
+    #[tokio::test]
+    async fn a_failed_purge_stops_before_indexing_or_refreshing() {
+        let store = populated_store();
+        let backend = RecordingBackend::failing_delete();
+
+        let error = reindex(&backend, store.as_ref(), None, true)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("purge exploded"));
+        assert_eq!(backend.index_many_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.refreshes.load(Ordering::SeqCst), 0);
+        assert!(backend.deleted_orgs.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn refresh_failure_reports_the_completed_indexing_work() {
+        let store = populated_store();
+        let backend = RecordingBackend::failing_refresh();
+
+        let error = reindex(&backend, store.as_ref(), None, true)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("reindex wrote 5 document(s) across 1 organization(s)"));
+        assert!(error.contains("purged 1 organization(s)"));
+        assert!(error.contains("refresh failed"));
+        assert!(error.contains("refresh exploded"));
+        assert_eq!(backend.index_many_calls.load(Ordering::SeqCst), 5);
+        assert_eq!(backend.refreshes.load(Ordering::SeqCst), 1);
     }
 }

@@ -560,11 +560,15 @@ authoritative instead of doing wasted work.
 By default the reindex adds or replaces documents by store id. It does **not**
 delete documents for objects that were removed while the remote backend was
 inactive. Pass `--purge` to delete each visited organization's existing remote
-documents with `_delete_by_query` before rebuilding them. Purging is
-destructive: if the command is interrupted after the delete, that organization
-stays unsearchable until the reindex is run again. Running a reindex while the
-server is serving is supported, but concurrent writes may be indexed by the
-server as well; both paths converge on the same document id.
+documents with `_delete_by_query` before rebuilding them. A missing `chef`
+index is treated as nothing to purge. The delete response is checked for
+`timed_out`, `failures`, version conflicts, and fewer deleted documents than
+matched; any of those aborts the command before the purge is reported as
+complete. Purging is destructive: if the command is interrupted after the
+delete, that organization stays unsearchable until the reindex is run again.
+Running a reindex while the server is serving is supported, but concurrent
+writes may be indexed by the server as well; both paths converge on the same
+document id.
 
 Remote backend HTTP calls use `search.timeout_ms` (default 30 seconds), so an
 unreachable or stalled cluster fails the command instead of hanging

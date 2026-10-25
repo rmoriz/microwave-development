@@ -236,7 +236,9 @@ pub enum Command {
         #[arg(long, value_name = "ORG")]
         org: Option<String>,
         /// Delete each organization's existing remote documents before
-        /// reindexing. Without this flag, documents are only added or replaced.
+        /// reindexing. Destructive: an interrupted run can leave the
+        /// organization unsearchable until the reindex is run again. Without
+        /// this flag, documents are only added or replaced.
         #[arg(long)]
         purge: bool,
     },

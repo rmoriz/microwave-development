@@ -152,6 +152,15 @@ pub trait SearchBackend: Send + Sync {
         Ok(())
     }
 
+    /// Whether [`SearchBackend::delete_index`] actually removes remote
+    /// documents.
+    ///
+    /// Backends that search the relational store directly return `false`, so a
+    /// requested reindex purge is not reported as an actual deletion.
+    fn supports_purge(&self) -> bool {
+        true
+    }
+
     /// Deletes a single document.
     async fn delete(&self, org_id: &str, id: &str) -> Result<(), SearchError>;
 
@@ -216,6 +225,10 @@ impl SearchBackend for EmbeddedSearch {
         // The embedded backend reads the store directly. The relational row is
         // the authoritative document, so acknowledge the write.
         Ok(IndexOutcome { acknowledged: 1 })
+    }
+
+    fn supports_purge(&self) -> bool {
+        false
     }
 
     async fn delete(&self, _org_id: &str, _id: &str) -> Result<(), SearchError> {

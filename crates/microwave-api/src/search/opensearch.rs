@@ -208,6 +208,78 @@ struct BulkResponse {
     items: Vec<Value>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct DeleteByQueryResponse {
+    #[serde(default)]
+    timed_out: bool,
+    /// Number of documents matched by the query.
+    #[serde(default)]
+    total: Option<usize>,
+    #[serde(default)]
+    deleted: usize,
+    #[serde(default)]
+    version_conflicts: usize,
+    #[serde(default)]
+    noops: usize,
+    #[serde(default)]
+    failures: Vec<Value>,
+}
+
+impl DeleteByQueryResponse {
+    /// Rejects a response that did not delete every matched document.
+    ///
+    /// `_delete_by_query` can return HTTP 200 while timing out, reporting
+    /// failures, losing version conflicts, or deleting only part of the
+    /// matched set. A purge must not be counted as complete unless the whole
+    /// organization was removed.
+    fn ensure_complete(&self) -> Result<(), SearchError> {
+        if self.timed_out {
+            return Err(SearchError::Response(format!(
+                "delete-by-query timed out after deleting {} of {} documents",
+                self.deleted,
+                self.total.map_or_else(
+                    || "an unknown number".to_string(),
+                    |total| total.to_string()
+                )
+            )));
+        }
+
+        if !self.failures.is_empty() {
+            let failures = self.failures.iter().map(Value::to_string).collect();
+            return Err(SearchError::Response(format!(
+                "delete-by-query failed for {} document(s): {}",
+                self.failures.len(),
+                failure_detail(failures)
+            )));
+        }
+
+        if self.version_conflicts > 0 {
+            return Err(SearchError::Response(format!(
+                "delete-by-query reported {} version conflict(s); not every document was deleted",
+                self.version_conflicts
+            )));
+        }
+
+        if let Some(total) = self.total {
+            let processed = self.deleted + self.noops;
+            if processed < total {
+                return Err(SearchError::Response(format!(
+                    "delete-by-query deleted {} and skipped {} of {} documents; not every document was deleted",
+                    self.deleted, self.noops, total
+                )));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Returns true when a 404 body identifies a missing index rather than a
+/// genuinely broken endpoint or query.
+fn is_index_not_found(body: &str) -> bool {
+    body.contains("index_not_found_exception")
+}
+
 /// Parse a `_bulk` response and return the number of acknowledged items.
 ///
 /// `_bulk` can return HTTP 200 while individual items fail. Every item is
@@ -378,7 +450,14 @@ impl super::backend::SearchBackend for OpenSearchBackend {
     async fn refresh(&self) -> Result<(), SearchError> {
         let url = self.url(&format!("/{INDEX}/_refresh"));
         let response = self.client.post(&url).send().await?;
-        self.check_status(&url, response.status().as_u16())
+        let status = response.status().as_u16();
+        if status == 404 && is_index_not_found(&response.text().await.unwrap_or_default()) {
+            // Nothing has created the index yet, so there is nothing to
+            // refresh. This happens after purging and reindexing an empty
+            // organization on a fresh cluster.
+            return Ok(());
+        }
+        self.check_status(&url, status)
     }
 
     async fn delete(&self, _org_id: &str, id: &str) -> Result<(), SearchError> {
@@ -387,15 +466,31 @@ impl super::backend::SearchBackend for OpenSearchBackend {
 
     async fn delete_index(&self, org_id: &str) -> Result<(), SearchError> {
         let url = self.url(&format!("/{INDEX}/_delete_by_query"));
+        // A term filter treats the organization id as an exact value. Using a
+        // raw query_string would let punctuation or operator characters in an
+        // id change the query.
         let body = json!({
             "query": {
-                "query_string": {
-                    "query": format!("X_CHEF_database_CHEF_X:chef_{org_id}")
+                "term": {
+                    "X_CHEF_database_CHEF_X": format!("chef_{org_id}")
                 }
             }
         });
         let response = self.client.post(&url).json(&body).send().await?;
-        self.check_status(&url, response.status().as_u16())
+        let status = response.status().as_u16();
+        if status == 404 {
+            if is_index_not_found(&response.text().await.unwrap_or_default()) {
+                return Ok(());
+            }
+            return Err(SearchError::Backend { status, url });
+        }
+        self.check_status(&url, status)?;
+        let response: DeleteByQueryResponse = response.json().await.map_err(|error| {
+            SearchError::Response(format!(
+                "could not decode delete-by-query response: {error}"
+            ))
+        })?;
+        response.ensure_complete()
     }
 }
 
@@ -799,6 +894,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn index_many_stops_after_a_later_chunk_fails() {
+        let mock = mock_with(|request| (200, bulk_response(&request.body, Some("node-600")))).await;
+        let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &mock.base_url).unwrap();
+        let documents: Vec<SearchDocument> = (0..BULK_CHUNK_SIZE * 2 + 200)
+            .map(|index| document_with_id(&format!("node-{index}")))
+            .collect();
+
+        let error = backend.index_many(&documents).await.unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("bulk request contained failed items"));
+        // The first chunk was accepted, the second failed, and the third was
+        // never attempted.
+        assert_eq!(bulk_requests(&mock).len(), 2);
+    }
+
+    #[tokio::test]
     async fn refresh_posts_to_the_chef_refresh_endpoint() {
         let mock = mock(200, json!({ "_shards": { "total": 1 } })).await;
         let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &mock.base_url).unwrap();
@@ -883,8 +996,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deleting_an_organization_uses_delete_by_query() {
-        let mock = mock(200, json!({ "deleted": 3 })).await;
+    async fn deleting_an_organization_uses_a_term_filter() {
+        let mock = mock(
+            200,
+            json!({
+                "timed_out": false,
+                "total": 3,
+                "deleted": 3,
+                "version_conflicts": 0,
+                "noops": 0,
+                "failures": []
+            }),
+        )
+        .await;
         let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &mock.base_url).unwrap();
 
         backend.delete_index("acme").await.unwrap();
@@ -893,10 +1017,126 @@ mod tests {
         assert_eq!(requests[0].method, "POST");
         assert_eq!(requests[0].uri, "/chef/_delete_by_query");
         let body: Value = serde_json::from_str(&requests[0].body).unwrap();
-        assert_eq!(
-            body["query"]["query_string"]["query"],
-            "X_CHEF_database_CHEF_X:chef_acme"
-        );
+        assert_eq!(body["query"]["term"]["X_CHEF_database_CHEF_X"], "chef_acme");
+        assert!(body["query"].get("query_string").is_none());
+    }
+
+    #[tokio::test]
+    async fn purge_of_a_missing_index_is_a_no_op() {
+        let mock = mock(
+            404,
+            json!({
+                "error": {
+                    "type": "index_not_found_exception",
+                    "reason": "no such index [chef]"
+                },
+                "status": 404
+            }),
+        )
+        .await;
+        let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &mock.base_url).unwrap();
+
+        backend.delete_index("acme").await.unwrap();
+
+        let requests = mock.requests();
+        assert_eq!(requests[0].uri, "/chef/_delete_by_query");
+    }
+
+    #[tokio::test]
+    async fn a_generic_404_purge_is_still_a_backend_error() {
+        let mock = mock(404, json!({ "error": "not found" })).await;
+        let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &mock.base_url).unwrap();
+
+        match backend.delete_index("acme").await {
+            Err(SearchError::Backend { status: 404, .. }) => {}
+            other => panic!("unexpected result: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_by_query_failures_abort_the_purge() {
+        let mock = mock(
+            200,
+            json!({
+                "timed_out": false,
+                "total": 2,
+                "deleted": 1,
+                "version_conflicts": 0,
+                "noops": 0,
+                "failures": [{
+                    "id": "node-guid",
+                    "cause": {
+                        "type": "cluster_block_exception",
+                        "reason": "index is read-only"
+                    }
+                }]
+            }),
+        )
+        .await;
+        let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &mock.base_url).unwrap();
+
+        let error = backend.delete_index("acme").await.unwrap_err().to_string();
+        assert!(error.contains("delete-by-query failed for 1 document(s)"));
+        assert!(error.contains("cluster_block_exception"));
+        assert!(error.contains("index is read-only"));
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_delete_by_query_aborts_the_purge() {
+        let mock = mock(
+            200,
+            json!({
+                "timed_out": true,
+                "total": 5,
+                "deleted": 4,
+                "version_conflicts": 0,
+                "noops": 0,
+                "failures": []
+            }),
+        )
+        .await;
+        let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &mock.base_url).unwrap();
+
+        let error = backend.delete_index("acme").await.unwrap_err().to_string();
+        assert!(error.contains("timed out after deleting 4 of 5 documents"));
+    }
+
+    #[tokio::test]
+    async fn an_incomplete_delete_by_query_aborts_the_purge() {
+        let mock = mock(
+            200,
+            json!({
+                "timed_out": false,
+                "total": 5,
+                "deleted": 3,
+                "version_conflicts": 0,
+                "noops": 1,
+                "failures": []
+            }),
+        )
+        .await;
+        let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &mock.base_url).unwrap();
+
+        let error = backend.delete_index("acme").await.unwrap_err().to_string();
+        assert!(error.contains("deleted 3 and skipped 1 of 5 documents"));
+    }
+
+    #[tokio::test]
+    async fn refresh_of_a_missing_index_is_a_no_op() {
+        let mock = mock(
+            404,
+            json!({
+                "error": {
+                    "type": "index_not_found_exception",
+                    "reason": "no such index [chef]"
+                },
+                "status": 404
+            }),
+        )
+        .await;
+        let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &mock.base_url).unwrap();
+
+        backend.refresh().await.unwrap();
     }
 
     #[tokio::test]

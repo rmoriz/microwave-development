@@ -204,3 +204,92 @@ Results:
   integration tests.
 - `microwave-api` lib: 38 passed (14 OpenSearch tests).
 - Clippy with `-D warnings` for the CLI and API: clean.
+
+## Round 4 — remote reindex fix round
+
+Branch: `remote-index` (fix worktree), base: `f9524e2`
+
+### 1. `--purge` against a missing `chef` index — ADDRESSED
+
+- `delete_index` treats a 404 whose body reports
+  `index_not_found_exception` as “nothing to purge”.
+- `refresh` applies the same missing-index rule: a fresh cluster with no
+  documents has nothing to refresh.
+- A generic 404 (for example, a wrong endpoint) is still a backend error, so a
+  configuration mistake is not hidden.
+- Tests: `purge_of_a_missing_index_is_a_no_op`,
+  `a_generic_404_purge_is_still_a_backend_error`,
+  `refresh_of_a_missing_index_is_a_no_op`.
+
+### 2. `_delete_by_query` response was unchecked — ADDRESSED
+
+- `DeleteByQueryResponse` now parses `timed_out`, `total`, `deleted`,
+  `noops`, `version_conflicts`, and `failures`.
+- Timeouts, failures, version conflicts, and fewer processed documents than
+  matched all abort the purge with the relevant counts/details.
+- `reindex` increments `purged_organizations` only after `delete_index`
+  succeeds, so incomplete purges are never reported as complete.
+- CLI wording now says `--purge` completed without reported delete failures
+  and asks the operator to verify results instead of claiming stale documents
+  are definitively gone.
+- Tests: `delete_by_query_failures_abort_the_purge`,
+  `a_timed_out_delete_by_query_aborts_the_purge`,
+  `an_incomplete_delete_by_query_aborts_the_purge`,
+  `a_failed_purge_stops_before_indexing_or_refreshing`.
+
+### 3. Refresh failure lost context — ADDRESSED
+
+- `reindex` now returns a distinct error naming the acknowledged document count,
+  organization count, purge count when applicable, and the refresh failure.
+- Test: `refresh_failure_reports_the_completed_indexing_work`.
+
+### 4. Embedded backend claimed a purge — ADDRESSED
+
+- Added `SearchBackend::supports_purge`; the embedded backend returns `false`.
+- `purged_organizations` only counts organizations whose remote delete was
+  actually performed.
+- Test: `embedded_reindex_does_not_claim_a_purge`.
+
+### 5. Purge query interpolation — ADDRESSED
+
+- `_delete_by_query` now uses a `term` filter on the keyword field
+  `X_CHEF_database_CHEF_X` instead of an interpolated `query_string`.
+- The upstream mapping confirms this field is a `keyword`.
+- Test: `deleting_an_organization_uses_a_term_filter`.
+
+### 6. Example/docs drift — ADDRESSED
+
+- `packaging/microwave.toml.example` no longer calls reindex a no-op; it
+  documents the backfill, default additive behavior, `--purge`, interruption
+  risk, and `timeout_ms`.
+- `reindex --purge` help now marks the operation destructive and warns that an
+  interrupted run can leave the organization unsearchable.
+- README and deployment docs describe missing-index handling and delete
+  response validation.
+
+### 7. Additional coverage — ADDRESSED
+
+- Multi-chunk abort:
+  `index_many_stops_after_a_later_chunk_fails` verifies the first chunk is
+  sent, the failing chunk aborts, and later chunks are not attempted.
+- CLI output:
+  `reindex_purge_reports_completed_remote_work` drives the real binary against
+  an in-process OpenSearch mock and checks the purge/acknowledgement output.
+
+### Round 4 verification
+
+```sh
+cargo fmt --all
+CARGO_PROFILE_DEV_DEBUG=0 cargo test -p microwave-api -p microwave-config -p microwave-ctl
+CARGO_PROFILE_DEV_DEBUG=0 cargo test -p microwave-ctl-bin
+CARGO_PROFILE_DEV_DEBUG=0 cargo clippy -p microwave-api -p microwave-config -p microwave-ctl -p microwave-ctl-bin --all-targets -- -D warnings
+```
+
+Results:
+
+- `microwave-api` lib: 54 passed.
+- `microwave-api` integration suites: passed.
+- `microwave-config`: passed (19).
+- `microwave-ctl` lib: 22 passed.
+- `microwave-ctl-bin`: 57 CLI integration tests passed.
+- Clippy with `-D warnings` for the API, config, CLI, and CLI binary: clean.

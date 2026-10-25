@@ -265,7 +265,7 @@ pub fn reindex(context: &Context, org: Option<&str>, purge: bool) -> Result<(), 
         if purge {
             println!("purged_organizations: {}", report.purged_organizations);
             println!(
-                "note: --purge deleted each organization's existing remote documents before reindexing; the rebuilt index was refreshed and stale documents for deleted objects are no longer present"
+                "note: --purge completed without reported delete failures and the rebuilt index was refreshed; verify search results before resuming traffic"
             );
         } else {
             println!(
