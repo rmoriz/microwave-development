@@ -40,6 +40,18 @@ pub async fn authenticate(
         }
     }
 
+    // The org-scoped user key resources are read-only. Upstream reports 405
+    // before attempting authentication, so a request with an unsupported
+    // method must not fail signature verification first.
+    if is_org_user_keys_path(&path) && request.method() != axum::http::Method::GET {
+        let response = next.run(request).await;
+        return with_version_header(
+            response,
+            &requested_version.to_string(),
+            &requested_version.to_string(),
+        );
+    }
+
     // The credential endpoints only accept POST. Upstream reports 405 before
     // attempting to authenticate an unsupported method, so let the router
     // produce the method-not-allowed response.
@@ -171,25 +183,40 @@ async fn authenticate_signed(
     };
 
     let mut authenticated = None;
-    for principal in principals {
+    'principals: for principal in principals {
         let keys = state
             .store
             .find_principal_keys(&principal)
             .await
             .map_err(ApiError::from)?;
         for key in keys {
+            // Expired keys still appear in the keys API but may not be used to
+            // sign requests.
+            if key.expired {
+                continue;
+            }
             if microwave_crypto::verify_request(&key.public_key, &auth_headers, &canonical).is_ok()
             {
-                authenticated = Some(principal);
-                break;
+                authenticated = Some((principal, key.key_name));
+                break 'principals;
             }
-        }
-        if authenticated.is_some() {
-            break;
         }
     }
 
-    let principal = authenticated.ok_or_else(|| authentication_failure(&user_id))?;
+    // Web requests may be signed with the webui key while naming the user to
+    // impersonate. In this harness the webui key is the superuser key.
+    if authenticated.is_none()
+        && headers
+            .get("x-ops-request-source")
+            .and_then(|value| value.to_str().ok())
+            == Some("web")
+    {
+        authenticated =
+            impersonated_principal(&state, org.as_ref(), &user_id, &auth_headers, &canonical)
+                .await?;
+    }
+
+    let (principal, key_name) = authenticated.ok_or_else(|| authentication_failure(&user_id))?;
     if let Some(org) = &org {
         if principal.actor_type == ActorType::User
             && principal.name != "pivotal"
@@ -209,11 +236,68 @@ async fn authenticate_signed(
     request
         .extensions_mut()
         .insert(crate::state::ApiVersion(api_version));
-    request
-        .extensions_mut()
-        .insert(crate::state::AuthContext { principal, org });
+    request.extensions_mut().insert(crate::state::AuthContext {
+        principal,
+        org,
+        key_name: Some(key_name),
+    });
 
     Ok(next.run(request).await)
+}
+
+/// Authenticate a webui-signed impersonation request. The request names the
+/// user to become in `X-Ops-Userid`; the signature must verify with the
+/// platform superuser's key.
+async fn impersonated_principal(
+    state: &crate::AppState,
+    org: Option<&microwave_store::Org>,
+    user_id: &str,
+    auth_headers: &microwave_crypto::AuthHeaders,
+    canonical: &microwave_crypto::CanonicalRequest<'_>,
+) -> Result<Option<(microwave_store::Principal, String)>, ApiError> {
+    let Some(superuser) = state
+        .store
+        .find_user("pivotal")
+        .await
+        .map_err(ApiError::from)?
+    else {
+        return Ok(None);
+    };
+    let keys = state
+        .store
+        .find_actor_keys(&superuser.id, ActorType::User)
+        .await
+        .map_err(ApiError::from)?;
+    let mut verified_with = None;
+    for key in keys {
+        if key.expired {
+            continue;
+        }
+        if microwave_crypto::verify_request(&key.public_key, auth_headers, canonical).is_ok() {
+            verified_with = Some(key.key_name);
+            break;
+        }
+    }
+    let Some(key_name) = verified_with else {
+        return Ok(None);
+    };
+
+    let Some(user) = state
+        .store
+        .find_user(user_id)
+        .await
+        .map_err(ApiError::from)?
+    else {
+        return Ok(None);
+    };
+    let principal = microwave_store::Principal {
+        actor_id: user.id,
+        authz_id: user.authz_id,
+        name: user.username,
+        actor_type: ActorType::User,
+        org_id: org.map(|org| org.id.clone()),
+    };
+    Ok(Some((principal, key_name)))
 }
 
 fn parse_api_version(headers: &HeaderMap) -> Result<u8, String> {
@@ -257,6 +341,16 @@ fn authorization_lines(headers: &HeaderMap) -> Result<Vec<&str>, ApiError> {
     }
     lines.sort_by_key(|(index, _)| *index);
     Ok(lines.into_iter().map(|(_, value)| value).collect())
+}
+
+/// `/organizations/:org/users/:user/keys` exposes only GET handlers.
+fn is_org_user_keys_path(path: &str) -> bool {
+    let mut parts = path.trim_matches('/').split('/');
+    parts.next() == Some("organizations")
+        && parts.next().is_some_and(|part| !part.is_empty())
+        && parts.next() == Some("users")
+        && parts.next().is_some_and(|part| !part.is_empty())
+        && parts.next() == Some("keys")
 }
 
 fn organization_name_from_path(path: &str) -> Option<String> {

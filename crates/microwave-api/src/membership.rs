@@ -84,7 +84,13 @@ async fn add_org_user(
         .await
         .map_err(ApiError::from)?
     {
-        return Err(ApiError::conflict("The association already exists."));
+        // Upstream emits this conflict as a plain string; pedant's platform
+        // helper compares the value directly when accepting a repeat
+        // association.
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "The association already exists." })),
+        ));
     }
 
     state

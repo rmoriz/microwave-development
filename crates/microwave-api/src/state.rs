@@ -75,6 +75,8 @@ pub struct ApiVersion(pub u8);
 pub struct AuthContext {
     pub principal: Principal,
     pub org: Option<Org>,
+    /// Name of the actor key that verified the request signature, when known.
+    pub key_name: Option<String>,
 }
 
 impl microwave_oauth::ProvidesOAuthState for AppState {
