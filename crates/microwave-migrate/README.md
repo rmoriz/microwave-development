@@ -2,8 +2,9 @@
 
 Migration support for Microwave Server. This crate owns the versioned JSON
 snapshot format and the `microwave-migrate` binary. It can export a local
-store, import a snapshot, or crawl a live legacy Chef Infra Server into the
-same snapshot envelope.
+SQLite store or a PostgreSQL metadata store, import a snapshot into either
+backend, or crawl a live legacy Chef Infra Server into the same snapshot
+envelope.
 
 ## Commands
 
@@ -11,8 +12,19 @@ same snapshot envelope.
 # Write a snapshot of ./data/microwave.db
 microwave-migrate export --data-dir ./data --output migration.json
 
+# Write a snapshot of a PostgreSQL metadata store
+microwave-migrate export \
+  --database-url postgres://microwave:secret@db/microwave \
+  --output migration.json
+
 # Create or merge into ./new-data/microwave.db
-microwave-migrate import --data-dir ./new-data --input migration.json
+microwave-migrate import --data-dir ./new-data --input migration.json --yes
+
+# Import into PostgreSQL (one transaction, ids and timestamps preserved)
+microwave-migrate import \
+  --database-url postgres://microwave:secret@db/microwave \
+  --input migration.json \
+  --yes
 
 # Crawl a live legacy server as a superuser
 microwave-migrate from-api \
@@ -31,8 +43,11 @@ microwave-migrate from-api \
   --output acme.json
 
 # Import through the operational CLI (uses the configured database path)
-microwave-ctl migrate-from-legacy --input migration.json
+microwave-ctl migrate-from-legacy --input migration.json --yes
 ```
+
+`import` merges into live metadata and asks for confirmation; `--yes` is
+required in scripts and other non-interactive environments.
 
 `import` validates the envelope before touching the database. Invalid JSON,
 an unexpected `format`, or an unsupported `version` exit non-zero and do not
@@ -154,14 +169,15 @@ JSON text held by the local store, so object bodies survive byte-for-byte.
   only database rows. Adjacent PEM files such as `<data_dir>/pivotal.pem` are
   never read.
 - **Cookbook blobs / the bookshelf directory, search indexes, telemetry,
-  `kvpair`, and OAuth access tokens/grants.** This slice migrates metadata,
-  authz, keys, checksums, and OAuth application registrations. Copy or
-  re-upload cookbook blobs separately, and let the search index rebuild.
+  `kvpair`, empty sandboxes, and OAuth access tokens/grants.** This slice
+  migrates metadata, authz, keys, in-flight sandbox uploads, and OAuth
+  application registrations. Copy or re-upload cookbook blobs separately, and
+  let the search index rebuild.
 
 ## Import semantics
 
-Import runs in a single SQLite transaction. Rows are upserted by primary key,
-so:
+Import runs in a single database transaction on either backend. Rows are
+upserted by primary key, so:
 
 - a fresh install receives the source ids, authz ids, timestamps, hashes, and
   keys unchanged;
@@ -172,7 +188,15 @@ so:
   are replaced per version to avoid duplicate association rows.
 
 Name uniqueness still applies: a row with the same unique name but a different
-id is rejected by SQLite rather than silently rewritten.
+id is rejected by the backend rather than silently rewritten. This matters most
+when importing into a non-empty PostgreSQL database that already has the
+global `server-admins` group from another installation; import into a fresh
+database (or reconcile the ids first) for a clean migration.
+
+PostgreSQL's sequence-backed identifiers (`cookbooks`, `cookbook_artifacts`,
+`cookbook_artifact_versions`, and `oauth_applications`) are inserted with the
+snapshot ids, then their sequences are advanced to the highest imported id.
+Later inserts cannot collide with the restored rows.
 
 ## Live legacy API crawler
 

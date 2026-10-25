@@ -14,7 +14,8 @@ For the current implementation gaps see "Not Yet Implemented" in
 > deployment: **one server process per database**. PostgreSQL metadata is
 > implemented and selectable through `database.driver`; several replicas can
 > point at one PostgreSQL database, but that topology has not been
-> load-validated and is not yet covered by the backup/migration CLI. OpenSearch
+> load-validated. The operational CLI, snapshot migration, and backup/restore
+> support PostgreSQL too; backup/restore uses `pg_dump`/`pg_restore`. OpenSearch
 > and S3/Garage can be used from either backend. The limitations are called out
 > in place rather than hidden.
 
@@ -101,7 +102,7 @@ A complete annotated example is
 | `server.worker_threads` | `MW_SERVER__WORKER_THREADS` | `0` | `0` = size from available CPUs. |
 | `paths.data_dir` | `MW_PATHS__DATA_DIR` | `./data` | All mutable state. |
 | `database.driver` | `MW_DATABASE__DRIVER` | `sqlite` | `sqlite` or `postgres`. |
-| `database.url` | `MW_DATABASE__URL` | `sqlite://<data_dir>/microwave.db` | `sqlite://<path>` or a `postgres://` URL. The CLI tools still require SQLite. |
+| `database.url` | `MW_DATABASE__URL` | `sqlite://<data_dir>/microwave.db` | `sqlite://<path>` or a `postgres://` URL. Both backends are supported by the server, `microwave-ctl`, and `microwave-migrate`. |
 | `search.backend` | `MW_SEARCH__BACKEND` | `embedded` | `embedded`, `opensearch`, `elasticsearch`. |
 | `search.url` | `MW_SEARCH__URL` | unset | Required for the remote backends, e.g. `http://opensearch:9200`. |
 | `object_store.backend` | `MW_OBJECT_STORE__BACKEND` | `local` | `local`, `s3`, `garage`. |
@@ -409,6 +410,13 @@ This is a server limitation, not a configuration mistake.
   load-validated. On every server start, `PostgresStore::connect` applies the
   embedded idempotent schema under that advisory lock before bootstrap runs,
   so replicas can start concurrently without manual migration steps.
+- **PostgreSQL operations from the CLI.** `microwave-ctl` runs user, org, key,
+  secret, maintenance, status, and diagnostic commands against either backend.
+  `backup` writes a custom-format `pg_dump` archive and `restore` replays it
+  with `pg_restore`; both require the matching PostgreSQL client tools on the
+  host. `microwave-migrate` exports and imports the same JSON snapshot for
+  SQLite and PostgreSQL, and `microwave-ctl migrate-from-legacy` imports into
+  either backend.
 - **Active/passive**: keep a second host ready, replicate backups/config, and
   move traffic at the load balancer. With SQLite only one server may write the
   metadata database at a time.
@@ -418,10 +426,6 @@ This is a server limitation, not a configuration mistake.
 - **Multiple replicas sharing one SQLite database.** SQLite allows a single
   writer; network filesystems add locking hazards. Do not point two hosts at
   the same database file. Use PostgreSQL instead.
-- **PostgreSQL CLI tooling and backup.** `microwave-ctl` and
-  `microwave-migrate` only open SQLite stores, and `microwave-ctl backup` is a
-  SQLite `VACUUM INTO` snapshot. Use `pg_dump` plus your object-store backup
-  for PostgreSQL deployments.
 - **DRBD/keepalived style clustering.** `microwave-ctl ha-status` reports
   `mode: standalone`, `nodes: 1`, `high_availability: not configured`, and
   says so explicitly.
@@ -459,19 +463,32 @@ Until the PostgreSQL topology is load-tested, prefer vertical capacity,
 
 Two complementary mechanisms exist.
 
-### Consistent local backup (`microwave-ctl backup`)
+### Database backup (`microwave-ctl backup`)
 
 ```sh
 sudo -u microwave microwave-ctl --config /etc/microwave/microwave.toml \
   backup /var/backups/microwave/2026-10-24
 ```
 
-The destination must be a directory (created if missing) that does not already
-contain `microwave.db`. The command writes:
+The destination must be a directory (created if missing). For SQLite it must
+not already contain `microwave.db`; for PostgreSQL it must not already contain
+`microwave.dump`. The command writes:
 
-- `microwave.db` — a `VACUUM INTO` snapshot, consistent including committed WAL
-  contents, safe to take while the server is running;
+- `microwave.db` for SQLite — a `VACUUM INTO` snapshot, consistent including
+  committed WAL contents, safe to take while the server is running;
+- `microwave.dump` for PostgreSQL — a custom-format `pg_dump` archive, taken
+  from a consistent database snapshot, safe while the server is running;
 - `bookshelf/` — a recursive copy of the local blob store, if present.
+
+PostgreSQL backup requires `pg_dump` to be installed and on `PATH`. The
+password is removed from the child process command line. A `password` query
+parameter or authority password is supplied through `PGPASSWORD`; an
+`sslpassword` is written to a temporary libpq service file with mode `0600`
+and referenced through `PGSERVICEFILE`/`PGSERVICE`. Depending on the platform
+and hardening, a child's environment or temporary files may still be
+observable to the same UID or root; treat backups and the host account
+accordingly. Other connection parameters (host, port, user, database,
+`sslmode`) are preserved.
 
 It does **not** include:
 
@@ -505,49 +522,89 @@ sudo -u microwave microwave-ctl --config /etc/microwave/microwave.toml \
 sudo systemctl start microwave-server
 ```
 
+`restore` prints the target (without credentials) and asks for confirmation.
+In scripts and other non-interactive environments, pass `--yes`. For
+PostgreSQL it reads the archive TOC first and reports the database the dump was
+created from; a mismatch with the configured target is refused unless `--yes`
+is given.
+
 `restore`:
 
-- verifies `microwave.db` with `PRAGMA integrity_check` before touching live
-  files;
-- refuses a backup that is the live database;
-- stages the database copy, then removes the live database and its `-wal`/
-  `-shm` sidecars before renaming the staged file into place;
+- for SQLite, verifies `microwave.db` with `PRAGMA integrity_check` before
+  touching live files;
+- for PostgreSQL, validates `microwave.dump` with `pg_restore --list` (the TOC
+  is captured, not printed) before dropping any live object, then runs
+  `pg_restore --clean --if-exists --single-transaction`. The target database
+  must be reachable and the archive must match the schema; extra objects that
+  are not in the archive are not removed;
+- refuses a SQLite backup that is the live database;
+- stages the SQLite database copy, then removes the live database and its
+  `-wal`/`-shm` sidecars before renaming the staged file into place;
 - replaces `bookshelf/` if the backup has one;
-- opens the restored database once to run schema migrations, so an
-  incompatible backup fails the command instead of the next start.
+- opens the restored SQLite database once to run schema migrations, so an
+  incompatible backup fails the command instead of the next start. PostgreSQL
+  schema migrations run on the next `PostgresStore::connect`.
 
-It does not restore `pivotal.pem`/`pivotal.password`, and it does not restore
-S3 objects. Restore those from your separate copies.
+PostgreSQL restore requires `pg_restore` on `PATH` and is destructive: stop the
+server (and any other replica using the database) before running it. It does
+not restore `pivotal.pem`/`pivotal.password`, and it does not restore S3
+objects. Restore those from your separate copies.
 
 ### Metadata snapshot (`microwave-migrate`)
 
 ```sh
 microwave-migrate export --data-dir /var/lib/microwave --output /var/backups/snapshot.json
-microwave-migrate import --data-dir /var/lib/microwave-new --input /var/backups/snapshot.json
+microwave-migrate import --data-dir /var/lib/microwave-new --input /var/backups/snapshot.json --yes
+
+# PostgreSQL source and target
+microwave-migrate export \
+  --database-url postgres://microwave:secret@db/microwave \
+  --output /var/backups/snapshot.json
+microwave-migrate import \
+  --database-url postgres://microwave:secret@db/microwave-new \
+  --input /var/backups/snapshot.json \
+  --yes
 ```
+
+`import` merges into live metadata and asks for confirmation. Use `--yes` in
+scripts and other non-interactive environments. The target is printed without
+authority or query-string passwords.
 
 The snapshot is versioned JSON (`format: microwave-server-snapshot`,
 `version: 1`) containing users (including password hashes), organizations,
 clients, actor keys, ACLs, groups, containers, nodes, roles, environments, data
 bags, checksums, cookbooks, cookbook artifacts, policies, policy groups, and
-OAuth applications. Import applies in one transaction and preserves ids,
-authz ids, timestamps, and keys.
+OAuth applications. Import applies in one transaction on either backend and
+preserves ids, authz ids, timestamps, and keys. PostgreSQL imports advance the
+sequence-backed cookbook, artifact, and OAuth identifiers so later inserts do
+not collide.
+
+Import into a fresh database when possible. The same unique-name rule applies
+on both backends: importing a `server-admins` or other global group with a
+different id into a database that already has that name fails rather than
+rewriting live ACL references.
 
 Not included: cookbook blobs, `kvpair` secrets (including the maintenance
-flag), and the superuser key files. Copy `bookshelf/` (or the S3 bucket) in
-addition. The snapshot file is written with mode `0600`; it still contains
-password hashes and public keys, so treat it as sensitive.
+flag), empty sandboxes, and the superuser key files. Copy `bookshelf/` (or the
+S3 bucket) in addition. The snapshot file is written with mode `0600`; it still
+contains password hashes and public keys, so treat it as sensitive. Use
+`microwave-ctl backup` instead when you need the full database including
+`kvpair`.
 
 ## 10. Migration from a legacy server
 
-**Current state:** the live crawler is not implemented.
-`microwave-migrate from-api` validates its arguments and returns a clear
-`not implemented` error without writing a file. `microwave-ctl
-migrate-from-legacy --input <snapshot>` imports a `microwave-migrate` snapshot;
-it is not a legacy importer.
+**Current state:** the live crawler is implemented. `microwave-migrate
+from-api` reads a legacy Chef Infra Server through its read-only HTTP API and
+writes the same versioned snapshot; see the
+[`microwave-migrate` README](../crates/microwave-migrate/README.md) for the
+crawled collections and the API limitations (notably password hashes, which
+the legacy API never returns). `microwave-ctl migrate-from-legacy --input
+<snapshot>` imports that snapshot into the configured SQLite or PostgreSQL
+database.
 
-That means the fully automated "point at the old server and import" workflow
-does not exist yet. The supported path today is:
+For a full export/import workflow, use `from-api` to produce the snapshot and
+then import it. The manual path below remains useful when you already have a
+snapshot or need to stage the copy yourself:
 
 1. **Produce a snapshot from a Microwave installation** (for example a staging
    instance populated by your migration tooling):
@@ -556,13 +613,18 @@ does not exist yet. The supported path today is:
      --output /var/backups/acme-snapshot.json
    ```
    or, if you already have a snapshot, skip this step.
-2. **Stop the target server** (the import takes a write lock on the database).
-3. **Import into the target data directory:**
+2. **Stop the target server** (and, for PostgreSQL, any other replica using
+   the database). SQLite import takes a write lock; PostgreSQL import runs in
+   one transaction.
+3. **Import into the configured database:**
    ```sh
    microwave-ctl --config /etc/microwave/microwave.toml \
-     migrate-from-legacy --input /var/backups/acme-snapshot.json
+     migrate-from-legacy --input /var/backups/acme-snapshot.json --yes
    ```
-   `microwave-migrate import --data-dir ... --input ...` is equivalent.
+   `microwave-migrate import --data-dir ... --input ... --yes` is equivalent
+   for SQLite. For PostgreSQL without a config file, use
+   `microwave-migrate import --database-url postgres://... --input ... --yes`.
+   Both import paths ask for confirmation unless `--yes` is given.
 4. **Copy cookbook blobs.** The snapshot is metadata only. Place files under
    the object key layout `organization-<org_id>/checksum-<md5>` in
    `/var/lib/microwave/bookshelf/` for the local backend, or upload them to the
@@ -579,8 +641,8 @@ cookbook metadata and checksum references, policyfiles/policy groups, and
 OAuth applications. Chef clients keep their existing keys and URLs, so no
 client reconfiguration is needed if the endpoint stays the same.
 
-Until the crawler and blob importer exist, the practical migration is a
-parallel run: keep the legacy server authoritative, move one organization at a
+Until a blob importer exists, the practical migration is a parallel run: keep
+the legacy server authoritative, move one organization at a
 time, and keep the legacy server read-only until the new one is verified.
 
 ## 11. Health, status, and logs
@@ -648,12 +710,16 @@ microwave-ctl --config /etc/microwave/microwave.toml psql 'select count(*) from 
 ```
 
 `status` reports the data directory, driver, database path, whether the
-database is readable, and whether the superuser exists. `ha-status` always
-reports a single standalone node. `psql` execs `sqlite3` for a SQLite database
-(install `sqlite3` on the host; the container image includes it), or `psql` for
-a configured PostgreSQL URL, and passes trailing arguments through.
-`microwave-ctl` and `microwave-migrate` do not open PostgreSQL stores, so
-server administration and snapshot import/export remain SQLite-only.
+database is readable, and whether the superuser exists. For PostgreSQL it
+connects without changing the schema and reports `database_readable: true`
+when the schema already exists and the superuser query succeeds; an empty or
+unreachable database reports `false` without failing the command. `ha-status` always reports a single standalone node.
+`psql` execs `sqlite3` for a SQLite database (install `sqlite3` on the host;
+the container image includes it), or `psql` for a configured PostgreSQL URL,
+and passes trailing arguments through. `backup`/`restore` use `VACUUM INTO` for
+SQLite and `pg_dump`/`pg_restore` for PostgreSQL. `microwave-migrate` exports
+and imports both backends; see
+[Backup and restore](#9-backup-and-restore).
 
 ### Logs
 
@@ -682,10 +748,10 @@ dropped — drain traffic at the load balancer before stopping or restarting.
 - **Reindex is a no-op.** `microwave-ctl reindex` prints that it is not
   implemented. The embedded backend always reads the store, so it needs no
   index; a remote OpenSearch backend has no backfill path yet.
-- **No PostgreSQL CLI.** The HTTP server runs against PostgreSQL, but
-  `microwave-ctl`, `microwave-migrate`, and the local backup/restore path only
-  open SQLite. Use `psql`/`pg_dump` for PostgreSQL operations, and keep
-  `ha-status` (which still reports a single node) out of HA automation.
+- **PostgreSQL client tools.** `microwave-ctl backup`/`restore` shell out to
+  `pg_dump`/`pg_restore`; install the matching major version on the host or run
+  them from a maintenance container. `psql` likewise needs the client tool.
+  A PostgreSQL restore is destructive and must be coordinated across replicas.
 - **Single writer.** SQLite is opened in WAL mode with a 5 s busy timeout. A
   heavy `microwave-ctl` write (import, key rotation, user creation) can
   contend with request writes; run bulk operations in a window.

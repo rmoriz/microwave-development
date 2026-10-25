@@ -1,11 +1,14 @@
 //! Offline migration/export-import support for Microwave Server.
 //!
-//! Migration moves data between local `microwave-store` databases and a live
-//! legacy Chef Infra Server through a versioned JSON snapshot:
+//! Migration moves data between local `microwave-store` SQLite databases or
+//! PostgreSQL metadata stores and a live legacy Chef Infra Server through a
+//! versioned JSON snapshot:
 //!
 //! ```text
 //! microwave-migrate export --data-dir ./data --output snapshot.json
+//! microwave-migrate export --database-url postgres://db/microwave --output snapshot.json
 //! microwave-migrate import --data-dir ./new-data --input snapshot.json
+//! microwave-migrate import --database-url postgres://db/microwave --input snapshot.json
 //! microwave-migrate from-api --url https://chef.example.com \
 //!     --client-name migrator --key migrator.pem --output snapshot.json
 //! ```
@@ -15,10 +18,12 @@
 
 use chrono::{SecondsFormat, Utc};
 use microwave_store::{SqliteStore, StoreError, StoreSnapshot};
+use microwave_store_postgres::PostgresStore;
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+use url::Url;
 
 mod from_api;
 
@@ -106,6 +111,12 @@ pub enum MigrateError {
     InvalidApiResponse { url: String, message: String },
     #[error("crypto error: {0}")]
     Crypto(#[from] microwave_crypto::CryptoError),
+    #[error("failed to build tokio runtime: {0}")]
+    Runtime(String),
+    #[error("{0}")]
+    Confirmation(String),
+    #[error("invalid PostgreSQL database URL")]
+    InvalidDatabaseUrl,
 }
 
 /// Export the store under `data_dir` to a JSON snapshot at `output`.
@@ -155,6 +166,150 @@ pub fn import_database(database: &Path, input: &Path) -> Result<(), MigrateError
     let store = SqliteStore::open(database)?;
     store.import_snapshot(&snapshot.data)?;
     Ok(())
+}
+
+/// Export a PostgreSQL metadata store to a JSON snapshot.
+///
+/// This connects without applying the embedded schema, so it works with a
+/// read-only database role. The schema must already exist (the server creates
+/// it on startup). The connection URL is never written to the snapshot.
+///
+/// The function is synchronous and owns a current-thread Tokio runtime. Do not
+/// call it from inside an existing Tokio runtime; use the async
+/// [`PostgresStore`] methods directly in that case.
+pub fn export_postgres(database_url: &str, output: &Path) -> Result<(), MigrateError> {
+    validate_postgres_url(database_url)?;
+    let runtime = runtime()?;
+    let store = runtime.block_on(PostgresStore::connect_existing(database_url))?;
+    let data = runtime.block_on(store.export_snapshot())?;
+    let snapshot = Snapshot {
+        format: SNAPSHOT_FORMAT.to_string(),
+        version: SNAPSHOT_VERSION,
+        generated_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        source: SnapshotSource {
+            kind: SnapshotSourceKind::LocalStore,
+            url: None,
+            data_dir: None,
+        },
+        data,
+    };
+    write_snapshot(&snapshot, output)
+}
+
+/// Import a JSON snapshot into a PostgreSQL metadata store.
+///
+/// The import runs in one database transaction and preserves source ids,
+/// authz ids, timestamps, hashes, and keys. Importing the same snapshot twice
+/// is idempotent.
+///
+/// The function is synchronous and owns a current-thread Tokio runtime. Do not
+/// call it from inside an existing Tokio runtime; use the async
+/// [`PostgresStore`] methods directly in that case.
+pub fn import_postgres(database_url: &str, input: &Path) -> Result<(), MigrateError> {
+    validate_postgres_url(database_url)?;
+    let snapshot = read_snapshot(input)?;
+    let runtime = runtime()?;
+    let store = runtime.block_on(PostgresStore::connect(database_url))?;
+    runtime.block_on(store.import_snapshot(&snapshot.data))?;
+    Ok(())
+}
+
+/// Reject a malformed or non-PostgreSQL database URL without echoing it.
+pub fn validate_postgres_url(database_url: &str) -> Result<(), MigrateError> {
+    if !(database_url.starts_with("postgres://") || database_url.starts_with("postgresql://")) {
+        return Err(MigrateError::InvalidDatabaseUrl);
+    }
+    let parsed = Url::parse(database_url).map_err(|_| MigrateError::InvalidDatabaseUrl)?;
+    if parsed.scheme() != "postgres" && parsed.scheme() != "postgresql" {
+        return Err(MigrateError::InvalidDatabaseUrl);
+    }
+    Ok(())
+}
+
+/// Return a connection URL with authority and query-string passwords removed.
+///
+/// Used by command-line confirmation output so a `password`/`sslpassword`
+/// query parameter is never echoed. Unparseable input is never echoed.
+pub fn redacted_database_url(database_url: &str) -> String {
+    redacted_url_with_label(database_url, "<invalid database URL>")
+}
+
+/// Return a credential-free PostgreSQL URL, or a fixed placeholder.
+///
+/// Use this before printing a `--database-url` target: anything that is not a
+/// `postgres://`/`postgresql://` URL becomes `<invalid PostgreSQL URL>` rather
+/// than being echoed.
+pub fn redacted_postgres_url(database_url: &str) -> String {
+    if !(database_url.starts_with("postgres://") || database_url.starts_with("postgresql://")) {
+        return "<invalid PostgreSQL URL>".to_string();
+    }
+    redacted_url_with_label(database_url, "<invalid PostgreSQL URL>")
+}
+
+fn redacted_url_with_label(database_url: &str, invalid: &str) -> String {
+    let Ok(mut parsed) = Url::parse(database_url) else {
+        return invalid.to_string();
+    };
+    let _ = parsed.set_password(None);
+    if let Some(raw_query) = parsed.query() {
+        let kept_query = strip_query_secrets(raw_query);
+        if kept_query.is_empty() {
+            parsed.set_query(None);
+        } else {
+            parsed.set_query(Some(&kept_query));
+        }
+    }
+    parsed.to_string()
+}
+
+fn strip_query_secrets(raw_query: &str) -> String {
+    raw_query
+        .split('&')
+        .filter(|pair| {
+            let key = pair.split_once('=').map(|(key, _)| key).unwrap_or(pair);
+            let key = percent_decode_query(key);
+            key != "password" && key != "sslpassword"
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn percent_decode_query(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) = (hex(bytes[index + 1]), hex(bytes[index + 2])) {
+                decoded.push(high * 16 + low);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Run a PostgreSQL snapshot operation on a current-thread Tokio runtime.
+///
+/// The migration binary and the operational CLI stay synchronous; only these
+/// backend calls cross into async.
+fn runtime() -> Result<tokio::runtime::Runtime, MigrateError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| MigrateError::Runtime(error.to_string()))
 }
 
 /// Crawl a live legacy Chef Infra Server into the snapshot format.
@@ -267,4 +422,65 @@ fn data_dir_of(database: &Path) -> String {
         .unwrap_or_else(|| Path::new("."))
         .display()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{redacted_database_url, redacted_postgres_url, validate_postgres_url};
+
+    #[test]
+    fn removes_authority_and_query_passwords() {
+        let redacted = redacted_database_url(
+            "postgres://user:authority-secret@db/microwave?password=query-secret&sslmode=require",
+        );
+        assert!(!redacted.contains("authority-secret"));
+        assert!(!redacted.contains("query-secret"));
+        assert!(!redacted.contains("password="));
+        assert!(redacted.contains("sslmode=require"));
+        assert!(redacted.contains("db/microwave"));
+    }
+
+    #[test]
+    fn removes_sslpassword_from_the_query() {
+        let redacted = redacted_database_url(
+            "postgres://host/microwave?sslpassword=ssl-secret&sslmode=verify-full",
+        );
+        assert!(!redacted.contains("ssl-secret"));
+        assert!(!redacted.contains("sslpassword"));
+        assert!(redacted.contains("sslmode=verify-full"));
+    }
+
+    #[test]
+    fn preserves_raw_query_encoding() {
+        let redacted = redacted_database_url(
+            "postgres://host/db?options=-c%20statement_timeout%3D5s&password=secret&sslmode=require",
+        );
+        assert!(!redacted.contains("secret"));
+        assert!(!redacted.contains("password="));
+        assert!(redacted.contains("options=-c%20statement_timeout%3D5s"));
+        assert!(!redacted.contains('+'));
+    }
+
+    #[test]
+    fn validates_postgres_urls_without_echoing_them() {
+        assert!(validate_postgres_url("postgres://user:secret@db/microwave").is_ok());
+        assert!(validate_postgres_url("postgresql://db/microwave").is_ok());
+        assert!(validate_postgres_url("mysql://user:secret@db/microwave").is_err());
+        let error = validate_postgres_url("postgres://user:secret@[::bad")
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("secret"));
+        assert!(error.contains("invalid PostgreSQL database URL"));
+    }
+
+    #[test]
+    fn never_echoes_unparseable_or_non_postgres_urls() {
+        let malformed = redacted_postgres_url("postgres://user:secret@[::bad");
+        assert_eq!(malformed, "<invalid PostgreSQL URL>");
+        assert!(!malformed.contains("secret"));
+
+        let wrong_scheme = redacted_postgres_url("mysql://user:secret@db/microwave");
+        assert_eq!(wrong_scheme, "<invalid PostgreSQL URL>");
+        assert!(!wrong_scheme.contains("secret"));
+    }
 }

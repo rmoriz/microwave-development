@@ -50,8 +50,8 @@ const KNOWN_CREDENTIALS: &[(&str, &[&str])] = &[
 /// Store a secret. The value is never echoed back to the terminal.
 pub fn set_secret(context: &Context, group: &str, name: &str, value: &str) -> Result<(), CtlError> {
     validate_credential(group, name)?;
-    let store = context.open_store()?;
-    store.set_secret(group, name, value)?;
+    let store = context.open_metadata_store()?;
+    store.run(store.store().set_secret(group, name, value))?;
     println!("Secret {group}.{name} updated.");
     Ok(())
 }
@@ -59,9 +59,9 @@ pub fn set_secret(context: &Context, group: &str, name: &str, value: &str) -> Re
 /// Print a secret to stdout. This is the only command that reveals values.
 pub fn show_secret(context: &Context, group: &str, name: &str) -> Result<(), CtlError> {
     validate_credential(group, name)?;
-    let store = context.open_store()?;
+    let store = context.open_metadata_store()?;
     let value = store
-        .get_secret(group, name)?
+        .run(store.store().get_secret(group, name))?
         .ok_or_else(|| StoreError::NotFound(format!("secret {group}.{name}")))?;
     println!("{value}");
     Ok(())
@@ -69,8 +69,8 @@ pub fn show_secret(context: &Context, group: &str, name: &str) -> Result<(), Ctl
 
 pub fn remove_secret(context: &Context, group: &str, name: &str) -> Result<(), CtlError> {
     validate_credential(group, name)?;
-    let store = context.open_store()?;
-    store.remove_secret(group, name)?;
+    let store = context.open_metadata_store()?;
+    store.run(store.store().remove_secret(group, name))?;
     println!("Removed secret {group}.{name}.");
     Ok(())
 }
@@ -78,20 +78,20 @@ pub fn remove_secret(context: &Context, group: &str, name: &str) -> Result<(), C
 pub fn maintenance(context: &Context, action: crate::MaintenanceAction) -> Result<(), CtlError> {
     use crate::MaintenanceAction;
 
-    let store = context.open_store()?;
+    let store = context.open_metadata_store()?;
     match action {
         MaintenanceAction::On => {
-            store.set_maintenance_enabled(true)?;
+            store.run(store.store().set_maintenance_enabled(true))?;
             println!("Maintenance mode enabled.");
         }
         MaintenanceAction::Off => {
-            store.set_maintenance_enabled(false)?;
+            store.run(store.store().set_maintenance_enabled(false))?;
             println!("Maintenance mode disabled.");
         }
         MaintenanceAction::Status => {
             println!(
                 "maintenance: {}",
-                if store.maintenance_enabled()? {
+                if store.run(store.store().maintenance_enabled())? {
                     "on"
                 } else {
                     "off"

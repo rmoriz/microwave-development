@@ -13,6 +13,8 @@ microwave-config = { path = "../microwave-config" }
 microwave-crypto = { path = "../microwave-crypto" }
 microwave-migrate = { path = "../microwave-migrate" }
 microwave-store = { path = "../microwave-store" }
+microwave-store-postgres = { path = "../microwave-store-postgres" }
+tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 url.workspace = true

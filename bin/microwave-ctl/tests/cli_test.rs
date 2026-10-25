@@ -246,7 +246,15 @@ fn backup_and_restore_round_trip() {
     std::fs::write(bookshelf.join("blob"), b"mutated").unwrap();
     std::fs::write(bookshelf.join("extra"), b"extra").unwrap();
 
-    let restored = run(data.path(), &["restore", backup_path.to_str().unwrap()]);
+    let refused = run(data.path(), &["restore", backup_path.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("--yes"));
+    assert!(stdout(&refused).contains("Restore target:"));
+
+    let restored = run(
+        data.path(),
+        &["restore", backup_path.to_str().unwrap(), "--yes"],
+    );
     assert_success(&restored);
 
     let listed = run(data.path(), &["user-list"]);
@@ -351,9 +359,22 @@ fn migrate_from_legacy_imports_a_snapshot() {
     microwave_migrate::export(source.path(), &snapshot).unwrap();
 
     let target = tempfile::tempdir().unwrap();
-    let imported = run(
+    let refused = run(
         target.path(),
         &["migrate-from-legacy", "--input", snapshot.to_str().unwrap()],
+    );
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("--yes"));
+    assert!(!target.path().join("microwave.db").exists());
+
+    let imported = run(
+        target.path(),
+        &[
+            "migrate-from-legacy",
+            "--input",
+            snapshot.to_str().unwrap(),
+            "--yes",
+        ],
     );
     assert_success(&imported);
     assert!(stdout(&imported).contains("Imported migration snapshot"));
@@ -1032,8 +1053,571 @@ fn migrate_from_legacy_rejects_unsupported_snapshots() {
     let target = tempfile::tempdir().unwrap();
     let imported = run(
         target.path(),
-        &["migrate-from-legacy", "--input", snapshot.to_str().unwrap()],
+        &[
+            "migrate-from-legacy",
+            "--input",
+            snapshot.to_str().unwrap(),
+            "--yes",
+        ],
     );
     assert!(!imported.status.success());
     assert!(stderr(&imported).contains("unsupported snapshot version 99"));
+}
+
+// ---------------------------------------------------------------------------
+// PostgreSQL-gated CLI coverage
+// ---------------------------------------------------------------------------
+
+fn postgres_url() -> Option<String> {
+    let url = std::env::var("MICROWAVE_TEST_POSTGRES_URL")
+        .ok()
+        .filter(|url| !url.trim().is_empty())?;
+    Some(url)
+}
+
+fn unique(prefix: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    format!("{prefix}-{}-{nanos}", std::process::id())
+}
+
+fn pg_ctl(dir: &Path, url: &str) -> Command {
+    let mut command = ctl(dir);
+    command
+        .env("MW_DATABASE__DRIVER", "postgres")
+        .env("MW_DATABASE__URL", url);
+    command
+}
+
+fn run_pg(dir: &Path, url: &str, args: &[&str]) -> Output {
+    pg_ctl(dir, url).args(args).output().unwrap()
+}
+
+fn pg_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+/// Require a host PostgreSQL client tool when the test database is configured.
+///
+/// Missing tools are a hard failure so the PostgreSQL suite cannot silently
+/// report success while skipping backup/restore/psql coverage. Set
+/// `MICROWAVE_TEST_SKIP_PG_CLIENT_TOOLS=1` to opt out explicitly on a host
+/// that only has Docker.
+fn pg_client_tool_available(tool: &str) -> bool {
+    if std::process::Command::new(tool)
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
+        return true;
+    }
+    if std::env::var("MICROWAVE_TEST_SKIP_PG_CLIENT_TOOLS").as_deref() == Ok("1") {
+        eprintln!(
+            "SKIP: {tool} is not installed and MICROWAVE_TEST_SKIP_PG_CLIENT_TOOLS=1 was set explicitly"
+        );
+        return false;
+    }
+    panic!(
+        "{tool} is required for the PostgreSQL CLI tests; install the PostgreSQL client tools \
+         or set MICROWAVE_TEST_SKIP_PG_CLIENT_TOOLS=1 to skip backup/restore/psql coverage explicitly"
+    );
+}
+
+/// Create a uniquely named database from the configured test server and return
+/// its URL. The configured database is used only as the administrative
+/// connection; tests that import snapshots or restore dumps need an empty
+/// target so global groups and ids cannot collide with other tests.
+fn scratch_database(base_url: &str, prefix: &str) -> (String, String) {
+    let name = unique(prefix).replace('-', "_");
+    let runtime = pg_runtime();
+    runtime.block_on(async {
+        let pool = sqlx::PgPool::connect(base_url)
+            .await
+            .expect("connect to configured PostgreSQL");
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{name}\"")))
+            .execute(&pool)
+            .await
+            .expect("create scratch database");
+        pool.close().await;
+    });
+    let url = database_url_with_name(base_url, &name);
+    (name, url)
+}
+
+fn drop_scratch_database(base_url: &str, name: &str) {
+    let runtime = pg_runtime();
+    runtime.block_on(async {
+        let pool = sqlx::PgPool::connect(base_url)
+            .await
+            .expect("connect to configured PostgreSQL");
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP DATABASE \"{name}\" WITH (FORCE)"
+        )))
+        .execute(&pool)
+        .await
+        .expect("drop scratch database");
+        pool.close().await;
+    });
+}
+
+fn database_url_with_name(url: &str, name: &str) -> String {
+    let (base, query) = match url.split_once('?') {
+        Some((base, query)) => (base, format!("?{query}")),
+        None => (url, String::new()),
+    };
+    let prefix = match base.rfind('/') {
+        Some(index) => &base[..=index],
+        None => base,
+    };
+    format!("{prefix}{name}{query}")
+}
+
+#[test]
+fn postgres_status_and_user_lifecycle() {
+    let Some(url) = postgres_url() else {
+        eprintln!("SKIP: MICROWAVE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let superuser = unique("pg-super");
+    let username = unique("pg-user");
+    // Ensure the schema exists so `status` reports a readable database; status
+    // itself is read-only and does not create tables.
+    pg_runtime()
+        .block_on(microwave_store_postgres::PostgresStore::connect(&url))
+        .expect("connect to configured PostgreSQL");
+    let status = || {
+        pg_ctl(dir.path(), &url)
+            .env("MW_AUTH__SUPERUSER_NAME", &superuser)
+            .arg("status")
+            .output()
+            .unwrap()
+    };
+
+    let fresh = status();
+    assert_success(&fresh);
+    let text = stdout(&fresh);
+    assert!(text.contains("database_driver: postgresql"));
+    assert!(text.contains("database_readable: true"));
+    assert!(text.contains(&format!("superuser: {superuser} (absent)")));
+
+    let created = run_pg(
+        dir.path(),
+        &url,
+        &[
+            "user-create",
+            &username,
+            "--email",
+            &format!("{username}@example.com"),
+            "--password",
+            "postgres-password",
+            "--admin",
+        ],
+    );
+    assert_success(&created);
+
+    let listed = run_pg(dir.path(), &url, &["user-list"]);
+    assert_success(&listed);
+    assert!(stdout(&listed).contains(&username));
+
+    let shown = run_pg(dir.path(), &url, &["user-show", &username]);
+    assert_success(&shown);
+    assert!(stdout(&shown).contains("admin: true"));
+
+    let superuser_create = run_pg(
+        dir.path(),
+        &url,
+        &["user-create", &superuser, "--password", "super-password"],
+    );
+    assert_success(&superuser_create);
+    let ready = status();
+    assert_success(&ready);
+    assert!(stdout(&ready).contains(&format!("superuser: {superuser} (present)")));
+
+    let deleted = run_pg(dir.path(), &url, &["user-delete", &username]);
+    assert_success(&deleted);
+    let missing = run_pg(dir.path(), &url, &["user-show", &username]);
+    assert!(!missing.status.success());
+    assert!(stderr(&missing).contains("not found"));
+}
+
+#[test]
+fn postgres_organization_membership_and_server_admins() {
+    let Some(url) = postgres_url() else {
+        eprintln!("SKIP: MICROWAVE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let creator = unique("pg-org-creator");
+    let member = unique("pg-org-member");
+    let org = unique("pg-org");
+
+    assert_success(&run_pg(
+        dir.path(),
+        &url,
+        &["user-create", &creator, "--password", "creator-password"],
+    ));
+    assert_success(&run_pg(
+        dir.path(),
+        &url,
+        &["user-create", &member, "--password", "member-password"],
+    ));
+    assert_success(&run_pg(
+        dir.path(),
+        &url,
+        &[
+            "org-create",
+            &org,
+            "--full-name",
+            "PostgreSQL Org",
+            "--creator",
+            &creator,
+        ],
+    ));
+
+    let shown = run_pg(dir.path(), &url, &["org-show", &org]);
+    assert_success(&shown);
+    assert!(stdout(&shown).contains("full_name: PostgreSQL Org"));
+    assert!(stdout(&shown).contains(&creator));
+
+    let added = run_pg(dir.path(), &url, &["org-user-add", &org, &member]);
+    assert_success(&added);
+    let shown = run_pg(dir.path(), &url, &["org-show", &org]);
+    assert_success(&shown);
+    assert!(stdout(&shown).contains(&member));
+
+    let removed = run_pg(dir.path(), &url, &["org-user-remove", &org, &member]);
+    assert_success(&removed);
+    let shown = run_pg(dir.path(), &url, &["org-show", &org]);
+    assert_success(&shown);
+    assert!(!stdout(&shown).contains(&member));
+
+    let granted = run_pg(
+        dir.path(),
+        &url,
+        &["grant-server-admin-permissions", &member],
+    );
+    assert_success(&granted);
+    let admins = run_pg(dir.path(), &url, &["list-server-admins"]);
+    assert_success(&admins);
+    assert!(stdout(&admins).lines().any(|line| line.trim() == member));
+    let revoked = run_pg(
+        dir.path(),
+        &url,
+        &["remove-server-admin-permissions", &member],
+    );
+    assert_success(&revoked);
+
+    let deleted = run_pg(dir.path(), &url, &["org-delete", &org]);
+    assert_success(&deleted);
+    let missing = run_pg(dir.path(), &url, &["org-show", &org]);
+    assert!(!missing.status.success());
+    assert!(stderr(&missing).contains("not found"));
+}
+
+#[test]
+fn postgres_keys_secrets_maintenance_and_check_config() {
+    use microwave_store::IdentityRepository;
+
+    let Some(url) = postgres_url() else {
+        eprintln!("SKIP: MICROWAVE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let owner = unique("pg-key-owner");
+    let org = unique("pg-key-org");
+    let client = unique("pg-key-client");
+    let secret_value = unique("pg-secret-value");
+
+    assert_success(&run_pg(
+        dir.path(),
+        &url,
+        &["user-create", &owner, "--password", "owner-password"],
+    ));
+    assert_success(&run_pg(
+        dir.path(),
+        &url,
+        &["org-create", &org, "--creator", &owner],
+    ));
+
+    let runtime = pg_runtime();
+    let store = runtime
+        .block_on(microwave_store_postgres::PostgresStore::connect(&url))
+        .expect("connect to configured PostgreSQL");
+    let org_row = runtime
+        .block_on(store.find_org(&org))
+        .expect("find org")
+        .expect("org exists");
+    runtime
+        .block_on(store.create_client(&org_row.id, &client, false, false))
+        .expect("create client");
+
+    let created = run_pg(
+        dir.path(),
+        &url,
+        &["add-client-key", &org, &client, "--key-name", "deploy"],
+    );
+    assert_success(&created);
+    assert!(stdout(&created).contains("BEGIN PRIVATE KEY"));
+    let listed = run_pg(dir.path(), &url, &["list-client-keys", &org, &client]);
+    assert_success(&listed);
+    assert!(stdout(&listed).contains("name: deploy"));
+    let deleted = run_pg(
+        dir.path(),
+        &url,
+        &["delete-client-key", &org, &client, "deploy"],
+    );
+    assert_success(&deleted);
+
+    let set = run_pg(
+        dir.path(),
+        &url,
+        &["set-secret", "data_collector", "token", &secret_value],
+    );
+    assert_success(&set);
+    let shown = run_pg(
+        dir.path(),
+        &url,
+        &["show-secret", "data_collector", "token"],
+    );
+    assert_success(&shown);
+    assert_eq!(stdout(&shown).trim(), secret_value);
+    let removed = run_pg(
+        dir.path(),
+        &url,
+        &["remove-secret", "data_collector", "token"],
+    );
+    assert_success(&removed);
+
+    assert_success(&run_pg(dir.path(), &url, &["maintenance", "on"]));
+    let status = run_pg(dir.path(), &url, &["maintenance", "status"]);
+    assert_success(&status);
+    assert!(stdout(&status).contains("maintenance: on"));
+    assert_success(&run_pg(dir.path(), &url, &["maintenance", "off"]));
+    let status = run_pg(dir.path(), &url, &["maintenance", "status"]);
+    assert_success(&status);
+    assert!(stdout(&status).contains("maintenance: off"));
+
+    // check-config resolves object-store credentials from PostgreSQL when
+    // they are absent from the config file.
+    let access = unique("pg-access");
+    let secret = unique("pg-secret");
+    assert_success(&run_pg(
+        dir.path(),
+        &url,
+        &["set-secret", "bookshelf", "access_key_id", &access],
+    ));
+    assert_success(&run_pg(
+        dir.path(),
+        &url,
+        &["set-secret", "bookshelf", "secret_access_key", &secret],
+    ));
+    let config = dir.path().join("pg.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[database]\ndriver = \"postgres\"\nurl = \"{url}\"\n\n\
+             [object_store]\nbackend = \"s3\"\nendpoint = \"http://minio:9000\"\n\
+             bucket = \"chef-cookbooks\"\n"
+        ),
+    )
+    .unwrap();
+    let checked = ctl(dir.path())
+        .args(["--config", config.to_str().unwrap(), "check-config"])
+        .output()
+        .unwrap();
+    assert_success(&checked);
+    assert!(stdout(&checked).contains("ok: object_store s3"));
+    assert_success(&run_pg(
+        dir.path(),
+        &url,
+        &["remove-secret", "bookshelf", "access_key_id"],
+    ));
+    assert_success(&run_pg(
+        dir.path(),
+        &url,
+        &["remove-secret", "bookshelf", "secret_access_key"],
+    ));
+}
+
+#[test]
+fn postgres_migrate_from_legacy_imports_a_sqlite_snapshot() {
+    use microwave_store::IdentityRepository;
+
+    let Some(base_url) = postgres_url() else {
+        eprintln!("SKIP: MICROWAVE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let (scratch, url) = scratch_database(&base_url, "ctl-import-db");
+    let source = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(&source.path().join("microwave.db")).unwrap();
+    let username = unique("pg-legacy");
+    let user = store
+        .create_user(
+            &username,
+            &format!("{username}@example.com"),
+            "bcrypt",
+            "legacy-hash",
+            "legacy-salt",
+            true,
+        )
+        .unwrap();
+    drop(store);
+
+    let snapshots = tempfile::tempdir().unwrap();
+    let snapshot = snapshots.path().join("migration.json");
+    microwave_migrate::export(source.path(), &snapshot).unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    let imported = run_pg(
+        target.path(),
+        &url,
+        &[
+            "migrate-from-legacy",
+            "--input",
+            snapshot.to_str().unwrap(),
+            "--yes",
+        ],
+    );
+    assert_success(&imported);
+    assert!(stdout(&imported).contains("configured PostgreSQL database"));
+
+    let runtime = pg_runtime();
+    let restored = runtime
+        .block_on(microwave_store_postgres::PostgresStore::connect(&url))
+        .expect("connect to configured PostgreSQL");
+    let restored_user = runtime
+        .block_on(restored.find_user(&username))
+        .expect("find imported user")
+        .expect("imported user exists");
+    assert_eq!(restored_user.id, user.id);
+    assert_eq!(restored_user.password_hash, "legacy-hash");
+    assert!(restored_user.admin);
+    drop_scratch_database(&base_url, &scratch);
+}
+
+#[test]
+fn postgres_psql_passes_queries_through() {
+    let Some(url) = postgres_url() else {
+        eprintln!("SKIP: MICROWAVE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    if !pg_client_tool_available("psql") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let output = run_pg(
+        dir.path(),
+        &url,
+        &["psql", "-tA", "-c", "select count(*) >= 0 from users;"],
+    );
+    assert_success(&output);
+    assert_eq!(stdout(&output).trim(), "t");
+}
+
+#[test]
+fn postgres_backup_and_restore_round_trip() {
+    use microwave_store::IdentityRepository;
+
+    let Some(base_url) = postgres_url() else {
+        eprintln!("SKIP: MICROWAVE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    if !pg_client_tool_available("pg_dump") || !pg_client_tool_available("pg_restore") {
+        return;
+    }
+
+    let (scratch, url) = scratch_database(&base_url, "ctl-backup-db");
+    let runtime = pg_runtime();
+    let store = runtime
+        .block_on(microwave_store_postgres::PostgresStore::connect(&url))
+        .expect("connect to scratch PostgreSQL");
+    let persisted = unique("pg-backup-persisted");
+    runtime
+        .block_on(store.create_user(
+            &persisted,
+            &format!("{persisted}@example.com"),
+            "bcrypt",
+            "hash",
+            "salt",
+            false,
+        ))
+        .expect("create persisted user");
+    drop(store);
+
+    let data = tempfile::tempdir().unwrap();
+    let backups = tempfile::tempdir().unwrap();
+    let path = backups.path().join("pg-backup");
+    let output = run_pg(data.path(), &url, &["backup", path.to_str().unwrap()]);
+    assert_success(&output);
+    assert!(path.join("microwave.dump").is_file());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path.join("microwave.dump"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    let store = runtime
+        .block_on(microwave_store_postgres::PostgresStore::connect(&url))
+        .expect("reconnect to scratch PostgreSQL");
+    let transient = unique("pg-backup-transient");
+    runtime
+        .block_on(store.create_user(
+            &transient,
+            &format!("{transient}@example.com"),
+            "bcrypt",
+            "hash",
+            "salt",
+            false,
+        ))
+        .expect("create transient user");
+    drop(store);
+
+    let refused = run_pg(data.path(), &url, &["restore", path.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("--yes"));
+    let text = stdout(&refused);
+    assert!(text.contains("Restore target:"));
+    assert!(!text.contains("microwave:microwave"));
+
+    // A refused confirmation must not have dropped the live objects.
+    let store = runtime
+        .block_on(microwave_store_postgres::PostgresStore::connect(&url))
+        .expect("connect after refused restore");
+    assert!(runtime
+        .block_on(store.find_user(&transient))
+        .expect("find transient user after refused restore")
+        .is_some());
+    drop(store);
+
+    let restored = run_pg(
+        data.path(),
+        &url,
+        &["restore", path.to_str().unwrap(), "--yes"],
+    );
+    assert_success(&restored);
+    let store = runtime
+        .block_on(microwave_store_postgres::PostgresStore::connect(&url))
+        .expect("connect after restore");
+    assert!(runtime
+        .block_on(store.find_user(&persisted))
+        .expect("find restored user")
+        .is_some());
+    assert!(runtime
+        .block_on(store.find_user(&transient))
+        .expect("find transient user")
+        .is_none());
+    drop(store);
+
+    drop_scratch_database(&base_url, &scratch);
 }

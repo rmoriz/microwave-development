@@ -11,6 +11,7 @@ mod context;
 mod diagnostics;
 mod error;
 mod keys;
+mod pg;
 mod secrets;
 
 pub use cli::{Cli, Command, MaintenanceAction};
@@ -125,7 +126,9 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
         Command::Psql { args } => diagnostics::psql(&context, &args),
         Command::Reindex { org } => commands::reindex(org.as_deref()),
         Command::Backup { path } => backup::backup(&context, &path),
-        Command::Restore { path } => backup::restore(&context, &path),
-        Command::MigrateFromLegacy { input } => commands::migrate_from_legacy(&context, &input),
+        Command::Restore { path, yes } => backup::restore(&context, &path, yes),
+        Command::MigrateFromLegacy { input, yes } => {
+            commands::migrate_from_legacy(&context, &input, yes)
+        }
     }
 }

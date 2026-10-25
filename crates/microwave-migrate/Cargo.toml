@@ -12,15 +12,17 @@ clap.workspace = true
 hex.workspace = true
 microwave-crypto = { path = "../microwave-crypto" }
 microwave-store = { path = "../microwave-store" }
+microwave-store-postgres = { path = "../microwave-store-postgres" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 http.workspace = true
+tokio.workspace = true
 ureq.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
 microwave-authz = { path = "../microwave-authz" }
 tempfile.workspace = true
-tokio.workspace = true
