@@ -3,7 +3,8 @@
 Branch: `missing-routes`  
 Base: `ada0873`  
 Initial implementation: `7fe004b feat(api): add missing oc_erchef compatibility routes`  
-Fix round: working tree after `7fe004b`
+Round 2 fixes (body-bound validation, pre-auth 405 gate): `d283864`  
+Round 3 fixes (gate scope, allocation cleanup): `d980460`
 
 ## Round 1 — initial implementation
 
@@ -74,6 +75,43 @@ Fix round: working tree after `7fe004b`
 - Nested recipe paths continue to collapse to their basename before `.rb` is
   removed, matching upstream `filename:basename/2`.
 
+## Round 3 — review fixes
+
+### 1. `_identifiers` 405 gate shadowed real mutating routes — ADDRESSED
+
+- The pre-auth gate no longer treats every
+  `/organizations/:org/:type/:name/_identifiers` as internal. It now matches
+  only `/organizations/:org/nodes/:name/_identifiers`, the sole upstream
+  internal object type.
+- `PUT`/`DELETE` on `/data/:bag/_identifiers`,
+  `/cookbooks/:cookbook/_identifiers`, and
+  `/cookbook_artifacts/:name/_identifiers` now authenticate and reach their
+  normal handlers instead of being forwarded without `AuthContext` and
+  returning 500.
+- Added `identifiers_gate_does_not_shadow_mutating_routes`:
+  - unsigned PUT/DELETE for all three route families return 401;
+  - signed cookbook PUT/DELETE return their normal 400 validation errors;
+  - signed artifact PUT returns 400 and DELETE returns 404;
+  - a signed data bag item named `_identifiers` can be created, read, updated,
+    and deleted normally.
+
+### 2. Hot-path allocations and comments — ADDRESSED
+
+- Replaced the two `Vec<&str>` path allocations with iterator-based segment
+  checks in `is_node_identifiers_path` and `is_role_environment_path`.
+- Corrected the pre-auth gate comment: method dispatch is resolved before
+  upstream `is_authorized/2`, so unsupported methods return 405 without
+  signature verification.
+- Corrected the validation-example count in this report from 9 to 13 and
+  recorded commit hashes.
+
+### 3. Validate body binding and earlier behavior — KEPT
+
+- `/validate/*` still verifies the actual request body with `verify_request`
+  and the wildcard signed path.
+- `_identifiers`, role-environment 405 ordering, environment recipes, and the
+  `qualify_recipe` basename fix are unchanged.
+
 ## Verification
 
 ```sh
@@ -86,6 +124,8 @@ PATH="/opt/homebrew/opt/libpq/bin:$PATH" ./scripts/run-postgres-tests.sh
 Results:
 
 - `microwave-api` + `microwave-crypto`: all test binaries pass (0 failures).
+- `internal_routes_test`: 15 tests pass, including the new gate-shadow
+  regression for data/cookbook/artifact `_identifiers` routes.
 - Clippy: clean with `-D warnings`.
 - PostgreSQL gate: passes, including the extended parity scenario with the
   body-mismatch validation step.
@@ -93,10 +133,10 @@ Results:
   - `object-identifiers`: 3 examples, 0 failures.
   - `controls`: 2 examples, 0 failures.
   - `nodes`: 331 examples, 0 failures, 5 pending.
-  - Validation examples (`authentication` tag): all 9 validate examples pass.
+  - Validation examples (`authentication` tag): all 13 validate examples pass.
     The tag still reports 37 unrelated pre-existing failures in environment
     authentication-header and environment state assertions; the count is
-    unchanged from before this fix round.
+    unchanged from before the fix rounds.
 
 ## Remaining gaps
 
