@@ -93,6 +93,9 @@ cargo test -p microwave-store --test dual_backend "$@"
 # they must run with the same disposable database.
 cargo test -p microwave-api --test postgres_runtime_test "$@"
 cargo test -p microwave-api --test postgres_http_coverage_test "$@"
+# The HTTP parity matrix re-runs the same signed scenarios against SQLite and
+# PostgreSQL and compares status, headers and normalized bodies.
+cargo test -p microwave-api --test http_parity_test "$@"
 # Operational CLI and snapshot tests run after the store suite because the
 # maintenance-flag assertions are global to the shared database.
 cargo test -p microwave-ctl-bin --test cli_test "$@"

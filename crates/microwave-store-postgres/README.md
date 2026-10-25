@@ -74,10 +74,11 @@ cargo test -p microwave-store-postgres
 
 # Cross-backend matrix: SQLite always, PostgreSQL when the URL is set:
 cargo test -p microwave-store --test dual_backend
+cargo test -p microwave-api --test http_parity_test
 
 # Start a disposable PostgreSQL container and run the whole PostgreSQL gate
-# (crate integration tests, dual-backend matrix, HTTP runtime/coverage, CLI,
-# and snapshot import/export):
+# (crate integration tests, dual-backend and HTTP parity matrices, HTTP
+# runtime/coverage, CLI, and snapshot import/export):
 scripts/run-postgres-tests.sh
 ```
 
@@ -96,6 +97,24 @@ organization, and org-scoped fixtures plus test-created global groups are
 deleted afterwards. The shared `server-admins` group and maintenance KV flag
 remain. This lets the matrix and the crate tests run in parallel against one
 database.
+
+The HTTP parity matrix lives in
+[`../microwave-api/tests/http_parity_test.rs`](../microwave-api/tests/http_parity_test.rs).
+Each scenario runs once against in-memory SQLite and once against PostgreSQL
+through the real router, authentication middleware, object store and metadata
+store. The two transcripts must match on status code, `Location` and
+content-type headers, and response body. Only volatile values are normalized:
+generated ids/timestamps, generated key material, OAuth secrets/tokens, and the
+organization id/HMAC token embedded in bookshelf URLs. Coverage includes users,
+organizations, clients, keys, nodes, roles, environments, data bags, search,
+sandboxes, cookbooks, cookbook artifacts, depsolver, policies/policy groups,
+ACLs, membership/invitations, OAuth application/token routes, license, status
+and stats. The PostgreSQL half skips only when `MICROWAVE_TEST_POSTGRES_URL` is
+unset; a configured but unreachable database fails loudly. It uses unique
+names per run and deletes its organizations, users, OAuth applications and
+runtime pivotal key afterwards. OAuth HTML session/profile pages and remote
+OpenSearch/Elasticsearch remain covered by their dedicated suites rather than
+this matrix.
 
 Because every `#[tokio::test]` owns its runtime, the matrix cannot share one
 pool across tests. It applies the embedded schema once per test binary (in a
