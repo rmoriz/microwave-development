@@ -155,6 +155,29 @@ pub fn check_config(context: &Context) -> Result<(), CtlError> {
             config.data_collector.timeout
         ));
     }
+    if config.data_collector.actions_enabled() {
+        checks.push("data_collector.actions enabled".to_string());
+    }
+    if let Some(url) = non_empty(config.compliance_proxy.url.as_deref()) {
+        match parse_http_url(url) {
+            Some(url) => checks.push(format!("compliance_proxy.url {}", redacted_url(&url))),
+            // Never echo a URL that may contain userinfo/passwords.
+            None => problems.push(
+                "compliance_proxy.url must be an http:// or https:// URL with a host".to_string(),
+            ),
+        }
+    }
+    if config.compliance_proxy.timeout == 0 {
+        problems.push("compliance_proxy.timeout must be greater than 0".to_string());
+    } else if config.compliance_proxy.is_configured() {
+        checks.push(format!(
+            "compliance_proxy.timeout {}ms",
+            config.compliance_proxy.timeout
+        ));
+    }
+    if config.compliance_proxy.insecure_skip_tls_verify && config.compliance_proxy.is_configured() {
+        checks.push("compliance_proxy TLS verification disabled".to_string());
+    }
     if config.required_recipe.enabled {
         match non_empty(config.required_recipe.path.as_deref()) {
             Some(path) => match validate_required_recipe_path(Path::new(path)) {

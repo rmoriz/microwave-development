@@ -25,6 +25,11 @@ pub struct AppState {
     /// Shared connection pool for outbound compatibility forwards. Per-request
     /// deadlines are applied by each caller so the pool can be reused safely.
     pub(crate) http_client: reqwest::Client,
+    /// Client used for compliance-proxy forwards. Kept separate because it may
+    /// deliberately skip TLS verification for a private/test upstream.
+    pub(crate) compliance_client: reqwest::Client,
+    /// Opt-in data collector mutation notifications.
+    pub(crate) actions: Arc<crate::actions::ActionDispatcher>,
 }
 
 impl AppState {
@@ -37,7 +42,9 @@ impl AppState {
     ) -> Result<Self, SearchError> {
         let search = build_search_backend(&config.search, store.clone())?;
         let http_client = build_http_client(&config)?;
+        let compliance_client = build_compliance_client(&config)?;
         let keygen = build_keygen_cache(&config);
+        let actions = crate::actions::ActionDispatcher::new(&config, http_client.clone());
         Ok(Self {
             store,
             sqlite: None,
@@ -46,7 +53,9 @@ impl AppState {
             search,
             metrics: Arc::new(Metrics::new()),
             keygen,
+            actions,
             http_client,
+            compliance_client,
         })
     }
 
@@ -62,16 +71,19 @@ impl AppState {
     ) -> Result<Self, SearchError> {
         let search = build_search_backend(&config.search, store.clone())?;
         let http_client = build_http_client(&config)?;
+        let compliance_client = build_compliance_client(&config)?;
         let keygen = build_keygen_cache(&config);
         Ok(Self {
             store: store.clone(),
             sqlite: Some(store),
+            actions: crate::actions::ActionDispatcher::new(&config, http_client.clone()),
             config,
             object_store,
             search,
             metrics: Arc::new(Metrics::new()),
             keygen,
             http_client,
+            compliance_client,
         })
     }
 
@@ -125,6 +137,20 @@ fn build_http_client(config: &Config) -> Result<reqwest::Client, SearchError> {
         .map_err(|error| {
             SearchError::Configuration(format!("failed to build shared HTTP client: {error}"))
         })
+}
+
+fn build_compliance_client(config: &Config) -> Result<reqwest::Client, SearchError> {
+    let request_timeout = Duration::from_millis(config.compliance_proxy.timeout.max(1));
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(request_timeout.min(Duration::from_secs(10)))
+        .read_timeout(request_timeout)
+        .redirect(reqwest::redirect::Policy::none());
+    if config.compliance_proxy.insecure_skip_tls_verify {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
+    builder.build().map_err(|error| {
+        SearchError::Configuration(format!("failed to build compliance HTTP client: {error}"))
+    })
 }
 
 #[derive(Debug, Clone, Copy)]

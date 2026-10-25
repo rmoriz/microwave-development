@@ -1,8 +1,10 @@
 //! HTTP API for Microwave Server.
 
 pub mod acls;
+pub mod actions;
 pub mod bookshelf;
 pub mod clients;
+pub mod compliance_proxy;
 pub mod containers;
 pub mod cookbook_artifacts;
 pub mod cookbooks;
@@ -69,6 +71,9 @@ pub fn router(state: AppState) -> Router {
     // fallback produces upstream's 404 for every method.
     if state.config.data_collector.is_configured() {
         inner = inner.merge(data_collector::routes());
+    }
+    if state.config.compliance_proxy.is_configured() {
+        inner = inner.merge(compliance_proxy::routes());
     }
     if state.config.required_recipe.enabled {
         inner = inner.merge(required_recipe::routes());

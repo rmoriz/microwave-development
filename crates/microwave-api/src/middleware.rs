@@ -175,6 +175,23 @@ async fn authenticate_request(
         }
     }
 
+    if is_compliance_proxy_path(&path) {
+        let enabled = state.config.compliance_proxy.is_configured();
+        let method = request.method();
+        // The proxy is GET-only upstream. A disabled proxy is absent from the
+        // router, so bypass authentication and let the fallback return 404 for
+        // every method and auth state.
+        let is_read = method == axum::http::Method::GET || method == axum::http::Method::HEAD;
+        if !enabled || !is_read {
+            let response = next.run(request).await;
+            return with_version_header(
+                response,
+                &requested_version.to_string(),
+                &requested_version.to_string(),
+            );
+        }
+    }
+
     if is_principal_path(&path) {
         // The principal resource is unauthenticated upstream but still needs
         // the negotiated API version to choose the v0 vs v1+ response shape.
@@ -342,6 +359,18 @@ async fn authenticate_signed(
             )));
         }
     }
+    let action_meta = if state.actions.is_enabled() {
+        crate::actions::RequestMeta::capture(
+            &parts.method,
+            &path,
+            &parts.headers,
+            body_bytes.clone(),
+            &principal,
+            org.as_ref(),
+        )
+    } else {
+        None
+    };
     let mut request = axum::extract::Request::from_parts(parts, axum::body::Body::from(body_bytes));
     request
         .extensions_mut()
@@ -352,7 +381,11 @@ async fn authenticate_signed(
         key_name: Some(key_name),
     });
 
-    Ok(next.run(request).await)
+    let response = next.run(request).await;
+    if let Some(meta) = action_meta {
+        state.actions.notify(&state, meta, response.status()).await;
+    }
+    Ok(response)
 }
 
 /// Authenticate a webui-signed impersonation request. The request names the
@@ -476,6 +509,27 @@ fn is_data_collector_path(path: &str) -> bool {
         && parts.next().is_some_and(|part| !part.is_empty())
         && parts.next() == Some("data-collector")
         && parts.next().is_none()
+}
+
+/// `/organizations/:org/owners/:owner/compliance[/...]` and the legacy
+/// `/compliance/organizations/:org/owners/:owner/compliance[/...]` spelling.
+fn is_compliance_proxy_path(path: &str) -> bool {
+    let parts: Vec<&str> = path
+        .trim_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let parts = if parts.first() == Some(&"compliance") {
+        &parts[1..]
+    } else {
+        &parts[..]
+    };
+    parts.len() >= 5
+        && parts.first() == Some(&"organizations")
+        && parts.get(1).is_some_and(|part| !part.is_empty())
+        && parts.get(2) == Some(&"owners")
+        && parts.get(3).is_some_and(|part| !part.is_empty())
+        && parts.get(4) == Some(&"compliance")
 }
 
 /// `/organizations/:org/required_recipe` (exact, no trailing slash).

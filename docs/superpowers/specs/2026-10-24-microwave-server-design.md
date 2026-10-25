@@ -442,7 +442,8 @@ The primary binary is `microwave-ctl`; a `chef-server-ctl` compatibility alias i
 - **Data Collector (`/organizations/:org/data-collector`):**
   - Enabled when `data_collector.root_url` is configured.
   - Accepts compliance/converge payloads, validates `x-data-collector-token` (or client signature), and forwards asynchronously/synchronously via `reqwest` connection pool.
-  - Also supports optional action notifications (`oc_chef_action`) when objects are mutated on the server.
+  - Also emits optional `oc_chef_action` mutation notifications (`message_version 0.1.1`) for successful writes when `data_collector.actions_enabled` is true (the default while `root_url` is set). Dispatch uses a bounded in-process queue and a single background worker with the configured timeout; collector failures never fail or delay the API request.
+  - `compliance_proxy.url` independently enables the Automate profile proxy for both `/organizations/:org/owners/:owner/compliance[/profile]` and `/compliance/organizations/:org/owners/:owner/compliance[/profile]`. Requests are rewritten to `/compliance/profiles/:owner[/profile]`, authenticated with the server-side token, and relay the upstream status and body. Neither surface forwards client Chef authorization headers.
 - **License (`/license`) & Telemetry:**
   - `GET /license` returns `{"limit_exceeded": false, "node_license": <configured_max>, "node_count": <count>, "upgrade_url": "..."}`.
   - Telemetry defaults to **disabled** (no external phone-home), while keeping the `telemetry` table and config toggles so pedant's `license_spec.rb` and `server_license_spec.rb` pass.
