@@ -299,9 +299,14 @@ fn upstream_url(
 
     let mut profile_segments = Vec::new();
     if let Some(profile) = profile.filter(|profile| !profile.is_empty()) {
-        for segment in profile.split('/') {
-            validate_segment(segment, "profile")?;
-            profile_segments.push(segment);
+        // Upstream nginx accepts a single trailing slash. Normalize it away,
+        // but still reject empty internal segments (double slashes) below.
+        let profile = profile.strip_suffix('/').unwrap_or(profile);
+        if !profile.is_empty() {
+            for segment in profile.split('/') {
+                validate_segment(segment, "profile")?;
+                profile_segments.push(segment);
+            }
         }
     }
 
@@ -418,6 +423,36 @@ mod tests {
                 )
                 .is_err(),
                 "accepted profile {profile}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalizes_one_profile_trailing_slash_and_rejects_empty_segments() {
+        assert_eq!(
+            upstream_url(
+                "https://automate.example.com",
+                "foobar",
+                Some("testprofile/"),
+                None
+            )
+            .unwrap(),
+            "https://automate.example.com/compliance/profiles/foobar/testprofile"
+        );
+        assert_eq!(
+            upstream_url("https://automate.example.com", "foobar", Some("/"), None).unwrap(),
+            "https://automate.example.com/compliance/profiles/foobar"
+        );
+        for profile in ["testprofile//", "base//linux"] {
+            assert!(
+                upstream_url(
+                    "https://automate.example.com",
+                    "foobar",
+                    Some(profile),
+                    None
+                )
+                .is_err(),
+                "accepted profile with empty segment {profile}"
             );
         }
     }

@@ -6,6 +6,7 @@ use axum::response::Response;
 use axum::Router;
 use microwave_config::Config;
 use microwave_crypto::SignVersion;
+use microwave_store::ActorType;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -233,6 +234,22 @@ async fn legacy_compliance_prefix_and_profiles_are_forwarded() {
 }
 
 #[tokio::test]
+async fn profile_trailing_slash_is_normalized() {
+    let (url, captured) = start_mock(200, "{}", Duration::ZERO).await;
+    let app = app_with_proxy(proxy_config(&url, None, 10_000)).await;
+
+    let response = app
+        .oneshot(signed_get(
+            "/organizations/acme/owners/foobar/compliance/testprofile/",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let captured = wait_for(&captured, 1).await;
+    assert_eq!(captured[0].path, "/compliance/profiles/foobar/testprofile");
+}
+
+#[tokio::test]
 async fn upstream_status_and_body_are_preserved() {
     let (url, _) = start_mock(404, r#"{"error":"profile missing"}"#, Duration::ZERO).await;
     let app = app_with_proxy(proxy_config(&url, None, 10_000)).await;
@@ -268,6 +285,43 @@ async fn traversal_segments_are_rejected_without_forwarding() {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
     }
     assert!(captured.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn legacy_prefix_authenticates_an_org_client() {
+    let (url, captured) = start_mock(200, r#"{"response":"ok"}"#, Duration::ZERO).await;
+    let state = support::state_with_config(proxy_config(&url, None, 10_000));
+    let org = support::add_org(&state, "acme").await;
+    let client = state
+        .store
+        .create_client_with_acl(&org.id, "client1", false, false, None)
+        .await
+        .unwrap();
+    state
+        .store
+        .add_actor_key(
+            &client.id,
+            ActorType::Client,
+            "default",
+            support::PUBLIC_KEY,
+        )
+        .await
+        .unwrap();
+    let app = support::app(state);
+
+    let request = support::signed_request_with_key(
+        "GET",
+        "/compliance/organizations/acme/owners/foobar/compliance",
+        b"",
+        SignVersion::V1_3,
+        "client1",
+        support::PRIVATE_KEY,
+    );
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let captured = wait_for(&captured, 1).await;
+    assert_eq!(captured[0].path, "/compliance/profiles/foobar");
 }
 
 #[tokio::test]

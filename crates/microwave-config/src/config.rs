@@ -795,6 +795,11 @@ const FORBIDDEN_TOKEN_HEADERS: &[&str] = &[
     "accept",
     "accept-encoding",
     "user-agent",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-real-ip",
+    "forwarded",
+    "x-data-collector-auth",
 ];
 
 fn validate_token_header_name(header: &str) -> Result<(), String> {

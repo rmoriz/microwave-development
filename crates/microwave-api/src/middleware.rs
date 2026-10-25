@@ -359,7 +359,7 @@ async fn authenticate_signed(
             )));
         }
     }
-    let action_meta = if state.actions.is_enabled()
+    let mut action_meta = if state.actions.is_enabled()
         && crate::actions::is_candidate(parts.method.as_str(), &path)
     {
         crate::actions::RequestMeta::capture(
@@ -373,6 +373,13 @@ async fn authenticate_signed(
     } else {
         None
     };
+    if let Some(meta) = action_meta.as_mut() {
+        if let Some(username) =
+            crate::actions::resolve_invitation_username(state.store.as_ref(), &path).await
+        {
+            meta.set_resolved_username(username);
+        }
+    }
     let mut request = axum::extract::Request::from_parts(parts, axum::body::Body::from(body_bytes));
     request
         .extensions_mut()

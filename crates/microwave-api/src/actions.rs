@@ -31,10 +31,11 @@
 //! worker per application state performs the outbound request with the
 //! configured timeout. When the queue is full the notification is dropped and
 //! logged; the API response is never blocked or turned into an error by the
-//! collector. Request bodies above 256 KiB are reported without `data` so the
-//! bounded queue also has a bounded memory footprint. Dropping the application
-//! state closes the channel; the worker drains already-queued jobs before it
-//! exits, although abrupt process termination may truncate the drain.
+//! collector. Request bodies above 256 KiB are not retained at all, and the
+//! queue also has an 8 MiB retained-data budget; smaller JSON bodies are parsed
+//! and scrubbed before enqueue. Together these bound queue memory. Dropping the
+//! application state closes the channel; the worker drains already-queued jobs
+//! before it exits, although abrupt process termination may truncate the drain.
 
 use axum::body::Bytes;
 use axum::http::{HeaderMap, Method, StatusCode};
@@ -43,21 +44,27 @@ use serde_json::{json, Map, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore};
 
 const MESSAGE_VERSION: &str = "0.1.1";
 /// Bounded queue. A burst of mutations may overflow this; excess messages are
 /// dropped rather than growing memory or spawning tasks.
 const QUEUE_CAPACITY: usize = 256;
-/// Request payloads larger than this are reported without their `data`
-/// member. Together with the bounded queue this keeps worst-case memory use
-/// predictable without dropping the mutation event itself.
+/// Total retained `data` bytes allowed across queued jobs. Jobs that do not
+/// fit are dropped rather than allowing the queue to retain hundreds of
+/// megabytes of request documents.
+const QUEUE_BYTE_BUDGET: usize = 8 * 1024 * 1024;
+/// Request payloads larger than this are not retained at all. Together with
+/// the byte budget this keeps queue memory predictable.
 const MAX_ACTION_DATA_BYTES: usize = 256 * 1024;
 const REDACTED_PASSWORD: &str = "*******";
 
 struct ActionJob {
     meta: RequestMeta,
     status: StatusCode,
+    /// Holds the queue byte budget until the worker finishes (or drops) the
+    /// job.
+    _permit: OwnedSemaphorePermit,
 }
 
 /// Owns the optional background worker and its bounded queue.
@@ -71,6 +78,7 @@ pub(crate) struct ActionDispatcher {
     store: Arc<dyn MetadataStore>,
     client: reqwest::Client,
     sender: Mutex<Option<mpsc::Sender<ActionJob>>>,
+    budget: Arc<Semaphore>,
     dropped: AtomicU64,
 }
 
@@ -107,6 +115,7 @@ impl ActionDispatcher {
             store,
             client,
             sender: Mutex::new(None),
+            budget: Arc::new(Semaphore::new(QUEUE_BYTE_BUDGET)),
             dropped: AtomicU64::new(0),
         })
     }
@@ -115,10 +124,10 @@ impl ActionDispatcher {
         self.root_url.is_some()
     }
 
-    /// Queue a notification. Returns without parsing the body, reading secrets,
-    /// or waiting for the collector. Payload construction happens in the
-    /// worker, so only request metadata capture and a non-blocking enqueue run
-    /// on the request path.
+    /// Queue a notification. Returns without parsing large bodies, reading
+    /// secrets, or waiting for the collector. Payload construction happens in
+    /// the worker, so only already-bounded request metadata capture and a
+    /// non-blocking enqueue run on the request path.
     pub(crate) async fn notify(&self, meta: RequestMeta, status: StatusCode) {
         if !self.is_enabled()
             || !status.is_success()
@@ -126,6 +135,32 @@ impl ActionDispatcher {
         {
             return;
         }
+
+        let retained = meta.retained_bytes();
+        let bytes = u32::try_from(retained).unwrap_or(u32::MAX);
+        if bytes as usize > QUEUE_BYTE_BUDGET {
+            let dropped = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+            tracing::warn!(
+                dropped,
+                bytes = retained,
+                budget = QUEUE_BYTE_BUDGET,
+                "data collector action exceeds the queue byte budget; dropping notification"
+            );
+            return;
+        }
+        let permit = match self.budget.clone().try_acquire_many_owned(bytes) {
+            Ok(permit) => permit,
+            Err(_) => {
+                let dropped = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+                tracing::warn!(
+                    dropped,
+                    bytes = retained,
+                    budget = QUEUE_BYTE_BUDGET,
+                    "data collector action queue byte budget is full; dropping notification"
+                );
+                return;
+            }
+        };
 
         let mut guard = self.sender.lock().await;
         if guard.is_none() {
@@ -145,7 +180,11 @@ impl ActionDispatcher {
             *guard = Some(sender);
         }
         let sender = guard.as_ref().expect("sender initialized above");
-        match sender.try_send(ActionJob { meta, status }) {
+        match sender.try_send(ActionJob {
+            meta,
+            status,
+            _permit: permit,
+        }) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
                 let dropped = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
@@ -176,7 +215,7 @@ async fn run_worker(
     service_hostname: Option<String>,
 ) {
     let mut token = configured_token;
-    let mut token_resolved = token.is_some();
+    let mut token_warning_emitted = false;
 
     while let Some(job) = receiver.recv().await {
         let Some(payload) = build_payload(&job.meta, job.status, service_hostname.as_deref())
@@ -184,9 +223,14 @@ async fn run_worker(
             continue;
         };
 
-        if !token_resolved {
+        if token.is_none() {
             token = resolve_token(store.as_ref()).await;
-            token_resolved = true;
+            if token.is_none() && !token_warning_emitted {
+                token_warning_emitted = true;
+                tracing::warn!(
+                    "data collector token is not configured; action notifications will be sent without a token and retried on the next job"
+                );
+            }
         }
 
         let mut request = client
@@ -230,15 +274,44 @@ async fn resolve_token(store: &dyn MetadataStore) -> Option<String> {
         .filter(|token| !token.is_empty())
 }
 
-/// Request information captured before the handler consumes the body.
+/// Keep only the headers used in the action payload. In particular, do not
+/// retain client authorization headers in the queue.
+fn audit_headers(headers: &HeaderMap) -> HeaderMap {
+    const AUDIT_HEADERS: &[&str] = &[
+        "host",
+        "x-forwarded-host",
+        "x-forwarded-for",
+        "user-agent",
+        "x-ops-timestamp",
+        "x-request-id",
+        "x-remote-request-id",
+    ];
+    let mut retained = HeaderMap::new();
+    for name in AUDIT_HEADERS {
+        if let Some(value) = headers.get(*name) {
+            retained.insert(*name, value.clone());
+        }
+    }
+    retained
+}
+
+/// Request information captured before the handler consumes the body. The raw
+/// body is never retained: JSON at or below `MAX_ACTION_DATA_BYTES` is parsed
+/// and scrubbed immediately. Larger bodies are parsed only to extract a small
+/// entity-name hint and their `data` member is discarded.
 pub(crate) struct RequestMeta {
     method: Method,
     path: String,
     headers: HeaderMap,
-    body: Bytes,
+    data: Option<Value>,
+    entity_data: Option<Value>,
+    data_bytes: usize,
     requestor_name: String,
     requestor_type: &'static str,
     organization_name: Option<String>,
+    /// Username resolved before a delete for endpoints whose path contains an
+    /// opaque id rather than a name.
+    resolved_username: Option<String>,
 }
 
 impl RequestMeta {
@@ -255,19 +328,103 @@ impl RequestMeta {
         if !matches!(method, &Method::POST | &Method::PUT | &Method::DELETE) {
             return None;
         }
+        let (data, entity_data, data_bytes) = prepare_action_data(&body);
         Some(Self {
             method: method.clone(),
             path: path.to_string(),
-            headers: headers.clone(),
-            body,
+            headers: audit_headers(headers),
+            data,
+            entity_data,
+            data_bytes,
             requestor_name: principal.name.clone(),
             requestor_type: match principal.actor_type {
                 ActorType::Client => "client",
                 ActorType::User => "user",
             },
             organization_name: org.map(|org| org.name.clone()),
+            resolved_username: None,
         })
     }
+
+    /// Approximate memory retained by this job after capture. The raw request
+    /// body is intentionally absent; only bounded scrubbed data, a small
+    /// entity hint, and metadata remain.
+    fn retained_bytes(&self) -> usize {
+        let entity_bytes = self
+            .entity_data
+            .as_ref()
+            .and_then(|value| serde_json::to_vec(value).ok())
+            .map_or(0, |encoded| encoded.len());
+        self.data_bytes
+            .saturating_add(entity_bytes)
+            .saturating_add(self.path.len())
+            .saturating_add(self.requestor_name.len())
+            .saturating_add(self.organization_name.as_deref().map_or(0, str::len))
+            .saturating_add(256)
+    }
+
+    pub(crate) fn set_resolved_username(&mut self, username: String) {
+        self.resolved_username = Some(username);
+    }
+}
+
+/// Parse and scrub request data before it can be retained by the queue. Bodies
+/// over the cap keep only an entity-name hint and omit their `data` member.
+fn prepare_action_data(body: &[u8]) -> (Option<Value>, Option<Value>, usize) {
+    if body.is_empty() {
+        return (None, None, 0);
+    }
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return (None, None, 0);
+    };
+    if body.len() > MAX_ACTION_DATA_BYTES {
+        return (None, entity_hint(&value), 0);
+    }
+    let value = scrub_data(value);
+    let bytes = serde_json::to_vec(&value)
+        .map(|encoded| encoded.len())
+        .unwrap_or(0);
+    (Some(value), None, bytes)
+}
+
+/// Minimal top-level fields used to derive the entity name without retaining
+/// an oversized request document. Values are scalar strings and are bounded;
+/// object-valued `user` bodies keep only `username`.
+fn entity_hint(value: &Value) -> Option<Value> {
+    const MAX_HINT_VALUE_BYTES: usize = 256;
+    let object = value.as_object()?;
+    let mut hint = Map::new();
+    for key in ["name", "id", "username", "groupname", "policy_name"] {
+        if let Some(value) = object.get(key).and_then(Value::as_str) {
+            hint.insert(
+                key.into(),
+                json!(truncate_hint(value, MAX_HINT_VALUE_BYTES)),
+            );
+        }
+    }
+    if let Some(user) = object.get("user") {
+        if let Some(username) = user
+            .as_str()
+            .or_else(|| user.get("username").and_then(Value::as_str))
+        {
+            hint.insert(
+                "user".into(),
+                json!(truncate_hint(username, MAX_HINT_VALUE_BYTES)),
+            );
+        }
+    }
+    (!hint.is_empty()).then_some(Value::Object(hint))
+}
+
+fn truncate_hint(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
 }
 
 /// Cheap path/method prefilter used before capturing a request body. It must
@@ -280,9 +437,6 @@ pub(crate) fn is_candidate(method: &str, path: &str) -> bool {
     // These are intentionally omitted by the payload builder; skip the body
     // capture as well.
     if parts.get(2) == Some(&"policies") && parts.get(4) == Some(&"revisions") {
-        return false;
-    }
-    if method == "DELETE" && parts.get(2) == Some(&"association_requests") {
         return false;
     }
     if parts.contains(&"_acl") {
@@ -310,6 +464,28 @@ pub(crate) fn is_candidate(method: &str, path: &str) -> bool {
         Some("users") => true,
         _ => false,
     }
+}
+
+/// Resolve the invited username for a DELETE association request before the
+/// handler removes it. Returns `None` for other paths or when the invitation
+/// no longer exists.
+pub(crate) async fn resolve_invitation_username(
+    store: &dyn MetadataStore,
+    path: &str,
+) -> Option<String> {
+    let parts = path_parts(path);
+    if parts.first() != Some(&"organizations")
+        || parts.get(2) != Some(&"association_requests")
+        || parts.len() != 4
+    {
+        return None;
+    }
+    store
+        .find_invitation(parts[3])
+        .await
+        .ok()
+        .flatten()
+        .map(|invitation| invitation.username)
 }
 
 struct Entity {
@@ -349,9 +525,10 @@ fn build_payload(
     status: StatusCode,
     configured_hostname: Option<&str>,
 ) -> Option<Value> {
-    let data = request_data(&meta.body);
-    let entity = entity_for(meta, data.as_ref())?;
-    let task = task_for(meta, status, data.as_ref());
+    let data = meta.data.as_ref();
+    let entity_data = meta.entity_data.as_ref().or(data);
+    let entity = entity_for(meta, entity_data)?;
+    let task = task_for(meta, status, entity_data);
 
     let mut payload = Map::new();
     payload.insert("message_type".into(), json!("action"));
@@ -409,18 +586,11 @@ fn build_payload(
     if let Some(remote_request_id) = header(&meta.headers, "x-remote-request-id") {
         payload.insert("remote_request_id".into(), json!(remote_request_id));
     }
-    if let Some(data) = data.filter(|_| meta.body.len() <= MAX_ACTION_DATA_BYTES) {
-        payload.insert("data".into(), scrub_data(data));
+    if let Some(data) = data {
+        payload.insert("data".into(), data.clone());
     }
 
     Some(Value::Object(payload))
-}
-
-fn request_data(body: &[u8]) -> Option<Value> {
-    if body.is_empty() {
-        return None;
-    }
-    serde_json::from_slice(body).ok()
 }
 
 fn scrub_data(data: Value) -> Value {
@@ -578,7 +748,15 @@ fn organization_entity(meta: &RequestMeta, data: Option<&Value>, parts: &[&str])
                 named(data, name, &["name"]).map(|name| Entity::simple("client", name))
             }
         }
-        "users" => username_from_data(data).map(|name| Entity::simple("user", name)),
+        "users" => {
+            // Item endpoints use the path name; a request body must not spoof
+            // the user being associated/dissociated. Collection POSTs have no
+            // path name and fall back to the body.
+            let username = name
+                .map(ToString::to_string)
+                .or_else(|| username_from_data(data))?;
+            Some(Entity::simple("user", username))
+        }
         "groups" => {
             named(data, name, &["groupname", "name"]).map(|name| Entity::simple("group", name))
         }
@@ -623,11 +801,14 @@ fn organization_entity(meta: &RequestMeta, data: Option<&Value>, parts: &[&str])
             }
         }
         "association_requests" => {
-            // A DELETE addresses the invitation UUID, not the invited user.
-            // Without a body we cannot resolve the username, so omit the
-            // notification rather than reporting the UUID as an entity name.
+            // A DELETE addresses an invitation UUID, not a username. The auth
+            // middleware resolves the invited user before the handler deletes
+            // the invitation; if it could not be resolved, omit the action.
             if meta.method == Method::DELETE && parts.len() >= 4 {
-                return None;
+                return meta
+                    .resolved_username
+                    .clone()
+                    .map(|username| Entity::simple("user", username));
             }
             let username = if let Some(path_name) = name {
                 path_name.to_string()
@@ -738,6 +919,7 @@ fn parent_type(resource: &str) -> &'static str {
         "roles" => "role",
         "environments" => "environment",
         "clients" => "client",
+        "users" => "user",
         "groups" => "group",
         "data" => "bag",
         "cookbooks" => "cookbook",
@@ -764,16 +946,25 @@ mod tests {
         }
     }
 
-    fn meta(method: Method, path: &str, body: &'static [u8]) -> RequestMeta {
+    fn meta_with_body(method: Method, path: &str, body: &[u8]) -> RequestMeta {
+        let body = Bytes::copy_from_slice(body);
+        let (data, entity_data, data_bytes) = prepare_action_data(&body);
         RequestMeta {
             method,
             path: path.into(),
             headers: HeaderMap::new(),
-            body: Bytes::from_static(body),
+            data,
+            entity_data,
+            data_bytes,
             requestor_name: principal().name,
             requestor_type: "user",
             organization_name: Some("acme".into()),
+            resolved_username: None,
         }
+    }
+
+    fn meta(method: Method, path: &str, body: &'static [u8]) -> RequestMeta {
+        meta_with_body(method, path, body)
     }
 
     #[test]
@@ -901,16 +1092,50 @@ mod tests {
     }
 
     #[test]
-    fn large_request_bodies_are_reported_without_data() {
-        let mut body = br#"{"name":"web1","blob":""#.to_vec();
+    fn oversized_entity_hints_do_not_retain_credentials_or_large_values() {
+        let mut body = br#"{"user":{"username":"alice","password":"hunter2"},"name":""#.to_vec();
+        body.extend(std::iter::repeat_n(b'n', 1024));
+        body.extend_from_slice(br#"","blob":""#);
         body.extend(std::iter::repeat_n(b'x', MAX_ACTION_DATA_BYTES));
         body.extend_from_slice(br#""}"#);
-        let mut meta = meta(
+        let meta = meta_with_body(Method::POST, "/organizations/acme/users", &body);
+        assert!(meta.data.is_none());
+        let hint = meta.entity_data.as_ref().unwrap();
+        assert_eq!(hint["user"], "alice");
+        assert!(hint.get("password").is_none());
+        assert!(hint["name"].as_str().unwrap().len() <= 256);
+        assert!(meta.retained_bytes() < 4096);
+    }
+
+    #[test]
+    fn queue_budget_is_below_the_naive_capacity_product() {
+        const {
+            assert!(
+                QUEUE_BYTE_BUDGET < QUEUE_CAPACITY * MAX_ACTION_DATA_BYTES,
+                "queue budget must be smaller than capacity times the per-body cap"
+            );
+        }
+        let meta = meta_with_body(
             Method::POST,
             "/organizations/acme/nodes",
             br#"{"name":"web1"}"#,
         );
-        meta.body = Bytes::from(body);
+        assert!(meta.retained_bytes() <= MAX_ACTION_DATA_BYTES + 2048);
+        assert!(meta.retained_bytes() >= 1);
+    }
+
+    #[test]
+    fn large_request_bodies_are_not_retained() {
+        let mut body = br#"{"name":"web1","normal":{"blob":""#.to_vec();
+        body.extend(std::iter::repeat_n(b'x', MAX_ACTION_DATA_BYTES));
+        body.extend_from_slice(br#""}}"#);
+        let meta = meta_with_body(Method::POST, "/organizations/acme/nodes", &body);
+        assert!(meta.data.is_none(), "oversized body was retained");
+        assert!(
+            meta.retained_bytes() < 2048,
+            "job retained too much metadata: {}",
+            meta.retained_bytes()
+        );
         let payload = build_payload(&meta, StatusCode::CREATED, None).unwrap();
         assert_eq!(payload["entity_type"], "node");
         assert_eq!(payload["entity_name"], "web1");
@@ -933,13 +1158,44 @@ mod tests {
     }
 
     #[test]
-    fn invitation_deletes_are_omitted_instead_of_reporting_the_uuid() {
-        let meta = meta(
+    fn invitation_deletes_use_the_resolved_username_or_are_omitted() {
+        let mut meta = meta(
             Method::DELETE,
             "/organizations/acme/association_requests/11111111-1111-1111-1111-111111111111",
             b"",
         );
         assert!(build_payload(&meta, StatusCode::OK, None).is_none());
+        meta.set_resolved_username("alice".into());
+        let payload = build_payload(&meta, StatusCode::OK, None).unwrap();
+        assert_eq!(payload["task"], "reject");
+        assert_eq!(payload["entity_type"], "user");
+        assert_eq!(payload["entity_name"], "alice");
+    }
+
+    #[test]
+    fn item_scoped_org_user_actions_prefer_the_path_name() {
+        let meta = meta(
+            Method::DELETE,
+            "/organizations/acme/users/alice",
+            br#"{"user":"mallory"}"#,
+        );
+        let payload = build_payload(&meta, StatusCode::OK, None).unwrap();
+        assert_eq!(payload["task"], "dissociate");
+        assert_eq!(payload["entity_type"], "user");
+        assert_eq!(payload["entity_name"], "alice");
+    }
+
+    #[test]
+    fn org_user_acl_parent_type_is_user() {
+        let meta = meta(
+            Method::PUT,
+            "/organizations/acme/users/alice/_acl/grant",
+            b"{}",
+        );
+        let payload = build_payload(&meta, StatusCode::OK, None).unwrap();
+        assert_eq!(payload["entity_type"], "permission");
+        assert_eq!(payload["parent_type"], "user");
+        assert_eq!(payload["parent_name"], "alice");
     }
 
     #[test]
@@ -999,11 +1255,35 @@ mod tests {
     }
 
     #[test]
-    fn nested_secrets_are_redacted() {
+    fn audit_headers_drop_client_credentials() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-ops-authorization-1", HeaderValue::from_static("secret"));
+        headers.insert("x-ops-sign", HeaderValue::from_static("version=1.3"));
+        headers.insert("user-agent", HeaderValue::from_static("knife/18.0"));
+        headers.insert("x-forwarded-for", HeaderValue::from_static("10.0.0.5"));
+        let retained = audit_headers(&headers);
+        assert!(!retained.contains_key("x-ops-authorization-1"));
+        assert!(!retained.contains_key("x-ops-sign"));
+        assert_eq!(retained.get("user-agent").unwrap(), "knife/18.0");
+        assert_eq!(retained.get("x-forwarded-for").unwrap(), "10.0.0.5");
+    }
+
+    #[test]
+    fn nested_secrets_are_redacted_before_retention() {
         let meta = meta(
             Method::POST,
             "/organizations/acme/nodes",
             br#"{"name":"web1","nested":{"password":"p","token":"t","safe":"ok"},"list":[{"secret":"s"}]}"#,
+        );
+        // The prepared data, which is what the queue retains, is already
+        // scrubbed.
+        assert_eq!(
+            meta.data.as_ref().unwrap()["nested"]["password"],
+            REDACTED_PASSWORD
+        );
+        assert_eq!(
+            meta.data.as_ref().unwrap()["nested"]["token"],
+            REDACTED_PASSWORD
         );
         let payload = build_payload(&meta, StatusCode::CREATED, None).unwrap();
         assert_eq!(payload["data"]["nested"]["password"], REDACTED_PASSWORD);
@@ -1045,7 +1325,7 @@ mod tests {
             "POST",
             "/organizations/acme/policies/base/revisions"
         ));
-        assert!(!is_candidate(
+        assert!(is_candidate(
             "DELETE",
             "/organizations/acme/association_requests/123"
         ));

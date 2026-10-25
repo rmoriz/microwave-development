@@ -1005,9 +1005,10 @@ worker drains a bounded 256-entry queue with the configured timeout. A full
 queue, timeout, refused connection, or non-2xx collector response is logged and
 dropped without changing the API response. Failed (4xx/5xx) mutations never
 emit notifications, and no collector connection is made while `root_url` is
-unset. Request bodies larger than 256 KiB are reported without their `data`
-member so the bounded queue also has a bounded memory footprint; delete
-notifications omit `data` because the request has no body.
+unset. Request bodies larger than 256 KiB are not retained at all; smaller
+bodies are parsed and scrubbed before they enter the queue, and queued jobs
+share an 8 MiB retained-data budget. Delete notifications omit `data` because
+the request has no body.
 
 The compliance proxy is independent of client payload forwarding. Setting
 `compliance_proxy.url` enables the Automate profile routes, rewrites
@@ -1018,7 +1019,9 @@ relays the upstream status, body, and content type. It never forwards
 client-supplied Chef authorization headers. Owner and profile segments are
 rejected if they contain `.`/`..`, slashes, or control characters; the final
 URL is parsed and must stay under the configured base path's
-`/compliance/profiles/` prefix before any request is sent. Responses are capped
+`/compliance/profiles/` prefix before any request is sent. One trailing slash
+after a profile is normalized away (a lone `/` becomes the owner-level path);
+empty internal segments (double slashes) are rejected. Responses are capped
 at 1 MiB and use the configured timeout; upstream failures map to `502` and
 timeouts to `504`. `insecure_skip_tls_verify` exists for test or private-CA
 setups and should stay `false` in production. The legacy

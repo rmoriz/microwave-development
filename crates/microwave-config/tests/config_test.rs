@@ -682,6 +682,11 @@ fn rejects_invalid_compliance_proxy_urls_and_headers() {
         "Content-Length",
         "Connection",
         "Transfer-Encoding",
+        "X-Forwarded-For",
+        "X-Forwarded-Host",
+        "X-Real-IP",
+        "Forwarded",
+        "X-Data-Collector-Auth",
         "not a header",
     ] {
         let input = format!(

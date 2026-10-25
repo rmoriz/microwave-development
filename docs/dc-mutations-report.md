@@ -163,3 +163,96 @@ Results:
   token. Configured `data_collector.token` is read at startup.
 - No live PostgreSQL run was performed in this fix round; the change adds no
   schema or backend-specific code.
+
+## Review fix round 2
+
+Commit: `fix round 2` on `dc-mutations` (based on `4fc46f4`).
+
+### 1. HIGH — queue retained full raw bodies and credentials — ADDRESSED
+
+- `RequestMeta` no longer stores the raw request body. At capture time:
+  - bodies over 256 KiB are parsed only to extract a small entity-name hint and
+    their `data` member is discarded;
+  - bodies at or below 256 KiB are parsed and recursively scrubbed before
+    retention;
+  - only the audit headers used by the payload are copied, so client
+    authorization/signature headers are not retained.
+- Added an 8 MiB queue retained-data budget enforced with a semaphore permit
+  held by each queued job. Jobs that would exceed the budget are dropped and
+  logged before enqueue.
+- Added a stalled-collector integration test with a 300 KiB request body. The
+  API returns promptly, the forwarded action payload is under 16 KiB, and the
+  payload has no `data` member. Unit tests also assert oversized bodies are not
+  retained and nested secrets are scrubbed before retention.
+
+### 2. MEDIUM — dissociate had no action and body could spoof the entity — ADDRESSED
+
+- Item-scoped organization user operations now prefer the path username. Body
+  extraction is used only for collection POSTs.
+- Integration test sends `DELETE /organizations/acme/users/alice` with
+  `{"user":"mallory"}` and verifies the action reports `alice` with task
+  `dissociate`.
+
+### 3. LOW — reject/delete invitation username — ADDRESSED
+
+- Before a DELETE association-request handler runs, the auth middleware resolves
+  the invitation's username and attaches it to the action metadata.
+- The worker reports `task: reject` with that username. If the invitation
+  cannot be resolved, the notification is still omitted.
+- Integration test creates an invitation, deletes it, and verifies the action
+  reports the invited user rather than the UUID.
+
+### 4. LOW — token header denylist — ADDRESSED
+
+- Extended the forbidden header list with `x-forwarded-for`,
+  `x-forwarded-host`, `x-real-ip`, `forwarded`, and `x-data-collector-auth`,
+  in addition to the existing framing/routing/hop-by-hop headers.
+- Config tests cover all new entries.
+
+### 5. LOW — org-user ACL parent type — ADDRESSED
+
+- Added `"users" => "user"` to the ACL parent-type mapping.
+- Unit test verifies an org-user ACL action reports `parent_type: user`.
+
+### 6. LOW — transient token `None` was cached forever — ADDRESSED
+
+- The worker now retries the secret lookup whenever it has no token, logging a
+  one-time warning. A token discovered later is used for subsequent jobs.
+- Integration test sends one action with no secret, adds the secret, sends a
+  second action, and verifies the second request carries the token.
+
+### 7. LOW — profile trailing/double slash — ADDRESSED
+
+- One trailing slash after a profile is normalized away, matching upstream
+  nginx. Empty internal segments (double slashes) remain rejected.
+- Unit and HTTP integration tests cover both cases.
+
+### 8. Tests — ADDRESSED
+
+- Queue body bounds and no-full-body retention: unit + stalled-collector test.
+- Dissociate path-name preference with a spoofed body: integration test.
+- Legacy client authentication: integration test signs a request as an
+  organization client against the legacy compliance prefix.
+- Org-user ACL parent type: unit test.
+- Invitation reject resolution and transient-token retry: integration tests.
+
+### Round 2 verification
+
+- `cargo fmt --all` / `--check`: pass.
+- `cargo test -p microwave-api -p microwave-config`: repeated cold full-suite
+  runs passed; the final run after all changes reported 81 lib tests, 13 action
+  tests, 11 compliance tests, 13 data-collector tests, 24 config tests, plus all
+  existing suites.
+- `cargo clippy -p microwave-api -p microwave-config --all-targets -- -D
+  warnings`: clean.
+- `scripts/run-pedant.sh compliance_proxy`: **4 examples, 0 failures**.
+- Targeted action/compliance/data-collector suites passed repeatedly.
+
+### Round 2 remaining notes
+
+- Oversized bodies still produce a notification when their entity name can be
+  extracted from a small hint; otherwise the notification is skipped.
+- A token that was successfully resolved is cached for the process lifetime;
+  a rotated secret requires a restart. A missing token is retried.
+- Queue drain remains best-effort at process termination.
+- No live PostgreSQL run; no schema/backend code changed.

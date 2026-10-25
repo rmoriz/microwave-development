@@ -243,6 +243,107 @@ async fn membership_association_accepts_the_user_body_field() {
 }
 
 #[tokio::test]
+async fn large_body_with_stalled_collector_is_bounded_and_omits_data() {
+    let (root_url, captured) = start_mock(200, "{}", Duration::from_secs(3)).await;
+    let app = app_with_actions(action_config(&root_url, None, 10_000)).await;
+
+    let mut body = br#"{"name":"web1","normal":{"blob":""#.to_vec();
+    body.extend(std::iter::repeat_n(b'x', 300 * 1024));
+    body.extend_from_slice(br#""}}"#);
+
+    let started = Instant::now();
+    let response = app
+        .oneshot(signed("POST", "/organizations/acme/nodes", &body))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "request path waited on a large notification"
+    );
+
+    let captured = wait_for(&captured, 1).await;
+    assert!(
+        captured[0].body.len() < 16 * 1024,
+        "action retained/forwarded the full body: {} bytes",
+        captured[0].body.len()
+    );
+    let payload: Value = serde_json::from_slice(&captured[0].body).unwrap();
+    assert_eq!(payload["entity_type"], "node");
+    assert_eq!(payload["entity_name"], "web1");
+    assert!(payload.get("data").is_none());
+}
+
+#[tokio::test]
+async fn dissociate_uses_the_path_user_and_ignores_a_spoofed_body() {
+    let (root_url, captured) = start_mock(200, "{}", Duration::ZERO).await;
+    let state = support::state_with_config(action_config(&root_url, None, 10_000));
+    let org = support::add_org(&state, "acme").await;
+    let user = support::add_user(&state, "alice", "alice@example.com", false);
+    support::associate(&state, &org, &user);
+    let app = support::app(state);
+
+    let response = app
+        .oneshot(signed(
+            "DELETE",
+            "/organizations/acme/users/alice",
+            br#"{"user":"mallory"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let captured = wait_for(&captured, 1).await;
+    let payload: Value = serde_json::from_slice(&captured[0].body).unwrap();
+    assert_eq!(payload["task"], "dissociate");
+    assert_eq!(payload["entity_type"], "user");
+    assert_eq!(payload["entity_name"], "alice");
+}
+
+#[tokio::test]
+async fn invitation_delete_reports_the_resolved_user() {
+    let (root_url, captured) = start_mock(200, "{}", Duration::ZERO).await;
+    let state = support::state_with_config(action_config(&root_url, None, 10_000));
+    support::add_org(&state, "acme").await;
+    support::add_user(&state, "alice", "alice@example.com", false);
+    let app = support::app(state);
+
+    let response = app
+        .clone()
+        .oneshot(signed(
+            "POST",
+            "/organizations/acme/association_requests",
+            br#"{"username":"alice"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let invitation = support::response_json(response).await;
+    let id = invitation["id"].as_str().unwrap().to_string();
+
+    // Let the invitation-create action arrive, then clear it so the delete is
+    // the only notification under test.
+    wait_for(&captured, 1).await;
+    captured.lock().await.clear();
+
+    let response = app
+        .oneshot(signed(
+            "DELETE",
+            &format!("/organizations/acme/association_requests/{id}"),
+            b"",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let captured = wait_for(&captured, 1).await;
+    let payload: Value = serde_json::from_slice(&captured[0].body).unwrap();
+    assert_eq!(payload["task"], "reject");
+    assert_eq!(payload["entity_type"], "user");
+    assert_eq!(payload["entity_name"], "alice");
+}
+
+#[tokio::test]
 async fn create_update_delete_are_reported_with_the_expected_tasks() {
     let (root_url, captured) = start_mock(200, "{}", Duration::ZERO).await;
     let app = app_with_actions(action_config(&root_url, None, 10_000)).await;
@@ -379,6 +480,56 @@ async fn action_token_can_come_from_the_data_collector_secret() {
             .to_str()
             .unwrap(),
         "secret-action-token"
+    );
+}
+
+#[tokio::test]
+async fn token_lookup_retries_after_a_transient_missing_secret() {
+    let (root_url, captured) = start_mock(200, "{}", Duration::ZERO).await;
+    let state = support::state_with_config(action_config(&root_url, None, 10_000));
+    support::add_org(&state, "acme").await;
+    let app = support::app(state.clone());
+
+    let response = app
+        .clone()
+        .oneshot(signed(
+            "POST",
+            "/organizations/acme/environments",
+            br#"{"name":"production"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let captured_first = wait_for(&captured, 1).await;
+    assert!(!captured_first[0]
+        .headers
+        .contains_key("x-data-collector-token"));
+
+    state
+        .store
+        .set_secret("data_collector", "token", "late-token")
+        .await
+        .unwrap();
+
+    let response = app
+        .oneshot(signed(
+            "POST",
+            "/organizations/acme/environments",
+            br#"{"name":"staging"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let captured = wait_for(&captured, 2).await;
+    assert_eq!(
+        captured[1]
+            .headers
+            .get("x-data-collector-token")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "late-token"
     );
 }
 
