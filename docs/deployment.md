@@ -206,19 +206,24 @@ Operational notes:
   new connections; existing connections keep using the pair they negotiated.
   If reading or validating the replacement fails, the server logs a clear
   error and continues serving with the previous certificate. Key material is
-  never logged.
-- Write the replacement pair atomically (temp files plus `rename`) so a reload
-  cannot observe a half-written certificate or a new certificate with the old
-  key. Reload again after fixing a failed rotation; the old pair stays active
-  until a valid replacement is found.
+  never logged. On Unix the handler is installed before database bootstrap and
+  the listener bind, so an early `SIGHUP` cannot terminate the process. The
+  same handler is installed for plain-HTTP listeners and logs that TLS is
+  disabled.
+- Replace each file atomically (temporary file plus `rename`) so a reload never
+  reads a partially written file. The two renames are not one atomic operation:
+  a reload that races them may observe a new certificate with the old key, fail
+  validation, and keep the previous pair. Send another `SIGHUP` or wait for the
+  next polling interval; the completed rotation is then picked up.
 - To poll instead of signalling, set `server.tls.reload_interval_seconds`
-  (for example `60`). The timer only reloads when the certificate or key file
-  metadata changed, and uses the same validation and failure behavior. `0`
-  disables polling. SIGHUP remains available on Unix and is the fastest way to
-  complete a rotation.
-- On a plain-HTTP listener no SIGHUP handler is installed; the default Unix
-  action for `SIGHUP` (terminate) still applies. Use the TLS listener or a
-  reverse proxy if you want in-place rotation.
+  (for example `60`). The timer reloads once at startup and then only when the
+  certificate or key file metadata changed, using the same validation and
+  failure behavior. `0` disables polling. SIGHUP remains available on Unix and
+  is the fastest way to complete a rotation.
+- SIGHUP is handled for every listener. On a plain-HTTP listener it logs
+  `TLS is disabled; nothing to reload` and continues, so `systemctl reload` and
+  `docker kill --signal=HUP` remain safe when TLS is not enabled. The signal
+  still does not re-read the rest of the configuration.
 - The certificate must be valid for the hostname clients use. `chef-client`
   verifies the server URL hostname and the issuing CA; a self-signed
   certificate is suitable only for tests or when the CA is installed on every

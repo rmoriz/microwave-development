@@ -67,6 +67,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None
             };
             let scheme = if tls.is_some() { "https" } else { "http" };
+            let reload_interval_seconds = config.server.tls.reload_interval_seconds;
+
+            // Build the rustls handle and install the SIGHUP handler before any
+            // database work, bootstrap, or listener bind. An early `kill -HUP`
+            // must never hit the default terminate action. The handler is
+            // installed for plain HTTP too and reports that there is nothing to
+            // reload, so a configured `ExecReload` stays safe.
+            let tls_config = tls
+                .as_ref()
+                .map(|tls| axum_server::tls_rustls::RustlsConfig::from_config(tls.config.clone()));
+            let tls_reloader = Arc::new(TlsReloader::new(
+                tls_config.clone(),
+                tls.as_ref()
+                    .map(|tls| (tls.cert_path.clone(), tls.key_path.clone())),
+            ));
+            spawn_sighup_handler(tls_reloader.clone());
+            if reload_interval_seconds > 0 {
+                spawn_periodic_reloader(tls_reloader.clone(), reload_interval_seconds);
+            }
+
             let database_url = config.resolved_database_url();
             let compression = store_compression(config.storage.compression);
             let (store, sqlite): (Arc<dyn MetadataStore>, Option<Arc<SqliteStore>>) =
@@ -131,7 +151,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let bind = config.server.bind.clone();
-            let reload_interval_seconds = config.server.tls.reload_interval_seconds;
             let state = match sqlite {
                 Some(sqlite) => AppState::from_sqlite(sqlite, Arc::new(config), object_store)?,
                 None => AppState::new(store, Arc::new(config), object_store)?,
@@ -139,16 +158,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let listener = tokio::net::TcpListener::bind(&bind).await?;
             let local_addr = listener.local_addr()?;
             tracing::info!(%bind, %local_addr, scheme, "microwave-server listening");
-            match tls {
-                Some(tls) => {
-                    let rustls_config =
-                        axum_server::tls_rustls::RustlsConfig::from_config(tls.config);
-                    spawn_tls_reload_watchers(
-                        rustls_config.clone(),
-                        tls.cert_path.clone(),
-                        tls.key_path.clone(),
-                        reload_interval_seconds,
-                    );
+            match tls_config {
+                Some(rustls_config) => {
                     let listener = listener.into_std()?;
                     axum_server::from_tcp_rustls(listener, rustls_config)?
                         .serve(router(state).into_make_service())
@@ -277,72 +288,107 @@ fn build_object_store(
     }
 }
 
-/// Start background TLS certificate reloads.
+/// Shared TLS reload state for the signal handler and the polling timer.
 ///
-/// On Unix a `SIGHUP` triggers an immediate reload. A positive
-/// `server.tls.reload_interval_seconds` additionally polls the files and
-/// reloads when their metadata changes. `axum-server` stores the rustls config
-/// in an `ArcSwap`, so the listener and in-flight connections keep running
-/// while the next handshake uses the new certificate.
-///
-/// A reload is only installed after the replacement pair passes the same
-/// validation as startup. On failure the previous certificate stays active.
-fn spawn_tls_reload_watchers(
+/// Reloads are serialized: a SIGHUP that arrives while a timer reload is
+/// running waits for it and then reloads again instead of racing the file reads
+/// and the `ArcSwap` update.
+struct TlsReloader {
+    target: Option<TlsReloadTarget>,
+    lock: tokio::sync::Mutex<()>,
+}
+
+struct TlsReloadTarget {
     handle: axum_server::tls_rustls::RustlsConfig,
     cert_path: PathBuf,
     key_path: PathBuf,
-    interval_seconds: u64,
-) {
-    // Register the signal handler synchronously, before `serve` starts
-    // accepting. Otherwise a SIGHUP sent immediately after startup could still
-    // use the default action and terminate the process.
+}
+
+impl TlsReloader {
+    fn new(
+        handle: Option<axum_server::tls_rustls::RustlsConfig>,
+        paths: Option<(PathBuf, PathBuf)>,
+    ) -> Self {
+        let target = match (handle, paths) {
+            (Some(handle), Some((cert_path, key_path))) => Some(TlsReloadTarget {
+                handle,
+                cert_path,
+                key_path,
+            }),
+            _ => None,
+        };
+        Self {
+            target,
+            lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    async fn reload(&self, trigger: &'static str) {
+        let Some(target) = &self.target else {
+            tracing::info!(trigger, "TLS is disabled; nothing to reload");
+            return;
+        };
+        let _guard = self.lock.lock().await;
+        reload_tls(&target.handle, &target.cert_path, &target.key_path, trigger).await;
+    }
+}
+
+/// Install the SIGHUP handler synchronously, before database bootstrap and the
+/// listener bind. Plain-HTTP deployments get the handler too, so a configured
+/// `ExecReload`/`docker kill --signal=HUP` is always safe.
+fn spawn_sighup_handler(reloader: Arc<TlsReloader>) {
     #[cfg(unix)]
-    {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
-            Ok(mut hangup) => {
-                let handle = handle.clone();
-                let cert_path = cert_path.clone();
-                let key_path = key_path.clone();
-                tokio::spawn(async move {
-                    while hangup.recv().await.is_some() {
-                        reload_tls(&handle, &cert_path, &key_path, "SIGHUP").await;
-                    }
-                });
-            }
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "failed to install the SIGHUP handler; TLS certificates will not reload on signal"
-                );
-            }
+    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+        Ok(mut hangup) => {
+            tracing::info!("installed SIGHUP handler");
+            tokio::spawn(async move {
+                while hangup.recv().await.is_some() {
+                    reloader.reload("SIGHUP").await;
+                }
+            });
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "failed to install the SIGHUP handler; signals will not reload TLS"
+            );
         }
     }
 
     #[cfg(not(unix))]
-    let _ = (&handle, &cert_path, &key_path);
+    let _ = reloader;
+}
 
-    if interval_seconds > 0 {
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(Duration::from_secs(interval_seconds));
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            // The first tick completes immediately; the startup pair was
-            // already installed by `microwave_tls::load`.
+/// Poll the configured certificate/key files. The first tick is immediate and
+/// performs one unconditional reload, covering a rotation that landed during
+/// startup or database bootstrap. Later ticks reload only when the file
+/// metadata changed.
+fn spawn_periodic_reloader(reloader: Arc<TlsReloader>, interval_seconds: u64) {
+    tokio::spawn(async move {
+        let Some(target) = reloader.target.as_ref() else {
+            return;
+        };
+        // Capture the stamps before the priming reload. Any write after this
+        // point changes the stamp and triggers another reload, so a change
+        // racing the priming read cannot be missed.
+        let mut last_seen = pair_stamp(&target.cert_path, &target.key_path);
+        let mut ticker = tokio::time::interval(Duration::from_secs(interval_seconds));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticker.tick().await;
+        reloader.reload("startup-check").await;
+        loop {
             ticker.tick().await;
-            let mut last_seen = pair_stamp(&cert_path, &key_path);
-            loop {
-                ticker.tick().await;
-                let current = pair_stamp(&cert_path, &key_path);
-                if current == last_seen {
-                    continue;
-                }
-                // Record the observed files even when loading fails, so an
-                // unchanged invalid pair produces one clear error instead of
-                // one per tick. The next write changes the stamp and retries.
-                last_seen = current;
-                reload_tls(&handle, &cert_path, &key_path, "interval").await;
+            let current = pair_stamp(&target.cert_path, &target.key_path);
+            if current == last_seen {
+                continue;
             }
-        });
-    }
+            // Record the observed files even when loading fails, so an
+            // unchanged invalid pair produces one clear error instead of one
+            // per tick. The next write changes the stamp and retries.
+            last_seen = current;
+            reloader.reload("interval").await;
+        }
+    });
 }
 
 /// Metadata used to notice replaced certificate/key files without re-reading

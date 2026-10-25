@@ -3,8 +3,8 @@
 ## Scope
 
 Rotate the TLS certificate and private key of a running `microwave-server`
-without dropping the listener. Plain HTTP and all non-TLS behavior are
-unchanged.
+without dropping the listener. Plain-HTTP serving behavior is unchanged; a
+SIGHUP on a plain listener is a logged no-op.
 
 ## Mechanism
 
@@ -16,13 +16,17 @@ unchanged.
   that handle next to the acceptor and calls `reload_from_config()` only after
   the replacement pair validates. No listener restart, socket close, or
   in-flight connection reset occurs.
-- On Unix the watcher registers `SIGHUP` synchronously before serving starts
-  and reloads on every signal. The spawn path is separate, so a signal sent
-  immediately after startup cannot hit the default terminate action.
+- On Unix the SIGHUP handler is installed synchronously at the top of the
+  `Serve` branch, before database open, bootstrap, and `TcpListener::bind`.
+  An early signal cannot hit the default terminate action. The handler is
+  installed for plain-HTTP listeners too; it logs `TLS is disabled; nothing to
+  reload` and continues. SIGHUP and timer reloads share a `tokio::sync::Mutex`,
+  so they are serialized rather than racing reads and the `ArcSwap` update.
 - `server.tls.reload_interval_seconds` (default `0`) starts a polling task.
-  It compares length plus modification time of both files, so unchanged files
-  are not re-parsed and do not log. The first tick is skipped because startup
-  already installed the initial pair.
+  Its immediate first tick performs one unconditional reload, covering a
+  rotation that landed during startup or bootstrap. Later ticks compare length
+  plus modification time of both files, so unchanged files are not re-parsed
+  and do not log.
 - A failed reload logs
   `TLS certificate reload failed; keeping the previous certificate` with the
   configured paths and the validation error. The old `ServerConfig` stays in
@@ -43,15 +47,18 @@ pair before touching the database.
 
 ## Operations
 
-- systemd: the packaged unit now has `ExecReload=/bin/kill -HUP $MAINPID`;
-  `systemctl reload microwave-server` rotates the pair.
+- systemd: the packaged unit has `ExecReload=/bin/kill -HUP $MAINPID`;
+  `systemctl reload microwave-server` rotates the pair and is safe on plain
+  HTTP as well.
 - Docker: `docker kill --signal=HUP <container>`. PID 1 is the server because
   the image has no entrypoint wrapper. Bind mounts and projected volumes update
   in place; Docker secrets are snapshots and need container recreation.
 - Kubernetes: update the projected/bind-mounted files and send SIGHUP, or
   enable polling. No restart is required.
-- Replace both files atomically. A half-written pair is rejected and the old
-  pair keeps serving.
+- Replace each file via its own temporary file and rename. The two renames are
+  not atomic as a pair: a racing reload can see a new certificate with the old
+  key, fail validation, and keep the previous pair. Retry or wait for polling;
+  the completed rotation is picked up.
 
 ## Tests
 
@@ -68,6 +75,13 @@ pair before touching the database.
   - Start with `MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS=1`, rotate the files
     without a signal, and assert the new fingerprint appears and the success
     log is written.
+  - Delay startup with a synchronous keygen warm-up, wait for the handler
+    installation log before the listener exists, send `SIGHUP`, and assert the
+    process survives, serves the original certificate, and that the handler log
+    precedes the listening log.
+  - Start a plain-HTTP listener, send `SIGHUP` twice, assert it logs
+    `TLS is disabled; nothing to reload`, stays alive, and keeps serving
+    `/_status`.
   - `serve --check` accepts a valid interval and rejects an oversized interval
     or an interval without TLS.
 - Existing TLS tests still cover ALPN/h2, HTTPS serving, plaintext rejection,
@@ -89,3 +103,21 @@ pair before touching the database.
 - Reload covers only the certificate/key pair. The rest of the configuration
   still requires a restart.
 - No preflight expiry-window validation and no chef-client-over-HTTPS e2e.
+
+## Review fix round
+
+| # | Finding | Status | Change |
+|---|---|---|---|
+| 1 | SIGHUP handler registered after bootstrap/bind | ADDRESSED | The rustls handle, reload state, and SIGHUP handler are now created at the top of the `Serve` branch, immediately after TLS config loading and before database open, bootstrap, or `TcpListener::bind`. New process test signals after the handler-install log and before the listener exists, then verifies the handler log precedes the listening log. |
+| 2 | Plain-HTTP deployments have no HUP handler but systemd advertises reload | ADDRESSED | The handler is installed for every listener. Without TLS it logs `TLS is disabled; nothing to reload` and continues. New test sends SIGHUP twice to a plain-HTTP listener and verifies it stays alive and keeps serving `/_status`. |
+| 3 | Periodic reload can miss a rotation during startup | ADDRESSED | The polling task no longer skips its immediate first tick: it performs one unconditional `startup-check` reload, with file stamps captured before the priming read so any racing write triggers another reload. |
+| 4 | Docs overclaim atomicity/startup safety | ADDRESSED | `docs/deployment.md` and this report now state that the two renames are not atomic as a pair, that a racing reload fails validation and keeps the old pair, that retries pick up the completed rotation, and that the handler is installed before bootstrap/bind and on plain HTTP. |
+| 5 | Concurrent SIGHUP and interval reloads not serialized | ADDRESSED | SIGHUP and timer triggers share one `TlsReloader` with a `tokio::sync::Mutex`, so reload attempts execute one at a time. |
+| 6 | Add startup/plain-listener tests | ADDRESSED | Added `sighup_during_startup_does_not_terminate` and `sighup_on_a_plain_http_listener_is_safe`; fingerprint rotation and invalid-replacement tests remain. |
+
+### Verification (fix round)
+
+- `cargo fmt --all -- --check`
+- `cargo test -p microwave-server -p microwave-config -p microwave-tls` — 53 tests pass
+- `cargo clippy -p microwave-server -p microwave-tls -p microwave-config --all-targets -- -D warnings`
+- strict `chef-client` e2e: `MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0 MW_SKIP_BUILD=1` — PASS

@@ -553,13 +553,50 @@ fn wait_for_log(log_path: &Path, needle: &str) -> String {
     panic!("log never contained {needle:?}; log contents:\n{text}");
 }
 
-fn spawn_tls_server(
+/// Perform one plain-HTTP request over a raw socket. Used by the listener
+/// tests that do not need an async client.
+fn plain_status(addr: &str) -> Result<String, String> {
+    use std::io::{Read, Write};
+
+    let mut stream = std::net::TcpStream::connect(addr).map_err(|error| error.to_string())?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .write_all(b"GET /_status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .map_err(|error| error.to_string())?;
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|error| error.to_string())?;
+    Ok(response)
+}
+
+fn wait_for_plain_status(addr: &str) -> String {
+    let mut last = String::new();
+    for _ in 0..200 {
+        match plain_status(addr) {
+            Ok(response) if response.contains("200 OK") && response.contains("pong") => {
+                return response;
+            }
+            Ok(response) => last = response,
+            Err(error) => last = error,
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("plain HTTP listener never served /_status; last response: {last}");
+}
+
+fn spawn_server(
     data_dir: &Path,
     bind: &str,
-    cert_path: &Path,
-    key_path: &Path,
+    tls: Option<(&Path, &Path)>,
     log_path: &Path,
     reload_interval_seconds: Option<u64>,
+    extra_env: &[(&str, &str)],
 ) -> std::process::Child {
     let stderr = std::fs::File::create(log_path).unwrap();
     let stdout = stderr.try_clone().unwrap();
@@ -568,23 +605,30 @@ fn spawn_tls_server(
         .args(["serve"])
         .env("MW_PATHS__DATA_DIR", data_dir)
         .env("MW_SERVER__BIND", bind)
-        .env("MW_SERVER__TLS__CERT_PATH", cert_path)
-        .env("MW_SERVER__TLS__KEY_PATH", key_path)
         .env_remove("MW_CONFIG")
         .env_remove("MW_SERVER__TLS__ENABLED")
+        .env_remove("MW_SERVER__TLS__CERT_PATH")
+        .env_remove("MW_SERVER__TLS__KEY_PATH")
+        .env_remove("MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS")
+        .env_remove("MW_KEYGEN__SIZE")
+        .env_remove("MW_KEYGEN__WORKERS")
+        .env_remove("MW_KEYGEN__WARM_UP")
         .env("RUST_LOG", "info")
         .stdout(std::process::Stdio::from(stdout))
         .stderr(std::process::Stdio::from(stderr));
-    match reload_interval_seconds {
-        Some(seconds) => {
-            command.env(
-                "MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS",
-                seconds.to_string(),
-            );
-        }
-        None => {
-            command.env_remove("MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS");
-        }
+    if let Some((cert_path, key_path)) = tls {
+        command
+            .env("MW_SERVER__TLS__CERT_PATH", cert_path)
+            .env("MW_SERVER__TLS__KEY_PATH", key_path);
+    }
+    if let Some(seconds) = reload_interval_seconds {
+        command.env(
+            "MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS",
+            seconds.to_string(),
+        );
+    }
+    for (name, value) in extra_env {
+        command.env(name, value);
     }
     command.spawn().expect("spawn microwave-server")
 }
@@ -602,6 +646,90 @@ fn send_sighup(child: &std::process::Child) {
 
 #[cfg(unix)]
 #[test]
+fn sighup_during_startup_does_not_terminate() {
+    let port_guard = PORT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let first = generated_pair();
+    let (cert, key) = write_pair_files(dir.path(), &first);
+    let log = dir.path().join("server.log");
+    let bind = ephemeral_addr();
+
+    // A synchronous keygen warm-up runs between `AppState` construction and
+    // the listener bind. One 2048-bit RSA keypair takes well over the 100 ms
+    // poll interval, keeping startup in progress when the signal is sent.
+    let child = spawn_server(
+        dir.path(),
+        &bind,
+        Some((&cert, &key)),
+        &log,
+        None,
+        &[
+            ("MW_KEYGEN__SIZE", "1"),
+            ("MW_KEYGEN__WORKERS", "0"),
+            ("MW_KEYGEN__WARM_UP", "true"),
+        ],
+    );
+    let mut guard = ServerProcess(Some(child));
+
+    let text = wait_for_log(&log, "installed SIGHUP handler");
+    assert!(
+        !text.contains("microwave-server listening"),
+        "startup finished before the signal could be sent; log:\n{text}"
+    );
+    send_sighup(guard.0.as_ref().unwrap());
+
+    wait_for_tcp(&bind);
+    drop(port_guard);
+    assert_eq!(wait_for_any_fingerprint(&bind), first.fingerprint);
+    assert!(
+        guard.0.as_mut().unwrap().try_wait().unwrap().is_none(),
+        "the server exited after a SIGHUP during startup"
+    );
+
+    let text = std::fs::read_to_string(&log).unwrap();
+    let handler = text.find("installed SIGHUP handler").unwrap();
+    let listening = text.find("microwave-server listening").unwrap();
+    assert!(
+        handler < listening,
+        "the SIGHUP handler must be installed before the listener binds; log:\n{text}"
+    );
+    wait_for_log(&log, "reloaded TLS certificate and key");
+}
+
+#[cfg(unix)]
+#[test]
+fn sighup_on_a_plain_http_listener_is_safe() {
+    let port_guard = PORT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("server.log");
+    let bind = ephemeral_addr();
+
+    let child = spawn_server(dir.path(), &bind, None, &log, None, &[]);
+    let mut guard = ServerProcess(Some(child));
+    wait_for_tcp(&bind);
+    drop(port_guard);
+    wait_for_plain_status(&bind);
+
+    send_sighup(guard.0.as_ref().unwrap());
+    let text = wait_for_log(&log, "TLS is disabled; nothing to reload");
+    assert!(text.contains("installed SIGHUP handler"));
+    assert!(
+        guard.0.as_mut().unwrap().try_wait().unwrap().is_none(),
+        "the server exited after a SIGHUP on a plain-HTTP listener"
+    );
+
+    // The handler stays installed; a second signal is also harmless.
+    send_sighup(guard.0.as_ref().unwrap());
+    wait_for_plain_status(&bind);
+    assert!(guard.0.as_mut().unwrap().try_wait().unwrap().is_none());
+}
+
+#[cfg(unix)]
+#[test]
 fn sighup_reloads_a_rotated_tls_pair_and_keeps_the_old_one_on_failure() {
     let port_guard = PORT_LOCK
         .lock()
@@ -613,7 +741,7 @@ fn sighup_reloads_a_rotated_tls_pair_and_keeps_the_old_one_on_failure() {
     let log = dir.path().join("server.log");
     let bind = ephemeral_addr();
 
-    let child = spawn_tls_server(dir.path(), &bind, &cert, &key, &log, None);
+    let child = spawn_server(dir.path(), &bind, Some((&cert, &key)), &log, None, &[]);
     let mut guard = ServerProcess(Some(child));
     wait_for_tcp(&bind);
     drop(port_guard);
@@ -660,7 +788,7 @@ fn periodic_reload_picks_up_a_rotated_tls_pair_without_a_signal() {
     let log = dir.path().join("server.log");
     let bind = ephemeral_addr();
 
-    let child = spawn_tls_server(dir.path(), &bind, &cert, &key, &log, Some(1));
+    let child = spawn_server(dir.path(), &bind, Some((&cert, &key)), &log, Some(1), &[]);
     let _guard = ServerProcess(Some(child));
     wait_for_tcp(&bind);
     drop(port_guard);

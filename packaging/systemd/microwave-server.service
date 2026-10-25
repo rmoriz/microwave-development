@@ -15,7 +15,9 @@ Group=microwave
 ExecStartPre=/usr/local/bin/microwave-ctl --config /etc/microwave/microwave.toml check-config
 ExecStart=/usr/local/bin/microwave-server serve --config /etc/microwave/microwave.toml
 # SIGHUP reloads the TLS certificate/key pair when the TLS listener is enabled.
-# It does not re-read the rest of the configuration; restart for that.
+# With plain HTTP it logs that there is nothing to reload and continues, so
+# `systemctl reload` is always safe. It does not re-read the rest of the
+# configuration; restart for that.
 ExecReload=/bin/kill -HUP $MAINPID
 
 Restart=on-failure
