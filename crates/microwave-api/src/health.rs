@@ -63,9 +63,20 @@ impl DependencySnapshot {
 }
 
 /// Short-lived cache shared by every clone of [`crate::AppState`].
+///
+/// A cold cache is refreshed by exactly one caller; concurrent callers wait for
+/// that probe and reuse its result. Once a snapshot exists it is served
+/// immediately while an expired snapshot is refreshed in the background, so an
+/// unauthenticated `/_status` burst cannot multiply dependency probes.
+#[derive(Clone)]
 pub struct HealthCache {
+    inner: Arc<HealthCacheInner>,
+}
+
+struct HealthCacheInner {
     ttl: Duration,
     cached: Mutex<Option<(Instant, Arc<DependencySnapshot>)>>,
+    refresh: tokio::sync::Mutex<()>,
 }
 
 impl Default for HealthCache {
@@ -81,19 +92,41 @@ impl HealthCache {
 
     pub fn with_ttl(ttl: Duration) -> Self {
         Self {
-            ttl,
-            cached: Mutex::new(None),
+            inner: Arc::new(HealthCacheInner {
+                ttl,
+                cached: Mutex::new(None),
+                refresh: tokio::sync::Mutex::new(()),
+            }),
         }
     }
 
     fn fresh(&self) -> Option<Arc<DependencySnapshot>> {
         let guard = self
+            .inner
             .cached
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         guard.as_ref().and_then(|(taken_at, snapshot)| {
-            (taken_at.elapsed() < self.ttl).then(|| snapshot.clone())
+            (taken_at.elapsed() < self.inner.ttl).then(|| snapshot.clone())
         })
+    }
+
+    fn latest(&self) -> Option<Arc<DependencySnapshot>> {
+        self.inner
+            .cached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|(_, snapshot)| snapshot.clone())
+    }
+
+    fn store(&self, snapshot: Arc<DependencySnapshot>) {
+        let mut guard = self
+            .inner
+            .cached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = Some((Instant::now(), snapshot));
     }
 
     pub async fn snapshot(
@@ -106,12 +139,32 @@ impl HealthCache {
             return snapshot;
         }
 
+        // Serve the previous result immediately and refresh it in the
+        // background. The refresh mutex makes every spawned refresher (and any
+        // cold-cache waiter) a single-flight group.
+        if let Some(stale) = self.latest() {
+            let cache = self.clone();
+            let store = Arc::clone(store);
+            let search = Arc::clone(search);
+            let object_store = Arc::clone(object_store);
+            tokio::spawn(async move {
+                let _refresh = cache.inner.refresh.lock().await;
+                if cache.fresh().is_some() {
+                    return;
+                }
+                let snapshot = Arc::new(collect(&store, &search, &object_store).await);
+                cache.store(snapshot);
+            });
+            return stale;
+        }
+
+        // Cold cache: one caller probes, the rest wait and reuse the snapshot.
+        let _refresh = self.inner.refresh.lock().await;
+        if let Some(snapshot) = self.fresh() {
+            return snapshot;
+        }
         let snapshot = Arc::new(collect(store, search, object_store).await);
-        let mut guard = self
-            .cached
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *guard = Some((Instant::now(), snapshot.clone()));
+        self.store(Arc::clone(&snapshot));
         snapshot
     }
 }
@@ -230,7 +283,39 @@ fn redact_credentials(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{redact_credentials, truncate_detail, MAX_DETAIL_LEN};
+    use super::{
+        redact_credentials, truncate_detail, DependencyProbe, DependencySnapshot, HealthCache,
+        MAX_DETAIL_LEN,
+    };
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn snapshot() -> Arc<DependencySnapshot> {
+        Arc::new(DependencySnapshot {
+            probes: vec![DependencyProbe {
+                name: "chef_sql",
+                status: "pong",
+                detail: "ok".to_string(),
+            }],
+        })
+    }
+
+    #[test]
+    fn cache_hits_within_ttl_and_expires_afterwards() {
+        let cache = HealthCache::with_ttl(Duration::from_millis(50));
+        cache.store(snapshot());
+
+        let clone = cache.clone();
+        assert!(clone.fresh().is_some(), "clones must share the snapshot");
+        assert!(cache.latest().is_some());
+
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(cache.fresh().is_none(), "the snapshot must expire");
+        assert!(
+            cache.latest().is_some(),
+            "the stale snapshot stays available for stale-while-refresh"
+        );
+    }
 
     #[test]
     fn redacts_url_userinfo() {

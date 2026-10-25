@@ -1008,15 +1008,30 @@ until handed to the API response and are never logged.
 backend, and object store. The `upstreams` object keeps upstream's
 `{"service": "pong"|"fail"}` shape with `chef_sql`, `chef_index` (or
 `chef_opensearch`/`chef_elasticsearch`), and `bookshelf`; `upstream_details`
-adds the probe status and detail. Each probe is bounded to 1.5 seconds and the
-whole snapshot is cached for one second, so health-check loops do not hammer
-the dependencies. A failing dependency sets the top-level `status` to `fail`
-(and the matching upstream to `fail`) but the endpoint still returns HTTP 200,
-so a reverse proxy or orchestrator can inspect the payload. The `keygen` object
-reports the cached keypair count, capacity, worker count, and worker health
-(`status` becomes `degraded` after a background or warm-up generation failure
-and returns to `ok` after the next successful background generation).
-`worker_failures` and `warm_up_failures` are cumulative counters.
+adds the probe status and detail. A failing dependency sets the top-level
+`status` to `fail` (and the matching upstream to `fail`) but the endpoint still
+returns HTTP 200, so a reverse proxy or orchestrator can inspect the payload.
+
+Each probe is bounded to 1.5 seconds. SQLite's health query runs on Tokio's
+blocking pool using an owned connection handle, so a held store lock cannot pin
+an async worker past that bound; PostgreSQL uses an async `SELECT 1` against
+the pool. OpenSearch and Elasticsearch call `/_cluster/health` and treat
+`"status":"red"` as unhealthy (`yellow` is valid for a single node). Local
+object storage verifies read/write access with a unique probe file per call; S3
+and Garage perform a signed, bounded `HEAD` request on the bucket.
+
+The completed snapshot is cached for one second. Concurrent requests share a
+single in-flight probe, and an expired snapshot is served immediately while one
+background refresh runs (stale-while-refresh), so an unauthenticated health
+check burst cannot multiply database, search, or object-store probes.
+
+The S3/Garage credentials must allow `s3:HeadBucket` (and therefore
+`s3:ListBucket`) on the configured bucket; object read/write permissions alone
+make the `bookshelf` probe fail with `403`. The `keygen` object reports the
+cached keypair count, capacity, worker count, and worker health (`status`
+becomes `degraded` after a background or warm-up generation failure and returns
+to `ok` after the next successful background generation). `worker_failures` and
+`warm_up_failures` are cumulative counters.
 
 ```sh
 curl -fsS http://127.0.0.1:8000/_status

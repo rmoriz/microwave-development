@@ -580,7 +580,11 @@ mod tests {
         assert_eq!(uri_encode("a-_.~", true), "a-_.~");
     }
 
-    async fn bucket_server(status: u16) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    type BucketRequest = (String, Option<String>);
+
+    async fn bucket_server(
+        status: u16,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<BucketRequest>>>) {
         use axum::http::StatusCode;
         use axum::Router;
 
@@ -589,9 +593,13 @@ mod tests {
         let app = Router::new().fallback(move |request: axum::extract::Request| {
             let seen = seen.clone();
             async move {
-                seen.lock()
-                    .unwrap()
-                    .push(format!("{} {}", request.method(), request.uri().path()));
+                let line = format!("{} {}", request.method(), request.uri().path());
+                let authorization = request
+                    .headers()
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_string);
+                seen.lock().unwrap().push((line, authorization));
                 StatusCode::from_u16(status).unwrap()
             }
         });
@@ -604,13 +612,21 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn health_check_heads_the_bucket_with_a_bounded_request() {
+    async fn health_check_heads_the_bucket_with_a_bounded_signed_request() {
         let (base_url, requests) = bucket_server(200).await;
         let store =
             S3ObjectStore::new(S3Config::new(base_url, "chef", "garage", "key", "secret")).unwrap();
 
         store.health_check().unwrap();
-        assert_eq!(requests.lock().unwrap().as_slice(), ["HEAD /chef"]);
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].0, "HEAD /chef");
+        let authorization = requests[0].1.as_deref().expect("signed request");
+        assert!(
+            authorization.starts_with("AWS4-HMAC-SHA256 Credential=key/"),
+            "unexpected authorization header: {authorization}"
+        );
+        assert!(authorization.contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

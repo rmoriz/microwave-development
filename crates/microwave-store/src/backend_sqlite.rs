@@ -1261,14 +1261,30 @@ impl KvRepository for SqliteStore {
 #[async_trait]
 impl HealthRepository for SqliteStore {
     async fn health_check(&self) -> Result<(), StoreError> {
-        let connection = self.connection();
-        let value: i64 = connection.query_row("SELECT 1", [], |row| row.get(0))?;
-        if value == 1 {
-            Ok(())
-        } else {
-            Err(StoreError::Invalid(format!(
-                "SQLite health probe returned unexpected value {value}"
-            )))
+        // Acquire the connection lock and run the query on Tokio's blocking
+        // pool. The shared lock can be held by a long-running store call, so
+        // doing this inline would pin an async worker past the caller's
+        // timeout.
+        let connection = self.connection_handle();
+        let probe = tokio::task::spawn_blocking(move || {
+            let connection = connection
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let value: i64 = connection.query_row("SELECT 1", [], |row| row.get(0))?;
+            if value == 1 {
+                Ok(())
+            } else {
+                Err(StoreError::Invalid(format!(
+                    "SQLite health probe returned unexpected value {value}"
+                )))
+            }
+        })
+        .await;
+        match probe {
+            Ok(result) => result,
+            Err(error) => Err(StoreError::Invalid(format!(
+                "SQLite health probe task failed: {error}"
+            ))),
         }
     }
 }
@@ -1301,10 +1317,37 @@ impl SecretsRepository for SqliteStore {
 mod health_tests {
     use super::HealthRepository;
     use crate::SqliteStore;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
 
     #[tokio::test]
     async fn health_check_runs_a_select_against_the_connection() {
         let store = SqliteStore::open_in_memory().unwrap();
+        store.health_check().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn health_check_timeout_is_real_when_the_connection_lock_is_held() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let held = store.connection_handle();
+        let (started_tx, started_rx) = mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _guard = held.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            started_tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+        });
+        started_rx.recv().unwrap();
+
+        let started = Instant::now();
+        let result = tokio::time::timeout(Duration::from_millis(100), store.health_check()).await;
+        assert!(result.is_err(), "health probe should have timed out");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the async caller was blocked by the held connection lock: {:?}",
+            started.elapsed()
+        );
+
+        holder.join().unwrap();
         store.health_check().await.unwrap();
     }
 }

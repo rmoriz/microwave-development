@@ -141,6 +141,9 @@ async fn core_api_works_against_postgresql() {
     assert_eq!(response.status(), StatusCode::OK);
     let status = json(response).await;
     assert_eq!(status["status"], "pong");
+    assert_eq!(status["upstreams"]["chef_sql"], "pong");
+    assert_eq!(status["upstreams"]["chef_index"], "pong");
+    assert_eq!(status["upstreams"]["bookshelf"], "pong");
     assert_eq!(status["indexing"]["mode"], "embedded");
 
     // Create an organization through the HTTP API.

@@ -7,9 +7,9 @@
 
 use microwave_store::{
     ActorType, ArtifactRepository, AuthzRepository, Compression, CookbookRepository, GroupMembers,
-    IdentityRepository, KvRepository, MembershipRepository, NewNode, OAuthRepository,
-    ObjectRepository, Permission, PolicyRepository, SandboxRepository, SecretsRepository,
-    StoreError, UserProfile, COMPRESSED_PREFIX,
+    HealthRepository, IdentityRepository, KvRepository, MembershipRepository, NewNode,
+    OAuthRepository, ObjectRepository, Permission, PolicyRepository, SandboxRepository,
+    SecretsRepository, StoreError, UserProfile, COMPRESSED_PREFIX,
 };
 use microwave_store_postgres::PostgresStore;
 use sqlx::Row;
@@ -20,6 +20,21 @@ fn assert_metadata_store<T: microwave_store::MetadataStore>() {}
 #[test]
 fn postgres_satisfies_metadata_store() {
     assert_metadata_store::<PostgresStore>();
+}
+
+#[tokio::test]
+async fn postgres_health_check_runs_select_one_and_reports_closed_pools() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    store.health_check().await.expect("healthy PostgreSQL");
+
+    let pool = store.pool().clone();
+    pool.close().await;
+    assert!(
+        store.health_check().await.is_err(),
+        "a closed pool must surface as an unhealthy metadata probe"
+    );
 }
 
 fn test_url() -> Option<String> {

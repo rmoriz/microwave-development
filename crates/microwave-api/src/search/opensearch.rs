@@ -409,7 +409,16 @@ impl super::backend::SearchBackend for OpenSearchBackend {
             .timeout(Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS))
             .send()
             .await?;
-        self.check_status(&url, response.status().as_u16())
+        self.check_status(&url, response.status().as_u16())?;
+
+        // A red cluster still answers with HTTP 200 by default. Yellow is
+        // expected on a single-node cluster while replicas are unassigned, but
+        // red means primary shards are unavailable and search is degraded.
+        let health: Value = response.json().await.unwrap_or(Value::Null);
+        if health.get("status").and_then(Value::as_str) == Some("red") {
+            return Err(SearchError::Response("cluster health is red".to_string()));
+        }
+        Ok(())
     }
 
     async fn search(&self, request: &SearchRequest) -> Result<SearchHits, SearchError> {
@@ -1195,6 +1204,20 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].method, "GET");
         assert_eq!(requests[0].uri, "/_cluster/health");
+
+        let server = mock(200, json!({ "status": "yellow" })).await;
+        let backend =
+            OpenSearchBackend::new(SearchProvider::Elasticsearch, &server.base_url).unwrap();
+        backend.health_check().await.unwrap();
+
+        let server = mock(200, json!({ "status": "red" })).await;
+        let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &server.base_url).unwrap();
+        match backend.health_check().await {
+            Err(SearchError::Response(message)) => {
+                assert!(message.contains("red"), "unexpected detail: {message}");
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
 
         let server = mock(503, json!({ "status": "red" })).await;
         let backend =

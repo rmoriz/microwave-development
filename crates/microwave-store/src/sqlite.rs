@@ -1,7 +1,7 @@
 use crate::compression::Compression;
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -27,7 +27,7 @@ pub enum StoreError {
 
 /// A SQLite-backed metadata store.
 pub struct SqliteStore {
-    connection: Mutex<Connection>,
+    connection: Arc<Mutex<Connection>>,
     compression: Compression,
 }
 
@@ -53,7 +53,7 @@ impl SqliteStore {
         configure(&connection, true)?;
         migrate(&connection)?;
         Ok(Self {
-            connection: Mutex::new(connection),
+            connection: Arc::new(Mutex::new(connection)),
             compression,
         })
     }
@@ -69,7 +69,7 @@ impl SqliteStore {
         configure(&connection, false)?;
         migrate(&connection)?;
         Ok(Self {
-            connection: Mutex::new(connection),
+            connection: Arc::new(Mutex::new(connection)),
             compression,
         })
     }
@@ -87,7 +87,7 @@ impl SqliteStore {
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
         Ok(Self {
-            connection: Mutex::new(connection),
+            connection: Arc::new(Mutex::new(connection)),
             compression: Compression::default(),
         })
     }
@@ -101,6 +101,23 @@ impl SqliteStore {
         self.connection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Clone the shared connection handle so a blocking health probe can move
+    /// its lock acquisition and query off the async runtime.
+    pub(crate) fn connection_handle(&self) -> Arc<Mutex<Connection>> {
+        Arc::clone(&self.connection)
+    }
+
+    /// Hold the shared connection lock to simulate a long-running store call.
+    ///
+    /// This deliberately exposes the connection guard only when the
+    /// `test-support` feature is enabled so end-to-end health probe tests can
+    /// verify that a held lock cannot stall `/_status`.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn lock_connection_for_test(&self) -> MutexGuard<'_, Connection> {
+        self.connection()
     }
 
     /// Write a consistent snapshot of this database to `destination`.

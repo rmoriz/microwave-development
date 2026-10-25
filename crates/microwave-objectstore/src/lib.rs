@@ -11,6 +11,8 @@ use hmac::{Hmac, Mac};
 use md5::{Digest, Md5};
 use sha2::Sha256;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 
@@ -19,6 +21,9 @@ mod s3;
 pub use s3::{S3Config, S3ObjectStore};
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// Monotonic suffix that keeps concurrent health probes from sharing a path.
+static HEALTH_PROBE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Default lifetime for presigned S3 URLs, matching the upstream bookshelf default.
 pub const DEFAULT_PRESIGN_EXPIRY_SECONDS: u64 = 900;
@@ -185,25 +190,33 @@ impl ObjectStore for LocalObjectStore {
 
     fn health_check(&self) -> Result<(), ObjectStoreError> {
         // Create the root if a fresh deployment has not written a blob yet, then
-        // verify both read and write access. The probe file is removed
-        // immediately; a leftover file from a crashed process is truncated.
+        // verify both read and write access. Each call uses a unique probe path
+        // so concurrent health checks cannot delete each other's file.
         std::fs::create_dir_all(&self.root)?;
         std::fs::read_dir(&self.root)?;
 
-        let probe = self
-            .root
-            .join(format!(".microwave-health-{}", std::process::id()));
+        let nonce = HEALTH_PROBE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default();
+        let probe = self.root.join(format!(
+            ".microwave-health-{}-{nonce}-{timestamp}",
+            std::process::id()
+        ));
         {
             use std::io::Write;
             let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(true)
+                .create_new(true)
                 .write(true)
                 .open(&probe)?;
             file.write_all(b"ok")?;
         }
-        std::fs::remove_file(&probe)?;
-        Ok(())
+        match std::fs::remove_file(&probe) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
@@ -297,5 +310,31 @@ mod tests {
         let file = tempfile::NamedTempFile::new().unwrap();
         let store = LocalObjectStore::new(file.path(), "secret", "http://localhost");
         assert!(store.health_check().is_err());
+    }
+
+    #[test]
+    fn concurrent_local_health_checks_use_distinct_probe_files() {
+        use std::sync::{Arc, Barrier};
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("bookshelf");
+        let store = LocalObjectStore::new(&root, "secret", "http://localhost");
+        let barrier = Arc::new(Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let store = store.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for _ in 0..10 {
+                        store.health_check().unwrap();
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
     }
 }

@@ -235,6 +235,8 @@ config = <<~RUBY
 
   server_api_version #{API_VERSION.to_i}
   include_internal false
+  # /_status does not include the optional server_version field.
+  include_version_in_status false
   old_runlists_and_search true
 
   log_file #{File.join(ARTIFACTS, "http-traffic.log").inspect}
