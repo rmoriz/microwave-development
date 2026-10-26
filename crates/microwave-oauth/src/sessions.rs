@@ -4,14 +4,14 @@ use crate::util::{
     cookie_header, csrf_token, current_user, delete_cookie_header, escape_html, page,
     page_with_token, parse_params, redirect, secure_cookies, session_token, wants_json,
 };
-use axum::extract::{Query, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use microwave_crypto::{verify_password, PasswordHash};
 use microwave_store::User;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub async fn home(
     State(state): State<OAuthState>,
@@ -198,6 +198,48 @@ pub async fn auth_failure(headers: HeaderMap) -> Response {
         .into_response()
 }
 
+struct AuthorizedApplication {
+    id: i64,
+    name: String,
+    uid: String,
+    scopes: String,
+    created_at: String,
+}
+
+/// Collapse the resource owner's active access tokens into one row per
+/// application, newest first. Doorkeeper renders applications rather than
+/// individual tokens, but the token carries the granted scopes and timestamp.
+async fn authorized_for(
+    state: &OAuthState,
+    user: &User,
+) -> Result<Vec<AuthorizedApplication>, OAuthError> {
+    let tokens = state
+        .store
+        .list_oauth_access_tokens_for_owner(&user.id)
+        .await?;
+    let mut seen = HashSet::new();
+    let mut applications = Vec::new();
+    for token in tokens {
+        let Some(application_id) = token.application_id else {
+            continue;
+        };
+        if !seen.insert(application_id) {
+            continue;
+        }
+        let Some(application) = state.store.find_oauth_application(application_id).await? else {
+            continue;
+        };
+        applications.push(AuthorizedApplication {
+            id: application.id,
+            name: application.name,
+            uid: application.uid,
+            scopes: token.scopes,
+            created_at: token.created_at,
+        });
+    }
+    Ok(applications)
+}
+
 pub async fn authorized_applications(
     State(state): State<OAuthState>,
     headers: HeaderMap,
@@ -206,18 +248,77 @@ pub async fn authorized_applications(
         Some(user) => user,
         None => return Ok(redirect("/id/signin")),
     };
+    let applications = authorized_for(&state, &user).await?;
     if wants_json(&headers) {
-        return Ok(Json(json!({ "applications": [] })).into_response());
+        let applications = applications
+            .iter()
+            .map(|application| {
+                json!({
+                    "id": application.id,
+                    "name": application.name,
+                    "uid": application.uid,
+                    "scopes": application.scopes,
+                    "created_at": application.created_at
+                })
+            })
+            .collect::<Vec<_>>();
+        return Ok(Json(json!({ "applications": applications })).into_response());
     }
+
+    let rows = applications
+        .iter()
+        .map(|application| {
+            format!(
+                "<tr><td>{name}</td><td>{scopes}</td><td>{created_at}</td>\
+                 <td><form method=\"post\" action=\"/id/oauth/authorized_applications/{id}\">\
+                 <input type=\"hidden\" name=\"_method\" value=\"DELETE\">\
+                 <button type=\"submit\">Revoke</button></form></td></tr>",
+                id = application.id,
+                name = escape_html(&application.name),
+                scopes = escape_html(&application.scopes),
+                created_at = escape_html(&application.created_at)
+            )
+        })
+        .collect::<String>();
+    let table = if rows.is_empty() {
+        "<p>You have not authorized any applications.</p>".to_string()
+    } else {
+        format!(
+            "<table><thead><tr><th>Application</th><th>Scopes</th>\
+             <th>Created At</th><th></th></tr></thead><tbody>{rows}</tbody></table>"
+        )
+    };
     let body = format!(
         "<h1>Authorized Applications</h1>\
          <p>Signed in as: {}</p>\
+         {table}\
          <p><a href=\"/id/profile\">Profile</a></p>\
          <form method=\"post\" action=\"/id/signout\">\
          <button type=\"submit\">Sign Out</button></form>",
         escape_html(&user.username)
     );
     Ok(page("Authorized Applications", &body).into_response())
+}
+
+pub async fn revoke_authorized_application(
+    State(state): State<OAuthState>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<Response, OAuthError> {
+    let Some(user) = current_user(&state, &headers).await? else {
+        if wants_json(&headers) {
+            return Err(OAuthError::unauthorized("authentication is required"));
+        }
+        return Ok(redirect("/id/signin"));
+    };
+    state
+        .store
+        .revoke_oauth_tokens_and_grants_for(id, &user.id)
+        .await?;
+    if wants_json(&headers) {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+    Ok(redirect("/id/oauth/authorized_applications"))
 }
 
 fn set_cookie(response: &mut Response, cookie: &str) -> Result<(), OAuthError> {

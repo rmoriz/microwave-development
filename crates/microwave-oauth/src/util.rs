@@ -194,6 +194,26 @@ pub fn timestamp_is_fresh(created_at: &str, expires_in: i64) -> bool {
     expires_at > Utc::now()
 }
 
+/// Remaining lifetime in whole seconds, mirroring Doorkeeper's
+/// `expires_in_seconds` (clamped at zero). `None` means the token never
+/// expires.
+pub fn token_expires_in_seconds(token: &OAuthAccessToken) -> Option<i64> {
+    let expires_in = token.expires_in?;
+    let Ok(created_at) = DateTime::parse_from_rfc3339(&token.created_at) else {
+        return Some(0);
+    };
+    let expires_at = created_at.with_timezone(&Utc) + chrono::Duration::seconds(expires_in);
+    Some((expires_at - Utc::now()).num_seconds().max(0))
+}
+
+/// Unix timestamp for an RFC 3339 store timestamp, matching Doorkeeper's
+/// `created_at.to_i` token-info field.
+pub fn unix_timestamp(timestamp: &str) -> i64 {
+    DateTime::parse_from_rfc3339(timestamp)
+        .map(|value| value.timestamp())
+        .unwrap_or_default()
+}
+
 pub fn cookie_header(token: &str, secure: bool) -> String {
     let secure = if secure { "; Secure" } else { "" };
     format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax{secure}")

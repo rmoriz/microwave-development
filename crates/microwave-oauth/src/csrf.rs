@@ -34,11 +34,13 @@ fn is_cookie_form_write(method: &str, path: &str, headers: &axum::http::HeaderMa
     // `parse_params` treats every non-JSON body as form data, so guard those
     // requests too rather than trusting the declared content type.
     !is_json
-        && (path == "/id/sessions"
+        && (path.starts_with("/id/sessions")
             || path == "/id/auth/chef/callback"
             || path == "/id/signout"
+            || path.starts_with("/id/password-reset")
             || path.starts_with("/id/oauth/authorize")
             || path.starts_with("/id/oauth/applications")
+            || path.starts_with("/id/oauth/authorized_applications")
             || path.starts_with("/id/profile"))
 }
 

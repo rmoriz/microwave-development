@@ -285,6 +285,47 @@ impl SqliteStore {
             .optional()?)
     }
 
+    /// Active (not revoked) access tokens for a resource owner, newest first.
+    pub fn list_oauth_access_tokens_for_owner(
+        &self,
+        resource_owner_id: &str,
+    ) -> Result<Vec<OAuthAccessToken>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(&format!(
+            "SELECT {TOKEN_COLUMNS} FROM oauth_access_tokens
+             WHERE resource_owner_id = ?1 AND revoked_at IS NULL
+             ORDER BY created_at DESC, id DESC"
+        ))?;
+        let rows = statement.query_map([resource_owner_id], token_from_row)?;
+        let mut tokens = Vec::new();
+        for row in rows {
+            tokens.push(row?);
+        }
+        Ok(tokens)
+    }
+
+    /// Revoke every access token and pending grant for an application owned by
+    /// one resource owner.
+    pub fn revoke_oauth_tokens_and_grants_for(
+        &self,
+        application_id: i64,
+        resource_owner_id: &str,
+    ) -> Result<(), StoreError> {
+        let timestamp = now();
+        let connection = self.connection();
+        connection.execute(
+            "UPDATE oauth_access_tokens SET revoked_at = COALESCE(revoked_at, ?3)
+             WHERE application_id = ?1 AND resource_owner_id = ?2",
+            params![application_id, resource_owner_id, timestamp],
+        )?;
+        connection.execute(
+            "UPDATE oauth_access_grants SET revoked_at = COALESCE(revoked_at, ?3)
+             WHERE application_id = ?1 AND resource_owner_id = ?2",
+            params![application_id, resource_owner_id, timestamp],
+        )?;
+        Ok(())
+    }
+
     pub fn revoke_oauth_access_token(&self, token: &str) -> Result<(), StoreError> {
         let connection = self.connection();
         connection.execute(

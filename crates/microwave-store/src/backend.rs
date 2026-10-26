@@ -784,6 +784,19 @@ pub trait OAuthRepository: Send + Sync {
         &self,
         refresh_token: &str,
     ) -> Result<Option<OAuthAccessToken>, StoreError>;
+    /// Active (not revoked) access tokens owned by a resource owner, newest
+    /// first. Backs `GET /id/oauth/authorized_applications`.
+    async fn list_oauth_access_tokens_for_owner(
+        &self,
+        resource_owner_id: &str,
+    ) -> Result<Vec<OAuthAccessToken>, StoreError>;
+    /// Revoke every access token and pending grant for one application and
+    /// resource owner. Backs `DELETE /id/oauth/authorized_applications/:id`.
+    async fn revoke_oauth_tokens_and_grants_for(
+        &self,
+        application_id: i64,
+        resource_owner_id: &str,
+    ) -> Result<(), StoreError>;
     async fn revoke_oauth_access_token(&self, token: &str) -> Result<(), StoreError>;
     async fn revoke_oauth_access_token_by_refresh(
         &self,
