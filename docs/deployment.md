@@ -110,6 +110,7 @@ A complete annotated example is
 |---|---|---|---|
 | `server.bind` | `MW_SERVER__BIND` | `0.0.0.0:8000` | Listener address. Plain HTTP unless `server.tls` is configured. |
 | `server.worker_threads` | `MW_SERVER__WORKER_THREADS` | `0` | `0` = size from available CPUs. |
+| `server.public_url` | `MW_SERVER__PUBLIC_URL` | unset | Public origin used to build password-reset links, e.g. `https://chef.example.com`. Required when mail is enabled. Must be an absolute origin with no credentials, path, query, or fragment. `https` is required except for loopback hosts, which may use `http`. |
 | `server.tls.enabled` | `MW_SERVER__TLS__ENABLED` | unset | `true` requires both paths; `false` forces plain HTTP; unset enables TLS when either path is set (the other is then required and validated). |
 | `server.tls.cert_path` | `MW_SERVER__TLS__CERT_PATH` | unset | PEM certificate chain, leaf first. Setting either path enables TLS. |
 | `server.tls.key_path` | `MW_SERVER__TLS__KEY_PATH` | unset | PEM private key matching the certificate. Never printed or logged. |
@@ -137,7 +138,20 @@ A complete annotated example is
 | `server.default_orgname` | `MW_SERVER__DEFAULT_ORGNAME` | unset | Rewrite upstream short paths (`/nodes`, `/search`, `/cookbooks`, …) to this organization. Signature verification still uses the client's original path. |
 | `server.trusted_proxies` | `MW_SERVER__TRUSTED_PROXIES` | empty | Comma-separated IPs/CIDRs/socket addresses allowed to set `X-Forwarded-Host`/`X-Forwarded-Proto`. Untrusted peers fall back to `Host`. |
 | `stats.username` / `stats.password` | `MW_STATS__USERNAME` / `MW_STATS__PASSWORD` | unset | Optional Basic auth for `/_stats`; when set, `/_status` remains public. |
-| `auth.password_reset_token_in_response` | `MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE` | `false` | Development-only: return the `/id/password-reset` URL in the HTTP response. Leave disabled in production; it allows account takeover. |
+| `auth.password_reset_token_in_response` | `MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE` | `false` | Development-only: return the `/id/password-reset` URL in the HTTP response. Leave disabled in production; it allows account takeover. This still applies when mail is enabled. |
+| `auth.password_reset_ttl_seconds` | `MW_AUTH__PASSWORD_RESET_TTL_SECONDS` | `3600` | Password-reset token lifetime in seconds. Must be greater than zero and at most `604800` (seven days). The reset email derives its expiry text from this value. |
+| `mail.enabled` | `MW_MAIL__ENABLED` | `false` | Enable outbound password-reset mail. Disabled by default; all other mail keys are ignored while this is false or `mail.host` is empty. |
+| `mail.host` | `MW_MAIL__HOST` | unset | SMTP relay hostname. Required when mail is enabled. |
+| `mail.port` | `MW_MAIL__PORT` | derived | Defaults to `587` for `starttls`, `465` for `tls`, and `25` for `none`. Must be greater than zero. |
+| `mail.security` | `MW_MAIL__SECURITY` | `starttls` | `starttls` (default), `tls` (implicit TLS/SMTPS), or `none` (explicit plaintext). `none` rejects SMTP AUTH for non-loopback hosts; remote authenticated relays must use `starttls` or `tls`. |
+| `mail.username` | `MW_MAIL__USERNAME` | unset | SMTP AUTH username. Requires `mail.password`. |
+| `mail.password` | `MW_MAIL__PASSWORD` | unset | SMTP AUTH password. Prefer the environment variable. Never logged or serialized, and absent from `microwave-config.json` backups. |
+| `mail.auth` | `MW_MAIL__AUTH` | `auto` | `auto`, `plain`, `login`, or `none`. `auto`, `plain`, and `login` require a username and password; `none` rejects credentials. |
+| `mail.from` | `MW_MAIL__FROM` | unset | `From` header, for example `Chef Infra Server <chef@example.com>`. Required when mail is enabled; a display name is accepted. |
+| `mail.reply_to` | `MW_MAIL__REPLY_TO` | unset | Optional `Reply-To` header. |
+| `mail.timeout_ms` | `MW_MAIL__TIMEOUT_MS` | `10000` | SMTP timeout in milliseconds. Must be greater than zero. |
+| `mail.hello_name` | `MW_MAIL__HELLO_NAME` | unset | EHLO/HELO name. When unset the mail library's default is used. |
+| `mail.tls_ca_path` | `MW_MAIL__TLS_CA_PATH` | unset | Extra PEM CA certificate used to verify a relay with a private CA; system roots remain trusted. Read when the mailer is built at startup, so an unreadable or unparseable file fails startup. |
 | `keygen.size` | `MW_KEYGEN__SIZE` | `3` | Maximum number of pre-generated 2048-bit RSA keypairs kept in memory. `0` disables caching and generates on demand. Maximum `1024`. |
 | `keygen.workers` | `MW_KEYGEN__WORKERS` | `1` | Background key-generation threads. Must not exceed `keygen.size`; maximum `8`. `0` leaves refilling to `warm_up`. |
 | `keygen.warm_up` | `MW_KEYGEN__WARM_UP` | `false` | Fill the cache synchronously during startup. Requires `keygen.size > 0`. Leave `false` to keep startup fast and let workers refill in the background. |
@@ -267,6 +281,77 @@ Operational notes:
   remains fully supported and is still the simplest option when you need
   automatic certificate rotation, multiple hostnames, or centralized TLS
   policy.
+
+### Mail (SMTP)
+
+Outbound mail is disabled by default and currently serves only the
+`POST /id/password-reset` flow. Enable it with a `[mail]` block plus
+`server.public_url`:
+
+```toml
+[server]
+public_url = "https://chef.example.com"
+
+[auth]
+password_reset_ttl_seconds = 3600
+
+[mail]
+enabled = true
+host = "smtp.example.com"
+port = 587
+security = "starttls"       # starttls | tls | none
+username = "chef-mailer"
+password = "secret"         # prefer MW_MAIL__PASSWORD
+auth = "auto"               # auto | plain | login | none
+from = "Chef Infra Server <chef@example.com>"
+reply_to = "ops@example.com"
+```
+
+`server.public_url` is mandatory when mail is enabled and must be an absolute
+`https` origin with no credentials, path, query, or fragment; `http` is
+accepted only for loopback development hosts (`localhost`, `127.0.0.1`, `::1`).
+Reset links are built from it rather than from `Host` or forwarded headers.
+
+Remote SMTP with authentication and TLS is the supported production path.
+`security = "starttls"` is the default and uses port 587; `security = "tls"`
+uses implicit TLS on port 465; `security = "none"` is explicit plaintext on port
+25 and is intended for a trusted local relay. Plaintext AUTH is rejected for
+non-loopback hosts, so a remote relay with credentials must use STARTTLS or
+TLS. `mail.auth` defaults to `auto`; `plain`/`login` force a mechanism, and
+`none` disables AUTH. `mail.from` is required; `mail.hello_name` overrides the
+EHLO name, and `mail.tls_ca_path` adds a private CA certificate while keeping
+the system roots.
+
+The SMTP password may be set with `mail.password` or `MW_MAIL__PASSWORD`; the
+environment variable wins. It is redacted from `Debug` and logs and is never
+serialized, so `microwave-config.json` backups do not contain it. After a
+restore or when replaying a configuration snapshot, provide the secret again
+through `MW_MAIL__PASSWORD` (or re-add `mail.password` to the live file).
+
+`check-config` loads and validates the section, including the required fields,
+the public URL, and the token TTL, without sending mail. An enabled but invalid
+configuration fails startup rather than silently disabling mail. `tls_ca_path`
+is read when the mailer is constructed at startup, so an unreadable or
+unparseable CA file fails startup as well.
+
+On a reset request, the server creates a token valid for
+`auth.password_reset_ttl_seconds` (default one hour, maximum seven days) and, if
+mail is enabled and the account exists with a non-empty email address, enqueues
+one plain-text message containing
+`{server.public_url}/id/password-reset?token=...`. Delivery is asynchronous
+through a bounded 64-message queue with one worker; there are no retries and no
+durable outbox. A full queue, stopped worker, or SMTP failure is logged without
+changing the response. Unknown accounts and accounts without an email address
+send nothing.
+
+The HTTP response is always the existing generic success message, regardless of
+whether a message was sent. `auth.password_reset_token_in_response = true` still
+adds a usable `reset_url` to that response even when mail is enabled; it is a
+development escape hatch that lets any unauthenticated caller obtain a reset
+link and is unsafe for production.
+
+Email-change verification and organization invitation mail are not implemented
+in this slice.
 
 ## 3. Single-node install
 
@@ -794,6 +879,11 @@ writes:
   `--include-private-keys`, in which case the backup contains the config
   snapshot and the private tree but no database or bookshelf.
 
+The configuration snapshot includes the resolved `[mail]` settings but never
+`mail.password`: the secret is not serialized into `microwave-config.json`. If
+mail is enabled, supply it again with `MW_MAIL__PASSWORD` after a restore or
+when re-provisioning from the snapshot.
+
 For a single-file archive with the same payload, use the tar format:
 
 ```sh
@@ -927,12 +1017,14 @@ Tar entries are validated before extraction: only `microwave.db`,
 `private/manifest.json` + `private/files/<file>` layout are allowed, and
 archive entries with absolute paths, `..`, symlinks, hard links, devices,
 FIFOs, or unknown names are rejected. A `microwave-config.json` entry is
-extracted for completeness but is not applied by `restore`. Private entries
-whose tar header exceeds the per-file or total size limit are rejected even
-without `--restore-private-keys`. Extraction happens in a temporary directory,
-so refusing confirmation never touches live data. For PostgreSQL it reads the
-archive TOC first and reports the database the dump was created from; a
-mismatch with the configured target is refused unless `--yes` is given.
+extracted for completeness but is not applied by `restore`; it never contains
+`mail.password`, so set `MW_MAIL__PASSWORD` after restore when mail is enabled.
+Private entries whose tar header exceeds the per-file or total size limit are
+rejected even without `--restore-private-keys`. Extraction happens in a
+temporary directory, so refusing confirmation never touches live data. For
+PostgreSQL it reads the archive TOC first and reports the database the dump was
+created from; a mismatch with the configured target is refused unless `--yes`
+is given.
 
 Private key/certificate restore is **opt-in and separate** from the database
 and bookshelf restore:
@@ -1678,6 +1770,10 @@ requires restoring that backup.
 | `failed to read TLS certificate file` / `do not form a matching pair` | Fix `server.tls.cert_path`/`key_path`, make the files readable by the service user, and ensure the key belongs to the leaf certificate. `check-config` performs the same check without binding. |
 | `TLS certificate reload failed; keeping the previous certificate` | The replacement pair is unreadable, malformed, or mismatched. The server is still serving the previous certificate. Fix both files (write them atomically) and send `SIGHUP` again or wait for the next polling interval. |
 | `curl: (60) SSL certificate problem` against a direct HTTPS listener | The client does not trust the issuing CA, or the certificate does not cover the hostname used. Install the internal CA on clients; reserve `-k`/`MW_HEALTHCHECK_INSECURE` for probes and tests. |
+| `server.public_url` rejected or missing while mail is enabled | Set an absolute `https` origin (or `http` only for a loopback host) with no credentials, path, query, or fragment. It is required whenever `mail.enabled` is true. |
+| Password-reset email is not delivered | Confirm `mail.enabled`, `mail.host`, `mail.from`, and `server.public_url`, and that the user has an email address. Delivery is asynchronous; relay and queue failures are logged (`Failed to send email`, `password reset mail failed`) while the HTTP response stays generic. |
+| `mail.security = "none"` rejected with credentials | Plaintext SMTP AUTH is loopback-only. Use STARTTLS or implicit TLS for a remote relay. |
+| `mail.password` missing after restore | Expected: the password is never serialized into `microwave-config.json`. Set `MW_MAIL__PASSWORD` for the restored server. |
 | `Permission denied` creating `microwave.db` | Data dir not writable by the service user. `chown -R microwave:microwave /var/lib/microwave`. |
 | `Address already in use` | Another process holds `server.bind`. Change the port or stop the other process. |
 | `check-config` complains about object store | `s3`/`garage` needs endpoint, bucket, and credentials (config or `bookshelf.*` secrets). |

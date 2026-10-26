@@ -20,6 +20,13 @@
 bind = "0.0.0.0:8000"
 # 0 lets the server size the Tokio runtime from the available CPUs.
 worker_threads = 0
+# Public origin clients use to reach this server, for example
+# "https://chef.example.com". Required when [mail] is enabled so password-reset
+# links are built from a trusted value instead of the unauthenticated Host
+# header. Must be an absolute origin with no credentials, path, query, or
+# fragment. https is required except for loopback development addresses
+# (localhost, 127.0.0.1, ::1), which may use http.
+# public_url = "https://chef.example.com"
 
 # Optional TLS listener (rustls). Setting either path enables HTTPS; the other
 # is then required and the pair is validated. `enabled = true` makes that
@@ -121,6 +128,56 @@ skew_seconds = 900
 # use `users.admin` for server-admin privileges; this name identifies the
 # account that cannot be demoted.
 superuser_name = "pivotal"
+# Development only: include the password-reset URL in the HTTP response. Off by
+# default. Enabling it lets any unauthenticated caller obtain a usable reset
+# link for an existing account and is unsafe for production, even with mail
+# enabled.
+# password_reset_token_in_response = false
+# Lifetime of password-reset tokens in seconds. Default 3600, maximum 604800
+# (seven days); must be greater than zero. The reset email derives its expiry
+# text from this value.
+# password_reset_ttl_seconds = 3600
+
+# Outbound SMTP for password-reset mail. Disabled by default; all other keys in
+# this section are ignored while `enabled` is false or `host` is empty. Setting
+# mail.enabled = true requires server.public_url, host, and from, and an invalid
+# enabled configuration fails startup (and `check-config`) instead of failing at
+# the first reset request. Remote authenticated SMTP is the supported production
+# path; use starttls or tls.
+# [mail]
+# enabled = false
+# Relay hostname. Required when mail is enabled.
+# host = "smtp.example.com"
+# Port. Defaults to 587 for starttls, 465 for tls (implicit TLS/SMTPS), and 25
+# for plaintext when omitted.
+# port = 587
+# starttls (default) upgrades the connection on port 587, tls uses implicit TLS
+# on port 465, and none is explicit plaintext for a trusted local relay on port
+# 25. SMTP AUTH with none is accepted only for loopback hosts; a remote relay
+# with credentials must use starttls or tls.
+# security = "starttls"
+# SMTP AUTH credentials. username requires password and vice versa.
+# username = "chef-mailer"
+# Prefer MW_MAIL__PASSWORD over storing the password in this file. It is
+# redacted from logs and Debug output and is never serialized, so it is absent
+# from microwave-config.json backups; provide it again after a restore.
+# password = "secret"
+# auto (default) lets the transport negotiate AUTH; plain and login force a
+# mechanism. auto, plain, and login all require username and password. Set none
+# for an unauthenticated relay, and do not combine it with credentials.
+# auth = "auto"
+# From header. Required when mail is enabled; a display name is accepted.
+# from = "Chef Infra Server <chef@example.com>"
+# Optional Reply-To header.
+# reply_to = "ops@example.com"
+# SMTP timeout in milliseconds. Must be greater than zero.
+# timeout_ms = 10000
+# EHLO/HELO name. When unset the mail library's default is used.
+# hello_name = "chef.example.com"
+# Optional extra PEM CA certificate used to verify a relay with a private CA.
+# System roots remain trusted. The file is read when the mailer is built at
+# startup; an unreadable or unparseable file fails startup.
+# tls_ca_path = "/etc/ssl/private-ca.pem"
 
 [keygen]
 # API key creation takes pre-generated 2048-bit RSA keypairs from this bounded
