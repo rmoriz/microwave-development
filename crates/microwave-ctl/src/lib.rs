@@ -264,6 +264,7 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
             yes,
             config_only,
             pg_options,
+            include_private_keys,
         } => backup::backup(
             &context,
             path.as_deref(),
@@ -276,6 +277,7 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
                 yes,
                 config_only,
                 pg_options: pg_options.as_deref(),
+                include_private_keys,
             },
         ),
         Command::Restore {
@@ -284,12 +286,16 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
             format,
             tar,
             pg_options,
+            restore_private_keys,
+            private_only,
         } => backup::restore(
             &context,
             &path,
             yes,
             if tar { Some(BackupFormat::Tar) } else { format },
             pg_options.as_deref(),
+            restore_private_keys,
+            private_only,
         ),
         Command::MigrateFromLegacy { input, yes } => {
             commands::migrate_from_legacy(&context, &input, yes)

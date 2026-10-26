@@ -257,7 +257,11 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 > both SQLite and PostgreSQL. `backup`/`restore` use `VACUUM INTO` for SQLite
 > and `pg_dump`/`pg_restore` for PostgreSQL; both require the matching client
 > tools for PostgreSQL. A directory or a single tar archive can be used for
-> either backend. `reconfigure` validates, initializes/migrates, and reports
+> either backend. Backups accept an optional timestamped destination,
+> `--config-only`, validated `--pg-options`, and opt-in
+> `--include-private-keys`; restore accepts `--pg-options` and the separate
+> `--restore-private-keys`/`--private-only` flags. `reconfigure` validates,
+> initializes/migrates, and reports
 > without restarting a server. `reindex` prints relational counts for the
 > embedded backend and backfills remote OpenSearch/Elasticsearch documents in
 > chunked `_bulk` requests, counting only acknowledged items and refreshing the
@@ -289,8 +293,23 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 > private files are pre-staged and committed as a set; partial-secret imports
 > warn; archives are capped at 1,000,000 entries. Use both secret flags for a
 > truly complete self-migration. Remote S3/Garage objects are outside the
-> archive; replicate the bucket. `microwave-ctl backup` remains a
-> database-file/dump plus bookshelf copy without private keys.
+> archive; replicate the bucket. `microwave-ctl backup --include-private-keys`
+> adds an explicit `private/` manifest for the fixed server key/certificate
+> set to either directory or tar backups; restore requires the separate
+> `--restore-private-keys` opt-in, validates and preflights/stages every
+> private destination before the database, and applies them as a set after a
+> successful database/bookshelf restore with rollback on ordinary commit
+> failure; old-content backups are kept until the whole set commits and are
+> preserved at a reported path if rollback fails. Backup destinations are
+> preflighted before any private tree replacement, so a failed re-run cannot
+> destroy an existing full backup's keys; populated trees are never replaced by
+> a default backup or an empty include. The swap is crash-window documented:
+> old keys can remain at a `.microwave-private-old-*` sibling. `--private-only
+> --restore-private-keys` retries keys without replaying metadata (an empty set
+> is a no-op). Without that flag, existing target keys are left untouched. The default backup is key-**file**-free, not DB-secret-free:
+> database-backed secrets (including the object-store secret in `kvpair`) are
+> always in the database dump. An existing destination cannot be extended; a
+> new backup in a new destination is required for keys.
 > `import-knife-backup` also supports both backends, writes cookbook blobs to a
 > local object-store root, and requires `--bookshelf-dir` with
 > `--database-url`. Explicit `--secrets-dir`/`--secrets-archive` sources migrate
@@ -324,7 +343,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [x] P1b: `Location` headers, Chef JSON error envelopes, bookshelf 250 MiB/ETag/Last-Modified/204, search grammar (default OR, `&&`/`||`, wildcard fields, phrases, fuzzy/boost), embedded `X_CHEF_*` fields.
 - [x] P1c: top-level service aliases, optional/timestamped backups, `psql SERVICE`, upstream `user-create`/`org-create` forms and validator keys, `show-service-credentials`, `require-credential-rotation`, orphan-blob cleanup, org-delete blob/search cleanup.
 - [x] P2: per-user USAG groups, SQLite indexes, transactional group-cycle checks, authz entity-type triggers, policy/artifact FKs, access log/request IDs, compression, trusted-proxy handling.
-- [ ] Integrate the reviewed `backup-keys` branch (`microwave-ctl backup --include-private-keys`) with the newer P1c backup command surface.
+- [x] Integrate the reviewed `backup-keys` branch (`microwave-ctl backup --include-private-keys`) with the newer P1c backup command surface: optional timestamped PATH, `--yes`, `--config-only`, validated `--pg-options`, tar/directory formats, private-key manifest/TLS handling, and restore `--restore-private-keys`/`--private-only`/`--pg-options` all coexist.
 - [ ] Run the non-harness Pedant `environments`/`roles` suites; the vendored harness currently lacks the `client` fixture for their auth cases.
 ### 5.5 Full Pedant Verification, HA & Performance Benchmarks
 - [ ] Run complete `oc-chef-pedant` suite against Default Embedded mode (SQLite + Tantivy + Local Bookshelf) and achieve 100% pass rate on supported specs.
