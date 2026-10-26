@@ -14,6 +14,7 @@ pub struct Config {
     pub object_store: ObjectStoreConfig,
     pub auth: AuthConfig,
     pub keygen: KeygenConfig,
+    pub depsolver: DepsolverConfig,
     pub license: LicenseConfig,
     pub stats: StatsConfig,
     pub data_collector: DataCollectorConfig,
@@ -68,6 +69,18 @@ impl Config {
         if self.compliance_proxy.timeout == 0 {
             return Err(ConfigError::InvalidValue {
                 key: "compliance_proxy.timeout".into(),
+                value: "0".into(),
+            });
+        }
+        if self.depsolver.timeout_ms == 0 {
+            return Err(ConfigError::InvalidValue {
+                key: "depsolver.timeout_ms".into(),
+                value: "0".into(),
+            });
+        }
+        if self.depsolver.max_concurrent == 0 {
+            return Err(ConfigError::InvalidValue {
+                key: "depsolver.max_concurrent".into(),
                 value: "0".into(),
             });
         }
@@ -126,6 +139,7 @@ impl Config {
     /// - `MW_AUTH__SKEW_SECONDS`, `MW_AUTH__SUPERUSER_NAME`,
     ///   `MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE`
     /// - `MW_KEYGEN__SIZE`, `MW_KEYGEN__WORKERS`, `MW_KEYGEN__WARM_UP`
+    /// - `MW_DEPSOLVER__TIMEOUT_MS`, `MW_DEPSOLVER__MAX_CONCURRENT`
     /// - `MW_LICENSE__NODE_LICENSE`, `MW_LICENSE__UPGRADE_URL`
     /// - `MW_STATS__USERNAME`, `MW_STATS__PASSWORD`
     /// - `MW_DATA_COLLECTOR__ROOT_URL`, `MW_DATA_COLLECTOR__TOKEN`,
@@ -272,6 +286,12 @@ impl Config {
         }
         if let Ok(value) = std::env::var("MW_KEYGEN__WARM_UP") {
             self.keygen.warm_up = parse_bool("MW_KEYGEN__WARM_UP", &value)?;
+        }
+        if let Ok(value) = std::env::var("MW_DEPSOLVER__TIMEOUT_MS") {
+            self.depsolver.timeout_ms = parse_value("MW_DEPSOLVER__TIMEOUT_MS", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_DEPSOLVER__MAX_CONCURRENT") {
+            self.depsolver.max_concurrent = parse_value("MW_DEPSOLVER__MAX_CONCURRENT", value)?;
         }
         if let Ok(value) = std::env::var("MW_LICENSE__NODE_LICENSE") {
             self.license.node_license = parse_value("MW_LICENSE__NODE_LICENSE", value)?;
@@ -711,6 +731,28 @@ impl Default for KeygenConfig {
             size: 3,
             workers: 1,
             warm_up: false,
+        }
+    }
+}
+
+/// Dependency solver execution limits.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DepsolverConfig {
+    /// Maximum time a single dependency solve may run, in milliseconds.
+    /// Upstream defaults to 20000. Must be greater than zero.
+    pub timeout_ms: u64,
+    /// Maximum number of dependency solves executed concurrently. Requests
+    /// beyond this bound are rejected with 503 instead of queueing. Must be
+    /// greater than zero.
+    pub max_concurrent: usize,
+}
+
+impl Default for DepsolverConfig {
+    fn default() -> Self {
+        Self {
+            timeout_ms: 20_000,
+            max_concurrent: 4,
         }
     }
 }

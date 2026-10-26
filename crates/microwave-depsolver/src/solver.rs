@@ -4,7 +4,7 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 /// Upstream's default depsolver timeout.
-pub const DEFAULT_TIMEOUT_MS: u64 = 2000;
+pub const DEFAULT_TIMEOUT_MS: u64 = 20_000;
 
 const MAX_ERROR_PATHS: usize = 100;
 

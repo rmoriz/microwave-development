@@ -55,7 +55,25 @@ async fn solve(
         .map_err(ApiError::from)?;
     let world = cookbook_world(&versions)?;
 
-    match world.solve(&goals, &environment_constraints, &SolveOptions::default()) {
+    // Reject rather than queue behind other solves: a client that would
+    // otherwise wait indefinitely gets an immediate, well-known 503.
+    let Some(permit) = state.try_acquire_depsolver() else {
+        return Ok(overload_error());
+    };
+    let options = SolveOptions::with_timeout_ms(state.config.depsolver.timeout_ms);
+    let solution = tokio::task::spawn_blocking({
+        let world = world.clone();
+        let goals = goals.clone();
+        let environment_constraints = environment_constraints.clone();
+        move || world.solve(&goals, &environment_constraints, &options)
+    })
+    .await
+    .map_err(|_| ApiError::internal())?;
+    // The expensive search is over; release the slot before the async
+    // permission checks and manifest rendering below.
+    drop(permit);
+
+    match solution {
         Ok(solution) => {
             let stored_versions = versions
                 .iter()
@@ -117,6 +135,13 @@ fn json_body(body: Result<Json<Value>, JsonRejection>) -> Result<Value, ApiError
             rejection => Err(ApiError::bad_request(rejection.body_text())),
         },
     }
+}
+
+fn overload_error() -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({ "error": ["Dependency solver overloaded"] })),
+    )
 }
 
 fn solve_error(error: SolveError) -> (StatusCode, Json<Value>) {

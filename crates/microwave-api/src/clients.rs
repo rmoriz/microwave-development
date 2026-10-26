@@ -267,6 +267,12 @@ async fn update_client(
             .map_err(ApiError::from)?;
     }
 
+    // Every successful update changes a searchable field (name, validator flag,
+    // or default key). Re-index the same document id so remote backends replace
+    // the previous revision; no delete of the old id is needed because the
+    // store id is stable across renames.
+    crate::search::index::index_client(&state, org, &client).await;
+
     let base = base_url(&headers, &state);
     let mut response = client_json(&state, org, &client, &base, api_version.0 == 0).await?;
     response["private_key"] = match private_key {
