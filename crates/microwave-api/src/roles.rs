@@ -2,10 +2,26 @@ use crate::helpers::{base_url, container_authz, organization, require_permission
 use crate::{ApiError, AppState, AuthContext};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
 use microwave_store::Permission;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
+
+/// Top-level keys accepted on role payloads, mirroring `?VALID_KEYS` in
+/// `chef_role.erl`.
+const VALID_KEYS: [&str; 8] = [
+    "chef_type",
+    "default_attributes",
+    "description",
+    "env_run_lists",
+    "json_class",
+    "name",
+    "override_attributes",
+    "run_list",
+];
+
+const ATTRIBUTE_KEYS: [&str; 2] = ["default_attributes", "override_attributes"];
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -69,7 +85,7 @@ async fn create_role(
     let container = container_authz(&state, org, "roles").await?;
     require_permission(&state, &auth, &container, Permission::Create).await?;
 
-    let name = normalize_role(&mut body)?;
+    let name = normalize_role(&mut body, None)?;
     let role = state
         .store
         .create_role(
@@ -104,8 +120,7 @@ async fn get_role(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("role {name}")))?;
     require_permission(&state, &auth, &role.authz_id, Permission::Read).await?;
-    let value = serde_json::from_str(&role.serialized_object).map_err(|_| ApiError::internal())?;
-    Ok(Json(value))
+    Ok(Json(role_document(&role)?))
 }
 
 /// `GET /organizations/:org/roles/:role/environments`
@@ -207,7 +222,10 @@ async fn find_role(
 }
 
 fn role_document(role: &microwave_store::StoredObject) -> Result<Value, ApiError> {
-    serde_json::from_str(&role.serialized_object).map_err(|_| ApiError::internal())
+    let mut document: Value =
+        serde_json::from_str(&role.serialized_object).map_err(|_| ApiError::internal())?;
+    normalize_role_document(&mut document);
+    Ok(document)
 }
 
 async fn update_role(
@@ -225,12 +243,7 @@ async fn update_role(
         .ok_or_else(|| ApiError::not_found(format!("role {name}")))?;
     require_permission(&state, &auth, &role.authz_id, Permission::Update).await?;
 
-    let body_name = normalize_role(&mut body)?;
-    if body_name != name {
-        return Err(ApiError::bad_request(
-            "role name does not match request path",
-        ));
-    }
+    normalize_role(&mut body, Some(&name))?;
     let updated = state
         .store
         .update_role(
@@ -241,16 +254,14 @@ async fn update_role(
         .await
         .map_err(ApiError::from)?;
     crate::search::index::index_object(&state, org, crate::search::IndexKind::Role, &updated).await;
-    let value =
-        serde_json::from_str(&updated.serialized_object).map_err(|_| ApiError::internal())?;
-    Ok(Json(value))
+    Ok(Json(role_document(&updated)?))
 }
 
 async fn delete_role(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, name)): Path<(String, String)>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Response, ApiError> {
     let org = organization(&auth)?;
     let role = state
         .store
@@ -259,33 +270,247 @@ async fn delete_role(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("role {name}")))?;
     require_permission(&state, &auth, &role.authz_id, Permission::Delete).await?;
+    let value = role_document(&role)?;
     state
         .store
         .delete_role(&org.id, &name)
         .await
         .map_err(ApiError::from)?;
     crate::search::index::delete_document(&state, &org.id, &role.id).await;
-    Ok(Json(json!({})))
+    Ok(Json(value).into_response())
 }
 
-fn normalize_role(body: &mut Value) -> Result<String, ApiError> {
-    let name = body
-        .get("name")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ApiError::bad_request("role name is required"))?
-        .to_string();
-    body["name"] = json!(name);
-    body["json_class"] = json!("Chef::Role");
-    body["chef_type"] = json!("role");
-    if body.get("run_list").is_none() {
-        body["run_list"] = json!([]);
+/// Validates and normalizes a role payload following
+/// `chef_role:parse_binary_json/2`.
+///
+/// `path_name` is `Some` for PUT requests: the body name is optional, but when
+/// present it must match the URL. Create requests require an explicit name.
+fn normalize_role(body: &mut Value, path_name: Option<&str>) -> Result<String, ApiError> {
+    let Some(object) = body.as_object_mut() else {
+        return Err(ApiError::bad_request(
+            "Incorrect JSON type for request body",
+        ));
+    };
+
+    let name = match path_name {
+        Some(path_name) => {
+            match object.get("name") {
+                None => {
+                    object.insert("name".into(), json!(path_name));
+                }
+                Some(Value::String(body_name)) if body_name == path_name => {}
+                Some(_) => {
+                    return Err(ApiError::bad_request("Role name mismatch."));
+                }
+            }
+            path_name.to_string()
+        }
+        None => object
+            .get("name")
+            .ok_or_else(|| ApiError::bad_request("Field 'name' missing"))?
+            .as_str()
+            .ok_or_else(|| ApiError::bad_request("Field 'name' invalid"))?
+            .to_string(),
+    };
+    if !valid_name(&name) {
+        return Err(ApiError::bad_request("Field 'name' invalid"));
     }
-    if body.get("default_attributes").is_none() {
-        body["default_attributes"] = json!({});
+    object.insert("name".into(), json!(name));
+
+    if let Some(key) = object
+        .keys()
+        .find(|key| !VALID_KEYS.contains(&key.as_str()))
+    {
+        return Err(ApiError::bad_request(format!(
+            "Invalid key {key} in request body"
+        )));
     }
-    if body.get("override_attributes").is_none() {
-        body["override_attributes"] = json!({});
+
+    validate_fixed_field(object, "json_class", "Chef::Role")?;
+    validate_fixed_field(object, "chef_type", "role")?;
+
+    for key in ATTRIBUTE_KEYS {
+        match object.get(key) {
+            None => {
+                object.insert(key.into(), json!({}));
+            }
+            Some(Value::Object(_)) => {}
+            Some(_) => {
+                return Err(ApiError::bad_request(format!(
+                    "Field '{key}' is not a hash"
+                )));
+            }
+        }
     }
+
+    let run_list = match object.get("run_list") {
+        None => Vec::new(),
+        Some(value) => validate_run_list(value, "Field 'run_list' is not a valid run list")?,
+    };
+    object.insert("run_list".into(), json!(normalize_run_list(run_list)));
+
+    let env_run_lists = match object.get("env_run_lists") {
+        None => Map::new(),
+        Some(Value::Object(lists)) => {
+            let mut normalized = Map::new();
+            for (environment, run_list) in lists {
+                if !valid_name(environment) {
+                    return Err(ApiError::bad_request(format!(
+                        "Invalid key '{environment}' for env_run_lists"
+                    )));
+                }
+                let run_list = validate_run_list(
+                    run_list,
+                    "Field 'env_run_lists' contains invalid run lists",
+                )?;
+                normalized.insert(environment.clone(), json!(normalize_run_list(run_list)));
+            }
+            normalized
+        }
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "Field 'env_run_lists' contains invalid run lists",
+            ));
+        }
+    };
+    object.insert("env_run_lists".into(), Value::Object(env_run_lists));
+
     Ok(name)
+}
+
+fn validate_fixed_field(
+    object: &mut Map<String, Value>,
+    key: &str,
+    expected: &str,
+) -> Result<(), ApiError> {
+    match object.get(key) {
+        None => {
+            object.insert(key.into(), json!(expected));
+            Ok(())
+        }
+        Some(Value::String(value)) if value == expected => Ok(()),
+        Some(_) => Err(ApiError::bad_request(format!("Field '{key}' invalid"))),
+    }
+}
+
+fn validate_run_list(value: &Value, message: &str) -> Result<Vec<String>, ApiError> {
+    let Some(items) = value.as_array() else {
+        return Err(ApiError::bad_request(message));
+    };
+    let mut run_list = Vec::with_capacity(items.len());
+    for item in items {
+        let item = item
+            .as_str()
+            .ok_or_else(|| ApiError::bad_request(message))?;
+        if !valid_run_list_item(item) {
+            return Err(ApiError::bad_request(message));
+        }
+        run_list.push(item.to_string());
+    }
+    Ok(run_list)
+}
+
+/// Upstream normalizes every run list item to an explicit `recipe[...]` or
+/// `role[...]` and removes exact duplicates after qualification.
+fn normalize_run_list(run_list: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::with_capacity(run_list.len());
+    for item in run_list {
+        let item = if item.starts_with("recipe[") || item.starts_with("role[") {
+            item
+        } else {
+            format!("recipe[{item}]")
+        };
+        if !normalized.contains(&item) {
+            normalized.push(item);
+        }
+    }
+    normalized
+}
+
+/// Normalize run lists in a stored document. Writes are already normalized,
+/// but reads also cover objects stored before this contract was enforced.
+fn normalize_role_document(document: &mut Value) {
+    let Some(object) = document.as_object_mut() else {
+        return;
+    };
+    if let Some(run_list) = object.get_mut("run_list") {
+        normalize_run_list_value(run_list);
+    }
+    if let Some(Value::Object(env_run_lists)) = object.get_mut("env_run_lists") {
+        for run_list in env_run_lists.values_mut() {
+            normalize_run_list_value(run_list);
+        }
+    }
+}
+
+fn normalize_run_list_value(value: &mut Value) {
+    let Some(items) = value.as_array() else {
+        return;
+    };
+    if !items.iter().all(Value::is_string) {
+        return;
+    }
+    let run_list = items
+        .iter()
+        .filter_map(Value::as_str)
+        .map(ToString::to_string)
+        .collect();
+    *value = json!(normalize_run_list(run_list));
+}
+
+fn valid_name(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':'))
+}
+
+fn valid_run_list_item(item: &str) -> bool {
+    if let Some(name) = item
+        .strip_prefix("recipe[")
+        .and_then(|item| item.strip_suffix(']'))
+    {
+        return valid_recipe(name);
+    }
+    if let Some(name) = item
+        .strip_prefix("role[")
+        .and_then(|item| item.strip_suffix(']'))
+    {
+        return valid_short_name(name);
+    }
+    valid_recipe(item)
+}
+
+/// A recipe reference is `[cookbook::]name[@MAJOR.MINOR[.PATCH]]`.
+fn valid_recipe(item: &str) -> bool {
+    match item.split_once('@') {
+        Some((name, version)) => valid_recipe_name(name) && valid_version(version),
+        None => valid_recipe_name(item),
+    }
+}
+
+fn valid_recipe_name(name: &str) -> bool {
+    let mut parts = name.split("::");
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(cookbook), Some(recipe), None) => {
+            valid_short_name(cookbook) && valid_short_name(recipe)
+        }
+        (Some(recipe), None, None) => valid_short_name(recipe),
+        _ => false,
+    }
+}
+
+fn valid_short_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+fn valid_version(version: &str) -> bool {
+    let parts: Vec<&str> = version.split('.').collect();
+    (2..=3).contains(&parts.len())
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
 }
