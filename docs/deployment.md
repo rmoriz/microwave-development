@@ -1318,6 +1318,64 @@ checksums are skipped, relative file URLs are signed and resolved against
 MD5-verified before an atomic write. A blob is limited to 64 MiB and one crawl
 to 4 GiB. Without the flag `from-api` remains metadata-only.
 
+### Migrating configuration from `/etc/opscode/chef-server.rb`
+
+Microwave does not parse or execute the legacy Ruby configuration. There is no
+`chef-server.rb` importer and no `CHEF_SECRETS_DATA` reader at server startup.
+Treat the migration as a translation step: read the old file, keep only the
+settings that have a Microwave equivalent, and write them as TOML or
+`MW_*` overrides.
+
+A minimal translation looks like this:
+
+```ruby
+# legacy /etc/opscode/chef-server.rb
+api_fqdn "chef.example.com"
+postgresql['max_connections'] = 350
+data_collector['root_url'] = "https://automate.example.com/data-collector/v0/"
+data_collector['token'] = "secret-token"
+```
+
+```toml
+# /etc/microwave/microwave.toml
+[server]
+bind = "0.0.0.0:443"
+public_url = "https://chef.example.com"
+
+[database]
+driver = "postgres"
+url = "postgres://microwave:secret@db/microwave"
+
+[data_collector]
+root_url = "https://automate.example.com/data-collector/v0/"
+token = "secret-token"
+```
+
+Common mappings:
+
+| Legacy `chef-server.rb` setting | Microwave equivalent | Notes |
+| --- | --- | --- |
+| `api_fqdn` | `server.public_url` for links; reverse-proxy `Host`/`X-Forwarded-*` for request routing | Microwave builds API URLs from the request host and forwarded headers. Set `server.public_url` for password-reset links and any absolute URL that must not depend on the request. |
+| `postgresql['max_connections']`, pool tuning | PostgreSQL server-side tuning plus `database.url` | Microwave does not expose a connection-pool size. Tune PostgreSQL itself. |
+| `postgresql['work_mem']` | PostgreSQL server setting | Unchanged concept; configure in PostgreSQL. |
+| `nginx['ssl_protocols']`, TLS settings | `server.tls.cert_path`, `server.tls.key_path`, and reverse-proxy TLS settings | Microwave terminates TLS directly or behind a proxy. |
+| `data_collector['root_url']`, `data_collector['token']` | `data_collector.root_url`, `data_collector.token` | Direct equivalent. |
+| `compliance_proxy.url` | `compliance_proxy.url` | Direct equivalent. |
+| `search_provider` | `search.backend` (`embedded`, `opensearch`, `elasticsearch`) | Solr is not supported. Use OpenSearch/Elasticsearch for remote search. |
+| `search.url` | `search.url` | Direct equivalent. |
+| `object_store` S3/Garage settings | `[object_store]` | Direct equivalent for backend, bucket, endpoint, region, credentials, and path style. |
+| `storage.compression` | `storage.compression` | `zlib` or `none`. |
+| `auth.skew_seconds` | `auth.skew_seconds` | Direct equivalent. |
+| `oc_id` settings | `[auth]` superuser and OAuth routes | Microwave uses its own oc-id-compatible identity surface; most oc-id Ruby settings have no equivalent. |
+| `rabbitmq[...]`, `opscode_solr4[...]`, analytics settings | none | These services are EOL/removed in Chef Infra Server 14+. Microwave has no RabbitMQ, Solr, or analytics service. |
+| `dark_launch[...]` | none | Not used. |
+| `telemetry[...]` | `telemetry.*` | Microwave stores telemetry configuration but does not send telemetry. |
+
+Secrets and keys are not imported from `chef-server.rb`. Use `microwave-ctl set-secret` or `MW_*` environment variables, and migrate server-private material with
+`microwave-migrate import-knife-backup --secrets-dir ...` or `microwave-ctl backup --include-private-keys`.
+
+For an agent-assisted migration, give the agent the old file plus this table and ask it to produce a Microwave TOML file plus a list of settings that have no equivalent. Review that list manually before starting the server.
+
 ### Importing a `knife ec backup` repository
 
 If the legacy server was backed up with `knife ec backup`, import that
