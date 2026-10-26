@@ -298,7 +298,9 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 > failure; old-content backups are kept until the whole set commits and are
 > preserved at a reported path if rollback fails. Backup destinations are
 > preflighted before any private tree replacement, so a failed re-run cannot
-> destroy an existing full backup's keys. `--private-only
+> destroy an existing full backup's keys; populated trees are never replaced by
+> a default backup or an empty include. The swap is crash-window documented:
+> old keys can remain at a `.microwave-private-old-*` sibling. `--private-only
 > --restore-private-keys` retries keys without replaying metadata (an empty set
 > is a no-op). Without that flag, existing target keys are left untouched. The default backup is key-**file**-free, not DB-secret-free:
 > database-backed secrets (including the object-store secret in `kvpair`) are

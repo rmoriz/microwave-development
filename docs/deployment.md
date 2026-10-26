@@ -856,9 +856,18 @@ destination and its transport accordingly. When a backup writes over a
 destination that already has `private/`, it only replaces a fully recognizable
 microwave-ctl private tree (expected manifest format/version, `manifest.json`,
 `files/`, and only the referenced regular payload files); extra or unrelated
-content is refused rather than deleted. The old private tree is kept until the
-database and bookshelf backup has completed and the new private tree has been
-fully staged, then swapped via a sibling directory with rollback on failure.
+content is refused rather than deleted. A populated recognized tree is never
+replaced by a default backup or by `--include-private-keys` with an empty
+private set; choose a new destination or remove the old tree explicitly. An
+empty recognized tree may still be replaced. The old private tree is kept until
+the database and bookshelf backup has completed and the new private tree has
+been fully staged, then swapped via a sibling directory with rollback on
+failure.
+
+A SIGKILL during that swap can leave the destination without `private/` and
+the old keys at a sibling `.microwave-private-old-*` path. If a later failure
+prevents restoring the old tree, the error reports that exact path; recover the
+keys from it rather than deleting it.
 
 The bookshelf copy and private-file collection are not atomic with the
 database snapshot. Uploads or key rotations in flight during the copy can be
@@ -910,15 +919,19 @@ referenced files present, no unreferenced files, no symlinks or traversal) and
 That preflight resolves each destination exactly once and pins it: the
 data-directory root may itself be a symlink and is canonicalized, data-dir
 payload filenames are never re-canonicalized, and a configured final TLS target
-symlink is resolved once to its canonical regular file. A symlink that appears
-at the pinned final target afterwards is rejected. Unsafe parent types are
-refused, missing parents are created with mode `0700`, and writability is
-verified by staging each payload and a temporary copy of any previous target in
-a mode-`0700` staging directory in the target parent. Keeping staging on the
-target filesystem makes the commit atomic; as a fallback, a SIGKILL can leave a
-private staging directory beside the target, which should be removed manually.
-The database and bookshelf are restored next, and only then are the private
-files committed as a set. Private files are `0600` and public files `0644`.
+symlink is resolved once to its canonical regular file. A missing TLS target is
+pinned by canonicalizing its nearest existing ancestor (following a managed
+`live/current` parent symlink) and appending the missing file name. A symlink
+observed at the pinned final target during staging is rejected; any symlink that
+appears later is atomically replaced by the final rename, never followed.
+Unsafe parent types are refused, missing parents are created with mode `0700`,
+and writability is verified by staging each payload and a temporary copy of any
+previous target in a mode-`0700` staging directory in the target parent.
+Keeping staging on the target filesystem makes the commit atomic; as a
+fallback, a SIGKILL can leave a private staging directory beside the target,
+which should be removed manually. The database and bookshelf are restored next,
+and only then are the private files committed as a set. Private files are
+`0600` and public files `0644`.
 
 If an ordinary private commit fails, files already applied in that run are
 rolled back from their temporary copies, and the error reports `applied X of

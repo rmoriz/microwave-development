@@ -194,7 +194,7 @@ fn write_backup_payload(
     // Check every destination conflict before modifying the destination. In
     // particular, a re-run into an existing full backup must fail before the
     // existing private/ tree is replaced.
-    preflight_backup_destination(context, path)?;
+    preflight_backup_destination(context, path, private_files)?;
 
     match context.config.database.driver {
         DatabaseDriver::Sqlite => backup_sqlite(context, path)?,
@@ -214,7 +214,11 @@ fn write_backup_payload(
     replace_private_backup_tree(path, private_files)
 }
 
-fn preflight_backup_destination(context: &Context, path: &Path) -> Result<(), CtlError> {
+fn preflight_backup_destination(
+    context: &Context,
+    path: &Path,
+    private_files: Option<&[PrivateBackupFile]>,
+) -> Result<(), CtlError> {
     let database_file = match context.config.database.driver {
         DatabaseDriver::Sqlite => DATABASE_FILE,
         DatabaseDriver::Postgres => POSTGRES_DUMP_FILE,
@@ -266,6 +270,17 @@ fn preflight_backup_destination(context: &Context, path: &Path) -> Result<(), Ct
                     "backup destination contains {PRIVATE_DIR}/ that is not a recognizable microwave-ctl private backup tree; refusing to delete it. Choose a new backup destination."
                 )));
             }
+            let populated = private_tree_payload_count(&private_root)? > 0;
+            if populated && private_files.is_none() {
+                return Err(CtlError::message(format!(
+                    "backup destination contains a populated {PRIVATE_DIR}/ private key tree; a default backup would remove it. Choose a new destination, or explicitly remove {PRIVATE_DIR}/ yourself before creating a key-file-free backup."
+                )));
+            }
+            if populated && private_files.is_some_and(|files| files.is_empty()) {
+                return Err(CtlError::message(format!(
+                    "refusing to replace a populated {PRIVATE_DIR}/ private key tree with an empty private manifest. Choose a new destination, or include at least one private key/certificate payload."
+                )));
+            }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
@@ -281,9 +296,31 @@ fn preflight_backup_destination(context: &Context, path: &Path) -> Result<(), Ct
 /// Replace the destination private/ tree only after the database and bookshelf
 /// backup succeeded. The new tree is staged in a sibling directory and then
 /// swapped into place; an ordinary failure restores the previous tree.
+// Failure injection is used by unit tests to exercise rollback branches that
+// cannot be triggered deterministically through the filesystem.
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PrivateTreeSwapFailure {
+    None,
+    /// Simulates a failed new-tree install while the old tree restores.
+    NewInstallRestoreOk,
+    /// Simulates a failed new-tree install and a failed old-tree restore.
+    NewInstallRestoreFails,
+    /// Simulates failure removing the old tree after the swap.
+    CleanupOld,
+}
+
 fn replace_private_backup_tree(
     path: &Path,
     private_files: Option<&[PrivateBackupFile]>,
+) -> Result<(), CtlError> {
+    replace_private_backup_tree_with(path, private_files, PrivateTreeSwapFailure::None)
+}
+
+fn replace_private_backup_tree_with(
+    path: &Path,
+    private_files: Option<&[PrivateBackupFile]>,
+    failure: PrivateTreeSwapFailure,
 ) -> Result<(), CtlError> {
     let private_root = path.join(PRIVATE_DIR);
     let previous = std::fs::symlink_metadata(&private_root).is_ok();
@@ -315,27 +352,93 @@ fn replace_private_backup_tree(
         })?;
     }
 
+    let mut new_installed = false;
     if let Some(staging) = new_staging {
-        if let Err(error) = std::fs::rename(staging.path(), &private_root) {
-            if previous {
-                let _ = std::fs::rename(&old, &private_root);
-            }
-            return Err(CtlError::message(format!(
-                "failed to install new private backup tree at {private_root:?}: {error}; the previous tree was restored"
-            )));
+        let install_result = match failure {
+            PrivateTreeSwapFailure::NewInstallRestoreOk
+            | PrivateTreeSwapFailure::NewInstallRestoreFails => Err(std::io::Error::other(
+                "test-only private tree install failure",
+            )),
+            _ => std::fs::rename(staging.path(), &private_root),
+        };
+        if let Err(error) = install_result {
+            let restored = if previous {
+                match failure {
+                    PrivateTreeSwapFailure::NewInstallRestoreFails => Err(std::io::Error::other(
+                        "test-only private tree restore failure",
+                    )),
+                    _ => std::fs::rename(&old, &private_root),
+                }
+            } else {
+                Ok(())
+            };
+            return match restored {
+                Ok(()) if previous => Err(CtlError::message(format!(
+                    "failed to install new private backup tree at {private_root:?}: {error}; the previous private tree was restored from {old:?}"
+                ))),
+                Ok(()) => Err(CtlError::message(format!(
+                    "failed to install new private backup tree at {private_root:?}: {error}; the destination has no {PRIVATE_DIR}/ tree"
+                ))),
+                Err(restore_error) => Err(CtlError::message(format!(
+                    "failed to install new private backup tree at {private_root:?}: {error}; restoring the previous private tree from {old:?} also failed: {restore_error}. The destination has no {PRIVATE_DIR}/ tree and the previous keys are preserved at {old:?}; recover them from that path. Do not delete it."
+                ))),
+            };
         }
+        new_installed = true;
     }
 
     if previous {
+        if failure == PrivateTreeSwapFailure::CleanupOld {
+            return Err(private_cleanup_error(new_installed, &old));
+        }
         if let Err(error) = remove_path(&old) {
-            // The new tree is already live. Leave the old tree for recovery and
-            // report its exact path rather than pretending cleanup succeeded.
-            return Err(CtlError::message(format!(
-                "new private backup tree is installed, but removing the previous tree {old:?} failed: {error}; remove it manually"
-            )));
+            return Err(private_cleanup_error_with(new_installed, &old, &error));
         }
     }
     Ok(())
+}
+
+fn private_cleanup_error(new_installed: bool, old: &Path) -> CtlError {
+    private_cleanup_error_with(
+        new_installed,
+        old,
+        &std::io::Error::other("test-only private tree cleanup failure"),
+    )
+}
+
+fn private_cleanup_error_with(
+    new_installed: bool,
+    old: &Path,
+    error: &dyn std::fmt::Display,
+) -> CtlError {
+    if new_installed {
+        CtlError::message(format!(
+            "the new private backup tree is installed, but removing the superseded previous tree {old:?} failed: {error}; after verifying the new private tree you may remove that path manually"
+        ))
+    } else {
+        CtlError::message(format!(
+            "the destination has no {PRIVATE_DIR}/ tree, but removing the previous private tree {old:?} failed: {error}; the previous keys are preserved at {old:?}. Do not delete that path until you have recovered or verified those keys."
+        ))
+    }
+}
+
+fn private_tree_payload_count(private_root: &Path) -> Result<usize, CtlError> {
+    let files_root = private_root.join("files");
+    let entries = std::fs::read_dir(&files_root).map_err(|error| {
+        CtlError::message(format!(
+            "failed to inspect private backup files {files_root:?}: {error}"
+        ))
+    })?;
+    let mut count = 0;
+    for entry in entries {
+        entry.map_err(|error| {
+            CtlError::message(format!(
+                "failed to inspect private backup files {files_root:?}: {error}"
+            ))
+        })?;
+        count += 1;
+    }
+    Ok(count)
 }
 
 fn is_recognized_private_backup_tree(private_root: &Path) -> Result<bool, CtlError> {
@@ -1437,11 +1540,77 @@ fn resolve_tls_target(context: &Context, kind: PrivateKind) -> Result<PathBuf, C
             "configured TLS target {:?} is not a regular file",
             configured
         ))),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(configured),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            pin_missing_target(&configured)
+        }
         Err(error) => Err(CtlError::message(format!(
             "failed to inspect configured TLS target {:?}: {error}",
             configured
         ))),
+    }
+}
+
+/// Pin a missing target by canonicalizing its nearest existing ancestor and
+/// appending the missing components. This keeps a managed parent symlink (for
+/// example `live/current -> archive`) resolved once at preflight time.
+fn pin_missing_target(path: &Path) -> Result<PathBuf, CtlError> {
+    let mut missing = Vec::new();
+    let mut current = path;
+    loop {
+        match std::fs::symlink_metadata(current) {
+            Ok(_) => {
+                if !missing.is_empty() {
+                    let metadata = std::fs::metadata(current).map_err(|error| {
+                        CtlError::message(format!(
+                            "failed to inspect configured TLS target ancestor {:?}: {error}",
+                            current
+                        ))
+                    })?;
+                    if !metadata.is_dir() {
+                        return Err(CtlError::message(format!(
+                            "configured TLS target ancestor {:?} is not a directory",
+                            current
+                        )));
+                    }
+                }
+                let mut pinned = std::fs::canonicalize(current).map_err(|error| {
+                    CtlError::message(format!(
+                        "failed to resolve configured TLS target ancestor {:?}: {error}",
+                        current
+                    ))
+                })?;
+                for component in missing.iter().rev() {
+                    pinned.push(component);
+                }
+                return Ok(pinned);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let name = current.file_name().ok_or_else(|| {
+                    CtlError::message(format!(
+                        "configured TLS target {:?} has no resolvable parent",
+                        path
+                    ))
+                })?;
+                missing.push(name.to_os_string());
+                let Some(parent) = current.parent() else {
+                    return Err(CtlError::message(format!(
+                        "configured TLS target {:?} has no existing ancestor",
+                        path
+                    )));
+                };
+                current = if parent.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    parent
+                };
+            }
+            Err(error) => {
+                return Err(CtlError::message(format!(
+                    "failed to inspect configured TLS target ancestor {:?}: {error}",
+                    current
+                )))
+            }
+        }
     }
 }
 
@@ -1529,7 +1698,11 @@ fn validate_private_files_directory(
                 "backup {PRIVATE_FILES_DIR} directory is missing"
             )));
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => {
+            return Err(CtlError::message(format!(
+                "failed to inspect backup {PRIVATE_FILES_DIR}: {error}"
+            )))
+        }
     }
 
     let mut seen = HashSet::new();
@@ -1551,7 +1724,12 @@ fn validate_private_files_directory(
             .ok_or_else(|| {
                 CtlError::message("backup private files directory contains a non-UTF-8 name")
             })?;
-        let metadata = std::fs::symlink_metadata(entry.path())?;
+        let metadata = std::fs::symlink_metadata(entry.path()).map_err(|error| {
+            CtlError::message(format!(
+                "failed to inspect backup private file {:?}: {error}",
+                entry.path()
+            ))
+        })?;
         if metadata.file_type().is_symlink() {
             return Err(CtlError::message(format!(
                 "backup private file {:?} is a symlink; refusing to restore it",
@@ -1659,6 +1837,10 @@ fn apply_private_restore(mut staged: StagedPrivateRestore) -> Result<usize, CtlE
     let fail_after = std::env::var("MW_CTL_TEST_PRIVATE_APPLY_FAIL_AFTER")
         .ok()
         .and_then(|value| value.parse::<usize>().ok());
+    #[cfg(debug_assertions)]
+    let set_mode_fail_after = std::env::var("MW_CTL_TEST_PRIVATE_SET_MODE_FAIL_AFTER")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok());
 
     for index in 0..total {
         let target = staged.entries[index].target.clone();
@@ -1698,10 +1880,22 @@ fn apply_private_restore(mut staged: StagedPrivateRestore) -> Result<usize, CtlE
                 &mut staged.entries[..index],
             ));
         }
-        if let Err(error) = set_mode(&target, mode) {
+        #[cfg(debug_assertions)]
+        let mode_result = if set_mode_fail_after == Some(index) {
+            Err(CtlError::message(
+                "test-only private target mode failure after rename",
+            ))
+        } else {
+            set_mode(&target, mode)
+        };
+        #[cfg(not(debug_assertions))]
+        let mode_result = set_mode(&target, mode);
+        if let Err(error) = mode_result {
             let error = std::io::Error::other(error.to_string());
+            // The rename already changed the content, so count this entry as
+            // applied even though its final mode could not be set.
             return Err(private_apply_error(
-                index,
+                index + 1,
                 total,
                 &target,
                 &error,
@@ -1835,10 +2029,16 @@ fn ensure_private_directory(path: &Path, allow_symlinks: bool) -> Result<(), Ctl
                     "failed to create private target parent {path:?}: {error}"
                 ))
             })?;
-            set_mode(path, PRIVATE_DIRECTORY_MODE)?;
+            set_mode(path, PRIVATE_DIRECTORY_MODE).map_err(|error| {
+                CtlError::message(format!(
+                    "failed to set mode on private target parent {path:?}: {error}"
+                ))
+            })?;
             Ok(())
         }
-        Err(error) => Err(error.into()),
+        Err(error) => Err(CtlError::message(format!(
+            "failed to inspect private target parent {path:?}: {error}"
+        ))),
     }
 }
 
@@ -1852,14 +2052,25 @@ fn ensure_private_directory(path: &Path, allow_symlinks: bool) -> Result<(), Ctl
 /// later live-data replacement would follow. Private entry sizes are checked
 /// from the tar header before any payload is extracted.
 fn extract_tar(path: &Path, destination: &Path) -> Result<(), CtlError> {
-    let file = std::fs::File::open(path)?;
+    let file = std::fs::File::open(path).map_err(|error| {
+        CtlError::message(format!("failed to open backup archive {path:?}: {error}"))
+    })?;
     let mut archive = tar::Archive::new(file);
     let mut saw_payload = false;
     let mut private_total = 0_u64;
 
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let entry_path = entry.path()?.into_owned();
+    for entry in archive.entries().map_err(|error| {
+        CtlError::message(format!("failed to read backup archive {path:?}: {error}"))
+    })? {
+        let mut entry = entry.map_err(|error| {
+            CtlError::message(format!("invalid backup archive entry in {path:?}: {error}"))
+        })?;
+        let entry_path = entry
+            .path()
+            .map_err(|error| {
+                CtlError::message(format!("invalid backup archive path in {path:?}: {error}"))
+            })?
+            .into_owned();
         if !allowed_tar_entry(&entry_path) {
             return Err(CtlError::message(format!(
                 "backup archive contains an unexpected entry {entry_path:?}; expected {}, {}, {}/, {PRIVATE_MANIFEST}, or {PRIVATE_FILES_DIR}/<file>",
@@ -2260,8 +2471,8 @@ fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), CtlError> 
 mod tests {
     use super::{
         allowed_tar_entry, archive_database, data_dir_file_is_private, database_names_match,
-        rollback_private_entries, stage_private_destinations, PrivateKind, PrivateRestoreEntry,
-        DATA_DIR_PRIVATE_FILES,
+        replace_private_backup_tree_with, rollback_private_entries, stage_private_destinations,
+        PrivateKind, PrivateRestoreEntry, PrivateTreeSwapFailure, DATA_DIR_PRIVATE_FILES,
     };
     use std::path::{Path, PathBuf};
 
@@ -2342,9 +2553,126 @@ mod tests {
         }
     }
 
+    fn seed_old_private_tree(root: &Path) {
+        let files = root.join("private/files");
+        std::fs::create_dir_all(&files).unwrap();
+        std::fs::write(
+            root.join("private/manifest.json"),
+            br#"{"format":"microwave-ctl-private-files","version":1,"entries":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(files.join("old.pem"), b"old-key-contents").unwrap();
+    }
+
+    fn hidden_old_tree(root: &Path) -> PathBuf {
+        std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name().is_some_and(|name| {
+                    name.to_string_lossy()
+                        .starts_with(".microwave-private-old-")
+                })
+            })
+            .expect("hidden old private tree")
+    }
+
+    #[test]
+    fn new_tree_install_failure_restores_the_previous_private_tree() {
+        let directory = tempfile::tempdir().unwrap();
+        seed_old_private_tree(directory.path());
+        let error = replace_private_backup_tree_with(
+            directory.path(),
+            Some(&[]),
+            PrivateTreeSwapFailure::NewInstallRestoreOk,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("previous private tree was restored"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join("private/files/old.pem")).unwrap(),
+            b"old-key-contents"
+        );
+    }
+
+    #[test]
+    fn new_tree_install_and_restore_failure_reports_the_preserved_old_path() {
+        let directory = tempfile::tempdir().unwrap();
+        seed_old_private_tree(directory.path());
+        let error = replace_private_backup_tree_with(
+            directory.path(),
+            Some(&[]),
+            PrivateTreeSwapFailure::NewInstallRestoreFails,
+        )
+        .unwrap_err()
+        .to_string();
+        let old = hidden_old_tree(directory.path());
+        assert!(
+            error.contains("destination has no private/ tree")
+                && error.contains(&format!("{old:?}"))
+                && error.contains("Do not delete it"),
+            "{error}"
+        );
+        assert!(!directory.path().join("private").exists());
+        assert_eq!(
+            std::fs::read(old.join("files/old.pem")).unwrap(),
+            b"old-key-contents"
+        );
+    }
+
+    #[test]
+    fn default_cleanup_failure_reports_the_preserved_old_tree_without_a_new_tree() {
+        let directory = tempfile::tempdir().unwrap();
+        seed_old_private_tree(directory.path());
+        let error = replace_private_backup_tree_with(
+            directory.path(),
+            None,
+            PrivateTreeSwapFailure::CleanupOld,
+        )
+        .unwrap_err()
+        .to_string();
+        let old = hidden_old_tree(directory.path());
+        assert!(
+            error.contains("destination has no private/ tree")
+                && error.contains("previous keys are preserved")
+                && error.contains(&format!("{old:?}"))
+                && error.contains("Do not delete that path"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("new private backup tree is installed"),
+            "{error}"
+        );
+        assert!(!directory.path().join("private").exists());
+        assert_eq!(
+            std::fs::read(old.join("files/old.pem")).unwrap(),
+            b"old-key-contents"
+        );
+    }
+
+    #[test]
+    fn successful_include_replacement_removes_the_superseded_tree() {
+        let directory = tempfile::tempdir().unwrap();
+        seed_old_private_tree(directory.path());
+        replace_private_backup_tree_with(directory.path(), Some(&[]), PrivateTreeSwapFailure::None)
+            .unwrap();
+        assert!(directory.path().join("private/manifest.json").is_file());
+        assert!(!directory.path().join("private/files/old.pem").exists());
+        assert!(std::fs::read_dir(directory.path())
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".microwave-private-old-")));
+    }
+
     #[cfg(unix)]
     #[test]
-    fn a_symlink_that_appears_after_target_resolution_is_rejected() {
+    fn a_symlink_that_appears_before_staging_is_rejected() {
         let directory = tempfile::tempdir().unwrap();
         let target = directory.path().join("cert.pem");
         let outside = directory.path().join("outside.pem");
@@ -2403,6 +2731,44 @@ mod tests {
         assert!(entries[0].staging.is_none());
         assert_eq!(std::fs::read(&backup).unwrap(), b"old-key-contents");
         std::fs::remove_dir_all(&staging_path).unwrap();
+    }
+
+    #[test]
+    fn failed_private_rollback_uses_the_sibling_preserved_path_when_possible() {
+        let directory = tempfile::tempdir().unwrap();
+        let target_directory = directory.path().join("target-is-a-directory");
+        std::fs::create_dir(&target_directory).unwrap();
+        std::fs::write(target_directory.join("keep"), b"keep").unwrap();
+        let staging = tempfile::Builder::new()
+            .prefix("staging-")
+            .tempdir_in(directory.path())
+            .unwrap();
+        let backup = staging.path().join("old");
+        std::fs::write(&backup, b"old-key-contents").unwrap();
+
+        let mut entries = vec![PrivateRestoreEntry {
+            target: target_directory.clone(),
+            mode: 0o600,
+            temporary: staging.path().join("new"),
+            backup: Some(backup.clone()),
+            old_mode: Some(0o600),
+            staging: Some(staging),
+            cleanup_backup: true,
+        }];
+        let errors = rollback_private_entries(&mut entries);
+        assert!(!errors.is_empty());
+        assert!(errors[0].contains("preserved at"), "{errors:?}");
+        let preserved = entries[0].backup.clone().expect("preserved backup path");
+        assert!(preserved
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(".microwave-private-backup-preserved-"));
+        assert_eq!(std::fs::read(&preserved).unwrap(), b"old-key-contents");
+        assert!(!entries[0].cleanup_backup);
+        assert!(!backup.exists());
+        std::fs::remove_file(preserved).unwrap();
+        std::fs::remove_dir_all(target_directory).unwrap();
     }
 
     #[test]

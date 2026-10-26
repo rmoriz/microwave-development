@@ -82,6 +82,29 @@ fn run_ctl_with_failpoint(
     private_only: bool,
     fail_after: Option<usize>,
 ) -> Output {
+    run_ctl_with_apply_failpoints(
+        config,
+        action,
+        path,
+        tar,
+        private,
+        private_only,
+        fail_after,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_ctl_with_apply_failpoints(
+    config: &Path,
+    action: &str,
+    path: &Path,
+    tar: bool,
+    private: bool,
+    private_only: bool,
+    fail_after: Option<usize>,
+    set_mode_fail_after: Option<usize>,
+) -> Output {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", "backup_child_dispatch", "--nocapture"])
@@ -90,6 +113,7 @@ fn run_ctl_with_failpoint(
         .env_remove("MW_DATABASE__URL")
         .env_remove("MW_PATHS__DATA_DIR")
         .env_remove("MW_CTL_TEST_PRIVATE_APPLY_FAIL_AFTER")
+        .env_remove("MW_CTL_TEST_PRIVATE_SET_MODE_FAIL_AFTER")
         .env("MW_BACKUP_TEST_CONFIG", config)
         .env("MW_BACKUP_TEST_ACTION", action)
         .env("MW_BACKUP_TEST_PATH", path)
@@ -103,6 +127,12 @@ fn run_ctl_with_failpoint(
         command.env(
             "MW_CTL_TEST_PRIVATE_APPLY_FAIL_AFTER",
             fail_after.to_string(),
+        );
+    }
+    if let Some(set_mode_fail_after) = set_mode_fail_after {
+        command.env(
+            "MW_CTL_TEST_PRIVATE_SET_MODE_FAIL_AFTER",
+            set_mode_fail_after.to_string(),
         );
     }
     command.output().unwrap()
@@ -232,6 +262,29 @@ impl Installation {
             .unwrap();
         self.tls_cert = live.join("cert.pem");
         self.tls_key = live.join("key.pem");
+        let text = format!(
+            "[paths]\ndata_dir = \"{}\"\n[server.tls]\ncert_path = \"{}\"\nkey_path = \"{}\"\n",
+            self.data_dir.display(),
+            self.tls_cert.display(),
+            self.tls_key.display()
+        );
+        std::fs::write(&self.config, text).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn use_missing_tls_targets_under_symlinked_parent(&mut self) {
+        let archive = self.root.join("tls/archive");
+        let live = self.root.join("tls/live");
+        std::fs::create_dir_all(&archive).unwrap();
+        std::fs::create_dir_all(&live).unwrap();
+        let current = live.join("current");
+        if !current.exists() {
+            std::os::unix::fs::symlink(Path::new("../archive"), &current).unwrap();
+        }
+        self.tls_cert = current.join("cert.pem");
+        self.tls_key = current.join("key.pem");
+        assert!(!self.tls_cert.exists());
+        assert!(!self.tls_key.exists());
         let text = format!(
             "[paths]\ndata_dir = \"{}\"\n[server.tls]\ncert_path = \"{}\"\nkey_path = \"{}\"\n",
             self.data_dir.display(),
@@ -864,6 +917,124 @@ fn letsencrypt_tls_symlink_targets_are_replaced_at_their_canonical_files() {
     assert_eq!(installation.database_secret().as_deref(), Some(DB_SECRET));
 }
 
+#[cfg(unix)]
+#[test]
+fn missing_tls_targets_beneath_a_symlinked_parent_are_pinned() {
+    let mut installation = Installation::new(true);
+    installation.seed_database(DB_SECRET);
+    installation.write_secrets();
+
+    let backup = installation.root.join("backup");
+    let output = run_ctl(&installation.config, "backup", &backup, false, true);
+    assert_success(&output);
+
+    installation.use_missing_tls_targets_under_symlinked_parent();
+    let archive_cert = installation.root.join("tls/archive/cert.pem");
+    let archive_key = installation.root.join("tls/archive/key.pem");
+    assert!(!archive_cert.exists());
+    assert!(!archive_key.exists());
+
+    let output = run_private_only(&installation.config, &backup, false);
+    assert_success(&output);
+    assert_no_secret_contents(&output);
+    assert_eq!(
+        std::fs::read_to_string(&archive_cert).unwrap(),
+        TLS_CERT_CONTENT
+    );
+    assert_eq!(
+        std::fs::read_to_string(&archive_key).unwrap(),
+        TLS_KEY_CONTENT
+    );
+    assert_eq!(mode(&archive_cert), 0o644);
+    assert_eq!(mode(&archive_key), 0o600);
+    assert!(
+        std::fs::symlink_metadata(installation.root.join("tls/live/current"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
+fn set_mode_failure_counts_the_renamed_entry_and_rolls_it_back() {
+    let installation = Installation::new(true);
+    installation.seed_database(DB_SECRET);
+    installation.write_secrets();
+
+    let backup = installation.root.join("backup");
+    let output = run_ctl(&installation.config, "backup", &backup, false, true);
+    assert_success(&output);
+
+    installation.replace_live_secrets();
+    let pivotal = installation.data_dir.join("pivotal.pem");
+    let pivotal_before = std::fs::read(&pivotal).unwrap();
+    let pivotal_mode = mode(&pivotal);
+
+    let output = run_ctl_with_apply_failpoints(
+        &installation.config,
+        "restore",
+        &backup,
+        false,
+        true,
+        true,
+        None,
+        Some(0),
+    );
+    assert_failure(&output);
+    let message = stderr(&output);
+    assert!(message.contains("applied 1 of 4"), "stderr: {message}");
+    assert!(message.contains("rolled back"), "stderr: {message}");
+    assert_eq!(std::fs::read(&pivotal).unwrap(), pivotal_before);
+    assert_eq!(mode(&pivotal), pivotal_mode);
+    assert_no_staging_dirs(&installation.data_dir);
+}
+
+#[test]
+fn populated_private_trees_are_not_replaced_by_default_or_an_empty_include() {
+    let installation = Installation::new(false);
+    installation.seed_database(DB_SECRET);
+    let destination = installation.root.join("populated");
+    write_file(
+        &destination.join("private/manifest.json"),
+        r#"{"format":"microwave-ctl-private-files","version":1,"entries":[{"kind":"data-dir","path":"private/files/pivotal.pem","target":"pivotal.pem","mode":384}]}"#,
+        0o600,
+    );
+    write_file(
+        &destination.join("private/files/pivotal.pem"),
+        "OLD-KEY-CONTENT",
+        0o600,
+    );
+    let before = std::fs::read(destination.join("private/files/pivotal.pem")).unwrap();
+
+    let output = run_ctl(&installation.config, "backup", &destination, false, false);
+    assert_failure(&output);
+    assert!(
+        stderr(&output).contains("populated private/")
+            && stderr(&output).contains("default backup would remove it"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(
+        std::fs::read(destination.join("private/files/pivotal.pem")).unwrap(),
+        before
+    );
+    assert!(!destination.join("microwave.db").exists());
+
+    let output = run_ctl(&installation.config, "backup", &destination, false, true);
+    assert_failure(&output);
+    assert!(
+        stderr(&output).contains("refusing to replace a populated private/")
+            && stderr(&output).contains("empty private manifest"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(
+        std::fs::read(destination.join("private/files/pivotal.pem")).unwrap(),
+        before
+    );
+    assert!(!destination.join("microwave.db").exists());
+}
+
 #[test]
 fn private_only_restores_keys_without_replaying_metadata() {
     let installation = Installation::new(true);
@@ -1164,6 +1335,24 @@ fn rerunning_a_full_backup_keeps_the_existing_private_tree_byte_identical() {
         stderr(&output)
     );
 
+    assert_eq!(
+        std::fs::read(backup.join("private/manifest.json")).unwrap(),
+        manifest_before
+    );
+    for (path, contents, expected_mode) in &before {
+        assert_eq!(std::fs::read(path).unwrap(), contents.clone(), "{path:?}");
+        assert_eq!(mode(path), *expected_mode, "{path:?}");
+    }
+
+    // A default re-run (without --include-private-keys) must also fail before
+    // removing the populated private tree.
+    let output = run_ctl(&installation.config, "backup", &backup, false, false);
+    assert_failure(&output);
+    assert!(
+        stderr(&output).contains("destination already contains"),
+        "stderr: {}",
+        stderr(&output)
+    );
     assert_eq!(
         std::fs::read(backup.join("private/manifest.json")).unwrap(),
         manifest_before
