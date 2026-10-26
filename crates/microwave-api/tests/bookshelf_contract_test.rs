@@ -58,7 +58,7 @@ async fn put_get_head_delete_roundtrip_carries_upstream_statuses_and_headers() {
     let expected_etag = format!("\"{}\"", checksum_md5_base64(&checksum).unwrap());
 
     let response = send(&app, "PUT", &object_path(&checksum, "PUT"), contents).await;
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(header_str(&response, header::ETAG), expected_etag);
 
     let response = send(&app, "GET", &object_path(&checksum, "GET"), b"").await;

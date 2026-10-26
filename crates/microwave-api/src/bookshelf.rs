@@ -117,7 +117,7 @@ async fn upload(
             if let Some(etag) = etag_value(&checksum) {
                 headers.insert(header::ETAG, etag);
             }
-            Ok((headers, StatusCode::ACCEPTED).into_response())
+            Ok((headers, StatusCode::OK).into_response())
         }
         Err(ObjectStoreError::ChecksumMismatch) => Ok(StatusCode::NOT_ACCEPTABLE.into_response()),
         Err(_) => Err(ApiError::internal()),

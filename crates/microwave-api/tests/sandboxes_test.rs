@@ -66,7 +66,7 @@ async fn upload(app: &axum::Router, url: &str, content: &str) {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]
