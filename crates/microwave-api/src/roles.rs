@@ -300,15 +300,14 @@ fn normalize_role(body: &mut Value, path_name: Option<&str>) -> Result<String, A
         ));
     };
 
-    let name = match object.get("name") {
-        None => return Err(ApiError::bad_request("Field 'name' missing")),
-        Some(Value::String(body_name)) => {
-            if path_name.is_some_and(|path_name| path_name != body_name) {
-                return Err(ApiError::bad_request("Role name mismatch."));
-            }
-            body_name.clone()
+    let name = match (object.get("name"), path_name) {
+        (None, Some(path_name)) => path_name.to_string(),
+        (None, None) => return Err(ApiError::bad_request("Field 'name' missing")),
+        (Some(Value::String(body_name)), Some(path_name)) if body_name != path_name => {
+            return Err(ApiError::bad_request("Role name mismatch."));
         }
-        Some(_) => return Err(ApiError::bad_request("Field 'name' invalid")),
+        (Some(Value::String(body_name)), _) => body_name.clone(),
+        (Some(_), _) => return Err(ApiError::bad_request("Field 'name' invalid")),
     };
     if !valid_name(&name) {
         return Err(ApiError::bad_request("Field 'name' invalid"));

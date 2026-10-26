@@ -345,7 +345,7 @@ async fn creates_a_cookbook_artifact_with_location() {
 }
 
 #[tokio::test]
-async fn rejects_environment_and_role_renames_without_location() {
+async fn renames_an_environment_but_not_a_role_with_location() {
     let state = support::state_with_pivotal();
     support::add_org(&state, "acme").await;
     let app = support::app(state);
@@ -357,14 +357,18 @@ async fn rejects_environment_and_role_renames_without_location() {
         br#"{"name":"production"}"#,
     )
     .await;
-    let (status, _, _) = send(
+    let (status, headers, body) = send(
         &app,
         "PUT",
         "/organizations/acme/environments/production",
         br#"{"name":"staging"}"#,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    assert_eq!(
+        location(&headers),
+        Some("http://0.0.0.0:8000/organizations/acme/environments/staging")
+    );
 
     send(
         &app,
@@ -373,7 +377,7 @@ async fn rejects_environment_and_role_renames_without_location() {
         br#"{"name":"web"}"#,
     )
     .await;
-    let (status, _, _) = send(
+    let (status, headers, _) = send(
         &app,
         "PUT",
         "/organizations/acme/roles/web",
@@ -381,6 +385,7 @@ async fn rejects_environment_and_role_renames_without_location() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(location(&headers), None);
 }
 
 #[tokio::test]

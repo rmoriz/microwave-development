@@ -107,8 +107,8 @@ async fn create_rejects_invalid_environment_bodies() {
             "Invalid value '>= 1.2.9223372036854775849' for cookbook_versions",
         ),
         (
-            r#"{"name":"prod","cookbook_versions":{"apache":"= 1.1"}}"#,
-            "Invalid value '= 1.1' for cookbook_versions",
+            r#"{"name":"prod","cookbook_versions":{"apache":">= 1.0.0.0"}}"#,
+            "Invalid value '>= 1.0.0.0' for cookbook_versions",
         ),
         (
             r#"["not","an","object"]"#,
@@ -156,7 +156,7 @@ async fn put_without_a_name_is_rejected() {
 }
 
 #[tokio::test]
-async fn put_rejects_an_environment_name_change() {
+async fn put_renames_an_environment_and_keeps_its_identity() {
     let state = support::state_with_pivotal();
     let app = support::app(state.clone());
     create_org(&app).await;
@@ -165,7 +165,7 @@ async fn put_rejects_an_environment_name_change() {
         &app,
         "POST",
         "/organizations/acme/environments",
-        br#"{"name":"production","description":"original"}"#,
+        br#"{"name":"production","description":"original","default_attributes":{"tier":"web"}}"#,
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -183,24 +183,42 @@ async fn put_rejects_an_environment_name_change() {
         br#"{"name":"staging","description":"renamed"}"#,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::CREATED);
     assert_eq!(
-        support::response_json(response).await,
-        json!({"error": ["Environment name mismatch."]})
+        response.headers().get(header::LOCATION).unwrap(),
+        "http://0.0.0.0:8000/organizations/acme/environments/staging"
+    );
+    let renamed = support::response_json(response).await;
+    assert_eq!(
+        renamed,
+        json!({
+            "name": "staging",
+            "description": "renamed",
+            "json_class": "Chef::Environment",
+            "chef_type": "environment",
+            "cookbook_versions": {},
+            "default_attributes": {},
+            "override_attributes": {}
+        })
     );
 
     let after = state
         .sqlite()
-        .find_environment(&org.id, "production")
+        .find_environment(&org.id, "staging")
         .unwrap()
         .unwrap();
     assert_eq!(after.id, before.id);
     assert_eq!(after.authz_id, before.authz_id);
     assert!(state
         .sqlite()
-        .find_environment(&org.id, "staging")
+        .find_environment(&org.id, "production")
         .unwrap()
         .is_none());
+    let fetched = support::response_json(
+        request(&app, "GET", "/organizations/acme/environments/staging", b"").await,
+    )
+    .await;
+    assert_eq!(fetched, renamed);
 }
 
 #[tokio::test]

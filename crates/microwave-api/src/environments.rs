@@ -92,7 +92,7 @@ async fn create_environment(
     let container = container_authz(&state, org, "environments").await?;
     require_permission(&state, &auth, &container, Permission::Create).await?;
 
-    let name = normalize_environment(&mut body, None)?;
+    let name = normalize_environment(&mut body)?;
     let environment = state
         .store
         .create_environment(
@@ -160,7 +160,8 @@ async fn update_environment(
         .ok_or_else(|| ApiError::not_found(format!("Cannot load environment {url_name}")))?;
     require_permission(&state, &auth, &environment.authz_id, Permission::Update).await?;
 
-    normalize_environment(&mut body, Some(&url_name))?;
+    let name = normalize_environment(&mut body)?;
+    let renamed = name != url_name;
     let updated = state
         .store
         .update_environment(
@@ -169,7 +170,13 @@ async fn update_environment(
             &serde_json::to_string(&body).map_err(|_| ApiError::internal())?,
         )
         .await
-        .map_err(ApiError::from)?;
+        .map_err(|error| match error {
+            StoreError::Conflict(_) => ApiError::conflict("Environment already exists"),
+            other => other.into(),
+        })?;
+    if renamed {
+        crate::search::index::delete_document(&state, &org.id, &environment.id).await;
+    }
     crate::search::index::index_object(
         &state,
         org,
@@ -177,7 +184,15 @@ async fn update_environment(
         &updated,
     )
     .await;
-    Ok(Json(serialized_body(&updated.serialized_object)?).into_response())
+    let document = serialized_body(&updated.serialized_object)?;
+    if !renamed {
+        return Ok(Json(document).into_response());
+    }
+    let base = base_url(&_headers, &state);
+    let uri = format!("{base}/organizations/{}/environments/{name}", org.name);
+    let mut response = (StatusCode::CREATED, Json(document)).into_response();
+    response.headers_mut().extend(location_headers(&uri)?);
+    Ok(response)
 }
 
 async fn delete_environment(
@@ -445,10 +460,9 @@ fn serialized_body(serialized: &str) -> Result<Value, ApiError> {
 /// Validates and normalizes an environment payload following
 /// `chef_environment:parse_binary_json/1`.
 ///
-/// `path_name` is `Some` for PUT requests: the body name is optional. When it
-/// is present and differs from the URL, upstream renames the environment (the
-/// row keeps its id and ACL). Create requests require an explicit name.
-fn normalize_environment(body: &mut Value, path_name: Option<&str>) -> Result<String, ApiError> {
+/// The body must carry a name. On PUT a name that differs from the URL renames
+/// the environment (the row keeps its id and ACL).
+fn normalize_environment(body: &mut Value) -> Result<String, ApiError> {
     let Some(object) = body.as_object_mut() else {
         return Err(ApiError::bad_request(
             "Incorrect JSON type for request body",
@@ -457,12 +471,7 @@ fn normalize_environment(body: &mut Value, path_name: Option<&str>) -> Result<St
 
     let name = match object.get("name") {
         None => return Err(ApiError::bad_request("Field 'name' missing")),
-        Some(Value::String(body_name)) => {
-            if path_name.is_some_and(|path_name| path_name != body_name) {
-                return Err(ApiError::bad_request("Environment name mismatch."));
-            }
-            body_name.clone()
-        }
+        Some(Value::String(body_name)) => body_name.clone(),
         Some(_) => return Err(ApiError::bad_request("Field 'name' invalid")),
     };
     if !valid_name(&name) {
@@ -564,16 +573,13 @@ fn validate_cookbook_versions(versions: &Map<String, Value>) -> Result<(), ApiEr
 /// Upstream's `parse_constraint/1` requires exactly one space between an
 /// operator and the version, and a version with two or three numeric parts.
 fn valid_constraint(value: &str) -> bool {
-    let version = value
-        .strip_prefix("<= ")
-        .or_else(|| value.strip_prefix(">= "))
-        .or_else(|| value.strip_prefix("~> "))
-        .or_else(|| value.strip_prefix("= "))
-        .or_else(|| value.strip_prefix("< "))
-        .or_else(|| value.strip_prefix("> "))
+    // Upstream treats a version without an operator as an implied `=`.
+    let version = ["<= ", ">= ", "~> ", "= ", "< ", "> "]
+        .iter()
+        .find_map(|operator| value.strip_prefix(operator))
         .unwrap_or(value);
     let parts: Vec<&str> = version.split('.').collect();
-    parts.len() == 3
+    (2..=3).contains(&parts.len())
         && parts.iter().all(|part| {
             !part.is_empty()
                 && part.chars().all(|c| c.is_ascii_digit())

@@ -1,6 +1,6 @@
 mod support;
 
-use axum::http::{header, HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
 use microwave_crypto::SignVersion;
 use serde_json::{json, Value};
@@ -98,7 +98,7 @@ async fn create_normalizes_run_lists_and_sets_defaults() {
 }
 
 #[tokio::test]
-async fn put_without_a_role_name_is_rejected() {
+async fn put_without_a_role_name_uses_the_url_name() {
     let app = support::app(support::state_with_pivotal());
     create_org(&app).await;
     let response = request(
@@ -116,11 +116,11 @@ async fn put_without_a_role_name_is_rejected() {
         br#"{"description":"updated","run_list":["apache"]}"#,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(
-        support::response_json(response).await,
-        json!({"error": ["Field 'name' missing"]})
-    );
+    assert_eq!(response.status(), StatusCode::OK);
+    let updated = support::response_json(response).await;
+    assert_eq!(updated["name"], "web");
+    assert_eq!(updated["description"], "updated");
+    assert_eq!(updated["run_list"], json!(["recipe[apache]"]));
 }
 
 #[tokio::test]
@@ -141,7 +141,7 @@ async fn put_validates_the_body_even_without_a_name() {
         &app,
         "PUT",
         "/organizations/acme/roles/web",
-        br#"{"name":"web","json_class":"Chef::Node"}"#,
+        br#"{"json_class":"Chef::Node"}"#,
     )
     .await;
     assert_error(
@@ -195,7 +195,7 @@ async fn put_rejects_a_role_name_change() {
 }
 
 #[tokio::test]
-async fn put_requires_a_role_name() {
+async fn put_with_a_name_change_is_rejected() {
     let state = support::state_with_pivotal();
     let app = support::app(state);
     create_org(&app).await;
@@ -211,18 +211,14 @@ async fn put_requires_a_role_name() {
         &app,
         "PUT",
         "/organizations/acme/roles/web",
-        br#"{"description":"no name"}"#,
+        br#"{"name":"web2","description":"renamed"}"#,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(
-        support::response_json(response).await,
-        json!({"error": ["Field 'name' missing"]})
-    );
+    assert_error(response, StatusCode::BAD_REQUEST, "Role name mismatch.").await;
 }
 
 #[tokio::test]
-async fn put_with_a_missing_role_name_is_rejected_before_any_change() {
+async fn put_with_a_missing_name_is_validated_before_any_change() {
     let state = support::state_with_pivotal();
     let app = support::app(state);
     create_org(&app).await;
@@ -238,10 +234,15 @@ async fn put_with_a_missing_role_name_is_rejected_before_any_change() {
         &app,
         "PUT",
         "/organizations/acme/roles/web",
-        br#"{"description":"x"}"#,
+        br#"{"description":"x","json_class":"Chef::Node"}"#,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_error(
+        response,
+        StatusCode::BAD_REQUEST,
+        "Field 'json_class' invalid",
+    )
+    .await;
 }
 
 #[tokio::test]
