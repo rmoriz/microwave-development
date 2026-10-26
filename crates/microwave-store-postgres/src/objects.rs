@@ -105,24 +105,51 @@ impl PostgresStore {
     ) -> Result<StoredObject, StoreError> {
         let timestamp = now();
         let serialized_object = encode_serialized(body, self.compression())?;
+        let new_name = serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|document| {
+                document
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|name| !name.is_empty())
+                    .map(ToString::to_string)
+            })
+            .unwrap_or_else(|| name.to_string());
+        let mut transaction = self.pool().begin().await.map_err(db)?;
+        if new_name != name {
+            let check = format!("SELECT 1 FROM {table} WHERE org_id = $1 AND name = $2");
+            let existing = sqlx::query(sqlx::AssertSqlSafe(check))
+                .bind(org_id)
+                .bind(&new_name)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(db)?;
+            if existing.is_some() {
+                return Err(StoreError::Conflict(format!(
+                    "{table} {new_name} already exists"
+                )));
+            }
+        }
         let sql = format!(
-            "UPDATE {table} SET serialized_object = $3, updated_at = $4
+            "UPDATE {table} SET name = $3, serialized_object = $4, updated_at = $5
              WHERE org_id = $1 AND name = $2"
         );
         let result = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(org_id)
             .bind(name)
+            .bind(&new_name)
             .bind(&serialized_object)
             .bind(&timestamp)
-            .execute(self.pool())
+            .execute(&mut *transaction)
             .await
-            .map_err(db)?;
+            .map_err(|error| unique(error, format!("{table} {new_name} already exists")))?;
         if result.rows_affected() == 0 {
             return Err(StoreError::NotFound(format!("{table} {name}")));
         }
-        self.find_named_object(table, org_id, name)
+        transaction.commit().await.map_err(db)?;
+        self.find_named_object(table, org_id, &new_name)
             .await?
-            .ok_or_else(|| StoreError::NotFound(format!("{table} {name}")))
+            .ok_or_else(|| StoreError::NotFound(format!("{table} {new_name}")))
     }
 
     async fn delete_named_object(

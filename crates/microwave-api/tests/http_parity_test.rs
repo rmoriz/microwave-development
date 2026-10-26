@@ -779,6 +779,7 @@ fn normalize_string(text: &str) -> String {
     text = normalize_numeric_ids(&text);
     for name in [
         "token",
+        "exp",
         "X-Amz-Signature",
         "X-Amz-Date",
         "X-Amz-Credential",
