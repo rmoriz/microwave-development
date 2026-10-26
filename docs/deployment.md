@@ -583,6 +583,11 @@ Environment=RUST_LOG=info,microwave_api=debug
 
 ### Search
 
+Microwave creates the `chef` index with the upstream mapping (whitespace analyzer;
+keyword `X_CHEF_*` fields) on the first search or write and during reindex. The
+cluster account therefore needs `create_index`/`PUT /chef` permission. A missing
+index is treated as an empty result on the search path.
+
 ```toml
 [search]
 backend = "opensearch"          # or "elasticsearch"

@@ -53,6 +53,7 @@ pub struct OpenSearchBackend {
     client: reqwest::Client,
     base_url: String,
     provider: SearchProvider,
+    index_ready: tokio::sync::OnceCell<()>,
 }
 
 impl OpenSearchBackend {
@@ -85,6 +86,7 @@ impl OpenSearchBackend {
             client,
             base_url: url.trim_end_matches('/').to_string(),
             provider,
+            index_ready: tokio::sync::OnceCell::new(),
         })
     }
 
@@ -95,11 +97,43 @@ impl OpenSearchBackend {
             client,
             base_url: base_url.into().trim_end_matches('/').to_string(),
             provider,
+            index_ready: tokio::sync::OnceCell::new(),
         })
     }
 
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base_url)
+    }
+
+    /// Create the `chef` index with the upstream mapping once per backend.
+    ///
+    /// Without the mapping OpenSearch dynamically types `X_CHEF_id_CHEF_X` as
+    /// text, which makes the required sort fail, and uses the standard analyzer
+    /// instead of the whitespace analyzer Chef queries expect.
+    async fn ensure_index(&self) -> Result<(), SearchError> {
+        self.index_ready
+            .get_or_try_init(|| async {
+                let url = self.url(&format!("/{INDEX}"));
+                let response = self
+                    .client
+                    .put(&url)
+                    .json(&index_definition())
+                    .send()
+                    .await?;
+                let status = response.status().as_u16();
+                if status == 400 {
+                    let body = response.text().await.unwrap_or_default();
+                    if body.contains("resource_already_exists_exception") {
+                        return Ok(());
+                    }
+                    return Err(SearchError::Response(format!(
+                        "could not create the chef index: {body}"
+                    )));
+                }
+                self.check_status(&url, status)
+            })
+            .await
+            .cloned()
     }
 
     fn filter_query(&self, request: &SearchRequest) -> String {
@@ -164,6 +198,7 @@ impl OpenSearchBackend {
     }
 
     async fn bulk(&self, body: String, allow_not_found: bool) -> Result<usize, SearchError> {
+        self.ensure_index().await?;
         let url = self.url("/_bulk");
         let response = self
             .client
@@ -191,6 +226,30 @@ impl OpenSearchBackend {
             Ok(())
         }
     }
+}
+
+fn index_definition() -> Value {
+    json!({
+        "settings": {
+            "analysis": {
+                "analyzer": {
+                    "default": { "type": "whitespace" }
+                }
+            },
+            "number_of_shards": 3,
+            "number_of_replicas": 2
+        },
+        "mappings": {
+            "_source": { "enabled": false },
+            "properties": {
+                "X_CHEF_database_CHEF_X": { "type": "keyword", "index": true, "norms": false },
+                "X_CHEF_type_CHEF_X": { "type": "keyword", "index": true, "norms": false },
+                "X_CHEF_id_CHEF_X": { "type": "keyword", "index": true, "norms": false },
+                "data_bag": { "type": "keyword", "index": true, "norms": false },
+                "content": { "type": "text", "index": true }
+            }
+        }
+    })
 }
 
 fn client_with_timeout(timeout_ms: u64) -> Result<reqwest::Client, SearchError> {
@@ -432,6 +491,7 @@ impl super::backend::SearchBackend for OpenSearchBackend {
     }
 
     async fn search(&self, request: &SearchRequest) -> Result<SearchHits, SearchError> {
+        self.ensure_index().await?;
         let url = self.url(&format!("/{INDEX}/_search"));
         let response = self
             .client
@@ -440,6 +500,19 @@ impl super::backend::SearchBackend for OpenSearchBackend {
             .send()
             .await?;
         let status = response.status().as_u16();
+        if status == 404 {
+            let body = response.text().await.unwrap_or_default();
+            if is_index_not_found(&body) {
+                return Ok(SearchHits {
+                    total: 0,
+                    ids: Vec::new(),
+                });
+            }
+            return Err(SearchError::Backend {
+                status,
+                url: url.to_string(),
+            });
+        }
         self.check_status(&url, status)?;
 
         let response: SearchResponse = response.json().await.map_err(|error| {
