@@ -26,7 +26,12 @@ where
         .route("/id", get(sessions::home))
         .route("/id/", get(sessions::home))
         .route("/id/signin", get(sessions::signin))
+        .route("/id/sessions/new", get(sessions::signin))
         .route("/id/sessions", post(sessions::create_session))
+        .route(
+            "/id/sessions/{id}",
+            delete(sessions::signout).post(sessions::signout),
+        )
         .route("/id/auth/chef/callback", post(sessions::create_session))
         .route("/id/auth/failure", get(sessions::auth_failure))
         .route(
@@ -38,13 +43,23 @@ where
             get(sessions::authorized_applications),
         )
         .route(
+            "/id/oauth/authorized_applications/{id}",
+            delete(sessions::revoke_authorized_application)
+                .post(sessions::revoke_authorized_application),
+        )
+        .route(
             "/id/oauth/authorize",
             get(oauth::authorize)
                 .post(oauth::authorize_approve)
                 .delete(oauth::authorize_deny),
         )
         .route("/id/oauth/token", post(oauth::token))
+        .route("/id/oauth/token/info", get(oauth::token_info))
         .route("/id/oauth/revoke", post(oauth::revoke))
+        .route(
+            "/id/oauth/applications/new",
+            get(applications::new_application),
+        )
         .route(
             "/id/oauth/applications",
             get(applications::list_applications).post(applications::create_application),
@@ -53,6 +68,7 @@ where
             "/id/oauth/applications/{id}",
             get(applications::get_application)
                 .put(applications::update_application)
+                .patch(applications::update_application)
                 .post(applications::update_application)
                 .delete(applications::delete_application),
         )
@@ -60,19 +76,24 @@ where
             "/id/profile",
             get(profile::show)
                 .put(profile::update)
+                .patch(profile::update)
                 .post(profile::update),
         )
         .route(
             "/id/profile/password",
-            put(profile::change_password).post(profile::change_password),
+            put(profile::change_password)
+                .patch(profile::change_password)
+                .post(profile::change_password),
         )
         .route("/id/profile/email", get(profile::email))
         .route("/id/profile/regen_key", post(profile::regen_key))
+        .route("/id/password-reset/new", get(password_reset::show))
         .route(
             "/id/password-reset",
             get(password_reset::show)
                 .post(password_reset::create)
-                .put(password_reset::update),
+                .put(password_reset::update)
+                .patch(password_reset::update),
         )
         .route("/id/v1/me", get(v1::me))
         .route("/id/v1/me/organizations", get(v1::organizations))

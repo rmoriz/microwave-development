@@ -1,12 +1,43 @@
 use crate::error::OAuthError;
 use crate::state::OAuthState;
-use crate::util::{escape_html, page, parse_params, redirect, require_admin, wants_json};
+use crate::util::{
+    csrf_token, escape_html, page, page_with_token, parse_params, redirect, require_admin,
+    wants_json,
+};
 use axum::extract::{Path, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use microwave_store::OAuthApplication;
 use serde_json::{json, Value};
+
+pub async fn new_application(
+    State(state): State<OAuthState>,
+    headers: HeaderMap,
+) -> Result<Response, OAuthError> {
+    require_admin(&state, &headers).await?;
+    if wants_json(&headers) {
+        return Ok(Json(json!({
+            "name": Value::Null,
+            "redirect_uri": Value::Null,
+            "scopes": "",
+            "confidential": true
+        }))
+        .into_response());
+    }
+    let csrf = csrf_token();
+    let body = format!(
+        "<h1>New application</h1>\
+         <form method=\"post\" action=\"/id/oauth/applications\">\
+         <input type=\"hidden\" name=\"authenticity_token\" value=\"{csrf}\">\
+         <label for=\"name\">Name</label><input id=\"name\" name=\"name\" required>\
+         <label for=\"redirect_uri\">Callback URL</label>\
+         <textarea id=\"redirect_uri\" name=\"redirect_uri\" required></textarea>\
+         <button type=\"submit\">Submit</button></form>\
+         <p><a href=\"/id/oauth/applications\">Cancel</a></p>"
+    );
+    Ok(page_with_token("New application", &body, &csrf).into_response())
+}
 
 pub async fn list_applications(
     State(state): State<OAuthState>,

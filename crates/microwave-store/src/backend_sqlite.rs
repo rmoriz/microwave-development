@@ -1205,6 +1205,21 @@ impl OAuthRepository for SqliteStore {
         self.find_oauth_access_token_by_refresh(refresh_token)
     }
 
+    async fn list_oauth_access_tokens_for_owner(
+        &self,
+        resource_owner_id: &str,
+    ) -> Result<Vec<OAuthAccessToken>, StoreError> {
+        self.list_oauth_access_tokens_for_owner(resource_owner_id)
+    }
+
+    async fn revoke_oauth_tokens_and_grants_for(
+        &self,
+        application_id: i64,
+        resource_owner_id: &str,
+    ) -> Result<(), StoreError> {
+        self.revoke_oauth_tokens_and_grants_for(application_id, resource_owner_id)
+    }
+
     async fn revoke_oauth_access_token(&self, token: &str) -> Result<(), StoreError> {
         self.revoke_oauth_access_token(token)
     }

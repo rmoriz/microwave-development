@@ -324,6 +324,56 @@ impl OAuthRepository for PostgresStore {
         row.map(|row| token_from_row(&row)).transpose().map_err(db)
     }
 
+    async fn list_oauth_access_tokens_for_owner(
+        &self,
+        resource_owner_id: &str,
+    ) -> Result<Vec<OAuthAccessToken>, StoreError> {
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {TOKEN_COLUMNS} FROM oauth_access_tokens
+             WHERE resource_owner_id = $1 AND revoked_at IS NULL
+             ORDER BY created_at DESC, id DESC"
+        )))
+        .bind(resource_owner_id)
+        .fetch_all(self.pool())
+        .await
+        .map_err(db)?;
+        rows.iter()
+            .map(token_from_row)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db)
+    }
+
+    async fn revoke_oauth_tokens_and_grants_for(
+        &self,
+        application_id: i64,
+        resource_owner_id: &str,
+    ) -> Result<(), StoreError> {
+        let timestamp = now();
+        let mut transaction = self.pool().begin().await.map_err(db)?;
+        sqlx::query(
+            "UPDATE oauth_access_tokens SET revoked_at = COALESCE(revoked_at, $3)
+             WHERE application_id = $1 AND resource_owner_id = $2",
+        )
+        .bind(application_id)
+        .bind(resource_owner_id)
+        .bind(&timestamp)
+        .execute(&mut *transaction)
+        .await
+        .map_err(db)?;
+        sqlx::query(
+            "UPDATE oauth_access_grants SET revoked_at = COALESCE(revoked_at, $3)
+             WHERE application_id = $1 AND resource_owner_id = $2",
+        )
+        .bind(application_id)
+        .bind(resource_owner_id)
+        .bind(&timestamp)
+        .execute(&mut *transaction)
+        .await
+        .map_err(db)?;
+        transaction.commit().await.map_err(db)?;
+        Ok(())
+    }
+
     async fn revoke_oauth_access_token(&self, token: &str) -> Result<(), StoreError> {
         sqlx::query(
             "UPDATE oauth_access_tokens SET revoked_at = COALESCE(revoked_at, $2)

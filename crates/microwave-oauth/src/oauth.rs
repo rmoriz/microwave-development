@@ -1,8 +1,9 @@
 use crate::error::OAuthError;
 use crate::state::OAuthState;
 use crate::util::{
-    append_query, escape_html, page, parse_params, percent_encode, redirect, timestamp_is_fresh,
-    wants_json, ACCESS_TOKEN_TTL_SECONDS, AUTHORIZATION_CODE_TTL_SECONDS,
+    append_query, bearer_token, escape_html, page, parse_params, percent_encode, redirect,
+    timestamp_is_fresh, token_expires_in_seconds, token_is_valid, unix_timestamp, wants_json,
+    ACCESS_TOKEN_TTL_SECONDS, AUTHORIZATION_CODE_TTL_SECONDS,
 };
 use axum::extract::{Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode, Uri};
@@ -267,6 +268,51 @@ pub async fn token(
             format!("unsupported grant type {other}"),
         )),
     }
+}
+
+pub async fn token_info(
+    State(state): State<OAuthState>,
+    headers: HeaderMap,
+) -> Result<Response, OAuthError> {
+    let token = bearer_token(&headers).ok_or_else(invalid_token_error)?;
+    let access = state
+        .store
+        .find_oauth_access_token(&token)
+        .await?
+        .filter(token_is_valid)
+        .ok_or_else(invalid_token_error)?;
+
+    let application_uid = match access.application_id {
+        Some(application_id) => state
+            .store
+            .find_oauth_application(application_id)
+            .await?
+            .map(|application| Value::String(application.uid)),
+        None => None,
+    }
+    .unwrap_or(Value::Null);
+
+    let expires_in = token_expires_in_seconds(&access);
+    let mut response = Json(json!({
+        "resource_owner_id": access.resource_owner_id,
+        "scope": access.scopes,
+        "expires_in": expires_in,
+        "application": { "uid": application_uid },
+        "created_at": unix_timestamp(&access.created_at)
+    }))
+    .into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    Ok(response)
+}
+
+fn invalid_token_error() -> OAuthError {
+    OAuthError::new(
+        StatusCode::UNAUTHORIZED,
+        "invalid_token",
+        "The access token is invalid",
+    )
 }
 
 pub async fn revoke(
