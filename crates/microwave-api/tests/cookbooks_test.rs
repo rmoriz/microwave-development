@@ -54,7 +54,7 @@ async fn uploads_and_reads_a_cookbook_version() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
 
     let sandbox_id = created["sandbox_id"].as_str().unwrap();
     let response = app
@@ -188,7 +188,7 @@ async fn upload_blob(app: &axum::Router, checksum: &str, contents: &str) {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
 
     let sandbox_id = created["sandbox_id"].as_str().unwrap();
     let response = app

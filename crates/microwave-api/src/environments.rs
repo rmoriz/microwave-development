@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
 use microwave_depsolver::{Constraint, Version};
-use microwave_store::{Org, Permission, StoredCookbookVersion, StoredObject};
+use microwave_store::{Org, Permission, StoreError, StoredCookbookVersion, StoredObject};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap};
 
@@ -102,7 +102,10 @@ async fn create_environment(
             &auth.principal.authz_id,
         )
         .await
-        .map_err(ApiError::from)?;
+        .map_err(|error| match error {
+            StoreError::Conflict(_) => ApiError::conflict("Environment already exists"),
+            other => other.into(),
+        })?;
     crate::search::index::index_object(
         &state,
         org,
@@ -131,7 +134,7 @@ async fn get_environment(
         .find_environment(&org.id, &name)
         .await
         .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("environment {name}")))?;
+        .ok_or_else(|| ApiError::not_found(format!("Cannot load environment {name}")))?;
     require_permission(&state, &auth, &environment.authz_id, Permission::Read).await?;
     let value =
         serde_json::from_str(&environment.serialized_object).map_err(|_| ApiError::internal())?;
@@ -153,7 +156,7 @@ async fn update_environment(
         .find_environment(&org.id, &name)
         .await
         .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("environment {name}")))?;
+        .ok_or_else(|| ApiError::not_found(format!("Cannot load environment {name}")))?;
     require_permission(&state, &auth, &environment.authz_id, Permission::Update).await?;
 
     normalize_environment(&mut body, Some(&name))?;
@@ -190,7 +193,7 @@ async fn delete_environment(
         .find_environment(&org.id, &name)
         .await
         .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("environment {name}")))?;
+        .ok_or_else(|| ApiError::not_found(format!("Cannot load environment {name}")))?;
     require_permission(&state, &auth, &environment.authz_id, Permission::Delete).await?;
     let value = serialized_body(&environment.serialized_object)?;
     state

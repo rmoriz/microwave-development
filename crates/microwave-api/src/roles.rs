@@ -8,7 +8,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
-use microwave_store::Permission;
+use microwave_store::{Permission, StoreError};
 use serde_json::{json, Map, Value};
 
 /// Top-level keys accepted on role payloads, mirroring `?VALID_KEYS` in
@@ -98,7 +98,10 @@ async fn create_role(
             &auth.principal.authz_id,
         )
         .await
-        .map_err(ApiError::from)?;
+        .map_err(|error| match error {
+            StoreError::Conflict(_) => ApiError::conflict("Role already exists"),
+            other => other.into(),
+        })?;
     crate::search::index::index_object(&state, org, crate::search::IndexKind::Role, &role).await;
 
     let base = base_url(&headers, &state);
@@ -121,7 +124,7 @@ async fn get_role(
         .find_role(&org.id, &name)
         .await
         .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("role {name}")))?;
+        .ok_or_else(|| ApiError::not_found(format!("Cannot load role {name}")))?;
     require_permission(&state, &auth, &role.authz_id, Permission::Read).await?;
     Ok(Json(role_document(&role)?))
 }
@@ -243,7 +246,7 @@ async fn update_role(
         .find_role(&org.id, &name)
         .await
         .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("role {name}")))?;
+        .ok_or_else(|| ApiError::not_found(format!("Cannot load role {name}")))?;
     require_permission(&state, &auth, &role.authz_id, Permission::Update).await?;
 
     normalize_role(&mut body, Some(&name))?;
@@ -271,7 +274,7 @@ async fn delete_role(
         .find_role(&org.id, &name)
         .await
         .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("role {name}")))?;
+        .ok_or_else(|| ApiError::not_found(format!("Cannot load role {name}")))?;
     require_permission(&state, &auth, &role.authz_id, Permission::Delete).await?;
     let value = role_document(&role)?;
     state
