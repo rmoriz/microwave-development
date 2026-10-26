@@ -805,6 +805,23 @@ This is a server limitation, not a configuration mistake.
 - **DRBD/keepalived style clustering.** `microwave-ctl ha-status` reports
   `mode: standalone`, `nodes: 1`, `high_availability: not configured`, and
   says so explicitly.
+- **LDAP/Active Directory external authentication.** Chef's `external_authentication_uid`
+  fields are stored and reported, but there is no LDAP/AD bind, no unlinked-account
+  handling, and no `local` bypass authentication. Users with external UIDs can only be
+  created and managed, not authenticated against a directory.
+- **FIPS mode.** The Rust crypto stack is not configured or validated as FIPS.
+- **Legacy `/etc/opscode/chef-server.rb` import.** Microwave uses TOML and `MW_*`
+  environment variables. Existing Ruby configuration must be translated; the server
+  does not execute or parse `chef-server.rb`, `CHEF_SECRETS_DATA`, or
+  `private-chef-secrets.json` at startup. Migration tools can carry explicit
+  key material, but configuration is not imported automatically.
+- **Embedded search indexing.** The default backend is a relational full scan,
+  not Tantivy or another inverted index. It is correct for small and medium
+  organizations, but scales linearly. Larger installations should use
+  OpenSearch or Elasticsearch.
+- **Additional mail flows.** Only password-reset email is implemented.
+  Email-change verification, invitation mail, SMTP rate limiting, and a durable
+  outbox/retry are not available.
 
 ### Target layout with PostgreSQL metadata
 
