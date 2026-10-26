@@ -53,6 +53,14 @@ pub enum ObjectStoreError {
     HttpStatus(u16),
 }
 
+/// Metadata about a stored blob, served by the `/bookshelf` HTTP routes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ObjectMetadata {
+    pub len: u64,
+    /// Last modification time, when the backend can report it.
+    pub modified: Option<SystemTime>,
+}
+
 /// Content-addressed blob store keyed by `(organization_id, checksum)`.
 ///
 /// Implementations must be safe to share across request handlers.
@@ -73,6 +81,19 @@ pub trait ObjectStore: Send + Sync {
 
     /// Delete the blob, returning whether it existed.
     fn delete(&self, organization_id: &str, checksum: &str) -> Result<bool, ObjectStoreError>;
+
+    /// Return metadata for an existing blob.
+    ///
+    /// `Ok(None)` means the backend cannot report metadata; callers should
+    /// fall back to [`ObjectStore::exists`] for existence checks. Backends that
+    /// can report metadata return `Err(NotFound)` for a missing blob.
+    fn metadata(
+        &self,
+        _organization_id: &str,
+        _checksum: &str,
+    ) -> Result<Option<ObjectMetadata>, ObjectStoreError> {
+        Ok(None)
+    }
 
     /// Build a URL a client can use to `method` the blob directly.
     fn presigned_url(&self, method: &str, organization_id: &str, checksum: &str) -> String;
@@ -186,6 +207,24 @@ impl ObjectStore for LocalObjectStore {
             Ok(true)
         } else {
             Ok(false)
+        }
+    }
+
+    fn metadata(
+        &self,
+        organization_id: &str,
+        checksum: &str,
+    ) -> Result<Option<ObjectMetadata>, ObjectStoreError> {
+        match std::fs::metadata(self.path(organization_id, checksum)) {
+            Ok(metadata) if metadata.is_file() => Ok(Some(ObjectMetadata {
+                len: metadata.len(),
+                modified: metadata.modified().ok(),
+            })),
+            Ok(_) => Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(ObjectStoreError::NotFound)
+            }
+            Err(error) => Err(error.into()),
         }
     }
 
