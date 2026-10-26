@@ -1,6 +1,7 @@
 //! OC-ID compatible OAuth2 and identity surface.
 
 mod applications;
+mod csrf;
 mod error;
 mod oauth;
 mod password_reset;
@@ -77,4 +78,5 @@ where
         .route("/id/v1/me/organizations", get(v1::organizations))
         .route("/id/v1/users/{id}", get(v1::user))
         .route("/id/v1/status", get(v1::status))
+        .layer(axum::middleware::from_fn(csrf::require_same_origin))
 }

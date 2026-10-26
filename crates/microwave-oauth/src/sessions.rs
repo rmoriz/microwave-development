@@ -2,7 +2,7 @@ use crate::error::OAuthError;
 use crate::state::OAuthState;
 use crate::util::{
     cookie_header, csrf_token, current_user, delete_cookie_header, escape_html, page,
-    page_with_token, parse_params, redirect, session_token, wants_json,
+    page_with_token, parse_params, redirect, secure_cookies, session_token, wants_json,
 };
 use axum::extract::{Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -80,7 +80,10 @@ pub async fn signin(
     let mut response = page_with_token("Sign In", &body, &csrf).into_response();
     if session_token(&headers).is_none() {
         let pre_session = uuid::Uuid::new_v4().simple().to_string();
-        set_cookie(&mut response, &cookie_header(&pre_session))?;
+        set_cookie(
+            &mut response,
+            &cookie_header(&pre_session, secure_cookies(&state, &headers)),
+        )?;
     }
     Ok(response)
 }
@@ -131,7 +134,7 @@ pub async fn create_session(
     };
 
     let token = state.store.create_id_session(&user.username).await?;
-    let cookie = cookie_header(&token);
+    let cookie = cookie_header(&token, secure_cookies(&state, &headers));
 
     if wants_json(&headers) {
         let mut response = Json(json!({
@@ -162,11 +165,17 @@ pub async fn signout(
     }
     if wants_json(&headers) {
         let mut response = Json(json!({})).into_response();
-        set_cookie(&mut response, &delete_cookie_header())?;
+        set_cookie(
+            &mut response,
+            &delete_cookie_header(secure_cookies(&state, &headers)),
+        )?;
         return Ok(response);
     }
     let mut response = redirect("/id/signin");
-    set_cookie(&mut response, &delete_cookie_header())?;
+    set_cookie(
+        &mut response,
+        &delete_cookie_header(secure_cookies(&state, &headers)),
+    )?;
     Ok(response)
 }
 

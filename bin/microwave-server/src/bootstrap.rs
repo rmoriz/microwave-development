@@ -9,10 +9,12 @@ use uuid::Uuid;
 
 /// Ensure a platform superuser exists with a usable default key.
 ///
-/// On first start this creates `pivotal`, writes its private key to
-/// `<data_dir>/pivotal.pem`, and writes a random login password to
-/// `<data_dir>/pivotal.password`. Neither file is logged.
+/// On first start this creates the configured `auth.superuser_name`, writes
+/// its private key to `<data_dir>/<name>.pem`, and writes a random login
+/// password to `<data_dir>/<name>.password`. Neither file is logged.
 ///
+/// An existing deployment whose configured superuser does not exist is not
+/// silently given a new account; the operator must create or rename it first.
 /// Several replicas may start at once. When another replica wins the
 /// `create_user` race this re-reads the existing row instead of failing.
 pub async fn ensure_superuser(
@@ -21,16 +23,23 @@ pub async fn ensure_superuser(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = Path::new(&config.paths.data_dir);
     std::fs::create_dir_all(data_dir)?;
+    let superuser = config.auth.superuser_name.clone();
 
-    let user = match store.find_user("pivotal").await? {
+    let user = match store.find_user(&superuser).await? {
         Some(user) => user,
         None => {
+            if !store.list_users().await?.is_empty() {
+                return Err(format!(
+                    "configured superuser {superuser:?} does not exist; create it with                      `microwave-ctl user-create {superuser}` or change auth.superuser_name"
+                )
+                .into());
+            }
             let password = format!("mw-{}", Uuid::new_v4().simple());
             let hash = hash_password(&password)?;
             let created = store
                 .create_user(
-                    "pivotal",
-                    "pivotal@localhost",
+                    &superuser,
+                    &format!("{superuser}@localhost"),
                     &hash.hash_type,
                     &hash.hash,
                     &hash.salt,
@@ -39,11 +48,11 @@ pub async fn ensure_superuser(
                 .await;
             match created {
                 Ok(user) => {
-                    write_private_file(&data_dir.join("pivotal.password"), &password)?;
+                    write_private_file(&data_dir.join(format!("{superuser}.password")), &password)?;
                     user
                 }
                 Err(StoreError::Conflict(_)) => store
-                    .find_user("pivotal")
+                    .find_user(&superuser)
                     .await?
                     .ok_or("superuser creation lost a race but the user could not be read back")?,
                 Err(error) => return Err(error.into()),
@@ -58,7 +67,7 @@ pub async fn ensure_superuser(
             .add_actor_key(&user.id, ActorType::User, "default", &public_key)
             .await
         {
-            Ok(()) => write_private_file(&data_dir.join("pivotal.pem"), &private_key)?,
+            Ok(()) => write_private_file(&data_dir.join(format!("{superuser}.pem")), &private_key)?,
             // Another replica already created the default key.
             Err(StoreError::Conflict(_)) => {}
             Err(error) => return Err(error.into()),
@@ -244,5 +253,53 @@ mod tests {
                 .as_deref(),
             Some("existing-secret")
         );
+    }
+}
+
+#[cfg(test)]
+mod superuser_tests {
+    use super::*;
+    use microwave_store::SqliteStore;
+
+    #[tokio::test]
+    async fn creates_the_configured_superuser() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.paths.data_dir = data_dir.path().to_string_lossy().into_owned();
+        config.auth.superuser_name = "root".into();
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        ensure_superuser(&store, &config).await.unwrap();
+
+        let user = store
+            .find_user("root")
+            .unwrap()
+            .expect("configured superuser");
+        assert!(user.admin);
+        assert!(store.find_user("pivotal").unwrap().is_none());
+        assert!(!store
+            .find_actor_keys(&user.id, ActorType::User)
+            .unwrap()
+            .is_empty());
+        assert!(data_dir.path().join("root.pem").is_file());
+        assert!(data_dir.path().join("root.password").is_file());
+    }
+
+    #[tokio::test]
+    async fn refuses_to_bootstrap_a_missing_configured_superuser_on_an_existing_store() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.paths.data_dir = data_dir.path().to_string_lossy().into_owned();
+        config.auth.superuser_name = "root".into();
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .create_user("pivotal", "pivotal@localhost", "bcrypt", "h", "s", true)
+            .unwrap();
+
+        let error = ensure_superuser(&store, &config)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("configured superuser"), "{error}");
     }
 }

@@ -170,6 +170,8 @@ pub struct AuthContext {
     pub org: Option<Org>,
     /// Name of the actor key that verified the request signature, when known.
     pub key_name: Option<String>,
+    /// Whether the principal is the configured platform superuser.
+    pub is_superuser: bool,
 }
 
 impl microwave_oauth::ProvidesOAuthState for AppState {

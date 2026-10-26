@@ -66,6 +66,7 @@ async fn fixture_with_keygen(size: usize, workers: usize, warm_up: bool) -> Fixt
     config.keygen.size = size;
     config.keygen.workers = workers;
     config.keygen.warm_up = warm_up;
+    config.auth.password_reset_token_in_response = true;
     config.object_store.secret = Some("test".into());
     let object_store: Arc<dyn microwave_objectstore::ObjectStore + Send + Sync> =
         Arc::new(microwave_objectstore::LocalObjectStore::new(
@@ -98,6 +99,11 @@ async fn request(
         .header(header::CONTENT_TYPE, content_type);
     for (name, value) in headers {
         builder = builder.header(*name, HeaderValue::from_str(value).unwrap());
+    }
+    if matches!(method, "POST" | "PUT" | "PATCH" | "DELETE") {
+        builder = builder
+            .header(header::HOST, "0.0.0.0:8000")
+            .header(header::ORIGIN, "http://0.0.0.0:8000");
     }
     app.clone()
         .oneshot(builder.body(Body::from(body.to_string())).unwrap())

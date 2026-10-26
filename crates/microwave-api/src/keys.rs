@@ -45,7 +45,6 @@ struct KeyTarget {
     actor_id: String,
     authz_id: String,
     actor_type: ActorType,
-    actor_name: String,
     validator: bool,
     uri: String,
 }
@@ -201,7 +200,6 @@ async fn user_target(
         actor_id: user.id,
         authz_id: user.authz_id,
         actor_type: ActorType::User,
-        actor_name: user.username,
         validator: false,
         uri: format!("{}/users/{username}/keys", base_url(headers, state)),
     })
@@ -224,7 +222,6 @@ async fn org_user_target(
         actor_id: user.id,
         authz_id: user.authz_id,
         actor_type: ActorType::User,
-        actor_name: user.username,
         validator: false,
         uri: format!(
             "{}/organizations/{}/users/{username}/keys",
@@ -251,7 +248,6 @@ async fn client_target(
         actor_id: client.id,
         authz_id: client.authz_id,
         actor_type: ActorType::Client,
-        actor_name: client.name,
         validator: client.validator,
         uri: format!(
             "{}/organizations/{}/clients/{client_name}/keys",
@@ -273,7 +269,8 @@ async fn authorize(
     if is_superuser(auth) {
         return Ok(());
     }
-    if auth.principal.name == target.actor_name {
+    if auth.principal.actor_id == target.actor_id && auth.principal.actor_type == target.actor_type
+    {
         match target.actor_type {
             ActorType::User => return Ok(()),
             ActorType::Client if !target.validator => return Ok(()),

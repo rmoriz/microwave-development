@@ -985,6 +985,14 @@ impl SqliteStore {
         if changed == 0 {
             return Err(StoreError::NotFound(format!("user {username}")));
         }
+        if let Some(admin) = patch.admin {
+            let group = self.ensure_global_group("server-admins")?;
+            if admin {
+                self.add_group_member(&group.authz_id, &current.authz_id)?;
+            } else {
+                self.remove_group_member(&group.authz_id, &current.authz_id)?;
+            }
+        }
         self.find_user(new_username)?
             .ok_or_else(|| StoreError::NotFound(format!("user {new_username}")))
     }

@@ -106,12 +106,14 @@ impl Config {
     /// - `MW_PATHS__DATA_DIR`
     /// - `MW_DATABASE__DRIVER`, `MW_DATABASE__URL`
     /// - `MW_STORAGE__COMPRESSION`
-    /// - `MW_SEARCH__BACKEND`, `MW_SEARCH__URL`, `MW_SEARCH__TIMEOUT_MS`
+    /// - `MW_SEARCH__BACKEND`, `MW_SEARCH__URL`, `MW_SEARCH__TIMEOUT_MS`,
+    ///   `MW_SEARCH__STRICT_RESULT_ACLS`
     /// - `MW_OBJECT_STORE__BACKEND`, `MW_OBJECT_STORE__BUCKET`, `MW_OBJECT_STORE__ENDPOINT`
     /// - `MW_OBJECT_STORE__REGION`, `MW_OBJECT_STORE__ACCESS_KEY`,
     ///   `MW_OBJECT_STORE__SECRET_KEY`, `MW_OBJECT_STORE__PATH_STYLE`
     /// - `MW_OBJECT_STORE__SECRET` (local bookshelf token secret)
-    /// - `MW_AUTH__SKEW_SECONDS`, `MW_AUTH__SUPERUSER_NAME`
+    /// - `MW_AUTH__SKEW_SECONDS`, `MW_AUTH__SUPERUSER_NAME`,
+    ///   `MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE`
     /// - `MW_KEYGEN__SIZE`, `MW_KEYGEN__WORKERS`, `MW_KEYGEN__WARM_UP`
     /// - `MW_LICENSE__NODE_LICENSE`, `MW_LICENSE__UPGRADE_URL`
     /// - `MW_DATA_COLLECTOR__ROOT_URL`, `MW_DATA_COLLECTOR__TOKEN`,
@@ -189,6 +191,9 @@ impl Config {
         if let Ok(value) = std::env::var("MW_SEARCH__URL") {
             self.search.url = Some(value);
         }
+        if let Ok(value) = std::env::var("MW_SEARCH__STRICT_RESULT_ACLS") {
+            self.search.strict_result_acls = parse_bool("MW_SEARCH__STRICT_RESULT_ACLS", &value)?;
+        }
         if let Ok(value) = std::env::var("MW_SEARCH__TIMEOUT_MS") {
             self.search.timeout_ms = parse_value("MW_SEARCH__TIMEOUT_MS", value)?;
         }
@@ -231,6 +236,10 @@ impl Config {
         }
         if let Ok(value) = std::env::var("MW_AUTH__SUPERUSER_NAME") {
             self.auth.superuser_name = value;
+        }
+        if let Ok(value) = std::env::var("MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE") {
+            self.auth.password_reset_token_in_response =
+                parse_bool("MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE", &value)?;
         }
         if let Ok(value) = std::env::var("MW_KEYGEN__SIZE") {
             self.keygen.size = parse_value("MW_KEYGEN__SIZE", value)?;
@@ -496,6 +505,10 @@ pub struct SearchConfig {
     /// requests from hanging forever when the cluster is unreachable or
     /// unresponsive. Must be greater than zero.
     pub timeout_ms: u64,
+    /// Hide search rows the caller cannot READ through object ACLs. Upstream
+    /// calls this `strict_search_result_acls`; Microwave defaults to `true` so
+    /// remote and embedded backends both filter unless explicitly disabled.
+    pub strict_result_acls: bool,
 }
 
 impl Default for SearchConfig {
@@ -504,6 +517,7 @@ impl Default for SearchConfig {
             backend: SearchBackend::Embedded,
             url: None,
             timeout_ms: 30_000,
+            strict_result_acls: true,
         }
     }
 }
@@ -560,6 +574,9 @@ pub enum ObjectStoreBackend {
 pub struct AuthConfig {
     pub skew_seconds: u64,
     pub superuser_name: String,
+    /// Development-only: include a usable password-reset URL in the HTTP
+    /// response. Off by default because the caller is unauthenticated.
+    pub password_reset_token_in_response: bool,
 }
 
 impl Default for AuthConfig {
@@ -567,6 +584,7 @@ impl Default for AuthConfig {
         Self {
             skew_seconds: 900,
             superuser_name: "pivotal".into(),
+            password_reset_token_in_response: false,
         }
     }
 }

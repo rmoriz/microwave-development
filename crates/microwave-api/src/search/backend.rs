@@ -67,8 +67,9 @@ pub struct SearchRequest {
     pub query: Query,
     pub start: usize,
     pub rows: usize,
-    /// Actor whose read ACLs should be applied by backends that can filter
-    /// results locally. `None` means the caller is a superuser.
+    /// Actor whose read ACLs should be applied by the embedded backend's
+    /// local filtering. The API applies strict filtering centrally for both
+    /// backends; this field is kept for direct embedded-backend callers.
     pub actor_authz_id: Option<String>,
 }
 

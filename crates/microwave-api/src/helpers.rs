@@ -70,7 +70,41 @@ pub async fn require_permission(
 }
 
 pub fn is_superuser(auth: &AuthContext) -> bool {
-    auth.principal.name == "pivotal"
+    auth.is_superuser
+}
+
+/// Whether the caller is the configured superuser or a member of the global
+/// `server-admins` group. Upstream grants the global organizations container
+/// to this set.
+pub async fn is_server_admin(state: &AppState, auth: &AuthContext) -> Result<bool, ApiError> {
+    if auth.is_superuser {
+        return Ok(true);
+    }
+    if auth.principal.actor_type != microwave_store::ActorType::User {
+        return Ok(false);
+    }
+    if state
+        .store
+        .find_user_by_id(&auth.principal.actor_id)
+        .await
+        .map_err(ApiError::from)?
+        .is_some_and(|user| user.admin)
+    {
+        return Ok(true);
+    }
+    let Some(group) = state
+        .store
+        .find_global_group("server-admins")
+        .await
+        .map_err(ApiError::from)?
+    else {
+        return Ok(false);
+    };
+    state
+        .store
+        .user_in_group(&group.authz_id, &auth.principal.authz_id)
+        .await
+        .map_err(ApiError::from)
 }
 
 pub fn require_superuser(auth: &AuthContext) -> Result<(), ApiError> {

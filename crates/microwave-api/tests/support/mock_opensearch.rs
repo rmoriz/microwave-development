@@ -1,6 +1,7 @@
 //! Minimal in-process OpenSearch stub for integration tests.
 
 use axum::extract::{Request, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use serde_json::{json, Value};
@@ -73,10 +74,14 @@ async fn handler(State(state): State<MockState>, request: Request) -> Response {
         .await
         .unwrap();
     state.requests.lock().unwrap().push(CapturedRequest {
-        method,
+        method: method.clone(),
         uri: uri.clone(),
         body: String::from_utf8_lossy(&body).to_string(),
     });
+
+    if method == "HEAD" && uri == "/chef" {
+        return StatusCode::NOT_FOUND.into_response();
+    }
 
     if uri.ends_with("/_cluster/health") {
         return axum::Json(json!({ "status": "green" })).into_response();

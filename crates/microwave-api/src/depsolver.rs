@@ -1,5 +1,5 @@
 use crate::cookbooks::render_manifest;
-use crate::helpers::{container_authz, organization, require_permission};
+use crate::helpers::{container_authz, is_superuser, organization, require_permission};
 use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
@@ -62,13 +62,40 @@ async fn solve(
                 .map(|version| ((version.name.clone(), version.version.clone()), version))
                 .collect::<BTreeMap<_, _>>();
             let mut result = Map::new();
+            let mut unauthorized = Vec::new();
             for package in solution.packages {
                 let key = (package.name.clone(), package.version.to_string());
                 let stored = stored_versions.get(&key).ok_or_else(ApiError::internal)?;
+                if !is_superuser(&auth)
+                    && !state
+                        .store
+                        .check_permission(
+                            &auth.principal.authz_id,
+                            &stored.authz_id,
+                            Permission::Read,
+                        )
+                        .await
+                        .map_err(ApiError::from)?
+                {
+                    unauthorized.push(json!({
+                        "name": package.name,
+                        "version": package.version.to_string()
+                    }));
+                    continue;
+                }
                 let mut manifest =
                     render_manifest(&stored.manifest, api_version, Some(&state), &org.id)?;
                 strip_minimal_metadata(&mut manifest);
                 result.insert(package.name, manifest);
+            }
+            if !unauthorized.is_empty() {
+                return Ok((
+                    StatusCode::FORBIDDEN,
+                    Json(json!({
+                        "error": ["Read permission is not granted for one or more cookbooks"],
+                        "unauthorized_cookbooks": unauthorized
+                    })),
+                ));
             }
             Ok((StatusCode::OK, Json(Value::Object(result))))
         }

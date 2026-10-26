@@ -53,6 +53,7 @@ pub struct OpenSearchBackend {
     client: reqwest::Client,
     base_url: String,
     provider: SearchProvider,
+    index_ready: tokio::sync::Mutex<bool>,
 }
 
 impl OpenSearchBackend {
@@ -85,6 +86,7 @@ impl OpenSearchBackend {
             client,
             base_url: url.trim_end_matches('/').to_string(),
             provider,
+            index_ready: tokio::sync::Mutex::new(false),
         })
     }
 
@@ -95,11 +97,64 @@ impl OpenSearchBackend {
             client,
             base_url: base_url.into().trim_end_matches('/').to_string(),
             provider,
+            index_ready: tokio::sync::Mutex::new(false),
         })
     }
 
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base_url)
+    }
+
+    /// Create the `chef` index with the upstream mapping once per backend.
+    ///
+    /// Without the mapping OpenSearch dynamically types `X_CHEF_id_CHEF_X` as
+    /// text, which makes the required sort fail, and uses the standard analyzer
+    /// instead of the whitespace analyzer Chef queries expect.
+    async fn ensure_index(&self) -> Result<(), SearchError> {
+        let mut ready = self.index_ready.lock().await;
+        if *ready {
+            return Ok(());
+        }
+        let url = self.url(&format!("/{INDEX}"));
+        let head = self.client.head(&url).send().await?;
+        match head.status().as_u16() {
+            200..=299 => {
+                *ready = true;
+                return Ok(());
+            }
+            404 => {}
+            // A read-only search credential cannot create the index. Let the
+            // search proceed against an existing index instead of turning an
+            // upgrade into an outage.
+            401 | 403 => return Ok(()),
+            status => {
+                return Err(SearchError::Backend {
+                    status,
+                    url: url.to_string(),
+                })
+            }
+        }
+
+        let response = self
+            .client
+            .put(&url)
+            .json(&index_definition())
+            .send()
+            .await?;
+        let status = response.status().as_u16();
+        if status == 400 {
+            let body = response.text().await.unwrap_or_default();
+            if body.contains("resource_already_exists_exception") {
+                *ready = true;
+                return Ok(());
+            }
+            return Err(SearchError::Response(format!(
+                "could not create the chef index: {body}"
+            )));
+        }
+        self.check_status(&url, status)?;
+        *ready = true;
+        Ok(())
     }
 
     fn filter_query(&self, request: &SearchRequest) -> String {
@@ -164,6 +219,7 @@ impl OpenSearchBackend {
     }
 
     async fn bulk(&self, body: String, allow_not_found: bool) -> Result<usize, SearchError> {
+        self.ensure_index().await?;
         let url = self.url("/_bulk");
         let response = self
             .client
@@ -191,6 +247,30 @@ impl OpenSearchBackend {
             Ok(())
         }
     }
+}
+
+fn index_definition() -> Value {
+    json!({
+        "settings": {
+            "analysis": {
+                "analyzer": {
+                    "default": { "type": "whitespace" }
+                }
+            },
+            "number_of_shards": 3,
+            "number_of_replicas": 2
+        },
+        "mappings": {
+            "_source": { "enabled": false },
+            "properties": {
+                "X_CHEF_database_CHEF_X": { "type": "keyword", "index": true, "norms": false },
+                "X_CHEF_type_CHEF_X": { "type": "keyword", "index": true, "norms": false },
+                "X_CHEF_id_CHEF_X": { "type": "keyword", "index": true, "norms": false },
+                "data_bag": { "type": "keyword", "index": true, "norms": false },
+                "content": { "type": "text", "index": true }
+            }
+        }
+    })
 }
 
 fn client_with_timeout(timeout_ms: u64) -> Result<reqwest::Client, SearchError> {
@@ -432,6 +512,7 @@ impl super::backend::SearchBackend for OpenSearchBackend {
     }
 
     async fn search(&self, request: &SearchRequest) -> Result<SearchHits, SearchError> {
+        self.ensure_index().await?;
         let url = self.url(&format!("/{INDEX}/_search"));
         let response = self
             .client
@@ -440,6 +521,20 @@ impl super::backend::SearchBackend for OpenSearchBackend {
             .send()
             .await?;
         let status = response.status().as_u16();
+        if status == 404 {
+            let body = response.text().await.unwrap_or_default();
+            if is_index_not_found(&body) {
+                *self.index_ready.lock().await = false;
+                return Ok(SearchHits {
+                    total: 0,
+                    ids: Vec::new(),
+                });
+            }
+            return Err(SearchError::Backend {
+                status,
+                url: url.to_string(),
+            });
+        }
         self.check_status(&url, status)?;
 
         let response: SearchResponse = response.json().await.map_err(|error| {
@@ -717,10 +812,12 @@ mod tests {
         );
 
         let requests = mock.requests();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].method, "GET");
-        assert_eq!(requests[0].uri, "/chef/_search");
-        let body: Value = serde_json::from_str(&requests[0].body).unwrap();
+        let request = requests
+            .iter()
+            .find(|request| request.uri == "/chef/_search")
+            .unwrap();
+        assert_eq!(request.method, "GET");
+        let body: Value = serde_json::from_str(&request.body).unwrap();
         assert_eq!(body["stored_fields"], json!(["_id"]));
         assert_eq!(body["from"], 5);
         assert_eq!(body["size"], 10);
@@ -749,7 +846,11 @@ mod tests {
         backend.search(&request).await.unwrap();
 
         let requests = mock.requests();
-        let body: Value = serde_json::from_str(&requests[0].body).unwrap();
+        let request = requests
+            .iter()
+            .find(|request| request.uri == "/chef/_search")
+            .unwrap();
+        let body: Value = serde_json::from_str(&request.body).unwrap();
         assert_eq!(
             body["query"]["bool"]["filter"][0]["query_string"]["query"],
             "+X_CHEF_database_CHEF_X:chef_acme +X_CHEF_type_CHEF_X:data_bag_item +data_bag:secrets"
@@ -772,9 +873,12 @@ mod tests {
         assert_eq!(outcome.acknowledged, 1);
 
         let requests = mock.requests();
-        assert_eq!(requests[0].method, "POST");
-        assert_eq!(requests[0].uri, "/_bulk");
-        let lines: Vec<&str> = requests[0].body.lines().collect();
+        let request = requests
+            .iter()
+            .find(|request| request.uri == "/_bulk")
+            .unwrap();
+        assert_eq!(request.method, "POST");
+        let lines: Vec<&str> = request.body.lines().collect();
         assert_eq!(lines.len(), 2);
         let action: Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(
@@ -878,7 +982,11 @@ mod tests {
         backend.index(&document).await.unwrap();
 
         let requests = mock.requests();
-        let lines: Vec<&str> = requests[0].body.lines().collect();
+        let request = requests
+            .iter()
+            .find(|request| request.uri == "/_bulk")
+            .unwrap();
+        let lines: Vec<&str> = request.body.lines().collect();
         let source: Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(source["X_CHEF_type_CHEF_X"], "data_bag_item");
         assert_eq!(source["data_bag"], "secrets");
@@ -981,8 +1089,11 @@ mod tests {
         backend.delete("acme", "node-guid").await.unwrap();
 
         let requests = mock.requests();
-        assert_eq!(requests[0].uri, "/_bulk");
-        let action: Value = serde_json::from_str(requests[0].body.trim()).unwrap();
+        let request = requests
+            .iter()
+            .find(|request| request.uri == "/_bulk")
+            .unwrap();
+        let action: Value = serde_json::from_str(request.body.trim()).unwrap();
         assert_eq!(
             action,
             json!({ "delete": { "_index": "chef", "_id": "node-guid" } })
@@ -1179,14 +1290,28 @@ mod tests {
 
     #[tokio::test]
     async fn maps_400_to_bad_request_and_other_errors_to_backend_errors() {
-        let server = mock(400, json!({ "error": "bad query" })).await;
+        let server = mock_with(|request| {
+            if request.uri == "/chef" {
+                (200, json!({}))
+            } else {
+                (400, json!({ "error": "bad query" }))
+            }
+        })
+        .await;
         let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &server.base_url).unwrap();
         assert!(matches!(
             backend.search(&request("name:web1")).await,
             Err(SearchError::BadRequest)
         ));
 
-        let server = mock(500, json!({ "error": "boom" })).await;
+        let server = mock_with(|request| {
+            if request.uri == "/chef" {
+                (200, json!({}))
+            } else {
+                (500, json!({ "error": "boom" }))
+            }
+        })
+        .await;
         let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &server.base_url).unwrap();
         match backend.search(&request("name:web1")).await {
             Err(SearchError::Backend { status: 500, .. }) => {}

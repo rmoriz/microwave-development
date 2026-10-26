@@ -780,7 +780,7 @@ fn authorize_superuser_target(
     if target_username == state.config.auth.superuser_name {
         return Err(ApiError::forbidden());
     }
-    if auth.principal.name != state.config.auth.superuser_name {
+    if !auth.is_superuser {
         return Err(ApiError::forbidden_with("missing create permission"));
     }
     Ok(())
