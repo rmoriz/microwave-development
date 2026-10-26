@@ -1791,6 +1791,85 @@ fn maintenance_mode_can_be_turned_on_and_off() {
     assert!(stderr(&invalid).contains("invalid value"));
 }
 
+fn smtp_check_config(
+    dir: &Path,
+    security: &str,
+    from: &str,
+    reply_to: Option<&str>,
+    ca_path: Option<&Path>,
+) -> std::path::PathBuf {
+    let config = dir.join("microwave.toml");
+    let reply_to = reply_to
+        .map(|value| format!("reply_to = {value:?}\n"))
+        .unwrap_or_default();
+    let ca_path = ca_path
+        .map(|value| format!("tls_ca_path = {:?}\n", value.to_string_lossy()))
+        .unwrap_or_default();
+    std::fs::write(
+        &config,
+        format!(
+            "[server]\npublic_url = \"https://localhost\"\n\n\
+             [mail]\nenabled = true\nhost = \"localhost\"\nsecurity = {security:?}\n\
+             auth = \"none\"\nfrom = {from:?}\n{reply_to}{ca_path}"
+        ),
+    )
+    .unwrap();
+    config
+}
+
+#[test]
+fn check_config_rejects_missing_or_invalid_smtp_ca() {
+    for invalid_ca in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = dir.path().join("private-ca.pem");
+        if invalid_ca {
+            std::fs::write(&ca, "not a PEM certificate").unwrap();
+        }
+        let config = smtp_check_config(dir.path(), "tls", "chef@example.com", None, Some(&ca));
+        let output = ctl(dir.path())
+            .args(["--config", config.to_str().unwrap(), "check-config"])
+            .output()
+            .unwrap();
+        eprintln!(
+            "DEBUG invalid_ca={} status={} stderr={}",
+            invalid_ca,
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output.status.success(), "invalid CA was accepted");
+        assert!(
+            stderr(&output).contains("mail.tls_ca_path"),
+            "unexpected error: {}",
+            stderr(&output)
+        );
+    }
+}
+
+#[test]
+fn check_config_rejects_malformed_mail_addresses() {
+    for (from, reply_to, expected) in [
+        ("not-a-mailbox", None, "mail.from"),
+        (
+            "chef@example.com",
+            Some("also-not-a-mailbox"),
+            "mail.reply_to",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let config = smtp_check_config(dir.path(), "none", from, reply_to, None);
+        let output = ctl(dir.path())
+            .args(["--config", config.to_str().unwrap(), "check-config"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "invalid mailbox was accepted");
+        assert!(
+            stderr(&output).contains(expected),
+            "unexpected error: {}",
+            stderr(&output)
+        );
+    }
+}
+
 #[test]
 fn check_config_reports_valid_configuration() {
     let dir = tempfile::tempdir().unwrap();

@@ -64,4 +64,4 @@ tar = "0.4"
 assert_cmd = "2"
 ureq = "3.5"
 http = "1"
-lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "pool", "tokio1-rustls-tls"] }
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }

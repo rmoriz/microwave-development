@@ -93,6 +93,13 @@ pub async fn create(
     // Send email if conditions are met
     if let (Some(token), Some(user)) = (reset_token.as_ref(), user.as_ref()) {
         if state.mailer.is_enabled() {
+            let has_email = user
+                .email
+                .as_deref()
+                .is_some_and(|email| !email.trim().is_empty());
+            if !has_email {
+                tracing::warn!(username = %user.username, "password reset requested for user without an email address");
+            }
             if let Some(user_email) = &user.email {
                 if !user_email.is_empty() {
                     if let Some(from_email) = &state.config.mail.from {
@@ -111,7 +118,10 @@ pub async fn create(
                         };
 
                         if let Err(error) = state.mailer.send(&message).await {
-                            tracing::warn!(%error, "password reset mail failed");
+                            tracing::warn!(
+                                error_category = error.kind(),
+                                "password reset mail failed"
+                            );
                         }
                     }
                 }
@@ -242,7 +252,7 @@ fn absolute_reset_url(state: &OAuthState, token: &str) -> Option<String> {
         .as_ref()
         .filter(|url| !url.is_empty())
         .map(|url| {
-            let base = url.trim_end_matches('/');
+            let base = url.trim().trim_end_matches('/');
             format!("{base}/id/password-reset?token={token}")
         })
 }

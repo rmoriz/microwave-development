@@ -112,7 +112,7 @@ impl Config {
         if let Some(public_url) = public_url {
             validate_public_url(public_url).map_err(|message| ConfigError::InvalidValue {
                 key: "server.public_url".into(),
-                value: format!("{public_url}: {message}"),
+                value: message,
             })?;
         }
         if self.auth.password_reset_ttl_seconds == 0 {
@@ -531,7 +531,7 @@ fn parse_bool(key: &str, value: &str) -> Result<bool, ConfigError> {
 /// Loopback hosts that may use plaintext HTTP or plaintext SMTP AUTH in
 /// development. Bracket-free IPv6 form is accepted for consistency with
 /// `Url::host_str`, while SMTP configuration may also use `[::1]`.
-fn is_loopback_host(host: &str) -> bool {
+pub fn is_loopback_host(host: &str) -> bool {
     let host = host.trim().trim_start_matches('[').trim_end_matches(']');
     host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
 }

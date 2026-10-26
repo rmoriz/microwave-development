@@ -823,17 +823,31 @@ fn mail_requires_host_from_timeout_and_public_url_when_enabled() {
 #[test]
 fn mail_rejects_incomplete_or_conflicting_credentials() {
     let public_url = Some("https://chef.example.com");
-    for (label, extra) in [
-        ("username without password", "username = \"mailer\""),
-        ("password without username", "password = \"secret\""),
+    for (label, auth, extra, expected) in [
+        (
+            "username without password",
+            "plain",
+            "username = \"mailer\"",
+            "mail.username requires mail.password",
+        ),
+        (
+            "password without username",
+            "plain",
+            "password = \"secret\"",
+            "mail.password requires mail.username",
+        ),
         (
             "credentials with auth = none",
-            "username = \"mailer\"\npassword = \"secret\"\nauth = \"none\"",
+            "none",
+            "username = \"mailer\"\npassword = \"secret\"",
+            "must not be combined with credentials",
         ),
     ] {
+        let error =
+            Config::from_toml_str(&mail_toml_with_auth(public_url, Some(auth), extra)).unwrap_err();
         assert!(
-            Config::from_toml_str(&mail_toml(public_url, extra)).is_err(),
-            "accepted {label}"
+            error.to_string().contains(expected),
+            "{label} failed through the wrong validation rule: {error}"
         );
     }
 
@@ -932,6 +946,34 @@ fn public_url_must_be_a_secure_origin_without_path_query_or_fragment() {
             "rejected valid public URL {url}"
         );
     }
+}
+
+#[test]
+fn public_url_accepts_surrounding_whitespace_without_echoing_it_as_a_different_value() {
+    let input = mail_toml(Some("  https://chef.example.com/  "), "");
+    let config = Config::from_toml_str(&input).unwrap();
+    assert_eq!(
+        config.server.public_url.as_deref().map(str::trim),
+        Some("https://chef.example.com/")
+    );
+}
+
+#[test]
+fn public_url_validation_does_not_echo_embedded_credentials() {
+    let error = Config::from_toml_str(
+        r#"
+        [server]
+        public_url = "https://user:super-secret-password@chef.example.com"
+        "#,
+    )
+    .unwrap_err();
+
+    let display = error.to_string();
+    let debug = format!("{error:?}");
+    assert!(display.contains("server.public_url"));
+    assert!(display.contains("must not include credentials"));
+    assert!(!display.contains("super-secret-password"));
+    assert!(!debug.contains("super-secret-password"));
 }
 
 #[test]

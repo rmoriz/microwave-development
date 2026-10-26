@@ -1,7 +1,7 @@
 use crate::health::HealthCache;
 use crate::metrics::Metrics;
 use crate::search::{build_search_backend, SearchBackend, SearchError};
-use microwave_config::Config;
+use microwave_config::{Config, MailSecurity};
 use microwave_crypto::{CryptoError, KeygenCache};
 use microwave_objectstore::ObjectStore;
 use microwave_store::{MetadataStore, Org, Principal, SqliteStore};
@@ -65,6 +65,18 @@ impl AppState {
         let actions =
             crate::actions::ActionDispatcher::new(&config, http_client.clone(), store.clone());
         let depsolver = build_depsolver_semaphore(&config);
+        if config.mail.is_enabled() {
+            if let Some(url) = config.server.public_url.as_deref() {
+                if url.trim().starts_with("http://") {
+                    tracing::warn!(
+                        "mail is enabled with an http public_url; use https in production"
+                    );
+                }
+            }
+            if config.mail.security == MailSecurity::None {
+                tracing::warn!("mail uses plaintext SMTP (security = none); use this only for trusted local relays");
+            }
+        }
         Ok(Self {
             store,
             sqlite: None,
@@ -100,6 +112,18 @@ impl AppState {
         let actions =
             crate::actions::ActionDispatcher::new(&config, http_client.clone(), store.clone());
         let depsolver = build_depsolver_semaphore(&config);
+        if config.mail.is_enabled() {
+            if let Some(url) = config.server.public_url.as_deref() {
+                if url.trim().starts_with("http://") {
+                    tracing::warn!(
+                        "mail is enabled with an http public_url; use https in production"
+                    );
+                }
+            }
+            if config.mail.security == MailSecurity::None {
+                tracing::warn!("mail uses plaintext SMTP (security = none); use this only for trusted local relays");
+            }
+        }
         Ok(Self {
             store: store.clone(),
             sqlite: Some(store),

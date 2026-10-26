@@ -7,7 +7,43 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 use microwave_config::{MailAuth, MailConfig, MailSecurity};
-use microwave_mail::{MailMessage, Mailer, SmtpMailer};
+use microwave_mail::{build_mailer, MailError, MailMessage, Mailer, SmtpMailer};
+
+static SMTP_LOG_CAPTURE: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+static SMTP_LOG_INIT: std::sync::Once = std::sync::Once::new();
+static SMTP_LOG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[derive(Clone)]
+struct GlobalLogWriter;
+
+impl std::io::Write for GlobalLogWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        SMTP_LOG_CAPTURE.lock().unwrap().extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for GlobalLogWriter {
+    type Writer = GlobalLogWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        GlobalLogWriter
+    }
+}
+
+fn init_global_log_capture() {
+    SMTP_LOG_INIT.call_once(|| {
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(GlobalLogWriter)
+            .finish();
+        let _ = tracing::subscriber::set_global_default(subscriber);
+    });
+}
 
 struct CapturedEmail {
     from: String,
@@ -164,6 +200,43 @@ async fn start_mock_smtp_server(
     });
 
     (addr, emails)
+}
+
+async fn start_rejecting_smtp_server(response_text: &str) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let response_text = response_text.to_string();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let (reader, mut writer) = socket.split();
+        let mut reader = BufReader::new(reader);
+        writer
+            .write_all(b"220 mock.smtp.server ESMTP\r\n")
+            .await
+            .unwrap();
+        let mut line = String::new();
+        while reader.read_line(&mut line).await.unwrap() > 0 {
+            let command = line.trim();
+            if command.starts_with("EHLO") || command.starts_with("HELO") {
+                writer
+                    .write_all(b"250-mock.smtp.server\r\n250 OK\r\n")
+                    .await
+                    .unwrap();
+            } else if command.starts_with("RCPT TO:") {
+                writer
+                    .write_all(format!("550 {response_text}\r\n").as_bytes())
+                    .await
+                    .unwrap();
+            } else if command == "QUIT" {
+                writer.write_all(b"221 Bye\r\n").await.unwrap();
+                break;
+            } else {
+                writer.write_all(b"250 OK\r\n").await.unwrap();
+            }
+            line.clear();
+        }
+    });
+    addr
 }
 
 #[tokio::test]
@@ -402,4 +475,113 @@ async fn missing_ca_path_returns_configuration_error() {
     if let Err(e) = result {
         assert!(matches!(e, microwave_mail::MailError::Configuration(_)));
     }
+}
+
+fn unauthenticated_config(host: &str) -> MailConfig {
+    MailConfig {
+        enabled: true,
+        host: Some(host.into()),
+        port: Some(25),
+        security: MailSecurity::None,
+        username: None,
+        password: None,
+        auth: MailAuth::None,
+        from: Some("Chef <chef@example.com>".into()),
+        reply_to: None,
+        timeout_ms: 5000,
+        hello_name: None,
+        tls_ca_path: None,
+    }
+}
+
+#[tokio::test]
+async fn configured_from_and_reply_to_mailboxes_are_validated_at_startup() {
+    for (from, reply_to, expected) in [
+        ("not-a-mailbox", None, "mail.from must be a valid mailbox"),
+        (
+            "chef@example.com",
+            Some("also-not-a-mailbox"),
+            "mail.reply_to must be a valid mailbox",
+        ),
+    ] {
+        let mut config = unauthenticated_config("localhost");
+        config.from = Some(from.into());
+        config.reply_to = reply_to.map(str::to_string);
+        let error = SmtpMailer::from_config(&config)
+            .err()
+            .expect("invalid configured mailbox must fail startup");
+        assert!(matches!(error, MailError::Configuration(_)));
+        assert!(error.to_string().contains(expected), "{error}");
+        assert!(!error.to_string().contains("not-a-mailbox"));
+    }
+}
+
+#[tokio::test]
+async fn build_mailer_accepts_every_canonical_loopback_spelling() {
+    for host in ["localhost", "LOCALHOST", "127.0.0.1", "::1", "[::1]"] {
+        let mut config = unauthenticated_config(host);
+        config.username = Some("mailer".into());
+        config.password = Some("secret".into());
+        config.auth = MailAuth::Plain;
+        let mailer = build_mailer(&config)
+            .unwrap_or_else(|error| panic!("loopback host {host} was rejected: {error}"));
+        assert!(mailer.is_enabled());
+    }
+}
+
+#[test]
+fn mail_errors_do_not_expose_raw_address_or_transport_details() {
+    for error in [
+        MailError::Address("invalid secret-recipient@example.com".into()),
+        MailError::Transport("relay echoed super-secret-response".into()),
+    ] {
+        let display = error.to_string();
+        let debug = format!("{error:?}");
+        assert!(!display.contains("secret"), "{display}");
+        assert!(!debug.contains("secret"), "{debug}");
+    }
+}
+
+#[tokio::test]
+async fn smtp_failure_logs_exclude_relay_text_addresses_bodies_and_tokens() {
+    let relay_secret = "super-secret-relay-response";
+    let addr = start_rejecting_smtp_server(relay_secret).await;
+    let mut config = unauthenticated_config("127.0.0.1");
+    config.port = Some(addr.port());
+    let mailer = SmtpMailer::from_config(&config).unwrap();
+    let message = MailMessage {
+        from: "chef@example.com".into(),
+        to: "alice@example.com".into(),
+        reply_to: None,
+        subject: "subject-secret".into(),
+        text_body: "https://chef.example.com/id/password-reset?token=body-token-secret".into(),
+    };
+
+    {
+        let _log_lock = SMTP_LOG_TEST_LOCK.lock().unwrap();
+        init_global_log_capture();
+        SMTP_LOG_CAPTURE.lock().unwrap().clear();
+    }
+    let error = mailer.send(&message).await.unwrap_err();
+    let MailError::Transport(raw) = &error else {
+        panic!("expected transport error, got {error:?}");
+    };
+    assert!(raw.contains(relay_secret), "fake relay was not exercised");
+
+    let logs = String::from_utf8(SMTP_LOG_CAPTURE.lock().unwrap().clone()).unwrap();
+    assert!(logs.contains("smtp delivery failed"), "{logs}");
+    assert!(logs.contains("error_category=transport"), "{logs}");
+    assert!(logs.contains("relay_host=127.0.0.1"), "{logs}");
+    assert!(logs.contains("recipient_domain=example.com"), "{logs}");
+    for secret in [
+        relay_secret,
+        "subject-secret",
+        "body-token-secret",
+        "alice@example.com",
+        "chef@example.com",
+    ] {
+        assert!(!logs.contains(secret), "log contained {secret}: {logs}");
+    }
+    assert!(!error.to_string().contains(relay_secret));
+    assert!(!format!("{error:?}").contains(relay_secret));
 }

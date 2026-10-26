@@ -36,15 +36,9 @@ impl MailDispatcher {
 
     async fn worker_loop(inner: Arc<dyn Mailer>, mut receiver: mpsc::Receiver<MailMessage>) {
         while let Some(message) = receiver.recv().await {
-            let subject = message.subject.clone();
-            if let Err(e) = inner.send(&message).await {
-                // Log the error but don't include credentials or body
-                tracing::warn!(
-                    subject = %subject,
-                    error = %e,
-                    "Failed to send email"
-                );
-            }
+            // Inner mailers are responsible for logging delivery failures with
+            // redacted metadata. The dispatcher only owns queue lifecycle.
+            let _ = inner.send(&message).await;
         }
     }
 }

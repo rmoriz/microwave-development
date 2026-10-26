@@ -10,21 +10,46 @@ pub use smtp::SmtpMailer;
 
 use microwave_config::MailConfig;
 
-/// Error type for mail operations
-#[derive(Debug, thiserror::Error)]
+/// Error type for mail operations.
+///
+/// Variants may carry diagnostic detail, but `Display` and `Debug` never expose
+/// it: mail errors are logged by category only so SMTP responses, recipients,
+/// subjects, bodies, reset tokens, and credentials cannot leak through logs or
+/// error messages.
+#[derive(thiserror::Error)]
 pub enum MailError {
-    #[error("Configuration error: {0}")]
+    #[error("mail configuration error: {0}")]
     Configuration(String),
-    #[error("Address error: {0}")]
+    #[error("invalid mail address")]
     Address(String),
-    #[error("Transport error: {0}")]
+    #[error("smtp transport error")]
     Transport(String),
-    #[error("Queue full")]
+    #[error("mail queue full")]
     QueueFull,
-    #[error("Queue closed")]
+    #[error("mail queue closed")]
     QueueClosed,
-    #[error("Mail disabled")]
+    #[error("mail disabled")]
     Disabled,
+}
+
+impl MailError {
+    /// Static category used in structured log fields.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Configuration(_) => "configuration",
+            Self::Address(_) => "address",
+            Self::Transport(_) => "transport",
+            Self::QueueFull => "queue_full",
+            Self::QueueClosed => "queue_closed",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+impl std::fmt::Debug for MailError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "MailError({})", self.kind())
+    }
 }
 
 /// Mail message to be sent

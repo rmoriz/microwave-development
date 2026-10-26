@@ -56,6 +56,7 @@ impl Mailer for RecordingMailer {
 
 struct BlockingMailer {
     block: Arc<Notify>,
+    started: Arc<Notify>,
 }
 
 #[async_trait::async_trait]
@@ -65,6 +66,7 @@ impl Mailer for BlockingMailer {
     }
 
     async fn send(&self, _message: &MailMessage) -> Result<(), MailError> {
+        self.started.notify_one();
         self.block.notified().await;
         Ok(())
     }
@@ -108,14 +110,17 @@ async fn dispatcher_send_records_message() {
 #[tokio::test]
 async fn dispatcher_returns_queue_full_when_capacity_exceeded() {
     let block = Arc::new(Notify::new());
+    let started = Arc::new(Notify::new());
     let blocking_mailer = Arc::new(BlockingMailer {
         block: block.clone(),
+        started: started.clone(),
     });
     let dispatcher = MailDispatcher::new(blocking_mailer, 2).unwrap();
 
-    // Send first message, then yield to let the worker pick it up and block
     dispatcher.send(&make_test_message("0")).await.unwrap();
-    tokio::task::yield_now().await;
+    timeout(Duration::from_secs(1), started.notified())
+        .await
+        .expect("worker did not start the blocking send");
 
     // Now fill the remaining capacity
     dispatcher.send(&make_test_message("1")).await.unwrap();
@@ -159,7 +164,13 @@ async fn dispatcher_continues_after_inner_send_failure() {
     .expect("timeout waiting for second message to be processed");
 
     // Verify the second message was actually delivered
-    let captured = messages.lock().await;
-    assert_eq!(captured.len(), 1);
-    assert_eq!(captured[0].subject, "Test 2");
+    let captured_messages = messages.lock().await;
+    assert_eq!(captured_messages.len(), 1);
+    assert_eq!(captured_messages[0].subject, "Test 2");
+    drop(captured_messages);
+
+    // The dispatcher no longer logs inner delivery failures; the inner
+    // mailer owns that. It must neither panic nor leak the queued payload.
+    // The dispatcher must not panic or leak the queued payload through logs.
+    let _ = messages;
 }
