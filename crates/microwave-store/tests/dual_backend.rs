@@ -2383,21 +2383,21 @@ mod suite {
             .expect("create password reset token");
         assert_eq!(
             store
-                .find_password_reset_token(&reset)
+                .find_password_reset_token(&reset, 3600)
                 .await
                 .expect("find password reset token"),
             Some(owner.username.clone())
         );
         assert_eq!(
             store
-                .consume_password_reset_token(&reset)
+                .consume_password_reset_token(&reset, 3600)
                 .await
                 .expect("consume password reset token"),
             Some(owner.username.clone())
         );
         assert_eq!(
             store
-                .consume_password_reset_token(&reset)
+                .consume_password_reset_token(&reset, 3600)
                 .await
                 .expect("consume password reset token twice"),
             None
@@ -2413,7 +2413,7 @@ mod suite {
             move |_| {
                 let store = Arc::clone(&store);
                 let token = token.clone();
-                async move { store.consume_password_reset_token(&token).await }
+                async move { store.consume_password_reset_token(&token, 3600).await }
             }
         })
         .await;

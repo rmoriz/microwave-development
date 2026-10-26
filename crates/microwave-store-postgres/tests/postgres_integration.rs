@@ -1748,8 +1748,8 @@ async fn manages_oauth_applications_tokens_sessions_and_resets() {
         .await
         .expect("create concurrent reset token");
     let (left, right) = tokio::join!(
-        store.consume_password_reset_token(&concurrent),
-        store.consume_password_reset_token(&concurrent)
+        store.consume_password_reset_token(&concurrent, 3600),
+        store.consume_password_reset_token(&concurrent, 3600)
     );
     let results = [
         left.expect("first concurrent consume"),
@@ -1763,7 +1763,7 @@ async fn manages_oauth_applications_tokens_sessions_and_resets() {
     assert!(results.contains(&Some("bob".into())));
     assert_eq!(
         store
-            .find_password_reset_token(&concurrent)
+            .find_password_reset_token(&concurrent, 3600)
             .await
             .expect("concurrent reset token consumed"),
         None
@@ -1775,24 +1775,57 @@ async fn manages_oauth_applications_tokens_sessions_and_resets() {
         .expect("create reset token");
     assert_eq!(
         store
-            .find_password_reset_token(&reset)
+            .find_password_reset_token(&reset, 3600)
             .await
             .expect("find reset token"),
         Some("alice".into())
     );
     assert_eq!(
         store
-            .consume_password_reset_token(&reset)
+            .consume_password_reset_token(&reset, 3600)
             .await
             .expect("consume reset token"),
         Some("alice".into())
     );
     assert_eq!(
         store
-            .find_password_reset_token(&reset)
+            .find_password_reset_token(&reset, 3600)
             .await
             .expect("consumed reset token"),
         None
+    );
+
+    // Expired password-reset tokens must not be findable or consumable,
+    // and the row must be removed.
+    let aged = store
+        .create_password_reset_token("expired-alice")
+        .await
+        .expect("create aged reset token");
+    sqlx::query("UPDATE kvpair SET updated_at = '2000-01-01T00:00:00Z' WHERE key = $1")
+        .bind(format!("id_password_reset:{aged}"))
+        .execute(store.pool())
+        .await
+        .expect("age reset token");
+    assert_eq!(
+        store
+            .find_password_reset_token(&aged, 3600)
+            .await
+            .expect("expired reset token"),
+        None
+    );
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM kvpair WHERE key = $1")
+        .bind(format!("id_password_reset:{aged}"))
+        .fetch_one(store.pool())
+        .await
+        .expect("count expired reset token");
+    assert_eq!(remaining, 0);
+    assert_eq!(
+        store
+            .consume_password_reset_token(&aged, 3600)
+            .await
+            .expect("consume expired reset token"),
+        None,
+        "expired token must not be consumable"
     );
 }
 

@@ -808,9 +808,16 @@ pub trait OAuthRepository: Send + Sync {
     async fn delete_id_session(&self, token: &str) -> Result<(), StoreError>;
 
     async fn create_password_reset_token(&self, username: &str) -> Result<String, StoreError>;
-    async fn find_password_reset_token(&self, token: &str) -> Result<Option<String>, StoreError>;
-    async fn consume_password_reset_token(&self, token: &str)
-        -> Result<Option<String>, StoreError>;
+    async fn find_password_reset_token(
+        &self,
+        token: &str,
+        max_age_seconds: i64,
+    ) -> Result<Option<String>, StoreError>;
+    async fn consume_password_reset_token(
+        &self,
+        token: &str,
+        max_age_seconds: i64,
+    ) -> Result<Option<String>, StoreError>;
 }
 
 /// Raw key/value storage plus the operator maintenance flag.

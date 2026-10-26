@@ -1247,15 +1247,20 @@ impl OAuthRepository for SqliteStore {
         self.create_password_reset_token(username)
     }
 
-    async fn find_password_reset_token(&self, token: &str) -> Result<Option<String>, StoreError> {
-        self.find_password_reset_token(token)
+    async fn find_password_reset_token(
+        &self,
+        token: &str,
+        max_age_seconds: i64,
+    ) -> Result<Option<String>, StoreError> {
+        self.find_password_reset_token(token, max_age_seconds)
     }
 
     async fn consume_password_reset_token(
         &self,
         token: &str,
+        max_age_seconds: i64,
     ) -> Result<Option<String>, StoreError> {
-        self.consume_password_reset_token(token)
+        self.consume_password_reset_token(token, max_age_seconds)
     }
 }
 
