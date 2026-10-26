@@ -79,7 +79,7 @@ async fn upload_hello(app: &Router) {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
     let sandbox_id = created["sandbox_id"].as_str().unwrap();
     let response = app
         .clone()
