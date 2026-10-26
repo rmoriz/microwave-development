@@ -1,5 +1,5 @@
 use crate::sqlite::{SqliteStore, StoreError};
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,7 +258,7 @@ impl SqliteStore {
         }
         for permission in Permission::ALL {
             transaction.execute(
-                "INSERT INTO authz_acl_actor (target_authz_id, permission, actor_authz_id)
+                "INSERT INTO authz_acl_group (target_authz_id, permission, group_authz_id)
                  VALUES (?1, ?2, ?3)",
                 params![authz_id, permission.as_str(), authz_id],
             )?;
@@ -831,13 +831,27 @@ impl SqliteStore {
                 row.get(0)
             })
             .optional()?;
-        transaction.execute(
+        // `cookbook_versions` and `cookbook_artifact_versions` restrict their
+        // parent deletes, so remove version/link rows before deleting the
+        // organization that owns them. The remaining org-owned rows cascade.
+        for statement in [
+            "DELETE FROM cookbook_version_checksums WHERE org_id = ?1",
+            "DELETE FROM cookbook_artifact_version_checksums WHERE org_id = ?1",
+            "DELETE FROM cookbook_versions WHERE org_id = ?1",
+            "DELETE FROM cookbooks WHERE org_id = ?1",
+            "DELETE FROM cookbook_artifact_versions WHERE org_id = ?1",
+            "DELETE FROM cookbook_artifacts WHERE org_id = ?1",
+            "DELETE FROM sandboxes WHERE org_id = ?1",
+            "DELETE FROM sandboxed_checksums WHERE org_id = ?1",
+            "DELETE FROM sandbox_checksums WHERE org_id = ?1",
             "DELETE FROM actor_keys
              WHERE actor_type = 'client'
                AND actor_id IN (SELECT id FROM clients WHERE org_id = ?1)",
-            params![org_id],
-        )?;
-        transaction.execute("DELETE FROM orgs WHERE id = ?1", params![org_id])?;
+            "DELETE FROM checksums WHERE org_id = ?1",
+            "DELETE FROM orgs WHERE id = ?1",
+        ] {
+            transaction.execute(statement, params![org_id])?;
+        }
         if let Some(name) = name {
             // Keep the org row, its dependents and the global read-access
             // group in one transaction. A failure here rolls the org delete
@@ -893,15 +907,19 @@ impl SqliteStore {
         parent_group_authz_id: &str,
         child_group_authz_id: &str,
     ) -> Result<(), StoreError> {
-        self.ensure_acyclic(parent_group_authz_id, child_group_authz_id)?;
-
-        let connection = self.connection();
-        connection.execute(
+        // Take the write lock before checking reachability so two concurrent
+        // calls cannot both observe an acyclic graph and then insert edges that
+        // together form a cycle.
+        let mut connection = self.connection();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_acyclic_in_connection(&transaction, parent_group_authz_id, child_group_authz_id)?;
+        transaction.execute(
             "INSERT OR IGNORE INTO authz_group_groups
              (parent_group_authz_id, child_group_authz_id)
              VALUES (?1, ?2)",
             params![parent_group_authz_id, child_group_authz_id],
         )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -910,29 +928,10 @@ impl SqliteStore {
         parent_group_authz_id: &str,
         child_group_authz_id: &str,
     ) -> Result<(), StoreError> {
-        if parent_group_authz_id == child_group_authz_id {
-            return Err(StoreError::Invalid("a group cannot contain itself".into()));
-        }
-
-        let connection = self.connection();
-        let creates_cycle: i64 = connection.query_row(
-            "WITH RECURSIVE descendants(authz_id) AS (
-                 SELECT child_group_authz_id
-                 FROM authz_group_groups
-                 WHERE parent_group_authz_id = ?1
-                 UNION
-                 SELECT relation.child_group_authz_id
-                 FROM authz_group_groups relation
-                 JOIN descendants ON relation.parent_group_authz_id = descendants.authz_id
-             )
-             SELECT EXISTS (SELECT 1 FROM descendants WHERE authz_id = ?2)",
-            params![child_group_authz_id, parent_group_authz_id],
-            |row| row.get(0),
-        )?;
-
-        if creates_cycle != 0 {
-            return Err(StoreError::Invalid("group cycle detected".into()));
-        }
+        let mut connection = self.connection();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_acyclic_in_connection(&transaction, parent_group_authz_id, child_group_authz_id)?;
+        transaction.rollback()?;
         Ok(())
     }
 
@@ -1324,6 +1323,36 @@ fn replace_acl_entries(
              VALUES (?1, ?2, ?3)",
             params![target_authz_id, permission.as_str(), group_id],
         )?;
+    }
+    Ok(())
+}
+
+fn ensure_acyclic_in_connection(
+    connection: &rusqlite::Connection,
+    parent_group_authz_id: &str,
+    child_group_authz_id: &str,
+) -> Result<(), StoreError> {
+    if parent_group_authz_id == child_group_authz_id {
+        return Err(StoreError::Invalid("a group cannot contain itself".into()));
+    }
+
+    let creates_cycle: i64 = connection.query_row(
+        "WITH RECURSIVE descendants(authz_id) AS (
+             SELECT child_group_authz_id
+             FROM authz_group_groups
+             WHERE parent_group_authz_id = ?1
+             UNION
+             SELECT relation.child_group_authz_id
+             FROM authz_group_groups relation
+             JOIN descendants ON relation.parent_group_authz_id = descendants.authz_id
+         )
+         SELECT EXISTS (SELECT 1 FROM descendants WHERE authz_id = ?2)",
+        params![child_group_authz_id, parent_group_authz_id],
+        |row| row.get(0),
+    )?;
+
+    if creates_cycle != 0 {
+        return Err(StoreError::Invalid("group cycle detected".into()));
     }
     Ok(())
 }

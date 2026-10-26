@@ -294,6 +294,64 @@ async fn group_collection_and_named_crud_follow_upstream_shapes() {
 }
 
 #[tokio::test]
+async fn membership_adds_user_specific_groups_to_the_users_group() {
+    let state = support::state_with_pivotal();
+    let _member_authz = add_user(&state, "member");
+    let app = support::app(state.clone());
+    create_org(&app).await;
+
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
+    let member = state.sqlite().find_user("member").unwrap().unwrap();
+    state.sqlite().add_user_to_org(&org.id, &member.id).unwrap();
+
+    let (status, groups) = request(&app, "GET", "/organizations/acme/groups", b"", "pivotal").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        groups[member.id.as_str()],
+        format!(
+            "http://0.0.0.0:8000/organizations/acme/groups/{}",
+            member.id
+        )
+    );
+
+    let (status, users_group) = request(
+        &app,
+        "GET",
+        "/organizations/acme/groups/users",
+        b"",
+        "pivotal",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        users_group["groups"],
+        serde_json::json!([member.id.clone()])
+    );
+    assert!(!users_group["users"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!("member")));
+
+    state
+        .sqlite()
+        .remove_user_from_org(&org.id, &member.id, &member.username)
+        .unwrap();
+    let (status, groups) = request(&app, "GET", "/organizations/acme/groups", b"", "pivotal").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(groups.get(&member.id).is_none());
+    let (status, users_group) = request(
+        &app,
+        "GET",
+        "/organizations/acme/groups/users",
+        b"",
+        "pivotal",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(users_group["groups"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn replacement_group_members_are_validated_and_apply_per_bucket() {
     let store = SqliteStore::open_in_memory().unwrap();
     let creator = store

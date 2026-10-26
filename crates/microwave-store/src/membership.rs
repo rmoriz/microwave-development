@@ -73,12 +73,12 @@ impl SqliteStore {
                 crate::identity::conflict(error, "The association already exists.".to_string())
             })?;
 
-        add_group_actor(&transaction, &users_group, user_id)?;
         let user_authz_id: String = transaction.query_row(
             "SELECT authz_id FROM users WHERE id = ?1",
             [user_id],
             |row| row.get(0),
         )?;
+        ensure_user_specific_group(&transaction, org_id, user_id, &user_authz_id, &users_group)?;
         crate::authz::add_org_read_access_ace(&transaction, org_id, &user_authz_id)?;
         transaction.commit()?;
         Ok(())
@@ -122,11 +122,14 @@ impl SqliteStore {
                 "association for user {username}"
             )));
         }
+        // Older rows may have been inserted directly into the users group
+        // before user-specific groups existed; remove both forms.
         transaction.execute(
             "DELETE FROM authz_group_actors
              WHERE group_authz_id = ?1 AND actor_authz_id = ?2",
             params![users_group, user_authz_id],
         )?;
+        delete_user_specific_group(&transaction, org_id, user_id)?;
         crate::authz::remove_org_read_access_ace(&transaction, org_id, &user_authz_id)?;
         transaction.commit()?;
         Ok(())
@@ -304,11 +307,17 @@ impl SqliteStore {
              VALUES (?1, ?2, '', ?3, ?3)",
             params![invitation.org_id, invitation.user_id, timestamp],
         )?;
-        add_group_actor(&transaction, &users_group, &invitation.user_id)?;
         let user_authz_id: String = transaction.query_row(
             "SELECT authz_id FROM users WHERE id = ?1",
             [&invitation.user_id],
             |row| row.get(0),
+        )?;
+        ensure_user_specific_group(
+            &transaction,
+            &invitation.org_id,
+            &invitation.user_id,
+            &user_authz_id,
+            &users_group,
         )?;
         crate::authz::add_org_read_access_ace(&transaction, &invitation.org_id, &user_authz_id)?;
         transaction.execute("DELETE FROM org_user_invites WHERE id = ?1", [id])?;
@@ -328,6 +337,95 @@ impl SqliteStore {
     }
 }
 
+/// Create the user-specific actor group (USAG) for an organization member.
+///
+/// Upstream names the group after the user's 32-character id, puts the user in
+/// that group, and nests the group under the organization's `users` group.
+/// Membership checks traverse the child relationship, so the user inherits the
+/// users group's permissions without a direct actor row.
+fn ensure_user_specific_group(
+    transaction: &Transaction<'_>,
+    org_id: &str,
+    user_id: &str,
+    user_authz_id: &str,
+    users_group_authz_id: &str,
+) -> Result<String, StoreError> {
+    let existing: Option<String> = transaction
+        .query_row(
+            "SELECT authz_id FROM groups WHERE org_id = ?1 AND name = ?2",
+            params![org_id, user_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let usag_authz_id = match existing {
+        Some(authz_id) => authz_id,
+        None => {
+            let id = new_id();
+            let authz_id = new_id();
+            transaction.execute(
+                "INSERT INTO authz_entities (authz_id, entity_type, org_id, created_at)
+                 VALUES (?1, 'group', ?2, ?3)",
+                params![authz_id, org_id, now()],
+            )?;
+            transaction.execute(
+                "INSERT INTO groups (id, org_id, authz_id, name, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                params![id, org_id, authz_id, user_id, now()],
+            )?;
+            authz_id
+        }
+    };
+
+    transaction.execute(
+        "INSERT OR IGNORE INTO authz_group_actors (group_authz_id, actor_authz_id)
+         VALUES (?1, ?2)",
+        params![usag_authz_id, user_authz_id],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO authz_group_groups
+         (parent_group_authz_id, child_group_authz_id)
+         VALUES (?1, ?2)",
+        params![users_group_authz_id, usag_authz_id],
+    )?;
+    Ok(usag_authz_id)
+}
+
+fn delete_user_specific_group(
+    transaction: &Transaction<'_>,
+    org_id: &str,
+    user_id: &str,
+) -> Result<(), StoreError> {
+    let Some(authz_id) = transaction
+        .query_row(
+            "SELECT authz_id FROM groups WHERE org_id = ?1 AND name = ?2",
+            params![org_id, user_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    else {
+        return Ok(());
+    };
+
+    for statement in [
+        "DELETE FROM authz_acl_actor
+         WHERE target_authz_id = ?1 OR actor_authz_id = ?1",
+        "DELETE FROM authz_acl_group
+         WHERE target_authz_id = ?1 OR group_authz_id = ?1",
+        "DELETE FROM authz_group_actors
+         WHERE group_authz_id = ?1 OR actor_authz_id = ?1",
+        "DELETE FROM authz_group_groups
+         WHERE parent_group_authz_id = ?1 OR child_group_authz_id = ?1",
+    ] {
+        transaction.execute(statement, [&authz_id])?;
+    }
+    transaction.execute("DELETE FROM groups WHERE authz_id = ?1", [&authz_id])?;
+    transaction.execute(
+        "DELETE FROM authz_entities WHERE authz_id = ?1",
+        [&authz_id],
+    )?;
+    Ok(())
+}
+
 fn org_group(connection: &Connection, org_id: &str, name: &str) -> Result<String, StoreError> {
     connection
         .query_row(
@@ -337,32 +435,6 @@ fn org_group(connection: &Connection, org_id: &str, name: &str) -> Result<String
         )
         .optional()?
         .ok_or_else(|| StoreError::NotFound(format!("group {name}")))
-}
-
-fn add_group_actor(
-    connection: &Connection,
-    group_authz_id: &str,
-    actor_id: &str,
-) -> Result<(), StoreError> {
-    // Group membership is keyed by authz id; accept either an actor id or an
-    // authz id so callers can pass the identifiers they already hold.
-    let actor_authz_id: Option<String> = connection
-        .query_row(
-            "SELECT authz_id FROM users WHERE id = ?1
-             UNION ALL
-             SELECT authz_id FROM clients WHERE id = ?1
-             LIMIT 1",
-            [actor_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let actor_authz_id = actor_authz_id.unwrap_or_else(|| actor_id.to_string());
-    connection.execute(
-        "INSERT OR IGNORE INTO authz_group_actors (group_authz_id, actor_authz_id)
-         VALUES (?1, ?2)",
-        params![group_authz_id, actor_authz_id],
-    )?;
-    Ok(())
 }
 
 fn actor_in_group(

@@ -193,15 +193,10 @@ async fn node_acl_grants_read_without_granting_update() {
     create_org(&app).await;
     let org = state.sqlite().find_org("acme").unwrap().unwrap();
     support::associate(&state, &org, &second);
-    let users = state
-        .sqlite()
-        .find_group(&org.id, "users")
-        .unwrap()
-        .unwrap();
-    state
-        .sqlite()
-        .remove_group_member(&users.authz_id, &second.authz_id)
-        .unwrap();
+    // Organization membership uses a per-user USAG. Deleting that USAG
+    // detaches the member from the users group and revokes the group's
+    // container ACL while preserving the user's own ACLs.
+    state.sqlite().delete_group(&org.id, &second.id).unwrap();
     create_node(&app).await;
 
     let (status, body) = request(

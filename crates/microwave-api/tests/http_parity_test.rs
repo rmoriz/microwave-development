@@ -721,8 +721,15 @@ fn normalize_value(value: &Value, key: Option<&str>) -> Value {
     match value {
         Value::Object(map) => {
             let mut out = Map::new();
+            let mut id_keys = 0usize;
             for (name, value) in map {
-                out.insert(name.clone(), normalize_value(value, Some(name)));
+                let normalized_name = if is_hex_id(name) {
+                    id_keys += 1;
+                    format!("<id:{id_keys}>")
+                } else {
+                    name.clone()
+                };
+                out.insert(normalized_name, normalize_value(value, Some(name)));
             }
             Value::Object(out)
         }
@@ -767,6 +774,7 @@ fn normalize_string(text: &str) -> String {
     let mut text = replace_path_id(text, "/bookshelf/organizations/");
     text = replace_path_id(&text, "/sandboxes/");
     text = replace_path_id(&text, "/association_requests/");
+    text = replace_path_id(&text, "/groups/");
     text = replace_path_id(&text, "sandbox ");
     text = normalize_numeric_ids(&text);
     for name in [

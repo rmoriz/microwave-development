@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TEXT NOT NULL
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS users_lower_email_index ON users (lower(email));
+CREATE INDEX IF NOT EXISTS users_external_authentication_uid_index
+    ON users (external_authentication_uid);
+
 CREATE TABLE IF NOT EXISTS org_user_associations (
     org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -88,12 +92,17 @@ CREATE TABLE IF NOT EXISTS authz_entities (
     created_at TEXT NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS authz_entities_org_index ON authz_entities (org_id);
+
 CREATE TABLE IF NOT EXISTS authz_acl_actor (
     target_authz_id TEXT NOT NULL REFERENCES authz_entities(authz_id) ON DELETE CASCADE,
     permission TEXT NOT NULL CHECK (permission IN ('create', 'read', 'update', 'delete', 'grant')),
     actor_authz_id TEXT NOT NULL REFERENCES authz_entities(authz_id) ON DELETE CASCADE,
     PRIMARY KEY (target_authz_id, permission, actor_authz_id)
 );
+
+CREATE INDEX IF NOT EXISTS authz_acl_actor_actor_index
+    ON authz_acl_actor (actor_authz_id, target_authz_id);
 
 CREATE TABLE IF NOT EXISTS authz_acl_group (
     target_authz_id TEXT NOT NULL REFERENCES authz_entities(authz_id) ON DELETE CASCADE,
@@ -108,6 +117,9 @@ CREATE TABLE IF NOT EXISTS authz_group_actors (
     PRIMARY KEY (group_authz_id, actor_authz_id)
 );
 
+CREATE INDEX IF NOT EXISTS authz_group_actors_actor_index
+    ON authz_group_actors (actor_authz_id);
+
 CREATE TABLE IF NOT EXISTS authz_group_groups (
     parent_group_authz_id TEXT NOT NULL REFERENCES authz_entities(authz_id) ON DELETE CASCADE,
     child_group_authz_id TEXT NOT NULL REFERENCES authz_entities(authz_id) ON DELETE CASCADE,
@@ -117,6 +129,135 @@ CREATE TABLE IF NOT EXISTS authz_group_groups (
 
 CREATE INDEX IF NOT EXISTS authz_group_groups_child_index
     ON authz_group_groups (child_group_authz_id);
+
+-- Keep the unified authz relation tables honest about the type of entity each
+-- column may reference. PostgreSQL has the same checks as row triggers below.
+CREATE TRIGGER IF NOT EXISTS authz_group_actors_actor_type_insert
+BEFORE INSERT ON authz_group_actors
+WHEN COALESCE((SELECT entity_type FROM authz_entities WHERE authz_id = NEW.actor_authz_id), '') <> 'actor'
+BEGIN
+    SELECT RAISE(ABORT, 'authz_group_actors.actor_authz_id must reference an actor');
+END;
+
+CREATE TRIGGER IF NOT EXISTS authz_group_actors_actor_type_update
+BEFORE UPDATE OF actor_authz_id ON authz_group_actors
+WHEN COALESCE((SELECT entity_type FROM authz_entities WHERE authz_id = NEW.actor_authz_id), '') <> 'actor'
+BEGIN
+    SELECT RAISE(ABORT, 'authz_group_actors.actor_authz_id must reference an actor');
+END;
+
+CREATE TRIGGER IF NOT EXISTS authz_group_actors_group_type_insert
+BEFORE INSERT ON authz_group_actors
+WHEN COALESCE((SELECT entity_type FROM authz_entities WHERE authz_id = NEW.group_authz_id), '') <> 'group'
+BEGIN
+    SELECT RAISE(ABORT, 'authz_group_actors.group_authz_id must reference a group');
+END;
+
+CREATE TRIGGER IF NOT EXISTS authz_group_actors_group_type_update
+BEFORE UPDATE OF group_authz_id ON authz_group_actors
+WHEN COALESCE((SELECT entity_type FROM authz_entities WHERE authz_id = NEW.group_authz_id), '') <> 'group'
+BEGIN
+    SELECT RAISE(ABORT, 'authz_group_actors.group_authz_id must reference a group');
+END;
+
+CREATE TRIGGER IF NOT EXISTS authz_group_groups_parent_type_insert
+BEFORE INSERT ON authz_group_groups
+WHEN COALESCE((SELECT entity_type FROM authz_entities WHERE authz_id = NEW.parent_group_authz_id), '') <> 'group'
+BEGIN
+    SELECT RAISE(ABORT, 'authz_group_groups.parent_group_authz_id must reference a group');
+END;
+
+CREATE TRIGGER IF NOT EXISTS authz_group_groups_parent_type_update
+BEFORE UPDATE OF parent_group_authz_id ON authz_group_groups
+WHEN COALESCE((SELECT entity_type FROM authz_entities WHERE authz_id = NEW.parent_group_authz_id), '') <> 'group'
+BEGIN
+    SELECT RAISE(ABORT, 'authz_group_groups.parent_group_authz_id must reference a group');
+END;
+
+CREATE TRIGGER IF NOT EXISTS authz_group_groups_child_type_insert
+BEFORE INSERT ON authz_group_groups
+WHEN COALESCE((SELECT entity_type FROM authz_entities WHERE authz_id = NEW.child_group_authz_id), '') <> 'group'
+BEGIN
+    SELECT RAISE(ABORT, 'authz_group_groups.child_group_authz_id must reference a group');
+END;
+
+CREATE TRIGGER IF NOT EXISTS authz_group_groups_child_type_update
+BEFORE UPDATE OF child_group_authz_id ON authz_group_groups
+WHEN COALESCE((SELECT entity_type FROM authz_entities WHERE authz_id = NEW.child_group_authz_id), '') <> 'group'
+BEGIN
+    SELECT RAISE(ABORT, 'authz_group_groups.child_group_authz_id must reference a group');
+END;
+
+CREATE TRIGGER IF NOT EXISTS authz_acl_actor_actor_type_insert
+BEFORE INSERT ON authz_acl_actor
+WHEN COALESCE((SELECT entity_type FROM authz_entities WHERE authz_id = NEW.actor_authz_id), '') <> 'actor'
+BEGIN
+    SELECT RAISE(ABORT, 'authz_acl_actor.actor_authz_id must reference an actor');
+END;
+
+CREATE TRIGGER IF NOT EXISTS authz_acl_actor_actor_type_update
+BEFORE UPDATE OF actor_authz_id ON authz_acl_actor
+WHEN COALESCE((SELECT entity_type FROM authz_entities WHERE authz_id = NEW.actor_authz_id), '') <> 'actor'
+BEGIN
+    SELECT RAISE(ABORT, 'authz_acl_actor.actor_authz_id must reference an actor');
+END;
+
+CREATE TRIGGER IF NOT EXISTS authz_acl_group_group_type_insert
+BEFORE INSERT ON authz_acl_group
+WHEN COALESCE((SELECT entity_type FROM authz_entities WHERE authz_id = NEW.group_authz_id), '') <> 'group'
+BEGIN
+    SELECT RAISE(ABORT, 'authz_acl_group.group_authz_id must reference a group');
+END;
+
+CREATE TRIGGER IF NOT EXISTS authz_acl_group_group_type_update
+BEFORE UPDATE OF group_authz_id ON authz_acl_group
+WHEN COALESCE((SELECT entity_type FROM authz_entities WHERE authz_id = NEW.group_authz_id), '') <> 'group'
+BEGIN
+    SELECT RAISE(ABORT, 'authz_acl_group.group_authz_id must reference a group');
+END;
+
+-- ACL targets may be any authz entity type (upstream keeps one ACL table per
+-- target type; this schema unifies them). Require that the target actually
+-- exists and has a known type even when a caller disabled foreign keys.
+CREATE TRIGGER IF NOT EXISTS authz_acl_actor_target_type_insert
+BEFORE INSERT ON authz_acl_actor
+WHEN COALESCE(
+         (SELECT entity_type FROM authz_entities WHERE authz_id = NEW.target_authz_id),
+         ''
+     ) NOT IN ('actor', 'group', 'object', 'container')
+BEGIN
+    SELECT RAISE(ABORT, 'authz_acl_actor.target_authz_id must reference an authz entity');
+END;
+
+CREATE TRIGGER IF NOT EXISTS authz_acl_actor_target_type_update
+BEFORE UPDATE OF target_authz_id ON authz_acl_actor
+WHEN COALESCE(
+         (SELECT entity_type FROM authz_entities WHERE authz_id = NEW.target_authz_id),
+         ''
+     ) NOT IN ('actor', 'group', 'object', 'container')
+BEGIN
+    SELECT RAISE(ABORT, 'authz_acl_actor.target_authz_id must reference an authz entity');
+END;
+
+CREATE TRIGGER IF NOT EXISTS authz_acl_group_target_type_insert
+BEFORE INSERT ON authz_acl_group
+WHEN COALESCE(
+         (SELECT entity_type FROM authz_entities WHERE authz_id = NEW.target_authz_id),
+         ''
+     ) NOT IN ('actor', 'group', 'object', 'container')
+BEGIN
+    SELECT RAISE(ABORT, 'authz_acl_group.target_authz_id must reference an authz entity');
+END;
+
+CREATE TRIGGER IF NOT EXISTS authz_acl_group_target_type_update
+BEFORE UPDATE OF target_authz_id ON authz_acl_group
+WHEN COALESCE(
+         (SELECT entity_type FROM authz_entities WHERE authz_id = NEW.target_authz_id),
+         ''
+     ) NOT IN ('actor', 'group', 'object', 'container')
+BEGIN
+    SELECT RAISE(ABORT, 'authz_acl_group.target_authz_id must reference an authz entity');
+END;
 
 CREATE TABLE IF NOT EXISTS containers (
     id TEXT PRIMARY KEY,
@@ -247,6 +388,9 @@ CREATE TABLE IF NOT EXISTS sandboxed_checksums (
     PRIMARY KEY (sandbox_id, org_id, checksum)
 );
 
+CREATE INDEX IF NOT EXISTS sandboxed_checksums_sandbox_index
+    ON sandboxed_checksums (org_id, sandbox_id);
+
 CREATE TABLE IF NOT EXISTS cookbooks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -296,7 +440,7 @@ CREATE TABLE IF NOT EXISTS cookbook_artifacts (
 
 CREATE TABLE IF NOT EXISTS cookbook_artifact_versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    cookbook_artifact_id INTEGER NOT NULL REFERENCES cookbook_artifacts(id) ON DELETE CASCADE,
+    cookbook_artifact_id INTEGER NOT NULL REFERENCES cookbook_artifacts(id) ON DELETE RESTRICT,
     org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     identifier TEXT NOT NULL,
     metadata BLOB,
@@ -305,6 +449,19 @@ CREATE TABLE IF NOT EXISTS cookbook_artifact_versions (
     created_by TEXT NOT NULL DEFAULT '',
     UNIQUE (cookbook_artifact_id, identifier)
 );
+
+-- Older databases were created with ON DELETE CASCADE. SQLite cannot alter an
+-- existing foreign key, so the trigger enforces the upstream RESTRICT behavior
+-- for those databases as well.
+CREATE TRIGGER IF NOT EXISTS cookbook_artifacts_restrict_delete
+BEFORE DELETE ON cookbook_artifacts
+WHEN EXISTS (
+    SELECT 1 FROM cookbook_artifact_versions
+    WHERE cookbook_artifact_id = OLD.id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'cookbook_artifacts cannot be deleted while versions exist');
+END;
 
 CREATE TABLE IF NOT EXISTS cookbook_artifact_version_checksums (
     cookbook_artifact_version_id INTEGER NOT NULL
@@ -335,7 +492,8 @@ CREATE TABLE IF NOT EXISTS policy_groups (
     last_updated_by TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE (org_id, name)
+    UNIQUE (org_id, name),
+    UNIQUE (org_id, authz_id, name)
 );
 
 CREATE TABLE IF NOT EXISTS policy_revisions (
@@ -362,8 +520,76 @@ CREATE TABLE IF NOT EXISTS policy_group_revision_associations (
     last_updated_by TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE (org_id, policy_group_name, policy_revision_name)
+    UNIQUE (org_id, policy_group_name, policy_revision_name),
+    FOREIGN KEY (org_id, policy_group_authz_id, policy_group_name)
+        REFERENCES policy_groups (org_id, authz_id, name)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    FOREIGN KEY (org_id, policy_revision_name, policy_revision_revision_id)
+        REFERENCES policy_revisions (org_id, name, revision_id)
+        ON UPDATE CASCADE ON DELETE CASCADE
 );
+
+-- The initial schema predates the composite associations above. Add the
+-- equivalent guards for databases that were created before those foreign keys
+-- existed (SQLite cannot add a foreign key with ALTER TABLE).
+CREATE TRIGGER IF NOT EXISTS policy_group_revision_associations_policy_group_insert
+BEFORE INSERT ON policy_group_revision_associations
+WHEN NOT EXISTS (
+    SELECT 1 FROM policy_groups
+    WHERE org_id = NEW.org_id
+      AND authz_id = NEW.policy_group_authz_id
+      AND name = NEW.policy_group_name
+)
+BEGIN
+    SELECT RAISE(ABORT, 'policy group association references an unknown policy group');
+END;
+
+CREATE TRIGGER IF NOT EXISTS policy_group_revision_associations_policy_group_update
+BEFORE UPDATE OF org_id, policy_group_authz_id, policy_group_name
+ON policy_group_revision_associations
+WHEN NOT EXISTS (
+    SELECT 1 FROM policy_groups
+    WHERE org_id = NEW.org_id
+      AND authz_id = NEW.policy_group_authz_id
+      AND name = NEW.policy_group_name
+)
+BEGIN
+    SELECT RAISE(ABORT, 'policy group association references an unknown policy group');
+END;
+
+CREATE TRIGGER IF NOT EXISTS policy_group_revision_associations_policy_revision_insert
+BEFORE INSERT ON policy_group_revision_associations
+WHEN NOT EXISTS (
+    SELECT 1 FROM policy_revisions
+    WHERE org_id = NEW.org_id
+      AND name = NEW.policy_revision_name
+      AND revision_id = NEW.policy_revision_revision_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'policy group association references an unknown policy revision');
+END;
+
+CREATE TRIGGER IF NOT EXISTS policy_group_revision_associations_policy_revision_update
+BEFORE UPDATE OF org_id, policy_revision_name, policy_revision_revision_id
+ON policy_group_revision_associations
+WHEN NOT EXISTS (
+    SELECT 1 FROM policy_revisions
+    WHERE org_id = NEW.org_id
+      AND name = NEW.policy_revision_name
+      AND revision_id = NEW.policy_revision_revision_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'policy group association references an unknown policy revision');
+END;
+
+CREATE TRIGGER IF NOT EXISTS policy_groups_cascade_associations
+AFTER DELETE ON policy_groups
+BEGIN
+    DELETE FROM policy_group_revision_associations
+    WHERE org_id = OLD.org_id
+      AND policy_group_authz_id = OLD.authz_id
+      AND policy_group_name = OLD.name;
+END;
 
 CREATE TABLE IF NOT EXISTS oauth_applications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

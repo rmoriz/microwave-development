@@ -634,8 +634,16 @@ impl AuthzRepository for PostgresStore {
         parent_group_authz_id: &str,
         child_group_authz_id: &str,
     ) -> Result<(), StoreError> {
-        self.ensure_acyclic(parent_group_authz_id, child_group_authz_id)
-            .await?;
+        // Lock both endpoint rows before checking reachability. Concurrent
+        // calls that try to add opposite edges serialize here, so the second
+        // caller observes the first edge and rejects the resulting cycle.
+        let mut transaction = self.pool().begin().await.map_err(db)?;
+        ensure_acyclic_locked(
+            &mut transaction,
+            parent_group_authz_id,
+            child_group_authz_id,
+        )
+        .await?;
         sqlx::query(
             "INSERT INTO authz_group_groups (parent_group_authz_id, child_group_authz_id)
              VALUES ($1, $2)
@@ -643,9 +651,10 @@ impl AuthzRepository for PostgresStore {
         )
         .bind(parent_group_authz_id)
         .bind(child_group_authz_id)
-        .execute(self.pool())
+        .execute(&mut *transaction)
         .await
         .map_err(db)?;
+        transaction.commit().await.map_err(db)?;
         Ok(())
     }
 
@@ -654,30 +663,23 @@ impl AuthzRepository for PostgresStore {
         parent_group_authz_id: &str,
         child_group_authz_id: &str,
     ) -> Result<(), StoreError> {
-        if parent_group_authz_id == child_group_authz_id {
-            return Err(StoreError::Invalid("a group cannot contain itself".into()));
-        }
-        let creates_cycle: bool = sqlx::query_scalar(
-            "WITH RECURSIVE descendants(authz_id) AS (
-                 SELECT child_group_authz_id
-                 FROM authz_group_groups
-                 WHERE parent_group_authz_id = $1
-                 UNION
-                 SELECT relation.child_group_authz_id
-                 FROM authz_group_groups relation
-                 JOIN descendants ON relation.parent_group_authz_id = descendants.authz_id
-             )
-             SELECT EXISTS (SELECT 1 FROM descendants WHERE authz_id = $2)",
+        let mut transaction = self.pool().begin().await.map_err(db)?;
+        match ensure_acyclic_locked(
+            &mut transaction,
+            parent_group_authz_id,
+            child_group_authz_id,
         )
-        .bind(child_group_authz_id)
-        .bind(parent_group_authz_id)
-        .fetch_one(self.pool())
         .await
-        .map_err(db)?;
-        if creates_cycle {
-            return Err(StoreError::Invalid("group cycle detected".into()));
+        {
+            Ok(()) => {
+                transaction.rollback().await.map_err(db)?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = transaction.rollback().await;
+                Err(error)
+            }
         }
-        Ok(())
     }
 
     async fn set_acl(
@@ -1054,7 +1056,7 @@ impl AuthzRepository for PostgresStore {
         }
         for permission in Permission::ALL {
             sqlx::query(
-                "INSERT INTO authz_acl_actor (target_authz_id, permission, actor_authz_id)
+                "INSERT INTO authz_acl_group (target_authz_id, permission, group_authz_id)
                  VALUES ($1, $2, $3)",
             )
             .bind(&authz_id)
@@ -1339,6 +1341,55 @@ async fn delete_global_group_in_transaction(
         .execute(&mut **transaction)
         .await
         .map_err(db)?;
+    Ok(())
+}
+
+async fn ensure_acyclic_locked(
+    transaction: &mut Transaction<'_, Postgres>,
+    parent_group_authz_id: &str,
+    child_group_authz_id: &str,
+) -> Result<(), StoreError> {
+    if parent_group_authz_id == child_group_authz_id {
+        return Err(StoreError::Invalid("a group cannot contain itself".into()));
+    }
+
+    // A deterministic lock order avoids deadlocks when two transactions add
+    // opposite edges at the same time.
+    let ids = vec![
+        parent_group_authz_id.to_string(),
+        child_group_authz_id.to_string(),
+    ];
+    sqlx::query(
+        "SELECT authz_id FROM authz_entities
+         WHERE authz_id = ANY ($1)
+         ORDER BY authz_id
+         FOR UPDATE",
+    )
+    .bind(&ids)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(db)?;
+
+    let creates_cycle: bool = sqlx::query_scalar(
+        "WITH RECURSIVE descendants(authz_id) AS (
+             SELECT child_group_authz_id
+             FROM authz_group_groups
+             WHERE parent_group_authz_id = $1
+             UNION
+             SELECT relation.child_group_authz_id
+             FROM authz_group_groups relation
+             JOIN descendants ON relation.parent_group_authz_id = descendants.authz_id
+         )
+         SELECT EXISTS (SELECT 1 FROM descendants WHERE authz_id = $2)",
+    )
+    .bind(child_group_authz_id)
+    .bind(parent_group_authz_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(db)?;
+    if creates_cycle {
+        return Err(StoreError::Invalid("group cycle detected".into()));
+    }
     Ok(())
 }
 

@@ -136,6 +136,73 @@ CREATE TABLE IF NOT EXISTS authz_group_groups (
 CREATE INDEX IF NOT EXISTS authz_group_groups_child_index
     ON authz_group_groups (child_group_authz_id);
 
+-- The unified authz relation tables carry the entity type in
+-- `authz_entities`. Upstream keeps a separate ACL/relation table per target
+-- type; these triggers provide the equivalent type integrity here.
+CREATE OR REPLACE FUNCTION microwave_authz_entity_type_check()
+RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    entity_id TEXT := to_jsonb(NEW) ->> TG_ARGV[0];
+    expected_types TEXT[] := string_to_array(TG_ARGV[1], ',');
+    actual_type TEXT;
+BEGIN
+    SELECT entity_type INTO actual_type
+    FROM authz_entities
+    WHERE authz_id = entity_id;
+
+    IF actual_type IS NULL OR NOT (actual_type = ANY (expected_types)) THEN
+        RAISE EXCEPTION 'authz column % must reference an entity of type %',
+            TG_ARGV[0], TG_ARGV[1];
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'authz_group_actors_actor_type'
+          AND tgrelid = 'authz_group_actors'::regclass
+    ) THEN
+        CREATE TRIGGER authz_group_actors_actor_type
+        BEFORE INSERT OR UPDATE ON authz_group_actors
+        FOR EACH ROW EXECUTE FUNCTION microwave_authz_entity_type_check('actor_authz_id', 'actor');
+
+        CREATE TRIGGER authz_group_actors_group_type
+        BEFORE INSERT OR UPDATE ON authz_group_actors
+        FOR EACH ROW EXECUTE FUNCTION microwave_authz_entity_type_check('group_authz_id', 'group');
+
+        CREATE TRIGGER authz_group_groups_parent_type
+        BEFORE INSERT OR UPDATE ON authz_group_groups
+        FOR EACH ROW EXECUTE FUNCTION microwave_authz_entity_type_check('parent_group_authz_id', 'group');
+
+        CREATE TRIGGER authz_group_groups_child_type
+        BEFORE INSERT OR UPDATE ON authz_group_groups
+        FOR EACH ROW EXECUTE FUNCTION microwave_authz_entity_type_check('child_group_authz_id', 'group');
+
+        CREATE TRIGGER authz_acl_actor_actor_type
+        BEFORE INSERT OR UPDATE ON authz_acl_actor
+        FOR EACH ROW EXECUTE FUNCTION microwave_authz_entity_type_check('actor_authz_id', 'actor');
+
+        CREATE TRIGGER authz_acl_group_group_type
+        BEFORE INSERT OR UPDATE ON authz_acl_group
+        FOR EACH ROW EXECUTE FUNCTION microwave_authz_entity_type_check('group_authz_id', 'group');
+
+        CREATE TRIGGER authz_acl_actor_target_type
+        BEFORE INSERT OR UPDATE ON authz_acl_actor
+        FOR EACH ROW EXECUTE FUNCTION microwave_authz_entity_type_check(
+            'target_authz_id', 'actor,group,object,container');
+
+        CREATE TRIGGER authz_acl_group_target_type
+        BEFORE INSERT OR UPDATE ON authz_acl_group
+        FOR EACH ROW EXECUTE FUNCTION microwave_authz_entity_type_check(
+            'target_authz_id', 'actor,group,object,container');
+    END IF;
+END;
+$$;
+
 CREATE TABLE IF NOT EXISTS containers (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -319,7 +386,7 @@ CREATE TABLE IF NOT EXISTS cookbook_artifacts (
 
 CREATE TABLE IF NOT EXISTS cookbook_artifact_versions (
     id BIGSERIAL PRIMARY KEY,
-    cookbook_artifact_id BIGINT NOT NULL REFERENCES cookbook_artifacts(id) ON DELETE CASCADE,
+    cookbook_artifact_id BIGINT NOT NULL REFERENCES cookbook_artifacts(id) ON DELETE RESTRICT,
     org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     identifier TEXT NOT NULL,
     metadata TEXT,
@@ -358,7 +425,8 @@ CREATE TABLE IF NOT EXISTS policy_groups (
     last_updated_by TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE (org_id, name)
+    UNIQUE (org_id, name),
+    UNIQUE (org_id, authz_id, name)
 );
 
 CREATE TABLE IF NOT EXISTS policy_revisions (
@@ -385,7 +453,15 @@ CREATE TABLE IF NOT EXISTS policy_group_revision_associations (
     last_updated_by TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE (org_id, policy_group_name, policy_revision_name)
+    UNIQUE (org_id, policy_group_name, policy_revision_name),
+    CONSTRAINT prpga_association_policy_group_name_fkey
+        FOREIGN KEY (org_id, policy_group_authz_id, policy_group_name)
+        REFERENCES policy_groups (org_id, authz_id, name)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    CONSTRAINT prpga_policy_name_revision_id_fkey
+        FOREIGN KEY (org_id, policy_revision_name, policy_revision_revision_id)
+        REFERENCES policy_revisions (org_id, name, revision_id)
+        ON UPDATE CASCADE ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS oauth_applications (
@@ -443,3 +519,79 @@ CREATE TABLE IF NOT EXISTS telemetry (
 );
 
 CREATE INDEX IF NOT EXISTS telemetry_property_index ON telemetry (property);
+
+-- ---------------------------------------------------------------------------
+-- Migration-safe upgrades for databases created by older releases.
+-- ---------------------------------------------------------------------------
+
+-- Older schemas allowed deleting a cookbook artifact and cascading away its
+-- versions. Upstream uses RESTRICT; replace any such cascade with the
+-- restrictive foreign key.
+DO $$
+DECLARE
+    constraint_name TEXT;
+BEGIN
+    SELECT c.conname INTO constraint_name
+    FROM pg_constraint c
+    JOIN pg_class t ON t.oid = c.conrelid
+    JOIN pg_attribute a ON a.attrelid = t.oid AND a.attname = 'cookbook_artifact_id'
+    WHERE t.relname = 'cookbook_artifact_versions'
+      AND c.contype = 'f'
+      AND a.attnum = ANY (c.conkey)
+      AND c.confdeltype = 'c'
+    LIMIT 1;
+
+    IF constraint_name IS NOT NULL THEN
+        EXECUTE format(
+            'ALTER TABLE cookbook_artifact_versions DROP CONSTRAINT %I',
+            constraint_name
+        );
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attname = 'cookbook_artifact_id'
+        WHERE t.relname = 'cookbook_artifact_versions'
+          AND c.contype = 'f'
+          AND a.attnum = ANY (c.conkey)
+    ) THEN
+        ALTER TABLE cookbook_artifact_versions
+            ADD CONSTRAINT cookbook_artifact_versions_cookbook_artifact_id_fkey
+            FOREIGN KEY (cookbook_artifact_id)
+            REFERENCES cookbook_artifacts (id)
+            ON DELETE RESTRICT;
+    END IF;
+END;
+$$;
+
+-- The initial schema predates the composite policy-group association foreign
+-- keys. Add them when the table was created by an older release.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'prpga_association_policy_group_name_fkey'
+    ) THEN
+        CREATE UNIQUE INDEX IF NOT EXISTS policy_groups_org_authz_name_index
+            ON policy_groups (org_id, authz_id, name);
+        ALTER TABLE policy_group_revision_associations
+            ADD CONSTRAINT prpga_association_policy_group_name_fkey
+            FOREIGN KEY (org_id, policy_group_authz_id, policy_group_name)
+            REFERENCES policy_groups (org_id, authz_id, name)
+            ON UPDATE CASCADE ON DELETE CASCADE;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'prpga_policy_name_revision_id_fkey'
+    ) THEN
+        ALTER TABLE policy_group_revision_associations
+            ADD CONSTRAINT prpga_policy_name_revision_id_fkey
+            FOREIGN KEY (org_id, policy_revision_name, policy_revision_revision_id)
+            REFERENCES policy_revisions (org_id, name, revision_id)
+            ON UPDATE CASCADE ON DELETE CASCADE;
+    END IF;
+END;
+$$;
