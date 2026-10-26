@@ -69,6 +69,73 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
                 foreground,
             )
         }
+        Command::Start {
+            service,
+            unit,
+            foreground,
+        } => {
+            let unit = unit.or(service);
+            return service::run(
+                ServiceAction::Start,
+                unit.as_deref(),
+                50,
+                false,
+                cli.config.as_deref(),
+                foreground,
+            );
+        }
+        Command::Stop { service, unit } => {
+            let unit = unit.or(service);
+            return service::run(
+                ServiceAction::Stop,
+                unit.as_deref(),
+                50,
+                false,
+                cli.config.as_deref(),
+                false,
+            );
+        }
+        Command::Restart { service, unit } => {
+            let unit = unit.or(service);
+            return service::run(
+                ServiceAction::Restart,
+                unit.as_deref(),
+                50,
+                false,
+                cli.config.as_deref(),
+                false,
+            );
+        }
+        Command::Hup { service, unit } => {
+            let unit = unit.or(service);
+            // The server is one systemd unit, so a HUP is implemented as a
+            // restart. This is the same action as `service restart`.
+            return service::run(
+                ServiceAction::Restart,
+                unit.as_deref(),
+                50,
+                false,
+                cli.config.as_deref(),
+                false,
+            );
+        }
+        Command::Tail {
+            service,
+            unit,
+            lines,
+            follow,
+        } => {
+            let unit = unit.or(service);
+            return service::run(
+                ServiceAction::Tail,
+                unit.as_deref(),
+                lines,
+                follow,
+                cli.config.as_deref(),
+                false,
+            );
+        }
+        Command::ServiceList { unit } => return commands::service_list(unit.as_deref()),
         _ => {}
     }
 
@@ -78,21 +145,47 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
         Command::Version => unreachable!("version was handled above"),
         Command::Pedant { .. } => unreachable!("pedant was handled above"),
         Command::Service { .. } => unreachable!("service was handled above"),
+        Command::Start { .. }
+        | Command::Stop { .. }
+        | Command::Restart { .. }
+        | Command::Hup { .. }
+        | Command::Tail { .. }
+        | Command::ServiceList { .. } => unreachable!("service alias was handled above"),
         Command::Status => commands::status(&context),
         Command::UserCreate {
-            name,
+            positional,
             email,
             password,
             admin,
-        } => commands::user_create(&context, &name, email.as_deref(), password, admin),
+            filename,
+            public_key_path,
+        } => commands::user_create(
+            &context,
+            &positional,
+            email.as_deref(),
+            password,
+            admin,
+            filename.as_deref(),
+            public_key_path.as_deref(),
+        ),
         Command::UserList => commands::user_list(&context),
         Command::UserShow { name } => commands::user_show(&context, &name),
         Command::UserDelete { name } => commands::user_delete(&context, &name),
         Command::OrgCreate {
             name,
             full_name,
+            full_name_flag,
             creator,
-        } => commands::org_create(&context, &name, full_name.as_deref(), creator.as_deref()),
+            association_user,
+            filename,
+        } => commands::org_create(
+            &context,
+            &name,
+            full_name_flag.or(full_name).as_deref(),
+            creator.as_deref(),
+            association_user.as_deref(),
+            filename.as_deref(),
+        ),
         Command::OrgList => commands::org_list(&context),
         Command::OrgShow { name } => commands::org_show(&context, &name),
         Command::OrgDelete { name } => commands::org_delete(&context, &name),
@@ -151,19 +244,38 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
             secrets::set_secret(&context, &group, &name, &value)
         }
         Command::RemoveSecret { group, name } => secrets::remove_secret(&context, &group, &name),
+        Command::ShowServiceCredentials => commands::show_service_credentials(&context),
+        Command::RequireCredentialRotation { yes } => {
+            commands::require_credential_rotation(&context, yes)
+        }
         Command::Maintenance { action } => secrets::maintenance(&context, action),
         Command::CheckConfig => diagnostics::check_config(&context),
         Command::Reconfigure => commands::reconfigure(&context),
         Command::HaStatus => diagnostics::ha_status(&context),
-        Command::Psql { args } => diagnostics::psql(&context, &args),
+        Command::Psql { args } => {
+            let invocation = diagnostics::parse_psql_args(&args)?;
+            diagnostics::psql(&context, &invocation)
+        }
         Command::Reindex { org, purge } => commands::reindex(&context, org.as_deref(), purge),
-        Command::Backup { path, format, tar } => backup::backup(
+        Command::Backup {
+            path,
+            format,
+            tar,
+            yes,
+            config_only,
+            pg_options,
+        } => backup::backup(
             &context,
-            &path,
+            path.as_deref(),
             if tar {
                 BackupFormat::Tar
             } else {
                 format.unwrap_or(BackupFormat::Directory)
+            },
+            &backup::BackupOptions {
+                yes,
+                config_only,
+                pg_options: pg_options.as_deref(),
             },
         ),
         Command::Restore {
@@ -171,11 +283,13 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
             yes,
             format,
             tar,
+            pg_options,
         } => backup::restore(
             &context,
             &path,
             yes,
             if tar { Some(BackupFormat::Tar) } else { format },
+            pg_options.as_deref(),
         ),
         Command::MigrateFromLegacy { input, yes } => {
             commands::migrate_from_legacy(&context, &input, yes)
@@ -187,12 +301,18 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
             wait_time,
             force_cleanup,
         } => maintenance::cleanup_bifrost(&context, estimate_only, wait_time, force_cleanup),
+        Command::CleanupOrphanBlobs { estimate_only } => {
+            commands::cleanup_orphan_blobs(&context, estimate_only)
+        }
         Command::FilteredDump { output, org } => {
             dump::filtered_dump(&context, &output, org.as_deref())
         }
         Command::GatherLogs { output } => dump::gather_logs(&context, output.as_deref()),
         Command::RotateCredentials { service } => rotation::rotate_credentials(&context, &service),
         Command::RotateAllCredentials => rotation::rotate_all_credentials(&context),
-        Command::RotateSharedSecrets => rotation::rotate_shared_secrets(&context),
+        Command::RotateSharedSecrets => {
+            rotation::rotate_shared_secrets(&context)?;
+            commands::clear_credential_rotation_marker(&context)
+        }
     }
 }

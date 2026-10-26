@@ -363,6 +363,7 @@ impl MockSearchServer {
                 .and_then(|line| line.split_whitespace().nth(1))
                 .unwrap_or_default();
             match path {
+                "/chef" => write_http_response(&mut stream, "200 OK", "{}"),
                 "/chef/_delete_by_query" => write_http_response(
                     &mut stream,
                     "200 OK",
@@ -503,7 +504,7 @@ fn reindex_purge_reports_completed_remote_work() {
     assert!(text.contains("search_backend: opensearch"));
     assert!(text.contains("organization: acme"));
     assert!(text.contains("purged_organizations: 1"));
-    assert!(text.contains("documents_acknowledged: 2"));
+    assert!(text.contains("documents_acknowledged: 3"));
     assert!(text.contains("completed without reported delete failures"));
     assert!(text.contains("verify search results"));
 }
@@ -527,13 +528,13 @@ fn reindex_reports_relational_authority_for_the_embedded_backend() {
     assert!(text.contains("search_backend: embedded"));
     assert!(text.contains("relational search is authoritative"));
     assert!(text.contains("organizations: 1"));
-    assert!(text.contains("clients: 1"));
+    assert!(text.contains("clients: 2"));
     assert!(!text.contains("not implemented"));
 
     let scoped = run(dir.path(), &["reindex", "--org", "acme"]);
     assert_success(&scoped);
     assert!(stdout(&scoped).contains("organization: acme"));
-    assert!(stdout(&scoped).contains("documents_acknowledged: 2"));
+    assert!(stdout(&scoped).contains("documents_acknowledged: 3"));
 
     // `--purge` is accepted for the embedded backend, but there is no remote
     // index to delete or refresh, so no purge is claimed.

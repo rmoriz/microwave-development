@@ -1,5 +1,6 @@
 use crate::pg::{normalize_database_name, PgTarget};
 use crate::{context::Context, BackupFormat, CtlError};
+use chrono::Utc;
 use microwave_config::DatabaseDriver;
 use microwave_store::SqliteStore;
 use std::io::{IsTerminal, Write};
@@ -9,7 +10,29 @@ use uuid::Uuid;
 
 const DATABASE_FILE: &str = "microwave.db";
 const POSTGRES_DUMP_FILE: &str = "microwave.dump";
+const CONFIG_FILE: &str = "microwave-config.json";
 const BOOKSHELF_DIR: &str = "bookshelf";
+
+/// Compatibility options accepted by `backup`.
+pub struct BackupOptions<'a> {
+    /// Upstream `--yes`. Microwave backups run online, so this is accepted
+    /// without stopping the service.
+    pub yes: bool,
+    /// Write the resolved configuration only; skip metadata and bookshelf.
+    pub config_only: bool,
+    /// Extra flags for `pg_dump` (PostgreSQL only).
+    pub pg_options: Option<&'a str>,
+}
+
+/// Default destination for a backup taken without an explicit path.
+pub fn default_backup_path(format: BackupFormat) -> PathBuf {
+    let timestamp = Utc::now().format("%Y%m%dT%H%M%SZ");
+    let name = format!("microwave-backup-{timestamp}");
+    match format {
+        BackupFormat::Directory => PathBuf::from(name),
+        BackupFormat::Tar => PathBuf::from(format!("{name}.tar")),
+    }
+}
 
 /// Create a backup containing a consistent database dump and a copy of the
 /// local bookshelf, when one exists.
@@ -18,20 +41,49 @@ const BOOKSHELF_DIR: &str = "bookshelf";
 /// archive. Both include committed WAL/transaction contents and are safe to
 /// take while a server is running. The directory format writes the files
 /// as-is; the tar format writes the same layout into one uncompressed archive.
-pub fn backup(context: &Context, path: &Path, format: BackupFormat) -> Result<(), CtlError> {
+pub fn backup(
+    context: &Context,
+    path: Option<&Path>,
+    format: BackupFormat,
+    options: &BackupOptions<'_>,
+) -> Result<(), CtlError> {
+    let owned_path;
+    let path = match path {
+        Some(path) => path,
+        None => {
+            owned_path = default_backup_path(format);
+            &owned_path
+        }
+    };
+
+    if options.yes {
+        println!("note: --yes accepted; this backup runs online and does not stop the service.");
+    }
+    if options.pg_options.is_some() && context.config.database.driver == DatabaseDriver::Sqlite {
+        println!("note: --pg-options is ignored for the sqlite backend.");
+    }
+
     match format {
-        BackupFormat::Directory => backup_directory(context, path)?,
-        BackupFormat::Tar => backup_tar(context, path)?,
+        BackupFormat::Directory => backup_directory(context, path, options)?,
+        BackupFormat::Tar => backup_tar(context, path, options)?,
     }
 
     println!("Backup written to {}", path.display());
-    println!(
-        "note: the bookshelf copy is not atomic with the database dump; drain writes for a strict backup."
-    );
+    if options.config_only {
+        println!("note: this backup contains configuration only; no metadata or bookshelf data was included.");
+    } else {
+        println!(
+            "note: the bookshelf copy is not atomic with the database dump; drain writes for a strict backup."
+        );
+    }
     Ok(())
 }
 
-fn backup_directory(context: &Context, path: &Path) -> Result<(), CtlError> {
+fn backup_directory(
+    context: &Context,
+    path: &Path,
+    options: &BackupOptions<'_>,
+) -> Result<(), CtlError> {
     if path.exists() && !path.is_dir() {
         return Err(CtlError::message(format!(
             "backup destination {} is not a directory; use --format tar for a file destination",
@@ -39,10 +91,10 @@ fn backup_directory(context: &Context, path: &Path) -> Result<(), CtlError> {
         )));
     }
     std::fs::create_dir_all(path)?;
-    write_backup_payload(context, path)
+    write_backup_payload(context, path, options)
 }
 
-fn backup_tar(context: &Context, path: &Path) -> Result<(), CtlError> {
+fn backup_tar(context: &Context, path: &Path, options: &BackupOptions<'_>) -> Result<(), CtlError> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_dir() => {
             return Err(CtlError::message(format!(
@@ -69,7 +121,7 @@ fn backup_tar(context: &Context, path: &Path) -> Result<(), CtlError> {
     let staging = tempfile::Builder::new()
         .prefix(".microwave-backup-")
         .tempdir_in(parent.unwrap_or_else(|| Path::new(".")))?;
-    write_backup_payload(context, staging.path())?;
+    write_backup_payload(context, staging.path(), options)?;
 
     // Build the archive beside the destination so the final rename is atomic
     // and a failure never leaves a partial archive under the requested name.
@@ -85,15 +137,10 @@ fn backup_tar(context: &Context, path: &Path) -> Result<(), CtlError> {
     // dereferencing anything that appears later as well.
     builder.follow_symlinks(false);
 
-    match context.config.database.driver {
-        DatabaseDriver::Sqlite => {
-            builder.append_path_with_name(staging.path().join(DATABASE_FILE), DATABASE_FILE)?;
-        }
-        DatabaseDriver::Postgres => {
-            builder.append_path_with_name(
-                staging.path().join(POSTGRES_DUMP_FILE),
-                POSTGRES_DUMP_FILE,
-            )?;
+    for name in [DATABASE_FILE, POSTGRES_DUMP_FILE, CONFIG_FILE] {
+        let payload = staging.path().join(name);
+        if payload.is_file() {
+            builder.append_path_with_name(&payload, name)?;
         }
     }
 
@@ -113,10 +160,18 @@ fn backup_tar(context: &Context, path: &Path) -> Result<(), CtlError> {
     Ok(())
 }
 
-fn write_backup_payload(context: &Context, path: &Path) -> Result<(), CtlError> {
+fn write_backup_payload(
+    context: &Context,
+    path: &Path,
+    options: &BackupOptions<'_>,
+) -> Result<(), CtlError> {
+    if options.config_only {
+        return write_config_snapshot(context, path);
+    }
+
     match context.config.database.driver {
         DatabaseDriver::Sqlite => backup_sqlite(context, path)?,
-        DatabaseDriver::Postgres => backup_postgres(context, path)?,
+        DatabaseDriver::Postgres => backup_postgres(context, path, options.pg_options)?,
     }
 
     let bookshelf_backup = path.join(BOOKSHELF_DIR);
@@ -124,6 +179,38 @@ fn write_backup_payload(context: &Context, path: &Path) -> Result<(), CtlError> 
     let bookshelf = context.data_dir.join(BOOKSHELF_DIR);
     if bookshelf.is_dir() {
         copy_dir_all(&bookshelf, &bookshelf_backup)?;
+    }
+    Ok(())
+}
+
+fn write_config_snapshot(context: &Context, path: &Path) -> Result<(), CtlError> {
+    let destination = path.join(CONFIG_FILE);
+    if destination.exists() {
+        return Err(CtlError::message(format!(
+            "backup destination already contains {}",
+            destination.display()
+        )));
+    }
+    let serialized = serde_json::to_vec_pretty(&context.config).map_err(|error| {
+        CtlError::message(format!("failed to serialize configuration: {error}"))
+    })?;
+    write_private_file(&destination, &serialized)
+}
+
+fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), CtlError> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(contents)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
 }
@@ -142,7 +229,11 @@ fn backup_sqlite(context: &Context, path: &Path) -> Result<(), CtlError> {
     Ok(())
 }
 
-fn backup_postgres(context: &Context, path: &Path) -> Result<(), CtlError> {
+fn backup_postgres(
+    context: &Context,
+    path: &Path,
+    pg_options: Option<&str>,
+) -> Result<(), CtlError> {
     let dump = path.join(POSTGRES_DUMP_FILE);
     if dump.exists() {
         return Err(CtlError::message(format!(
@@ -155,19 +246,23 @@ fn backup_postgres(context: &Context, path: &Path) -> Result<(), CtlError> {
         CtlError::message(format!("backup path {} is not valid UTF-8", dump.display()))
     })?;
     let target = PgTarget::parse(&context.database_url)?;
-    run_tool(
-        "pg_dump",
-        &[
-            "--format=custom",
-            "--no-owner",
-            "--no-password",
-            "--file",
-            dump_arg,
-            "--dbname",
-            target.url(),
-        ],
-        &target,
-    )?;
+    let extra = parse_pg_options(pg_options, PgTool::Dump)?;
+    let mut args: Vec<String> = vec![
+        "--format=custom".into(),
+        "--no-owner".into(),
+        "--no-password".into(),
+    ];
+    args.extend(extra);
+    // Put the managed file/database options last so a user option cannot
+    // redirect the dump away from the requested destination.
+    args.extend([
+        "--file".to_string(),
+        dump_arg.to_string(),
+        "--dbname".to_string(),
+        target.url().to_string(),
+    ]);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_tool("pg_dump", &arg_refs, &target)?;
 
     if !dump.is_file() {
         return Err(CtlError::message(format!(
@@ -195,6 +290,7 @@ pub fn restore(
     path: &Path,
     yes: bool,
     format: Option<BackupFormat>,
+    pg_options: Option<&str>,
 ) -> Result<(), CtlError> {
     let format = match (format, path.is_dir()) {
         (Some(format), _) => format,
@@ -208,6 +304,10 @@ pub fn restore(
         }
     };
 
+    if pg_options.is_some() && context.config.database.driver == DatabaseDriver::Sqlite {
+        println!("note: --pg-options is ignored for the sqlite backend.");
+    }
+
     match format {
         BackupFormat::Directory => {
             if !path.is_dir() {
@@ -216,7 +316,7 @@ pub fn restore(
                     path.display()
                 )));
             }
-            restore_directory(context, path, yes)?;
+            restore_directory(context, path, yes, pg_options)?;
         }
         BackupFormat::Tar => {
             if !path.is_file() {
@@ -229,7 +329,7 @@ pub fn restore(
                 .prefix("microwave-restore-")
                 .tempdir()?;
             extract_tar(path, staging.path())?;
-            restore_directory(context, staging.path(), yes)?;
+            restore_directory(context, staging.path(), yes, pg_options)?;
         }
     }
 
@@ -237,7 +337,12 @@ pub fn restore(
     Ok(())
 }
 
-fn restore_directory(context: &Context, path: &Path, yes: bool) -> Result<(), CtlError> {
+fn restore_directory(
+    context: &Context,
+    path: &Path,
+    yes: bool,
+    pg_options: Option<&str>,
+) -> Result<(), CtlError> {
     // Validate and copy the backup bookshelf before the database or live
     // bookshelf is touched. A symlink/FIFO (or any read error) in the backup
     // must fail here, while the live installation is still intact.
@@ -245,7 +350,7 @@ fn restore_directory(context: &Context, path: &Path, yes: bool) -> Result<(), Ct
 
     match context.config.database.driver {
         DatabaseDriver::Sqlite => restore_sqlite(context, path, yes)?,
-        DatabaseDriver::Postgres => restore_postgres(context, path, yes)?,
+        DatabaseDriver::Postgres => restore_postgres(context, path, yes, pg_options)?,
     }
 
     swap_bookshelf(context, staged_bookshelf)?;
@@ -386,6 +491,7 @@ fn allowed_tar_entry(path: &Path) -> bool {
     }
     path == Path::new(DATABASE_FILE)
         || path == Path::new(POSTGRES_DUMP_FILE)
+        || path == Path::new(CONFIG_FILE)
         || path.starts_with(BOOKSHELF_DIR)
 }
 
@@ -438,7 +544,12 @@ fn restore_sqlite(context: &Context, path: &Path, yes: bool) -> Result<(), CtlEr
     Ok(())
 }
 
-fn restore_postgres(context: &Context, path: &Path, yes: bool) -> Result<(), CtlError> {
+fn restore_postgres(
+    context: &Context,
+    path: &Path,
+    yes: bool,
+    pg_options: Option<&str>,
+) -> Result<(), CtlError> {
     let dump = path.join(POSTGRES_DUMP_FILE);
     if !dump.is_file() {
         return Err(CtlError::message(format!(
@@ -463,21 +574,23 @@ fn restore_postgres(context: &Context, path: &Path, yes: bool) -> Result<(), Ctl
         target.database(),
         yes,
     )?;
-    run_tool(
-        "pg_restore",
-        &[
-            "--clean",
-            "--if-exists",
-            "--no-owner",
-            "--no-privileges",
-            "--single-transaction",
-            "--no-password",
-            "--dbname",
-            target.url(),
-            dump_arg,
-        ],
-        &target,
-    )?;
+    let extra = parse_pg_options(pg_options, PgTool::Restore)?;
+    let mut args: Vec<String> = vec![
+        "--clean".into(),
+        "--if-exists".into(),
+        "--no-owner".into(),
+        "--no-privileges".into(),
+        "--single-transaction".into(),
+        "--no-password".into(),
+    ];
+    args.extend(extra);
+    args.extend([
+        "--dbname".to_string(),
+        target.url().to_string(),
+        dump_arg.to_string(),
+    ]);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_tool("pg_restore", &arg_refs, &target)?;
     Ok(())
 }
 
@@ -693,9 +806,141 @@ fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), CtlError> 
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PgTool {
+    Dump,
+    Restore,
+}
+
+impl PgTool {
+    fn program(self) -> &'static str {
+        match self {
+            Self::Dump => "pg_dump",
+            Self::Restore => "pg_restore",
+        }
+    }
+
+    /// Options this CLI already controls or that only apply to the other tool.
+    fn controlled_options(self) -> &'static [&'static str] {
+        match self {
+            Self::Dump => &[
+                "-f",
+                "--file",
+                "-F",
+                "--format",
+                "-d",
+                "--dbname",
+                "-h",
+                "--host",
+                "-p",
+                "--port",
+                "-U",
+                "--username",
+                "-W",
+                "--password",
+                "--no-password",
+                "-a",
+                "--data-only",
+                "-s",
+                "--schema-only",
+                "-C",
+                "--create",
+                "-c",
+                "--clean",
+                "-1",
+                "--single-transaction",
+                "-l",
+                "--list",
+            ],
+            Self::Restore => &[
+                "-f",
+                "--file",
+                "-F",
+                "--format",
+                "-d",
+                "--dbname",
+                "-h",
+                "--host",
+                "-p",
+                "--port",
+                "-U",
+                "--username",
+                "-W",
+                "--password",
+                "--no-password",
+                "-c",
+                "--clean",
+                "--if-exists",
+                "-1",
+                "--single-transaction",
+                "-l",
+                "--list",
+                "-L",
+                "--use-list",
+                "-e",
+                "--exit-on-error",
+                "--no-owner",
+                "--no-privileges",
+            ],
+        }
+    }
+}
+
+/// Split and validate a `--pg-options` value.
+///
+/// Values are tokenized on whitespace and passed directly to the child
+/// process; there is no shell. Options that this CLI sets itself (or that
+/// belong only to the other PostgreSQL tool) are rejected with a clear error
+/// rather than producing a confusing failure halfway through a backup.
+fn parse_pg_options(value: Option<&str>, tool: PgTool) -> Result<Vec<String>, CtlError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(Vec::new());
+    };
+
+    let mut parsed = Vec::new();
+    for token in value.split_whitespace() {
+        if token == "--" {
+            return Err(CtlError::message(
+                "--pg-options must not contain the `--` option terminator".to_string(),
+            ));
+        }
+        if !token.starts_with('-') {
+            return Err(CtlError::message(format!(
+                "--pg-options value {token:?} is not an option; pass flags such as `--no-sync` or `-Z9`"
+            )));
+        }
+        let name = token.split_once('=').map(|(name, _)| name).unwrap_or(token);
+        let controlled = tool
+            .controlled_options()
+            .iter()
+            .any(|option| *option == name || short_option_with_value(token, option));
+        if controlled {
+            return Err(CtlError::message(format!(
+                "--pg-options cannot include {token:?}; {} controls that option",
+                tool.program()
+            )));
+        }
+        parsed.push(token.to_string());
+    }
+    Ok(parsed)
+}
+
+/// Match an attached short-option value such as `-fout.dump`.
+fn short_option_with_value(token: &str, option: &str) -> bool {
+    option.len() == 2
+        && option.starts_with('-')
+        && !option.starts_with("--")
+        && token.starts_with(option)
+        && token.len() > option.len()
+        && !token.starts_with("--")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{allowed_tar_entry, archive_database, database_names_match};
+    use super::{
+        allowed_tar_entry, archive_database, database_names_match, default_backup_path,
+        parse_pg_options, BackupFormat, PgTool,
+    };
     use std::path::Path;
 
     #[test]
@@ -715,6 +960,7 @@ mod tests {
     fn only_accepts_the_expected_backup_layout_in_a_tar_archive() {
         assert!(allowed_tar_entry(Path::new("microwave.db")));
         assert!(allowed_tar_entry(Path::new("microwave.dump")));
+        assert!(allowed_tar_entry(Path::new("microwave-config.json")));
         assert!(allowed_tar_entry(Path::new("bookshelf")));
         assert!(allowed_tar_entry(Path::new(
             "bookshelf/organization-abc/checksum-def"
@@ -727,5 +973,42 @@ mod tests {
         assert!(!allowed_tar_entry(Path::new("/etc/passwd")));
         assert!(!allowed_tar_entry(Path::new("pivotal.pem")));
         assert!(!allowed_tar_entry(Path::new("")));
+    }
+
+    #[test]
+    fn default_backup_paths_are_timestamped() {
+        let directory = default_backup_path(BackupFormat::Directory);
+        let name = directory.file_name().unwrap().to_string_lossy();
+        assert!(
+            name.starts_with("microwave-backup-"),
+            "unexpected default: {name}"
+        );
+        assert!(directory.extension().is_none());
+
+        let archive = default_backup_path(BackupFormat::Tar);
+        let name = archive.file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with("microwave-backup-"));
+        assert_eq!(
+            archive.extension().and_then(|value| value.to_str()),
+            Some("tar")
+        );
+    }
+
+    #[test]
+    fn accepts_supported_pg_options_and_rejects_managed_ones() {
+        assert_eq!(
+            parse_pg_options(Some("--no-sync -Z9"), PgTool::Dump).unwrap(),
+            vec!["--no-sync".to_string(), "-Z9".to_string()]
+        );
+        assert!(parse_pg_options(Some("--file=/tmp/other.dump"), PgTool::Dump).is_err());
+        assert!(parse_pg_options(Some("-f/tmp/other.dump"), PgTool::Dump).is_err());
+        assert!(parse_pg_options(Some("--clean"), PgTool::Dump).is_err());
+        assert!(parse_pg_options(Some("value"), PgTool::Dump).is_err());
+        assert!(parse_pg_options(Some("--format=plain"), PgTool::Restore).is_err());
+        assert!(parse_pg_options(Some("--no-data"), PgTool::Restore).is_ok());
+        assert_eq!(
+            parse_pg_options(None, PgTool::Dump).unwrap(),
+            Vec::<String>::new()
+        );
     }
 }

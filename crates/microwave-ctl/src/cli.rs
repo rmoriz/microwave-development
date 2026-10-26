@@ -53,12 +53,23 @@ pub enum Command {
     /// Print the CLI version.
     Version,
     /// Report storage paths, database readability, and superuser state.
+    ///
+    /// This is a storage report, not the systemd service status. For the
+    /// service, use `service status` or the `service-list` alias.
     Status,
 
     /// Create a user. A password is generated when one is not supplied.
+    ///
+    /// Supports both the flag form (`user-create USER --email ... --password
+    /// ...`) and the upstream positional form (`user-create USER FIRST
+    /// [MIDDLE] LAST EMAIL PASSWORD`). Unless an existing public key is
+    /// supplied, a default key is generated and its private key is printed
+    /// once (or written to `--filename`).
     UserCreate {
-        /// Username.
-        name: String,
+        /// Positional arguments: `USER` or the upstream `USER FIRST [MIDDLE]
+        /// LAST EMAIL PASSWORD`.
+        #[arg(value_name = "ARGS")]
+        positional: Vec<String>,
         /// Email address. Defaults to `<name>@localhost`.
         #[arg(long, value_name = "EMAIL")]
         email: Option<String>,
@@ -68,6 +79,12 @@ pub enum Command {
         /// Grant platform administrator privileges.
         #[arg(long)]
         admin: bool,
+        /// Write the generated private key to this file instead of printing it.
+        #[arg(short = 'f', long = "filename", value_name = "FILE")]
+        filename: Option<PathBuf>,
+        /// Import an existing PEM public key instead of generating a keypair.
+        #[arg(long = "public-key-path", alias = "user-key", value_name = "PATH")]
+        public_key_path: Option<PathBuf>,
     },
     /// List usernames.
     UserList,
@@ -77,16 +94,32 @@ pub enum Command {
     UserDelete { name: String },
 
     /// Create an organization and apply the default authorization policy.
+    ///
+    /// Creates the `<org>-validator` client with a default key. The validator
+    /// private key is printed once unless `--filename` is used.
     OrgCreate {
         /// Organization name.
         name: String,
-        /// Human-readable organization name. Defaults to the name.
-        #[arg(long = "full-name", value_name = "NAME")]
+        /// Human-readable organization name (upstream positional form).
+        /// Defaults to the name.
+        #[arg(value_name = "FULL_NAME")]
         full_name: Option<String>,
+        /// Human-readable organization name (flag form). Defaults to the
+        /// positional name or the organization name.
+        #[arg(long = "full-name", value_name = "NAME")]
+        full_name_flag: Option<String>,
         /// User that receives the initial organization ACLs. Defaults to the
         /// configured superuser.
         #[arg(long, value_name = "USER")]
         creator: Option<String>,
+        /// Associate an existing user with the organization and add them to
+        /// the `admins` and `billing-admins` groups.
+        #[arg(short = 'a', long = "association-user", value_name = "USER")]
+        association_user: Option<String>,
+        /// Write the validator private key to this file (mode 0600) instead of
+        /// printing it.
+        #[arg(short = 'f', long = "filename", value_name = "FILE")]
+        filename: Option<PathBuf>,
     },
     /// List organizations.
     OrgList,
@@ -207,6 +240,20 @@ pub enum Command {
         /// Credential name, for example `secret`.
         name: String,
     },
+    /// Print every stored service credential. This intentionally reveals
+    /// secret values and is intended for runbooks that need to copy them to
+    /// another node.
+    ShowServiceCredentials,
+
+    /// Mark the installation as disabled until credentials have been rotated.
+    /// Writes `<data_dir>/credential_rotation_required`; it does not stop
+    /// systemd. `rotate-shared-secrets` clears the marker.
+    RequireCredentialRotation {
+        /// Agree to disable the server and require credential rotation without
+        /// an interactive prompt.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
 
     /// Control maintenance mode.
     Maintenance {
@@ -223,8 +270,14 @@ pub enum Command {
     /// Show the status of high-availability services.
     HaStatus,
     /// Open `sqlite3` (or `psql`) against the configured database.
+    ///
+    /// Accepts the upstream `psql SERVICE_NAME [--write] [--options VALUE]`
+    /// form. Any service name maps to the configured database. Arguments after
+    /// the options are passed through to the client tool unchanged.
     Psql {
-        /// Arguments passed through to `sqlite3` or `psql`.
+        /// Optional service name, client options, and trailing arguments. The
+        /// CLI recognizes `--write` and `--options VALUE`; everything else is
+        /// forwarded to `sqlite3` or `psql`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -278,18 +331,101 @@ pub enum Command {
         foreground: bool,
     },
 
+    /// Alias for `service start`. Accepts the upstream optional SERVICE_NAME.
+    Start {
+        /// Upstream service name. Treated as the systemd unit when `--unit` is
+        /// omitted.
+        service: Option<String>,
+        /// systemd unit name. Defaults to `MW_SERVICE_UNIT` or
+        /// `microwave-server`.
+        #[arg(long, value_name = "UNIT")]
+        unit: Option<String>,
+        /// Run `microwave-server serve` in this process. See `service start`.
+        #[arg(long)]
+        foreground: bool,
+    },
+    /// Alias for `service stop`. Accepts the upstream optional SERVICE_NAME.
+    Stop {
+        /// Upstream service name. Treated as the systemd unit when `--unit` is
+        /// omitted.
+        service: Option<String>,
+        /// systemd unit name.
+        #[arg(long, value_name = "UNIT")]
+        unit: Option<String>,
+    },
+    /// Alias for `service restart`. Accepts the upstream optional SERVICE_NAME.
+    Restart {
+        /// Upstream service name. Treated as the systemd unit when `--unit` is
+        /// omitted.
+        service: Option<String>,
+        /// systemd unit name.
+        #[arg(long, value_name = "UNIT")]
+        unit: Option<String>,
+    },
+    /// Send SIGHUP to the service. Microwave runs as one systemd unit, so this
+    /// maps to `systemctl restart` (a configuration reload in this
+    /// deployment). Accepts the upstream optional SERVICE_NAME.
+    Hup {
+        /// Upstream service name. Treated as the systemd unit when `--unit` is
+        /// omitted.
+        service: Option<String>,
+        /// systemd unit name.
+        #[arg(long, value_name = "UNIT")]
+        unit: Option<String>,
+    },
+    /// Alias for `service tail`. Accepts the upstream optional SERVICE_NAME.
+    Tail {
+        /// Upstream service name. Treated as the systemd unit when `--unit` is
+        /// omitted.
+        service: Option<String>,
+        /// systemd unit name.
+        #[arg(long, value_name = "UNIT")]
+        unit: Option<String>,
+        /// Number of journal lines.
+        #[arg(long, value_name = "COUNT", default_value_t = 50)]
+        lines: usize,
+        /// Follow the journal.
+        #[arg(long)]
+        follow: bool,
+    },
+    /// List the services managed by this installation. Microwave runs as a
+    /// single systemd unit; enabled services are marked with `*`.
+    ServiceList {
+        /// systemd unit name. Defaults to `MW_SERVICE_UNIT` or
+        /// `microwave-server`.
+        #[arg(long, value_name = "UNIT")]
+        unit: Option<String>,
+    },
+
     /// Create a consistent metadata and bookshelf backup. SQLite uses
     /// `VACUUM INTO`; PostgreSQL uses `pg_dump`. The default format is a
-    /// directory; `--format tar` writes a single tar archive.
+    /// directory; `--tar` writes a single tar archive.
+    ///
+    /// PATH is optional and defaults to a timestamped
+    /// `microwave-backup-<UTC>` directory in the current directory.
     Backup {
         /// Destination directory, or tar file when the tar format is selected.
-        path: PathBuf,
+        /// Defaults to `microwave-backup-<UTC>` (or `.tar` for `--tar`).
+        path: Option<PathBuf>,
         /// Archive format. Defaults to a directory.
         #[arg(long, value_enum, value_name = "FORMAT")]
         format: Option<BackupFormat>,
         /// Shorthand for `--format tar`.
-        #[arg(long, conflicts_with = "format")]
+        #[arg(short = 't', long, conflicts_with = "format")]
         tar: bool,
+        /// Accepted for compatibility with upstream backup runbooks. This
+        /// backup runs online and does not stop the service.
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Back up the resolved configuration only, without metadata or
+        /// bookshelf data.
+        #[arg(short = 'c', long = "config-only")]
+        config_only: bool,
+        /// Additional options passed to `pg_dump` (and `pg_restore` during a
+        /// restore from a backup made with this flag). Conflicting options
+        /// managed by this CLI are rejected.
+        #[arg(long = "pg-options", value_name = "VALUE", allow_hyphen_values = true)]
+        pg_options: Option<String>,
     },
     /// Restore metadata and bookshelf data from a backup directory or tar
     /// archive. SQLite restores the staged database file; PostgreSQL replays
@@ -308,6 +444,9 @@ pub enum Command {
         /// Shorthand for `--format tar`.
         #[arg(long, conflicts_with = "format")]
         tar: bool,
+        /// Additional options passed to `pg_restore` for PostgreSQL backups.
+        #[arg(long = "pg-options", value_name = "VALUE", allow_hyphen_values = true)]
+        pg_options: Option<String>,
     },
 
     /// Edit a user's profile, email, admin flag, or password. Without
@@ -338,6 +477,15 @@ pub enum Command {
         /// Also remove stale internal cleanup tracking rows.
         #[arg(long)]
         force_cleanup: bool,
+    },
+
+    /// Remove local bookshelf blobs that are not referenced by the metadata
+    /// store. Use `--estimate-only` to report the count and size without
+    /// deleting anything.
+    CleanupOrphanBlobs {
+        /// Report orphaned blobs without deleting them.
+        #[arg(long)]
+        estimate_only: bool,
     },
 
     /// Write redacted, indexable objects for all organizations as JSON files.
@@ -569,6 +717,226 @@ mod tests {
                 format: None,
                 tar: false,
                 ..
+            }
+        ));
+    }
+
+    #[test]
+    fn backup_path_is_optional_and_accepts_upstream_flags() {
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "backup",
+            "-y",
+            "--config-only",
+            "--pg-options",
+            "--no-sync",
+            "-t",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Backup {
+                path,
+                tar,
+                yes,
+                config_only,
+                pg_options,
+                ..
+            } => {
+                assert!(path.is_none());
+                assert!(tar);
+                assert!(yes);
+                assert!(config_only);
+                assert_eq!(pg_options.as_deref(), Some("--no-sync"));
+            }
+            _ => panic!("expected backup command"),
+        }
+    }
+
+    #[test]
+    fn parses_the_top_level_service_aliases() {
+        let cli = Cli::try_parse_from(["microwave-ctl", "restart", "erchef"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Restart {
+                service: Some(ref service),
+                unit: None
+            } if service == "erchef"
+        ));
+
+        let cli = Cli::try_parse_from(["microwave-ctl", "start", "--foreground", "--unit", "demo"])
+            .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Start {
+                foreground: true,
+                ref unit,
+                ..
+            } if unit.as_deref() == Some("demo")
+        ));
+
+        let cli = Cli::try_parse_from(["microwave-ctl", "hup", "--unit", "demo"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Hup { ref unit, .. } if unit.as_deref() == Some("demo")
+        ));
+
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "tail",
+            "--unit",
+            "demo",
+            "--lines",
+            "7",
+            "--follow",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Tail {
+                lines: 7,
+                follow: true,
+                ..
+            }
+        ));
+
+        let cli = Cli::try_parse_from(["microwave-ctl", "service-list"]).unwrap();
+        assert!(matches!(cli.command, Command::ServiceList { unit: None }));
+    }
+
+    #[test]
+    fn parses_user_create_in_both_forms() {
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "user-create",
+            "alice",
+            "Alice",
+            "Marie",
+            "Smith",
+            "alice@example.com",
+            "secret",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::UserCreate {
+                ref positional,
+                email,
+                password,
+                admin,
+                filename,
+                public_key_path,
+            } => {
+                assert_eq!(positional.len(), 6);
+                assert!(email.is_none());
+                assert!(password.is_none());
+                assert!(!admin);
+                assert!(filename.is_none());
+                assert!(public_key_path.is_none());
+            }
+            _ => panic!("expected user-create"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "user-create",
+            "alice",
+            "--email",
+            "alice@example.com",
+            "--password",
+            "secret",
+            "-f",
+            "/tmp/alice.pem",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::UserCreate {
+                filename: Some(ref path),
+                ref email,
+                ..
+            } if path == std::path::Path::new("/tmp/alice.pem")
+                && email.as_deref() == Some("alice@example.com")
+        ));
+    }
+
+    #[test]
+    fn parses_org_create_association_user_and_filename() {
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "org-create",
+            "acme",
+            "Acme Corp",
+            "-a",
+            "bob",
+            "-f",
+            "/tmp/acme-validator.pem",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::OrgCreate {
+                association_user: Some(ref user),
+                filename: Some(ref path),
+                full_name: Some(ref full_name),
+                full_name_flag: None,
+                ..
+            } if user == "bob"
+                && path == std::path::Path::new("/tmp/acme-validator.pem")
+                && full_name == "Acme Corp"
+        ));
+
+        // The flag form remains available for existing scripts.
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "org-create",
+            "acme",
+            "--full-name",
+            "Acme Corp",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::OrgCreate {
+                full_name: None,
+                full_name_flag: Some(ref full_name),
+                ..
+            } if full_name == "Acme Corp"
+        ));
+
+        // The upstream positional form carries the full name.
+        let cli =
+            Cli::try_parse_from(["microwave-ctl", "org-create", "acme", "Acme Corp"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::OrgCreate {
+                full_name: Some(ref full_name),
+                full_name_flag: None,
+                ..
+            } if full_name == "Acme Corp"
+        ));
+    }
+
+    #[test]
+    fn parses_credential_and_blob_cleanup_commands() {
+        assert!(matches!(
+            Cli::try_parse_from(["microwave-ctl", "show-service-credentials"])
+                .unwrap()
+                .command,
+            Command::ShowServiceCredentials
+        ));
+
+        let cli =
+            Cli::try_parse_from(["microwave-ctl", "require-credential-rotation", "-y"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::RequireCredentialRotation { yes: true }
+        ));
+
+        let cli = Cli::try_parse_from(["microwave-ctl", "cleanup-orphan-blobs", "--estimate-only"])
+            .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::CleanupOrphanBlobs {
+                estimate_only: true
             }
         ));
     }
