@@ -417,6 +417,10 @@ describe "chef server authorization checks", :authorization do
 
   # Generic setup
   let(:organizations_url) { "#{server}/organizations" }
+  # The client-auth examples are marked pending, but RSpec still evaluates
+  # the requestor let. Use the configured validator client instead of raising
+  # a NameError in the pending examples.
+  let(:client) { platform.validator_client }
 
   context "for roles" do
     # Endpoint specific setup -- for roles
