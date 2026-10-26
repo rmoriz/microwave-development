@@ -1921,7 +1921,18 @@ async fn scenario_objects(h: &Harness) -> Vec<Step> {
         )
         .await
         .expect_ok();
-    assert_eq!(step.json(), &json!({}));
+    assert_eq!(
+        step.json(),
+        &json!({
+            "name": "web",
+            "json_class": "Chef::Role",
+            "chef_type": "role",
+            "default_attributes": {},
+            "override_attributes": {},
+            "run_list": ["recipe[base]"],
+            "env_run_lists": {}
+        })
+    );
     steps.push(step);
 
     let step = h
@@ -1934,7 +1945,18 @@ async fn scenario_objects(h: &Harness) -> Vec<Step> {
         )
         .await
         .expect_ok();
-    assert_eq!(step.json(), &json!({}));
+    assert_eq!(
+        step.json(),
+        &json!({
+            "name": "production",
+            "description": "updated",
+            "json_class": "Chef::Environment",
+            "chef_type": "environment",
+            "cookbook_versions": {},
+            "default_attributes": {},
+            "override_attributes": {}
+        })
+    );
     steps.push(step);
 
     let step = h

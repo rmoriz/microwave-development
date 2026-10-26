@@ -2,13 +2,28 @@ use crate::cookbooks::{parse_num_versions, NumVersions};
 use crate::helpers::{base_url, container_authz, organization, require_permission};
 use crate::{ApiError, AppState, AuthContext};
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
 use microwave_depsolver::{Constraint, Version};
 use microwave_store::{Org, Permission, StoredCookbookVersion, StoredObject};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap};
+
+/// Top-level keys accepted on environment payloads, mirroring `?VALID_KEYS`
+/// in `chef_environment.erl`.
+const VALID_KEYS: [&str; 7] = [
+    "name",
+    "description",
+    "json_class",
+    "chef_type",
+    "default_attributes",
+    "override_attributes",
+    "cookbook_versions",
+];
+
+const ATTRIBUTE_KEYS: [&str; 2] = ["default_attributes", "override_attributes"];
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -74,7 +89,7 @@ async fn create_environment(
     let container = container_authz(&state, org, "environments").await?;
     require_permission(&state, &auth, &container, Permission::Create).await?;
 
-    let name = normalize_environment(&mut body)?;
+    let name = normalize_environment(&mut body, None)?;
     let environment = state
         .store
         .create_environment(
@@ -125,8 +140,10 @@ async fn update_environment(
     Extension(auth): Extension<AuthContext>,
     Path((_organization, name)): Path<(String, String)>,
     Json(mut body): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    protect_default(&name)?;
+) -> Result<Response, ApiError> {
+    if let Some(response) = default_environment_response(&name) {
+        return Ok(response);
+    }
     let org = organization(&auth)?;
     let environment = state
         .store
@@ -136,12 +153,7 @@ async fn update_environment(
         .ok_or_else(|| ApiError::not_found(format!("environment {name}")))?;
     require_permission(&state, &auth, &environment.authz_id, Permission::Update).await?;
 
-    let body_name = normalize_environment(&mut body)?;
-    if body_name != name {
-        return Err(ApiError::bad_request(
-            "environment name does not match request path",
-        ));
-    }
+    normalize_environment(&mut body, Some(&name))?;
     let updated = state
         .store
         .update_environment(
@@ -158,17 +170,17 @@ async fn update_environment(
         &updated,
     )
     .await;
-    let value =
-        serde_json::from_str(&updated.serialized_object).map_err(|_| ApiError::internal())?;
-    Ok(Json(value))
+    Ok(Json(serialized_body(&updated.serialized_object)?).into_response())
 }
 
 async fn delete_environment(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, name)): Path<(String, String)>,
-) -> Result<Json<Value>, ApiError> {
-    protect_default(&name)?;
+) -> Result<Response, ApiError> {
+    if let Some(response) = default_environment_response(&name) {
+        return Ok(response);
+    }
     let org = organization(&auth)?;
     let environment = state
         .store
@@ -177,13 +189,14 @@ async fn delete_environment(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("environment {name}")))?;
     require_permission(&state, &auth, &environment.authz_id, Permission::Delete).await?;
+    let value = serialized_body(&environment.serialized_object)?;
     state
         .store
         .delete_environment(&org.id, &name)
         .await
         .map_err(ApiError::from)?;
     crate::search::index::delete_document(&state, &org.id, &environment.id).await;
-    Ok(Json(json!({})))
+    Ok(Json(value).into_response())
 }
 
 async fn list_environment_cookbooks(
@@ -403,34 +416,181 @@ fn environment_cookbook_entry(
     })
 }
 
-fn protect_default(name: &str) -> Result<(), ApiError> {
-    if name == "_default" {
-        Err(ApiError::method_not_allowed(
-            "The '_default' environment cannot be modified.",
-        ))
-    } else {
-        Ok(())
+/// Upstream advertises `GET` on the `_default` environment and rejects
+/// modification with a `405` that carries an `Allow` header.
+fn default_environment_response(name: &str) -> Option<Response> {
+    if name != "_default" {
+        return None;
+    }
+    let mut response =
+        ApiError::method_not_allowed("The '_default' environment cannot be modified.")
+            .into_response();
+    response
+        .headers_mut()
+        .insert(header::ALLOW, HeaderValue::from_static("GET"));
+    Some(response)
+}
+
+fn serialized_body(serialized: &str) -> Result<Value, ApiError> {
+    serde_json::from_str(serialized).map_err(|_| ApiError::internal())
+}
+
+/// Validates and normalizes an environment payload following
+/// `chef_environment:parse_binary_json/1`.
+///
+/// `path_name` is `Some` for PUT requests: the body name is optional, but when
+/// present it must match the URL. Create requests require an explicit name.
+fn normalize_environment(body: &mut Value, path_name: Option<&str>) -> Result<String, ApiError> {
+    let Some(object) = body.as_object_mut() else {
+        return Err(ApiError::bad_request(
+            "Incorrect JSON type for request body",
+        ));
+    };
+
+    let name = match path_name {
+        Some(path_name) => {
+            match object.get("name") {
+                None => {
+                    object.insert("name".into(), json!(path_name));
+                }
+                Some(Value::String(body_name)) if body_name == path_name => {}
+                Some(_) => {
+                    return Err(ApiError::bad_request("Environment name mismatch."));
+                }
+            }
+            path_name.to_string()
+        }
+        None => object
+            .get("name")
+            .ok_or_else(|| ApiError::bad_request("Field 'name' missing"))?
+            .as_str()
+            .ok_or_else(|| ApiError::bad_request("Field 'name' invalid"))?
+            .to_string(),
+    };
+    if !valid_name(&name) {
+        return Err(ApiError::bad_request("Field 'name' invalid"));
+    }
+    object.insert("name".into(), json!(name));
+
+    if let Some(key) = object
+        .keys()
+        .find(|key| !VALID_KEYS.contains(&key.as_str()))
+    {
+        return Err(ApiError::bad_request(format!(
+            "Invalid key {key} in request body"
+        )));
+    }
+
+    validate_fixed_field(object, "json_class", "Chef::Environment")?;
+    validate_fixed_field(object, "chef_type", "environment")?;
+
+    match object.get("description") {
+        None => {
+            object.insert("description".into(), json!(""));
+        }
+        Some(Value::String(_)) => {}
+        Some(_) => return Err(ApiError::bad_request("Field 'description' invalid")),
+    }
+
+    for key in ATTRIBUTE_KEYS {
+        match object.get(key) {
+            None => {
+                object.insert(key.into(), json!({}));
+            }
+            Some(Value::Object(_)) => {}
+            Some(_) => {
+                return Err(ApiError::bad_request(format!(
+                    "Field '{key}' is not a hash"
+                )));
+            }
+        }
+    }
+
+    let cookbook_versions = match object.get("cookbook_versions") {
+        None => Map::new(),
+        Some(Value::Object(versions)) => {
+            validate_cookbook_versions(versions)?;
+            versions.clone()
+        }
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "Field 'cookbook_versions' is not a hash",
+            ));
+        }
+    };
+    object.insert("cookbook_versions".into(), Value::Object(cookbook_versions));
+
+    Ok(name)
+}
+
+fn validate_fixed_field(
+    object: &mut Map<String, Value>,
+    key: &str,
+    expected: &str,
+) -> Result<(), ApiError> {
+    match object.get(key) {
+        None => {
+            object.insert(key.into(), json!(expected));
+            Ok(())
+        }
+        Some(Value::String(value)) if value == expected => Ok(()),
+        Some(_) => Err(ApiError::bad_request(format!("Field '{key}' invalid"))),
     }
 }
 
-fn normalize_environment(body: &mut Value) -> Result<String, ApiError> {
-    let name = body
-        .get("name")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ApiError::bad_request("environment name is required"))?
-        .to_string();
-    body["name"] = json!(name);
-    body["json_class"] = json!("Chef::Environment");
-    body["chef_type"] = json!("environment");
-    if body.get("cookbook_versions").is_none() {
-        body["cookbook_versions"] = json!({});
+fn validate_cookbook_versions(versions: &Map<String, Value>) -> Result<(), ApiError> {
+    for (name, constraint) in versions {
+        if !valid_name(name) {
+            return Err(ApiError::bad_request(format!(
+                "Invalid key '{name}' for cookbook_versions"
+            )));
+        }
+        match constraint {
+            Value::String(value) if valid_constraint(value) => {}
+            Value::String(value) => {
+                return Err(ApiError::bad_request(format!(
+                    "Invalid value '{value}' for cookbook_versions"
+                )));
+            }
+            value => {
+                return Err(ApiError::bad_request(format!(
+                    "Invalid value '{}' for cookbook_versions",
+                    json_value_text(value)
+                )));
+            }
+        }
     }
-    if body.get("default_attributes").is_none() {
-        body["default_attributes"] = json!({});
+    Ok(())
+}
+
+/// Upstream's `parse_constraint/1` requires exactly one space between an
+/// operator and the version, and a version with two or three numeric parts.
+fn valid_constraint(value: &str) -> bool {
+    let version = value
+        .strip_prefix("<= ")
+        .or_else(|| value.strip_prefix(">= "))
+        .or_else(|| value.strip_prefix("~> "))
+        .or_else(|| value.strip_prefix("= "))
+        .or_else(|| value.strip_prefix("< "))
+        .or_else(|| value.strip_prefix("> "))
+        .unwrap_or(value);
+    let parts: Vec<&str> = version.split('.').collect();
+    (2..=3).contains(&parts.len())
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+}
+
+fn json_value_text(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        other => other.to_string(),
     }
-    if body.get("override_attributes").is_none() {
-        body["override_attributes"] = json!({});
-    }
-    Ok(name)
+}
+
+fn valid_name(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
