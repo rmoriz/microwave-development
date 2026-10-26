@@ -17,13 +17,107 @@ pub const MAX_REQUEST_BODY: usize = MAX_REQUEST_SIZE;
 
 pub async fn authenticate(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
-    request: axum::extract::Request,
+    mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
+    // `Router::layer` runs after axum has selected a route, so rewriting the
+    // URI here cannot change which handler was chosen. When a rewrite is
+    // needed, re-enter the router once with the new path. The marker also
+    // prevents recursion and keeps request metrics counted once.
+    if request.extensions().get::<OriginalRequestPath>().is_some() {
+        return authenticate_request(state, request, next).await;
+    }
+
     state.metrics.record_request();
+
+    // Clients sign the URI they sent, so keep that path and only rewrite the
+    // request the router dispatches.
+    let signed_path = request.uri().path().to_string();
+    let routed_path = routing_path(&signed_path, state.config.server.default_orgname.as_deref());
+    if routed_path != signed_path {
+        if let Some(uri) = rewrite_uri_path(request.uri(), &routed_path) {
+            *request.uri_mut() = uri;
+        }
+        request
+            .extensions_mut()
+            .insert(OriginalRequestPath(signed_path));
+
+        let response = match tower::ServiceExt::oneshot(crate::router(state.clone()), request).await
+        {
+            Ok(response) => response,
+            Err(error) => match error {},
+        };
+        state.metrics.record_response(response.status());
+        return response;
+    }
+
     let response = authenticate_request(state.clone(), request, next).await;
     state.metrics.record_response(response.status());
     response
+}
+
+/// The path the client signed, before [`routing_path`] rewrote it.
+#[derive(Clone, Debug)]
+struct OriginalRequestPath(String);
+
+/// Top-level compatibility endpoints upstream nginx maps to `default_orgname`.
+const DEFAULT_ORG_ENDPOINTS: [&str; 11] = [
+    "search",
+    "nodes",
+    "cookbooks",
+    "data",
+    "roles",
+    "sandboxes",
+    "environments",
+    "clients",
+    "principals",
+    "groups",
+    "containers",
+];
+
+/// Compute the path used for routing.
+///
+/// A single trailing slash is removed (matching upstream's `p_maybe_sep`), and
+/// top-level compatibility endpoints are prefixed with the configured default
+/// organization. The original path remains available for signature
+/// verification.
+fn routing_path(path: &str, default_orgname: Option<&str>) -> String {
+    let path = without_one_trailing_slash(path);
+    match default_orgname {
+        Some(orgname) if is_default_org_endpoint(path) => {
+            format!("/organizations/{orgname}{path}")
+        }
+        _ => path.to_string(),
+    }
+}
+
+/// Strip exactly one trailing slash, leaving `/` and double slashes alone.
+fn without_one_trailing_slash(path: &str) -> &str {
+    if path.len() > 1 && path.ends_with('/') && !path.ends_with("//") {
+        &path[..path.len() - 1]
+    } else {
+        path
+    }
+}
+
+/// True for `/nodes`, `/nodes/...`, `/search`, and the other upstream
+/// default-org compatibility endpoints.
+fn is_default_org_endpoint(path: &str) -> bool {
+    path.strip_prefix('/')
+        .and_then(|rest| rest.split('/').next())
+        .is_some_and(|endpoint| DEFAULT_ORG_ENDPOINTS.contains(&endpoint))
+}
+
+/// Replace only the path portion of a URI, preserving its query and any
+/// scheme/authority from HTTP/2 request targets.
+fn rewrite_uri_path(uri: &axum::http::Uri, path: &str) -> Option<axum::http::Uri> {
+    let path_and_query = match uri.query() {
+        Some(query) => format!("{path}?{query}"),
+        None => path.to_string(),
+    };
+    let mut parts = uri.clone().into_parts();
+    parts.path_and_query = Some(path_and_query.parse().ok()?);
+    axum::http::Uri::from_parts(parts).ok()
 }
 
 /// Give handlers a `Host` header for HTTP/2 requests.
@@ -302,12 +396,20 @@ async fn authenticate_signed(
     };
 
     let path = parts.uri.path().to_string();
+    let signed_path = parts
+        .extensions
+        .get::<OriginalRequestPath>()
+        .map(|original| original.0.clone())
+        .unwrap_or_else(|| path.clone());
     let method = parts.method.as_str().to_string();
     // `chef_wm_validate` signs the path below `/validate/`, not the validation
     // URL itself. The body is still the body that was actually sent:
     // `chef_authn` hashes it and rejects a mismatched `X-Ops-Content-Hash`.
-    let validated_path = validate_signed_path(&path);
-    let canonical_path = validated_path.as_deref().unwrap_or(path.as_str());
+    //
+    // Routing may have rewritten `path` (default-org prefix or a trailing
+    // slash), but the canonical request always uses the URI the client signed.
+    let validated_path = validate_signed_path(&signed_path);
+    let canonical_path = validated_path.as_deref().unwrap_or(signed_path.as_str());
     let org = match organization_name_from_path(&path) {
         Some(name) => Some(
             state
