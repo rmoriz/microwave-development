@@ -103,6 +103,14 @@ async fn create_rejects_invalid_environment_bodies() {
             "Invalid key 'the cookbook' for cookbook_versions",
         ),
         (
+            r#"{"name":"prod","cookbook_versions":{"apache":">= 1.2.9223372036854775849"}}"#,
+            "Invalid value '>= 1.2.9223372036854775849' for cookbook_versions",
+        ),
+        (
+            r#"{"name":"prod","cookbook_versions":{"apache":"= 1.1"}}"#,
+            "Invalid value '= 1.1' for cookbook_versions",
+        ),
+        (
             r#"["not","an","object"]"#,
             "Incorrect JSON type for request body",
         ),

@@ -573,10 +573,12 @@ fn valid_constraint(value: &str) -> bool {
         .or_else(|| value.strip_prefix("> "))
         .unwrap_or(value);
     let parts: Vec<&str> = version.split('.').collect();
-    (2..=3).contains(&parts.len())
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part.chars().all(|c| c.is_ascii_digit())
+                && part.parse::<i64>().is_ok()
+        })
 }
 
 fn json_value_text(value: &Value) -> String {
