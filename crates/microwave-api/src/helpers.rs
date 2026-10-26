@@ -10,25 +10,53 @@ pub fn organization(auth: &AuthContext) -> Result<&Org, ApiError> {
 }
 
 pub fn base_url(headers: &HeaderMap, state: &AppState) -> String {
-    let host = headers
-        .get("x-forwarded-host")
-        .or_else(|| headers.get("host"))
-        .and_then(|value| value.to_str().ok())
+    // Forwarded headers are single-valued at this point: the HTTP edge
+    // normalizes trusted proxies and removes them from untrusted peers. Still
+    // take the first list member so direct helper callers never produce a
+    // malformed URL from a comma-separated proxy chain.
+    let host = first_forwarded(headers, "x-forwarded-host")
+        .and_then(valid_host)
+        .or_else(|| {
+            headers
+                .get("host")
+                .and_then(|value| value.to_str().ok())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
         .unwrap_or(state.config.server.bind.as_str());
     // A reverse proxy that terminates TLS advertises the original scheme.
     // Without that header, follow the listener's own configuration so URLs
     // returned by the native TLS listener are https.
-    let proto = headers
-        .get("x-forwarded-proto")
-        .and_then(|value| value.to_str().ok())
+    let proto = first_forwarded(headers, "x-forwarded-proto")
+        .filter(|value| value.eq_ignore_ascii_case("http") || value.eq_ignore_ascii_case("https"))
+        .map(str::to_ascii_lowercase)
         .unwrap_or_else(|| {
             if state.config.server.tls.is_enabled() {
-                "https"
+                "https".to_string()
             } else {
-                "http"
+                "http".to_string()
             }
         });
     format!("{proto}://{host}")
+}
+
+fn first_forwarded<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get(name)?
+        .to_str()
+        .ok()?
+        .split(',')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn valid_host(value: &str) -> Option<&str> {
+    if value.bytes().any(|byte| !(0x21..=0x7e).contains(&byte)) {
+        return None;
+    }
+    let authority: axum::http::uri::Authority = value.parse().ok()?;
+    (!authority.as_str().contains('@')).then_some(value)
 }
 
 /// Build the `Location` header for a 201 response.

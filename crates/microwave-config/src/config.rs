@@ -112,7 +112,8 @@ impl Config {
     /// - `MW_SERVER__BIND`, `MW_SERVER__TLS__ENABLED`,
     ///   `MW_SERVER__TLS__CERT_PATH`, `MW_SERVER__TLS__KEY_PATH`,
     ///   `MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS`,
-    ///   `MW_SERVER__DEFAULT_ORGNAME`
+    ///   `MW_SERVER__DEFAULT_ORGNAME`, `MW_SERVER__TRUSTED_PROXIES`
+    ///   (comma-separated IPs/CIDRs)
     /// - `MW_PATHS__DATA_DIR`
     /// - `MW_DATABASE__DRIVER`, `MW_DATABASE__URL`
     /// - `MW_STORAGE__COMPRESSION`
@@ -145,6 +146,14 @@ impl Config {
         }
         if let Ok(value) = std::env::var("MW_SERVER__WORKER_THREADS") {
             self.server.worker_threads = parse_value("MW_SERVER__WORKER_THREADS", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_SERVER__TRUSTED_PROXIES") {
+            self.server.trusted_proxies = value
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(ToString::to_string)
+                .collect();
         }
         if let Ok(value) = std::env::var("MW_SERVER__TLS__ENABLED") {
             self.server.tls.enabled = Some(parse_bool("MW_SERVER__TLS__ENABLED", &value)?);
@@ -401,6 +410,13 @@ pub struct ServerConfig {
     /// (lowercase letters, digits, `_` or `-`, starting with a letter or digit,
     /// at most 255 bytes); empty and whitespace-only values are rejected.
     pub default_orgname: Option<String>,
+    /// Direct peers whose `X-Forwarded-Host` and `X-Forwarded-Proto` headers
+    /// may override `Host` and the listener scheme. Entries are IP addresses
+    /// (`127.0.0.1`, `::1`) or CIDR ranges (`10.0.0.0/8`, `fd00::/8`).
+    /// Empty by default: forwarded headers are ignored, so only deploy with
+    /// this populated when the listener is reachable solely through those
+    /// proxies.
+    pub trusted_proxies: Vec<String>,
     pub tls: TlsConfig,
 }
 
@@ -410,6 +426,7 @@ impl Default for ServerConfig {
             bind: "0.0.0.0:8000".into(),
             worker_threads: 0,
             default_orgname: None,
+            trusted_proxies: Vec::new(),
             tls: TlsConfig::default(),
         }
     }

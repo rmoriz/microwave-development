@@ -1,8 +1,21 @@
 use crate::error::ApiError;
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::body::{Body, HttpBody};
+use axum::extract::connect_info::ConnectInfo;
+use axum::http::header::{
+    ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE,
+    VARY,
+};
+use axum::http::uri::Authority;
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
+use flate2::write::{GzEncoder, ZlibEncoder};
+use flate2::Compression;
 use microwave_store::ActorType;
 use serde_json::json;
+use std::io::Write;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Instant;
+use uuid::Uuid;
 
 pub const MIN_API_VERSION: u8 = 0;
 pub const MAX_API_VERSION: u8 = 2;
@@ -14,6 +27,396 @@ pub const MIN_CHEF_VERSION: u32 = 10;
 /// than this are rejected with `413` before any JSON parsing happens.
 pub const MAX_REQUEST_SIZE: usize = 2_000_000;
 pub const MAX_REQUEST_BODY: usize = MAX_REQUEST_SIZE;
+
+/// Request-scoped identifier propagated to handlers and echoed on the response.
+#[derive(Clone, Debug)]
+pub struct RequestId(pub String);
+
+/// Marker that prevents the request-scoped middleware from logging twice when
+/// [`authenticate`] re-enters [`crate::router`] to rewrite a path.
+#[derive(Clone, Copy, Debug)]
+pub struct RequestContextApplied;
+
+/// Access log and request-id middleware.
+///
+/// The id is preserved when the client supplies a valid token and generated
+/// otherwise. Forwarded headers are normalized here, before handlers build
+/// absolute URLs, and are dropped entirely unless the direct peer is listed in
+/// `server.trusted_proxies`.
+pub async fn observe_request(
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if request
+        .extensions()
+        .get::<RequestContextApplied>()
+        .is_some()
+    {
+        return next.run(request).await;
+    }
+
+    let request_id = request_id(&request);
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        request.headers_mut().insert("x-request-id", value.clone());
+    }
+    request
+        .extensions_mut()
+        .insert(RequestId(request_id.clone()));
+    request.extensions_mut().insert(RequestContextApplied);
+    sanitize_forwarded_headers(&mut request, &state);
+
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let started = Instant::now();
+    let mut response = next.run(request).await;
+    let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert("x-request-id", value);
+    }
+    tracing::info!(
+        method = %method,
+        path = %path,
+        status = response.status().as_u16(),
+        latency_ms,
+        request_id = %request_id,
+        "http request"
+    );
+    response
+}
+
+fn request_id(request: &axum::extract::Request) -> String {
+    request
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| valid_request_id(value))
+        .map(ToString::to_string)
+        .unwrap_or_else(|| Uuid::new_v4().to_string())
+}
+
+/// Visible ASCII without whitespace, bounded to keep logs and response headers
+/// small. Generated UUIDs and common proxy ids both satisfy this.
+fn valid_request_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 200
+        && value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+}
+
+fn sanitize_forwarded_headers(request: &mut axum::extract::Request, state: &crate::AppState) {
+    if !peer_is_trusted(request, &state.config.server.trusted_proxies) {
+        request.headers_mut().remove("x-forwarded-host");
+        request.headers_mut().remove("x-forwarded-proto");
+        return;
+    }
+
+    let forwarded_host = first_header_value(request.headers(), "x-forwarded-host")
+        .and_then(valid_forwarded_host)
+        .map(ToString::to_string);
+    match forwarded_host {
+        Some(host) => {
+            if let Ok(value) = HeaderValue::from_str(&host) {
+                request.headers_mut().insert("x-forwarded-host", value);
+            }
+        }
+        None => {
+            request.headers_mut().remove("x-forwarded-host");
+        }
+    }
+
+    let forwarded_proto = first_header_value(request.headers(), "x-forwarded-proto")
+        .filter(|value| value.eq_ignore_ascii_case("http") || value.eq_ignore_ascii_case("https"))
+        .map(str::to_ascii_lowercase);
+    match forwarded_proto {
+        Some(proto) => {
+            if let Ok(value) = HeaderValue::from_str(&proto) {
+                request.headers_mut().insert("x-forwarded-proto", value);
+            }
+        }
+        None => {
+            request.headers_mut().remove("x-forwarded-proto");
+        }
+    }
+}
+
+/// Return the first comma-separated list member, trimmed and non-empty.
+pub(crate) fn first_header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get(name)?
+        .to_str()
+        .ok()?
+        .split(',')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn valid_forwarded_host(value: &str) -> Option<&str> {
+    if value.bytes().any(|byte| !(0x21..=0x7e).contains(&byte)) {
+        return None;
+    }
+    let authority: Authority = value.parse().ok()?;
+    // A proxy must not be able to inject userinfo into generated URLs.
+    (!authority.as_str().contains('@')).then_some(value)
+}
+
+fn peer_is_trusted(request: &axum::extract::Request, trusted: &[String]) -> bool {
+    if trusted.is_empty() {
+        return false;
+    }
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|connect_info| connect_info.0)
+        .or_else(|| request.extensions().get::<SocketAddr>().copied());
+    let Some(peer) = peer else {
+        return false;
+    };
+    trusted
+        .iter()
+        .map(|entry| entry.trim())
+        .filter(|entry| !entry.is_empty())
+        .any(|entry| proxy_matches(peer, entry))
+}
+
+fn proxy_matches(peer: SocketAddr, entry: &str) -> bool {
+    if let Ok(address) = entry.parse::<SocketAddr>() {
+        return address == peer;
+    }
+    if let Ok(address) = entry.parse::<IpAddr>() {
+        return address == peer.ip();
+    }
+    let Some((network, prefix)) = entry.split_once('/') else {
+        return false;
+    };
+    let (Ok(network), Ok(prefix)) = (
+        network.trim().parse::<IpAddr>(),
+        prefix.trim().parse::<u8>(),
+    ) else {
+        return false;
+    };
+    match (network, peer.ip()) {
+        (IpAddr::V4(network), IpAddr::V4(peer)) => ipv4_matches(network, peer, prefix),
+        (IpAddr::V6(network), IpAddr::V6(peer)) => ipv6_matches(network, peer, prefix),
+        _ => false,
+    }
+}
+
+fn ipv4_matches(network: Ipv4Addr, peer: Ipv4Addr, prefix: u8) -> bool {
+    if prefix > 32 {
+        return false;
+    }
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - u32::from(prefix))
+    };
+    (u32::from(network) & mask) == (u32::from(peer) & mask)
+}
+
+fn ipv6_matches(network: Ipv6Addr, peer: Ipv6Addr, prefix: u8) -> bool {
+    if prefix > 128 {
+        return false;
+    }
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u128::MAX << (128 - u32::from(prefix))
+    };
+    (u128::from(network) & mask) == (u128::from(peer) & mask)
+}
+
+/// Compress JSON/text responses when the client accepts gzip or deflate.
+///
+/// Already-encoded, partial, and streaming bodies are left untouched. Bodies
+/// below [`MIN_COMPRESS_SIZE`] are not worth the framing overhead.
+pub async fn compress_response(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let method = request.method().clone();
+    let accept_encoding = request
+        .headers()
+        .get(ACCEPT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .map(ToString::to_string);
+    let response = next.run(request).await;
+    compress(response, &method, accept_encoding.as_deref()).await
+}
+
+pub const MIN_COMPRESS_SIZE: usize = 32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResponseEncoding {
+    Gzip,
+    Deflate,
+}
+
+async fn compress(
+    mut response: Response,
+    method: &Method,
+    accept_encoding: Option<&str>,
+) -> Response {
+    if !compression_candidate(method, &response) {
+        return response;
+    }
+    append_vary(response.headers_mut());
+    let Some(encoding) = accept_encoding.and_then(preferred_encoding) else {
+        return response;
+    };
+    let Some(length) = response.body().size_hint().exact() else {
+        // Streaming bodies have no known end; buffering them would defeat the
+        // point of streaming and could exhaust memory.
+        return response;
+    };
+    if length < MIN_COMPRESS_SIZE as u64 {
+        return response;
+    }
+
+    let (mut parts, body) = response.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, length as usize).await else {
+        return ApiError::internal().into_response();
+    };
+    let Ok(encoded) = tokio::task::spawn_blocking(move || encode_body(&bytes, encoding)).await
+    else {
+        return ApiError::internal().into_response();
+    };
+    let Ok(encoded) = encoded else {
+        return ApiError::internal().into_response();
+    };
+
+    parts.headers.remove(CONTENT_LENGTH);
+    parts.headers.insert(
+        CONTENT_ENCODING,
+        HeaderValue::from_static(match encoding {
+            ResponseEncoding::Gzip => "gzip",
+            ResponseEncoding::Deflate => "deflate",
+        }),
+    );
+    Response::from_parts(parts, Body::from(encoded))
+}
+
+fn compression_candidate(method: &Method, response: &Response) -> bool {
+    if method == Method::HEAD
+        || response.status().is_informational()
+        || matches!(
+            response.status(),
+            StatusCode::NO_CONTENT | StatusCode::NOT_MODIFIED | StatusCode::PARTIAL_CONTENT
+        )
+    {
+        return false;
+    }
+    let headers = response.headers();
+    if headers.contains_key(CONTENT_ENCODING) || headers.contains_key(CONTENT_RANGE) {
+        return false;
+    }
+    if headers
+        .get(CACHE_CONTROL)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("no-transform"))
+    {
+        return false;
+    }
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(is_compressible_content_type)
+}
+
+fn is_compressible_content_type(value: &str) -> bool {
+    let essence = value
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    essence == "application/json"
+        || essence.ends_with("+json")
+        || essence == "application/xml"
+        || essence.ends_with("+xml")
+        || essence == "application/javascript"
+        || (essence.starts_with("text/") && essence != "text/event-stream")
+}
+
+fn append_vary(headers: &mut HeaderMap) {
+    let already_present = headers
+        .get(VARY)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|entry| entry.trim().eq_ignore_ascii_case("accept-encoding"))
+        });
+    if already_present {
+        return;
+    }
+    let value = match headers.get(VARY).and_then(|value| value.to_str().ok()) {
+        Some(existing) if !existing.trim().is_empty() => {
+            format!("{existing}, Accept-Encoding")
+        }
+        _ => "Accept-Encoding".to_string(),
+    };
+    if let Ok(value) = HeaderValue::from_str(&value) {
+        headers.insert(VARY, value);
+    }
+}
+
+fn preferred_encoding(value: &str) -> Option<ResponseEncoding> {
+    let mut gzip = None;
+    let mut deflate = None;
+    let mut wildcard = None;
+    for item in value.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let mut pieces = item.split(';');
+        let coding = pieces.next().unwrap_or_default().trim();
+        let quality = pieces
+            .find_map(|parameter| {
+                let (name, value) = parameter.trim().split_once('=')?;
+                name.trim()
+                    .eq_ignore_ascii_case("q")
+                    .then(|| value.trim().parse::<f32>().ok())
+                    .flatten()
+            })
+            .unwrap_or(1.0);
+        if !(0.0..=1.0).contains(&quality) {
+            continue;
+        }
+        match coding.to_ascii_lowercase().as_str() {
+            "gzip" | "x-gzip" => gzip = Some(quality),
+            "deflate" => deflate = Some(quality),
+            "*" => wildcard = Some(quality),
+            _ => {}
+        }
+    }
+    let gzip = gzip.or(wildcard).unwrap_or(0.0);
+    let deflate = deflate.or(wildcard).unwrap_or(0.0);
+    if gzip > 0.0 && gzip >= deflate {
+        Some(ResponseEncoding::Gzip)
+    } else if deflate > 0.0 {
+        Some(ResponseEncoding::Deflate)
+    } else {
+        None
+    }
+}
+
+fn encode_body(bytes: &[u8], encoding: ResponseEncoding) -> std::io::Result<Vec<u8>> {
+    match encoding {
+        ResponseEncoding::Gzip => {
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(bytes)?;
+            encoder.finish()
+        }
+        ResponseEncoding::Deflate => {
+            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(bytes)?;
+            encoder.finish()
+        }
+    }
+}
 
 pub async fn authenticate(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
@@ -934,7 +1337,128 @@ pub(crate) fn normalize_allow_header(response: &mut Response) {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_compliance_proxy_path, organization_name_from_path};
+    use super::{
+        compression_candidate, first_header_value, is_compliance_proxy_path,
+        is_compressible_content_type, organization_name_from_path, preferred_encoding,
+        proxy_matches, valid_request_id, ResponseEncoding,
+    };
+    use axum::body::Body;
+    use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+    use axum::response::Response;
+    use std::net::SocketAddr;
+
+    #[test]
+    fn request_ids_are_bounded_visible_ascii() {
+        assert!(valid_request_id("request-123"));
+        assert!(valid_request_id("a1b2c3d4-e5f6-7890-abcd-ef1234567890"));
+        assert!(!valid_request_id(""));
+        assert!(!valid_request_id("has space"));
+        assert!(!valid_request_id("tab\there"));
+        assert!(!valid_request_id(&"a".repeat(201)));
+    }
+
+    #[test]
+    fn forwarded_values_use_only_the_first_member() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-host",
+            HeaderValue::from_static(" first.example , second.example "),
+        );
+        assert_eq!(
+            first_header_value(&headers, "x-forwarded-host"),
+            Some("first.example")
+        );
+
+        headers.insert(
+            "x-forwarded-host",
+            HeaderValue::from_static(", second.example"),
+        );
+        assert_eq!(first_header_value(&headers, "x-forwarded-host"), None);
+    }
+
+    #[test]
+    fn proxy_matching_accepts_ips_cidrs_and_socket_addresses() {
+        let peer = SocketAddr::from(([10, 1, 2, 3], 9000));
+        assert!(proxy_matches(peer, "10.1.2.3"));
+        assert!(proxy_matches(peer, "10.0.0.0/8"));
+        assert!(proxy_matches(peer, "10.1.2.3:9000"));
+        assert!(!proxy_matches(peer, "10.2.0.0/16"));
+        assert!(!proxy_matches(peer, "not-an-address"));
+
+        let peer = SocketAddr::from(([0xfd00, 0, 0, 0, 0, 0, 0, 1], 9000));
+        assert!(proxy_matches(peer, "fd00::/8"));
+        assert!(proxy_matches(peer, "fd00::1"));
+        assert!(!proxy_matches(peer, "fe80::/10"));
+    }
+
+    #[test]
+    fn encoding_negotiation_prefers_gzip_and_respects_zero_quality() {
+        assert_eq!(preferred_encoding("gzip"), Some(ResponseEncoding::Gzip));
+        assert_eq!(
+            preferred_encoding("deflate"),
+            Some(ResponseEncoding::Deflate)
+        );
+        assert_eq!(
+            preferred_encoding("deflate, gzip;q=0.5"),
+            Some(ResponseEncoding::Deflate)
+        );
+        assert_eq!(
+            preferred_encoding("gzip;q=0.5, deflate;q=0.8"),
+            Some(ResponseEncoding::Deflate)
+        );
+        assert_eq!(
+            preferred_encoding("gzip;q=0, deflate;q=1"),
+            Some(ResponseEncoding::Deflate)
+        );
+        assert_eq!(preferred_encoding("gzip;q=0, br"), None);
+        assert_eq!(preferred_encoding("br"), None);
+        assert_eq!(preferred_encoding("*"), Some(ResponseEncoding::Gzip));
+        assert_eq!(preferred_encoding("identity"), None);
+    }
+
+    #[test]
+    fn only_json_and_text_content_types_are_candidates() {
+        assert!(is_compressible_content_type("application/json"));
+        assert!(is_compressible_content_type(
+            "application/json; charset=utf-8"
+        ));
+        assert!(is_compressible_content_type("application/vnd.api+json"));
+        assert!(is_compressible_content_type("text/plain"));
+        assert!(is_compressible_content_type("text/html; charset=utf-8"));
+        assert!(!is_compressible_content_type("application/octet-stream"));
+        assert!(!is_compressible_content_type("text/event-stream"));
+        assert!(!is_compressible_content_type("image/png"));
+    }
+
+    #[test]
+    fn already_encoded_partial_and_head_responses_are_skipped() {
+        let mut response = Response::new(Body::from("{}"));
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        assert!(compression_candidate(&Method::GET, &response));
+
+        response
+            .headers_mut()
+            .insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        assert!(!compression_candidate(&Method::GET, &response));
+
+        let mut response = Response::new(Body::from("{}"));
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        *response.status_mut() = StatusCode::PARTIAL_CONTENT;
+        assert!(!compression_candidate(&Method::GET, &response));
+
+        let mut response = Response::new(Body::from("{}"));
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        assert!(!compression_candidate(&Method::HEAD, &response));
+    }
 
     #[test]
     fn extracts_the_organization_from_standard_and_legacy_compliance_paths() {
