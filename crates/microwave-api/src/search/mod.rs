@@ -190,11 +190,11 @@ async fn execute_search(
 
     let request = BackendSearchRequest {
         org_id: org.id.clone(),
-        kind,
+        kind: kind.clone(),
         query,
         start,
         rows,
-        actor_authz_id: (!is_superuser(auth)).then(|| auth.principal.authz_id.clone()),
+        actor_authz_id: None,
     };
     let hits = state
         .search
@@ -202,10 +202,34 @@ async fn execute_search(
         .await
         .map_err(ApiError::from)?;
 
+    let mut ids = hits.ids;
+    if state.config.search.strict_result_acls && !is_superuser(auth) {
+        let entries = index::load_entries(state.store.as_ref(), &org.id, &kind).await?;
+        let authz_by_id: HashMap<&str, &str> = entries
+            .iter()
+            .map(|entry| (entry.id.as_str(), entry.authz_id.as_str()))
+            .collect();
+        let mut allowed = Vec::with_capacity(ids.len());
+        for id in ids {
+            let Some(authz_id) = authz_by_id.get(id.as_str()) else {
+                continue;
+            };
+            if state
+                .store
+                .check_permission(&auth.principal.authz_id, authz_id, Permission::Read)
+                .await
+                .map_err(ApiError::from)?
+            {
+                allowed.push(id);
+            }
+        }
+        ids = allowed;
+    }
+
     Ok(ExecutedSearch {
         total: hits.total,
         start,
-        ids: hits.ids,
+        ids,
     })
 }
 

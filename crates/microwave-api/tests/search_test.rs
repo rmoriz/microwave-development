@@ -421,7 +421,9 @@ async fn client_search_rows_include_upstream_fields_by_api_version() {
 
 #[tokio::test]
 async fn search_rows_are_filtered_by_object_read_acl() {
-    let state = support::state_with_pivotal();
+    let mut config = microwave_config::Config::default();
+    config.search.strict_result_acls = true;
+    let state = support::state_with_config(config);
     support::add_user(&state, "second", "second@example.com", false);
     let app = support::app(state.clone());
     create_org(&app).await;
@@ -491,7 +493,9 @@ async fn search_rows_are_filtered_by_object_read_acl() {
 
 #[tokio::test]
 async fn data_bag_search_rows_use_the_bag_read_acl() {
-    let state = support::state_with_pivotal();
+    let mut config = microwave_config::Config::default();
+    config.search.strict_result_acls = true;
+    let state = support::state_with_config(config);
     support::add_user(&state, "second", "second@example.com", false);
     let app = support::app(state.clone());
     create_org(&app).await;
@@ -533,7 +537,7 @@ async fn data_bag_search_rows_use_the_bag_read_acl() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(result["total"], 0);
+    assert_eq!(result["total"], 1, "total is the pre-filter upstream count");
     assert!(result["rows"].as_array().unwrap().is_empty());
 
     let (status, result) = request(

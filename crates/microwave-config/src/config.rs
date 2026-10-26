@@ -106,7 +106,8 @@ impl Config {
     /// - `MW_PATHS__DATA_DIR`
     /// - `MW_DATABASE__DRIVER`, `MW_DATABASE__URL`
     /// - `MW_STORAGE__COMPRESSION`
-    /// - `MW_SEARCH__BACKEND`, `MW_SEARCH__URL`, `MW_SEARCH__TIMEOUT_MS`
+    /// - `MW_SEARCH__BACKEND`, `MW_SEARCH__URL`, `MW_SEARCH__TIMEOUT_MS`,
+    ///   `MW_SEARCH__STRICT_RESULT_ACLS`
     /// - `MW_OBJECT_STORE__BACKEND`, `MW_OBJECT_STORE__BUCKET`, `MW_OBJECT_STORE__ENDPOINT`
     /// - `MW_OBJECT_STORE__REGION`, `MW_OBJECT_STORE__ACCESS_KEY`,
     ///   `MW_OBJECT_STORE__SECRET_KEY`, `MW_OBJECT_STORE__PATH_STYLE`
@@ -189,6 +190,9 @@ impl Config {
         }
         if let Ok(value) = std::env::var("MW_SEARCH__URL") {
             self.search.url = Some(value);
+        }
+        if let Ok(value) = std::env::var("MW_SEARCH__STRICT_RESULT_ACLS") {
+            self.search.strict_result_acls = parse_bool("MW_SEARCH__STRICT_RESULT_ACLS", &value)?;
         }
         if let Ok(value) = std::env::var("MW_SEARCH__TIMEOUT_MS") {
             self.search.timeout_ms = parse_value("MW_SEARCH__TIMEOUT_MS", value)?;
@@ -501,6 +505,9 @@ pub struct SearchConfig {
     /// requests from hanging forever when the cluster is unreachable or
     /// unresponsive. Must be greater than zero.
     pub timeout_ms: u64,
+    /// Hide search rows the caller cannot READ through object ACLs. Upstream
+    /// calls this `strict_search_result_acls`; off by default for compatibility.
+    pub strict_result_acls: bool,
 }
 
 impl Default for SearchConfig {
@@ -509,6 +516,7 @@ impl Default for SearchConfig {
             backend: SearchBackend::Embedded,
             url: None,
             timeout_ms: 30_000,
+            strict_result_acls: false,
         }
     }
 }
