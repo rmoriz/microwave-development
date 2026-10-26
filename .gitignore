@@ -7,3 +7,6 @@
 *.swp
 *.swo
 *~
+
+# Superpowers SDD workspaces (scratch)
+/.superpowers/
