@@ -1,3 +1,4 @@
+use crate::chef_json::ChefJson;
 use crate::helpers::{base_url, is_superuser, organization, require_permission};
 use crate::{ApiError, AppState, AuthContext};
 use axum::extract::{Path, State};
@@ -65,7 +66,7 @@ async fn create_user_key(
     Extension(auth): Extension<AuthContext>,
     Path(username): Path<String>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    ChefJson(body): ChefJson<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let target = user_target(&state, &headers, &username).await?;
     authorize(&state, &auth, &target, Permission::Update).await?;
@@ -88,7 +89,7 @@ async fn update_user_key(
     Extension(auth): Extension<AuthContext>,
     Path((username, key_name)): Path<(String, String)>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    ChefJson(body): ChefJson<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let target = user_target(&state, &headers, &username).await?;
     authorize(&state, &auth, &target, Permission::Update).await?;
@@ -122,7 +123,7 @@ async fn create_client_key(
     Extension(auth): Extension<AuthContext>,
     Path((_organization, client_name)): Path<(String, String)>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    ChefJson(body): ChefJson<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let target = client_target(&state, &auth, &headers, &client_name).await?;
     authorize(&state, &auth, &target, Permission::Update).await?;
@@ -145,7 +146,7 @@ async fn update_client_key(
     Extension(auth): Extension<AuthContext>,
     Path((_organization, client_name, key_name)): Path<(String, String, String)>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    ChefJson(body): ChefJson<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let target = client_target(&state, &auth, &headers, &client_name).await?;
     authorize(&state, &auth, &target, Permission::Update).await?;

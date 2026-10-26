@@ -1,3 +1,4 @@
+use crate::chef_json::ChefJson;
 use crate::helpers::{is_superuser, organization, require_permission};
 use crate::{ApiError, AppState, AuthContext};
 use axum::extract::{Path, Query, State};
@@ -78,7 +79,7 @@ async fn put_user_acl(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((username, permission)): Path<(String, String)>,
-    Json(body): Json<Value>,
+    ChefJson(body): ChefJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let permission = parse_permission(&permission)?;
     let user = state
@@ -119,7 +120,7 @@ async fn put_organization_acl(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, permission)): Path<(String, String)>,
-    Json(body): Json<Value>,
+    ChefJson(body): ChefJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let permission = parse_permission(&permission)?;
     let org = organization(&auth)?;
@@ -161,7 +162,7 @@ async fn put_cookbook_artifact_acl(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, name, permission)): Path<(String, String, String)>,
-    Json(body): Json<Value>,
+    ChefJson(body): ChefJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     put_object_acl_inner(
         &state,
@@ -200,7 +201,7 @@ async fn put_object_acl(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, object_type, name, permission)): Path<(String, String, String, String)>,
-    Json(body): Json<Value>,
+    ChefJson(body): ChefJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     put_object_acl_inner(&state, &auth, &object_type, &name, &permission, body).await
 }
@@ -209,7 +210,7 @@ async fn put_cookbook_acl(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, name, permission)): Path<(String, String, String)>,
-    Json(body): Json<Value>,
+    ChefJson(body): ChefJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     put_object_acl_inner(&state, &auth, "cookbooks", &name, &permission, body).await
 }
@@ -218,7 +219,7 @@ async fn put_data_acl(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, name, permission)): Path<(String, String, String)>,
-    Json(body): Json<Value>,
+    ChefJson(body): ChefJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     put_object_acl_inner(&state, &auth, "data", &name, &permission, body).await
 }

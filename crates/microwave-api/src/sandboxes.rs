@@ -1,5 +1,8 @@
 use crate::bookshelf::{checksum_map, checksums_from_body};
-use crate::helpers::{base_url, container_authz, organization, require_permission};
+use crate::chef_json::ChefJson;
+use crate::helpers::{
+    base_url, container_authz, location_headers, organization, require_permission,
+};
 use crate::{ApiError, AppState, AuthContext};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -24,8 +27,8 @@ async fn create_sandbox(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    ChefJson(body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let container = container_authz(&state, org, "sandboxes").await?;
     require_permission(&state, &auth, &container, Permission::Create).await?;
@@ -37,10 +40,12 @@ async fn create_sandbox(
         .await
         .map_err(ApiError::from)?;
     let base = base_url(&headers, &state);
+    let uri = format!("{base}/organizations/{}/sandboxes/{sandbox_id}", org.name);
     Ok((
         StatusCode::CREATED,
+        location_headers(&uri)?,
         Json(json!({
-            "uri": format!("{base}/organizations/{}/sandboxes/{sandbox_id}", org.name),
+            "uri": uri,
             "sandbox_id": sandbox_id,
             "checksums": checksum_map(checks, &state, &org.id)
         })),
@@ -51,7 +56,7 @@ async fn commit_sandbox(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, sandbox_id)): Path<(String, String)>,
-    Json(body): Json<Value>,
+    ChefJson(body): ChefJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
     let container = container_authz(&state, org, "sandboxes").await?;

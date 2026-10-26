@@ -280,6 +280,118 @@ async fn creates_a_container_with_location() {
 }
 
 #[tokio::test]
+async fn creates_a_sandbox_with_location() {
+    let state = support::state_with_pivotal();
+    support::add_org(&state, "acme").await;
+    let app = support::app(state);
+
+    let (status, headers, body) = send(
+        &app,
+        "POST",
+        "/organizations/acme/sandboxes",
+        br#"{"checksums":{"5d41402abc4b2a76b9719d911017c592":null}}"#,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    let expected = format!(
+        "http://0.0.0.0:8000/organizations/acme/sandboxes/{}",
+        body["sandbox_id"].as_str().unwrap()
+    );
+    assert_eq!(location(&headers), Some(expected.as_str()));
+    assert_eq!(body["uri"], expected);
+}
+
+#[tokio::test]
+async fn creates_a_cookbook_version_with_location() {
+    let state = support::state_with_pivotal();
+    support::add_org(&state, "acme").await;
+    let app = support::app(state);
+
+    let (status, headers, body) = send(
+        &app,
+        "PUT",
+        "/organizations/acme/cookbooks/apache/1.0.0",
+        br#"{"name":"apache-1.0.0","cookbook_name":"apache","version":"1.0.0","json_class":"Chef::CookbookVersion","chef_type":"cookbook_version","frozen?":false,"metadata":{"version":"1.0.0"},"all_files":[]}"#,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    assert_eq!(
+        location(&headers),
+        Some("http://0.0.0.0:8000/organizations/acme/cookbooks/apache/1.0.0")
+    );
+}
+
+#[tokio::test]
+async fn creates_a_cookbook_artifact_with_location() {
+    let state = support::state_with_pivotal();
+    support::add_org(&state, "acme").await;
+    let app = support::app(state);
+
+    let (status, headers, body) = send(
+        &app,
+        "PUT",
+        "/organizations/acme/cookbook_artifacts/apache/abc123",
+        br#"{"name":"apache","identifier":"abc123"}"#,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    assert_eq!(
+        location(&headers),
+        Some("http://0.0.0.0:8000/organizations/acme/cookbook_artifacts/apache/abc123")
+    );
+}
+
+#[tokio::test]
+async fn renames_an_environment_and_a_role_with_location() {
+    let state = support::state_with_pivotal();
+    support::add_org(&state, "acme").await;
+    let app = support::app(state);
+
+    send(
+        &app,
+        "POST",
+        "/organizations/acme/environments",
+        br#"{"name":"production"}"#,
+    )
+    .await;
+    let (status, headers, body) = send(
+        &app,
+        "PUT",
+        "/organizations/acme/environments/production",
+        br#"{"name":"staging"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    assert_eq!(
+        location(&headers),
+        Some("http://0.0.0.0:8000/organizations/acme/environments/staging")
+    );
+
+    send(
+        &app,
+        "POST",
+        "/organizations/acme/roles",
+        br#"{"name":"web"}"#,
+    )
+    .await;
+    let (status, headers, body) = send(
+        &app,
+        "PUT",
+        "/organizations/acme/roles/web",
+        br#"{"name":"web2"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    assert_eq!(
+        location(&headers),
+        Some("http://0.0.0.0:8000/organizations/acme/roles/web2")
+    );
+}
+
+#[tokio::test]
 async fn creates_memberships_and_invitations_with_location() {
     let state = support::state_with_pivotal();
     support::add_org(&state, "acme").await;

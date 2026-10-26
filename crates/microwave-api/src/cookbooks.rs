@@ -1,4 +1,7 @@
-use crate::helpers::{base_url, container_authz, organization, require_permission};
+use crate::chef_json::ChefJson;
+use crate::helpers::{
+    base_url, container_authz, location_headers, organization, require_permission,
+};
 use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -152,8 +155,9 @@ async fn put_cookbook_version(
     Extension(ApiVersion(api_version)): Extension<ApiVersion>,
     Path((_organization, name, version)): Path<(String, String, String)>,
     Query(query): Query<HashMap<String, String>>,
-    Json(manifest): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    headers: HeaderMap,
+    ChefJson(manifest): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     validate_cookbook_name(&name)?;
     validate_version(&version)?;
@@ -199,7 +203,7 @@ async fn put_cookbook_version(
             .await
             .map_err(ApiError::from)?;
         delete_blobs(&state, &org.id, &removed);
-        Ok((StatusCode::OK, Json(response)))
+        Ok((StatusCode::OK, HeaderMap::new(), Json(response)))
     } else {
         let container = container_authz(&state, org, "cookbooks").await?;
         require_permission(&state, &auth, &container, Permission::Create).await?;
@@ -225,7 +229,15 @@ async fn put_cookbook_version(
             .await
             .map_err(ApiError::from)?;
 
-        Ok((StatusCode::CREATED, Json(normalized.response)))
+        Ok((
+            StatusCode::CREATED,
+            location_headers(&format!(
+                "{}/organizations/{}/cookbooks/{name}/{version}",
+                base_url(&headers, &state),
+                org.name
+            ))?,
+            Json(normalized.response),
+        ))
     }
 }
 

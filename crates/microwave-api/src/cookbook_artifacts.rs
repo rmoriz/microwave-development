@@ -1,5 +1,8 @@
+use crate::chef_json::ChefJson;
 use crate::cookbooks::{delete_blobs, manifest_checksums, render_manifest};
-use crate::helpers::{base_url, container_authz, organization, require_permission};
+use crate::helpers::{
+    base_url, container_authz, location_headers, organization, require_permission,
+};
 use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -98,8 +101,9 @@ async fn put_artifact_version(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, name, identifier)): Path<(String, String, String)>,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    headers: HeaderMap,
+    ChefJson(body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let body = normalize_artifact(&body, &name, &identifier)?;
 
@@ -112,6 +116,7 @@ async fn put_artifact_version(
         require_permission(&state, &auth, &existing.authz_id, Permission::Update).await?;
         return Ok((
             StatusCode::CONFLICT,
+            HeaderMap::new(),
             Json(json!({ "error": "Cookbook artifact already exists" })),
         ));
     }
@@ -146,7 +151,15 @@ async fn put_artifact_version(
         .await
         .map_err(ApiError::from)?;
 
-    Ok((StatusCode::CREATED, Json(body)))
+    Ok((
+        StatusCode::CREATED,
+        location_headers(&format!(
+            "{}/organizations/{}/cookbook_artifacts/{name}/{identifier}",
+            base_url(&headers, &state),
+            org.name
+        ))?,
+        Json(body),
+    ))
 }
 
 async fn delete_artifact_version(
