@@ -1,15 +1,24 @@
 mod support;
 
+use axum::extract::connect_info::ConnectInfo;
 use axum::http::{header::HeaderName, HeaderValue, StatusCode};
 use microwave_config::Config;
 use microwave_crypto::SignVersion;
 use serde_json::{json, Value};
+use std::net::SocketAddr;
 use tower::ServiceExt;
 
 fn tls_config() -> Config {
     let mut config = Config::default();
     config.server.tls.cert_path = Some("/tmp/tls.crt".into());
     config.server.tls.key_path = Some("/tmp/tls.key".into());
+    config
+}
+
+/// Forwarded headers are only honored from a configured direct peer.
+fn trusted_tls_config() -> Config {
+    let mut config = tls_config();
+    config.server.trusted_proxies = vec!["127.0.0.1".into()];
     config
 }
 
@@ -24,6 +33,9 @@ async fn send(
     headers: &[(&str, &str)],
 ) -> (StatusCode, Value) {
     let mut request = support::signed_request(method, path, body, SignVersion::V1_3, "pivotal");
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))));
     if let Some(authority) = authority {
         *request.uri_mut() = format!("https://{authority}{path}").parse().unwrap();
     }
@@ -77,7 +89,7 @@ async fn native_tls_uses_the_request_authority() {
 
 #[tokio::test]
 async fn x_forwarded_host_wins_over_the_request_authority() {
-    let state = support::state_with_config(tls_config());
+    let state = support::state_with_config(trusted_tls_config());
     support::add_user(&state, "alice", "alice@example.com", false);
     let app = support::app(state);
 
@@ -99,7 +111,7 @@ async fn x_forwarded_host_wins_over_the_request_authority() {
 
 #[tokio::test]
 async fn forwarded_proto_still_wins_over_native_tls() {
-    let state = support::state_with_config(tls_config());
+    let state = support::state_with_config(trusted_tls_config());
     support::add_user(&state, "alice", "alice@example.com", false);
     let app = support::app(state);
 

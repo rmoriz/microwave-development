@@ -10,6 +10,7 @@ async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
 chrono.workspace = true
+flate2.workspace = true
 microwave-authz = { path = "../microwave-authz" }
 microwave-config = { path = "../microwave-config" }
 microwave-crypto = { path = "../microwave-crypto" }
@@ -37,4 +38,5 @@ microwave-store-postgres = { path = "../microwave-store-postgres" }
 tempfile.workspace = true
 tokio.workspace = true
 tower.workspace = true
+tracing-subscriber.workspace = true
 uuid.workspace = true

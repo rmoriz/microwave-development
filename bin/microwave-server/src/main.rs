@@ -181,16 +181,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                     axum_server::from_tcp_rustls(listener, rustls_config)?
                         .handle(handle)
-                        .serve(router(state).into_make_service())
+                        .serve(
+                            router(state)
+                                .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                        )
                         .await?;
                 }
                 None => {
                     let shutdown = shutdown.clone();
-                    axum::serve(listener, router(state))
-                        .with_graceful_shutdown(async move {
-                            shutdown.notified().await;
-                        })
-                        .await?;
+                    axum::serve(
+                        listener,
+                        router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                    )
+                    .with_graceful_shutdown(async move {
+                        shutdown.notified().await;
+                    })
+                    .await?;
                 }
             }
         }
