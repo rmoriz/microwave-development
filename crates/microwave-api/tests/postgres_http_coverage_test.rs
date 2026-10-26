@@ -1210,9 +1210,16 @@ async fn membership_invitation_and_org_read_flow_works_against_postgresql() {
         "pivotal",
     )
     .await;
-    let invitation_id = invitation["id"].as_str().unwrap().to_string();
-    assert_eq!(invitation["org"], org);
-    assert_eq!(invitation["user"], bob);
+    let invitation_id = invitation["uri"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+    assert_eq!(invitation["organization"]["name"], org);
+    assert_eq!(invitation["organization_user"]["username"], "pivotal");
+    assert_eq!(invitation["user"]["email"], format!("{bob}@example.com"));
 
     let invitations = ok(
         &pg,
@@ -1222,8 +1229,10 @@ async fn membership_invitation_and_org_read_flow_works_against_postgresql() {
         "pivotal",
     )
     .await;
-    assert_eq!(invitations.as_array().unwrap().len(), 1);
-    assert_eq!(invitations[0]["id"], invitation_id);
+    assert_eq!(
+        invitations,
+        json!([{ "id": invitation_id, "username": bob }])
+    );
 
     let user_invitations = ok(
         &pg,
@@ -1233,7 +1242,10 @@ async fn membership_invitation_and_org_read_flow_works_against_postgresql() {
         &bob,
     )
     .await;
-    assert_eq!(user_invitations.as_array().unwrap().len(), 1);
+    assert_eq!(
+        user_invitations,
+        json!([{ "id": invitation_id, "orgname": org }])
+    );
     let count = ok(
         &pg,
         "GET",
@@ -1253,7 +1265,12 @@ async fn membership_invitation_and_org_read_flow_works_against_postgresql() {
     )
     .await;
     assert_eq!(accepted["id"], invitation_id);
-    assert_eq!(accepted["org"], org);
+    assert_eq!(accepted["orgname"], org);
+    assert_eq!(accepted["username"], bob);
+    assert_eq!(
+        accepted["organization"],
+        json!({ "deprecated": true, "name": org })
+    );
 
     let count = ok(
         &pg,
@@ -1274,12 +1291,12 @@ async fn membership_invitation_and_org_read_flow_works_against_postgresql() {
     )
     .await;
     assert_eq!(
-        users.get(&bob),
-        Some(&json!(format!(
-            "http://0.0.0.0:8000/organizations/{org}/users/{bob}"
-        )))
+        users,
+        json!([
+            { "user": { "username": bob } },
+            { "user": { "username": "pivotal" } }
+        ])
     );
-    assert!(users["pivotal"].is_string());
 
     // New members get read access to the organization and its user list.
     let detail = ok(
@@ -1291,6 +1308,7 @@ async fn membership_invitation_and_org_read_flow_works_against_postgresql() {
     )
     .await;
     assert_eq!(detail["username"], bob);
+    let org_id = pg.store_org_id(&org).await;
     let organizations = ok(
         &pg,
         "GET",
@@ -1300,12 +1318,17 @@ async fn membership_invitation_and_org_read_flow_works_against_postgresql() {
     )
     .await;
     assert_eq!(
-        organizations[&org],
-        format!("http://0.0.0.0:8000/organizations/{org}")
+        organizations,
+        json!([{
+            "organization": {
+                "name": org,
+                "full_name": "PG HTTP Coverage",
+                "guid": org_id,
+            }
+        }])
     );
 
     // Membership and default group assignment are visible in PostgreSQL.
-    let org_id = pg.store_org_id(&org).await;
     let bob_row = pg.store.find_user(&bob).await.unwrap().expect("bob exists");
     assert!(pg.store.is_user_in_org(&org_id, &bob_row.id).await.unwrap());
     let users_group = pg
@@ -1329,7 +1352,7 @@ async fn membership_invitation_and_org_read_flow_works_against_postgresql() {
         "pivotal",
     )
     .await;
-    assert_eq!(removed, json!({}));
+    assert_eq!(removed["username"], bob);
     let organizations = ok(
         &pg,
         "GET",
@@ -1338,7 +1361,7 @@ async fn membership_invitation_and_org_read_flow_works_against_postgresql() {
         &bob,
     )
     .await;
-    assert_eq!(organizations, json!({}));
+    assert_eq!(organizations, json!([]));
 }
 
 impl PgApp {
