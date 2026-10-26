@@ -103,6 +103,14 @@ async fn create_rejects_invalid_environment_bodies() {
             "Invalid key 'the cookbook' for cookbook_versions",
         ),
         (
+            r#"{"name":"prod","cookbook_versions":{"apache":">= 1.2.9223372036854775849"}}"#,
+            "Invalid value '>= 1.2.9223372036854775849' for cookbook_versions",
+        ),
+        (
+            r#"{"name":"prod","cookbook_versions":{"apache":">= 1.0.0.0"}}"#,
+            "Invalid value '>= 1.0.0.0' for cookbook_versions",
+        ),
+        (
             r#"["not","an","object"]"#,
             "Incorrect JSON type for request body",
         ),
@@ -122,10 +130,9 @@ async fn create_rejects_invalid_environment_bodies() {
 }
 
 #[tokio::test]
-async fn put_uses_the_url_name_when_name_is_missing() {
+async fn put_without_a_name_is_rejected() {
     let app = support::app(support::state_with_pivotal());
     create_org(&app).await;
-
     let response = request(
         &app,
         "POST",
@@ -134,7 +141,6 @@ async fn put_uses_the_url_name_when_name_is_missing() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
-
     let response = request(
         &app,
         "PUT",
@@ -142,32 +148,11 @@ async fn put_uses_the_url_name_when_name_is_missing() {
         br#"{"description":"updated"}"#,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let updated = support::response_json(response).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(
-        updated,
-        json!({
-            "name": "production",
-            "description": "updated",
-            "json_class": "Chef::Environment",
-            "chef_type": "environment",
-            "cookbook_versions": {},
-            "default_attributes": {},
-            "override_attributes": {}
-        })
+        support::response_json(response).await,
+        json!({"error": ["Field 'name' missing"]})
     );
-
-    let fetched = support::response_json(
-        request(
-            &app,
-            "GET",
-            "/organizations/acme/environments/production",
-            b"",
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(fetched, updated);
 }
 
 #[tokio::test]
@@ -184,7 +169,6 @@ async fn put_renames_an_environment_and_keeps_its_identity() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
-
     let org = state.sqlite().find_org("acme").unwrap().unwrap();
     let before = state
         .sqlite()
@@ -218,21 +202,6 @@ async fn put_renames_an_environment_and_keeps_its_identity() {
         })
     );
 
-    let response = request(
-        &app,
-        "GET",
-        "/organizations/acme/environments/production",
-        b"",
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-
-    let fetched = support::response_json(
-        request(&app, "GET", "/organizations/acme/environments/staging", b"").await,
-    )
-    .await;
-    assert_eq!(fetched, renamed);
-
     let after = state
         .sqlite()
         .find_environment(&org.id, "staging")
@@ -240,57 +209,68 @@ async fn put_renames_an_environment_and_keeps_its_identity() {
         .unwrap();
     assert_eq!(after.id, before.id);
     assert_eq!(after.authz_id, before.authz_id);
+    assert!(state
+        .sqlite()
+        .find_environment(&org.id, "production")
+        .unwrap()
+        .is_none());
+    let fetched = support::response_json(
+        request(&app, "GET", "/organizations/acme/environments/staging", b"").await,
+    )
+    .await;
+    assert_eq!(fetched, renamed);
 }
 
 #[tokio::test]
-async fn put_rename_conflicts_leave_both_environments_untouched() {
+async fn put_requires_an_environment_name() {
     let state = support::state_with_pivotal();
-    let app = support::app(state.clone());
+    let app = support::app(state);
     create_org(&app).await;
-
-    for (name, description) in [("production", "prod"), ("staging", "stage")] {
-        let body = format!(r#"{{"name":"{name}","description":"{description}"}}"#);
-        let response = request(
-            &app,
-            "POST",
-            "/organizations/acme/environments",
-            body.as_bytes(),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::CREATED);
-    }
-
+    let response = request(
+        &app,
+        "POST",
+        "/organizations/acme/environments",
+        br#"{"name":"production"}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
     let response = request(
         &app,
         "PUT",
         "/organizations/acme/environments/production",
-        br#"{"name":"staging","description":"changed"}"#,
+        br#"{"description":"no name"}"#,
     )
     .await;
-    assert_error(response, StatusCode::CONFLICT, "Environment already exists").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        support::response_json(response).await,
+        json!({"error": ["Field 'name' missing"]})
+    );
+}
 
-    let org = state.sqlite().find_org("acme").unwrap().unwrap();
-    for (name, description) in [("production", "prod"), ("staging", "stage")] {
-        let stored = state
-            .sqlite()
-            .find_environment(&org.id, name)
-            .unwrap()
-            .unwrap();
-        assert_eq!(stored.name, name);
-        assert!(stored.serialized_object.contains(description));
-        let fetched = support::response_json(
-            request(
-                &app,
-                "GET",
-                &format!("/organizations/acme/environments/{name}"),
-                b"",
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(fetched["name"], name);
-        assert_eq!(fetched["description"], description);
-    }
+#[tokio::test]
+async fn put_with_a_missing_name_is_rejected_before_any_change() {
+    // Covered by put_requires_an_environment_name; kept as a named regression
+    // for the upstream Pedant case where the name key is deleted.
+    let state = support::state_with_pivotal();
+    let app = support::app(state);
+    create_org(&app).await;
+    let response = request(
+        &app,
+        "POST",
+        "/organizations/acme/environments",
+        br#"{"name":"production"}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let response = request(
+        &app,
+        "PUT",
+        "/organizations/acme/environments/production",
+        br#"{"description":"x"}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

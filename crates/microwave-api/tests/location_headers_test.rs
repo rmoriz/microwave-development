@@ -345,7 +345,7 @@ async fn creates_a_cookbook_artifact_with_location() {
 }
 
 #[tokio::test]
-async fn renames_an_environment_and_a_role_with_location() {
+async fn renames_an_environment_but_not_a_role_with_location() {
     let state = support::state_with_pivotal();
     support::add_org(&state, "acme").await;
     let app = support::app(state);
@@ -377,18 +377,15 @@ async fn renames_an_environment_and_a_role_with_location() {
         br#"{"name":"web"}"#,
     )
     .await;
-    let (status, headers, body) = send(
+    let (status, headers, _) = send(
         &app,
         "PUT",
         "/organizations/acme/roles/web",
         br#"{"name":"web2"}"#,
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "body: {body}");
-    assert_eq!(
-        location(&headers),
-        Some("http://0.0.0.0:8000/organizations/acme/roles/web2")
-    );
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(location(&headers), None);
 }
 
 #[tokio::test]

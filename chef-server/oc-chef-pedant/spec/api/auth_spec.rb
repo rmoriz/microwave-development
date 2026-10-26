@@ -108,7 +108,7 @@ describe "chef server authorization checks", :authorization do
           end
         end # context "with a user with all permissions EXCEPT create"
 
-        context "with a client", :pending do
+        context "with a client" do
           it "returns 403", :authorization do
             response = post(api_url("/#{resource_type}/"),
               client,
@@ -195,7 +195,7 @@ describe "chef server authorization checks", :authorization do
           end
         end # context "with a user with all permissions EXCEPT update"
 
-        context "with a client", :pending do
+        context "with a client" do
           it "returns 403", :authorization do
             response = put(api_url("/#{resource_type}/#{new_name}"),
               client,
@@ -258,7 +258,7 @@ describe "chef server authorization checks", :authorization do
           end
         end # context "with a user with all permissions EXCEPT delete"
 
-        context "with a client", :pending do
+        context "with a client" do
           it "returns 403", :authorization do
             response = delete(api_url("/#{resource_type}/#{new_name}"),
               client)
@@ -344,7 +344,7 @@ describe "chef server authorization checks", :authorization do
           end
         end # context "with a user with all permissions EXCEPT read"
 
-        context "with a client", :pending do
+        context "with a client" do
           let(:user) { client }
           include_context "successful GET list auth for #{resource_type}"
         end # context "with a client"
@@ -398,7 +398,7 @@ describe "chef server authorization checks", :authorization do
           end
         end # context "with a user with all permissions EXCEPT read"
 
-        context "with a client", :pending do
+        context "with a client" do
           let(:user) { client }
           include_context "successful GET auth for #{resource_type}"
         end # context "with a client"
@@ -417,6 +417,10 @@ describe "chef server authorization checks", :authorization do
 
   # Generic setup
   let(:organizations_url) { "#{server}/organizations" }
+  # The client-auth examples are marked pending, but RSpec still evaluates
+  # the requestor let. Use the configured validator client instead of raising
+  # a NameError in the pending examples.
+  let(:client) { platform.validator_client }
 
   context "for roles" do
     # Endpoint specific setup -- for roles

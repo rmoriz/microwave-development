@@ -41,12 +41,13 @@ fn signed_headers(
     version: SignVersion,
     user_id: &str,
 ) -> Vec<(String, String)> {
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let request = CanonicalRequest {
         method,
         path,
         body,
         user_id,
-        timestamp: "2026-10-24T12:00:00Z",
+        timestamp: &timestamp,
         api_version: Some("2"),
         version,
     };

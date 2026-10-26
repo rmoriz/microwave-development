@@ -819,8 +819,20 @@ async fn authenticate_signed(
     let authorization = authorization_lines(headers)?;
     let signature = microwave_crypto::decode_signature(&authorization)
         .map_err(|_| authentication_failure(&user_id))?;
-    let version =
-        microwave_crypto::parse_sign_header(&sign).map_err(|_| authentication_failure(&user_id))?;
+    let version = microwave_crypto::parse_sign_header(&sign)
+        .map_err(|_| ApiError::bad_request("Failed to authenticate"))?;
+
+    // Upstream rejects stale and future-signed requests with 401. Accept a
+    // configurable symmetric window around the server clock.
+    let signed_at = chrono::DateTime::parse_from_rfc3339(&timestamp)
+        .map_err(|_| authentication_failure(&user_id))?;
+    let skew = chrono::Utc::now()
+        .signed_duration_since(signed_at.with_timezone(&chrono::Utc))
+        .num_seconds()
+        .unsigned_abs();
+    if skew > state.config.auth.skew_seconds {
+        return Err(authentication_failure(&user_id));
+    }
 
     let auth_headers = microwave_crypto::AuthHeaders {
         version,
@@ -1048,8 +1060,10 @@ fn required_header(headers: &HeaderMap, name: &str) -> Result<String, ApiError> 
     headers
         .get(name)
         .and_then(|value| value.to_str().ok())
-        .map(|value| value.trim().to_string())
-        .ok_or_else(ApiError::unauthorized)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| ApiError::bad_request("Failed to authenticate"))
 }
 
 fn authorization_lines(headers: &HeaderMap) -> Result<Vec<&str>, ApiError> {

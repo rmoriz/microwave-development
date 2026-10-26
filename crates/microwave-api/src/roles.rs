@@ -238,7 +238,7 @@ async fn update_role(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, url_name)): Path<(String, String)>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     NegotiatedChefJson(mut body): NegotiatedChefJson<Value>,
 ) -> Result<Response, ApiError> {
     let org = organization(&auth)?;
@@ -250,8 +250,7 @@ async fn update_role(
         .ok_or_else(|| ApiError::not_found(format!("Cannot load role {url_name}")))?;
     require_permission(&state, &auth, &role.authz_id, Permission::Update).await?;
 
-    let name = normalize_role(&mut body, Some(&url_name))?;
-    let renamed = name != url_name;
+    normalize_role(&mut body, Some(&url_name))?;
     let updated = state
         .store
         .update_role(
@@ -260,33 +259,9 @@ async fn update_role(
             &serde_json::to_string(&body).map_err(|_| ApiError::internal())?,
         )
         .await
-        .map_err(|error| match error {
-            StoreError::Conflict(_) => ApiError::conflict("Role already exists"),
-            other => other.into(),
-        })?;
-    if renamed && updated.name != name {
-        // See the environment handler: do not persist a half-renamed object on
-        // a backend whose update path cannot change the name.
-        let _ = state
-            .store
-            .update_role(&org.id, &url_name, &role.serialized_object)
-            .await;
-        return Err(ApiError::internal());
-    }
-    if renamed {
-        crate::search::index::delete_document(&state, &org.id, &role.id).await;
-    }
+        .map_err(ApiError::from)?;
     crate::search::index::index_object(&state, org, crate::search::IndexKind::Role, &updated).await;
-
-    let document = role_document(&updated)?;
-    if !renamed {
-        return Ok(Json(document).into_response());
-    }
-    let base = base_url(&headers, &state);
-    let uri = format!("{base}/organizations/{}/roles/{name}", org.name);
-    let mut response = (StatusCode::CREATED, Json(document)).into_response();
-    response.headers_mut().extend(location_headers(&uri)?);
-    Ok(response)
+    Ok(Json(role_document(&updated)?).into_response())
 }
 
 async fn delete_role(
@@ -325,18 +300,14 @@ fn normalize_role(body: &mut Value, path_name: Option<&str>) -> Result<String, A
         ));
     };
 
-    let name = match path_name {
-        Some(path_name) => match object.get("name") {
-            None => path_name.to_string(),
-            Some(Value::String(body_name)) => body_name.clone(),
-            Some(_) => return Err(ApiError::bad_request("Field 'name' invalid")),
-        },
-        None => object
-            .get("name")
-            .ok_or_else(|| ApiError::bad_request("Field 'name' missing"))?
-            .as_str()
-            .ok_or_else(|| ApiError::bad_request("Field 'name' invalid"))?
-            .to_string(),
+    let name = match (object.get("name"), path_name) {
+        (None, Some(path_name)) => path_name.to_string(),
+        (None, None) => return Err(ApiError::bad_request("Field 'name' missing")),
+        (Some(Value::String(body_name)), Some(path_name)) if body_name != path_name => {
+            return Err(ApiError::bad_request("Role name mismatch."));
+        }
+        (Some(Value::String(body_name)), _) => body_name.clone(),
+        (Some(_), _) => return Err(ApiError::bad_request("Field 'name' invalid")),
     };
     if !valid_name(&name) {
         return Err(ApiError::bad_request("Field 'name' invalid"));

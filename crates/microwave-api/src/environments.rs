@@ -92,7 +92,7 @@ async fn create_environment(
     let container = container_authz(&state, org, "environments").await?;
     require_permission(&state, &auth, &container, Permission::Create).await?;
 
-    let name = normalize_environment(&mut body, None)?;
+    let name = normalize_environment(&mut body)?;
     let environment = state
         .store
         .create_environment(
@@ -145,7 +145,7 @@ async fn update_environment(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, url_name)): Path<(String, String)>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     NegotiatedChefJson(mut body): NegotiatedChefJson<Value>,
 ) -> Result<Response, ApiError> {
     if let Some(response) = default_environment_response(&url_name) {
@@ -160,7 +160,7 @@ async fn update_environment(
         .ok_or_else(|| ApiError::not_found(format!("Cannot load environment {url_name}")))?;
     require_permission(&state, &auth, &environment.authz_id, Permission::Update).await?;
 
-    let name = normalize_environment(&mut body, Some(&url_name))?;
+    let name = normalize_environment(&mut body)?;
     let renamed = name != url_name;
     let updated = state
         .store
@@ -174,16 +174,6 @@ async fn update_environment(
             StoreError::Conflict(_) => ApiError::conflict("Environment already exists"),
             other => other.into(),
         })?;
-    if renamed && updated.name != name {
-        // A backend that cannot rename must not leave the new document stored
-        // under the old name. Restore the previous representation and fail
-        // rather than reporting a rename that did not happen.
-        let _ = state
-            .store
-            .update_environment(&org.id, &url_name, &environment.serialized_object)
-            .await;
-        return Err(ApiError::internal());
-    }
     if renamed {
         crate::search::index::delete_document(&state, &org.id, &environment.id).await;
     }
@@ -194,12 +184,11 @@ async fn update_environment(
         &updated,
     )
     .await;
-
     let document = serialized_body(&updated.serialized_object)?;
     if !renamed {
         return Ok(Json(document).into_response());
     }
-    let base = base_url(&headers, &state);
+    let base = base_url(&_headers, &state);
     let uri = format!("{base}/organizations/{}/environments/{name}", org.name);
     let mut response = (StatusCode::CREATED, Json(document)).into_response();
     response.headers_mut().extend(location_headers(&uri)?);
@@ -471,28 +460,19 @@ fn serialized_body(serialized: &str) -> Result<Value, ApiError> {
 /// Validates and normalizes an environment payload following
 /// `chef_environment:parse_binary_json/1`.
 ///
-/// `path_name` is `Some` for PUT requests: the body name is optional. When it
-/// is present and differs from the URL, upstream renames the environment (the
-/// row keeps its id and ACL). Create requests require an explicit name.
-fn normalize_environment(body: &mut Value, path_name: Option<&str>) -> Result<String, ApiError> {
+/// The body must carry a name. On PUT a name that differs from the URL renames
+/// the environment (the row keeps its id and ACL).
+fn normalize_environment(body: &mut Value) -> Result<String, ApiError> {
     let Some(object) = body.as_object_mut() else {
         return Err(ApiError::bad_request(
             "Incorrect JSON type for request body",
         ));
     };
 
-    let name = match path_name {
-        Some(path_name) => match object.get("name") {
-            None => path_name.to_string(),
-            Some(Value::String(body_name)) => body_name.clone(),
-            Some(_) => return Err(ApiError::bad_request("Field 'name' invalid")),
-        },
-        None => object
-            .get("name")
-            .ok_or_else(|| ApiError::bad_request("Field 'name' missing"))?
-            .as_str()
-            .ok_or_else(|| ApiError::bad_request("Field 'name' invalid"))?
-            .to_string(),
+    let name = match object.get("name") {
+        None => return Err(ApiError::bad_request("Field 'name' missing")),
+        Some(Value::String(body_name)) => body_name.clone(),
+        Some(_) => return Err(ApiError::bad_request("Field 'name' invalid")),
     };
     if !valid_name(&name) {
         return Err(ApiError::bad_request("Field 'name' invalid"));
@@ -593,19 +573,18 @@ fn validate_cookbook_versions(versions: &Map<String, Value>) -> Result<(), ApiEr
 /// Upstream's `parse_constraint/1` requires exactly one space between an
 /// operator and the version, and a version with two or three numeric parts.
 fn valid_constraint(value: &str) -> bool {
-    let version = value
-        .strip_prefix("<= ")
-        .or_else(|| value.strip_prefix(">= "))
-        .or_else(|| value.strip_prefix("~> "))
-        .or_else(|| value.strip_prefix("= "))
-        .or_else(|| value.strip_prefix("< "))
-        .or_else(|| value.strip_prefix("> "))
+    // Upstream treats a version without an operator as an implied `=`.
+    let version = ["<= ", ">= ", "~> ", "= ", "< ", "> "]
+        .iter()
+        .find_map(|operator| value.strip_prefix(operator))
         .unwrap_or(value);
     let parts: Vec<&str> = version.split('.').collect();
     (2..=3).contains(&parts.len())
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part.chars().all(|c| c.is_ascii_digit())
+                && part.parse::<i64>().is_ok()
+        })
 }
 
 fn json_value_text(value: &Value) -> String {
