@@ -323,7 +323,7 @@ for tag in "${TAGS[@]}"; do
   status=${PIPESTATUS[0]}
   set -e
 
-  line="$(grep -E '[0-9]+ examples?,' "$LOG" | tail -1 || true)"
+  line="$(grep -aE '[0-9]+ examples?,' "$LOG" | tail -1 || true)"
   line="$(printf '%s' "$line" | sed -E $'s/\x1b\\[[0-9;]*m//g')"
   if [[ -z "$line" ]]; then
     line="NO RSPEC SUMMARY (suite aborted)"
