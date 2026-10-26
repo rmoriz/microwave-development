@@ -60,6 +60,18 @@ fn associates_and_dissociates_users_with_the_org_users_group() {
     assert!(store
         .user_in_group(&fixture.users_group, &alice.authz_id)
         .unwrap());
+    let usag = store
+        .find_group(&fixture.org.id, &alice.id)
+        .unwrap()
+        .expect("user-specific actor group exists");
+    assert!(store
+        .user_in_group(&usag.authz_id, &alice.authz_id)
+        .unwrap());
+    let members = store
+        .list_group_members(&fixture.org.id, &fixture.users_group)
+        .unwrap();
+    assert!(members.users.is_empty());
+    assert_eq!(members.groups, vec![alice.id.clone()]);
     assert_eq!(
         store
             .list_user_orgs(&alice.id)
@@ -79,6 +91,15 @@ fn associates_and_dissociates_users_with_the_org_users_group() {
     assert!(!store
         .user_in_group(&fixture.users_group, &alice.authz_id)
         .unwrap());
+    assert!(store
+        .find_group(&fixture.org.id, &alice.id)
+        .unwrap()
+        .is_none());
+    assert!(store
+        .list_group_members(&fixture.org.id, &fixture.users_group)
+        .unwrap()
+        .groups
+        .is_empty());
     assert!(store.list_user_orgs(&alice.id).unwrap().is_empty());
 }
 
@@ -143,8 +164,45 @@ fn creates_lists_and_accepts_invitations() {
     assert!(store
         .user_in_group(&fixture.users_group, &bob.authz_id)
         .unwrap());
+    assert!(
+        store
+            .find_group(&fixture.org.id, &bob.id)
+            .unwrap()
+            .expect("invitee USAG exists")
+            .authz_id
+            .len()
+            == 32
+    );
+    assert_eq!(
+        store
+            .list_group_members(&fixture.org.id, &fixture.users_group)
+            .unwrap()
+            .groups,
+        vec![bob.id.clone()]
+    );
     assert_eq!(store.count_user_invitations(&bob.id).unwrap(), 0);
     assert_eq!(store.find_invitation(&invitation.id).unwrap(), None);
+}
+
+#[test]
+fn deleting_an_org_removes_its_user_specific_groups() {
+    let fixture = fixture();
+    let store = &fixture.store;
+    let alice = user(store, "alice");
+    store.add_user_to_org(&fixture.org.id, &alice.id).unwrap();
+    assert!(store
+        .find_group(&fixture.org.id, &alice.id)
+        .unwrap()
+        .is_some());
+
+    store.delete_org(&fixture.org.id).unwrap();
+
+    assert!(store.find_org("acme").unwrap().is_none());
+    assert!(store
+        .find_group(&fixture.org.id, &alice.id)
+        .unwrap()
+        .is_none());
+    assert!(store.find_user("alice").unwrap().is_some());
 }
 
 #[test]

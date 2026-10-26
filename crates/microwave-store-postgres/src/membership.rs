@@ -76,12 +76,19 @@ impl MembershipRepository for PostgresStore {
         .execute(&mut *transaction)
         .await
         .map_err(|error| unique(error, "The association already exists."))?;
-        add_group_actor(&mut transaction, &users_group, user_id).await?;
         let user_authz_id: String = sqlx::query_scalar("SELECT authz_id FROM users WHERE id = $1")
             .bind(user_id)
             .fetch_one(&mut *transaction)
             .await
             .map_err(db)?;
+        ensure_user_specific_group(
+            &mut transaction,
+            org_id,
+            user_id,
+            &user_authz_id,
+            &users_group,
+        )
+        .await?;
         crate::authz::add_org_read_access_ace(&mut transaction, org_id, &user_authz_id).await?;
         transaction.commit().await.map_err(db)?;
         Ok(())
@@ -132,6 +139,7 @@ impl MembershipRepository for PostgresStore {
         .execute(&mut *transaction)
         .await
         .map_err(db)?;
+        delete_user_specific_group(&mut transaction, org_id, user_id).await?;
         crate::authz::remove_org_read_access_ace(&mut transaction, org_id, &user_authz_id).await?;
         transaction.commit().await.map_err(db)?;
         Ok(())
@@ -335,12 +343,19 @@ impl MembershipRepository for PostgresStore {
         .execute(&mut *transaction)
         .await
         .map_err(db)?;
-        add_group_actor(&mut transaction, &users_group, &invitation.user_id).await?;
         let user_authz_id: String = sqlx::query_scalar("SELECT authz_id FROM users WHERE id = $1")
             .bind(&invitation.user_id)
             .fetch_one(&mut *transaction)
             .await
             .map_err(db)?;
+        ensure_user_specific_group(
+            &mut transaction,
+            &invitation.org_id,
+            &invitation.user_id,
+            &user_authz_id,
+            &users_group,
+        )
+        .await?;
         crate::authz::add_org_read_access_ace(&mut transaction, &invitation.org_id, &user_authz_id)
             .await?;
         sqlx::query("DELETE FROM org_user_invites WHERE id = $1")
@@ -381,34 +396,121 @@ async fn org_group(
         .ok_or_else(|| StoreError::NotFound(format!("group {name}")))
 }
 
-async fn add_group_actor(
+/// Create the user-specific actor group (USAG) for an organization member.
+///
+/// Mirrors the SQLite membership implementation: the group is named after the
+/// user's id, contains the user, and is a child of the organization's `users`
+/// group.
+async fn ensure_user_specific_group(
     transaction: &mut Transaction<'_, Postgres>,
-    group_authz_id: &str,
-    actor_id: &str,
-) -> Result<(), StoreError> {
-    // Group membership is keyed by authz id; accept either an actor id or an
-    // authz id so callers can pass the identifiers they already hold.
-    let actor_authz_id: Option<String> = sqlx::query_scalar(
-        "SELECT authz_id FROM users WHERE id = $1
-         UNION ALL
-         SELECT authz_id FROM clients WHERE id = $1
-         LIMIT 1",
-    )
-    .bind(actor_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(db)?;
-    let actor_authz_id = actor_authz_id.unwrap_or_else(|| actor_id.to_string());
+    org_id: &str,
+    user_id: &str,
+    user_authz_id: &str,
+    users_group_authz_id: &str,
+) -> Result<String, StoreError> {
+    let existing: Option<String> =
+        sqlx::query_scalar("SELECT authz_id FROM groups WHERE org_id = $1 AND name = $2")
+            .bind(org_id)
+            .bind(user_id)
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(db)?;
+    let usag_authz_id = match existing {
+        Some(authz_id) => authz_id,
+        None => {
+            let id = new_id();
+            let authz_id = new_id();
+            sqlx::query(
+                "INSERT INTO authz_entities (authz_id, entity_type, org_id, created_at)
+                 VALUES ($1, 'group', $2, $3)",
+            )
+            .bind(&authz_id)
+            .bind(org_id)
+            .bind(now())
+            .execute(&mut **transaction)
+            .await
+            .map_err(db)?;
+            sqlx::query(
+                "INSERT INTO groups (id, org_id, authz_id, name, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, $5)",
+            )
+            .bind(&id)
+            .bind(org_id)
+            .bind(&authz_id)
+            .bind(user_id)
+            .bind(now())
+            .execute(&mut **transaction)
+            .await
+            .map_err(db)?;
+            authz_id
+        }
+    };
+
     sqlx::query(
         "INSERT INTO authz_group_actors (group_authz_id, actor_authz_id)
          VALUES ($1, $2)
          ON CONFLICT DO NOTHING",
     )
-    .bind(group_authz_id)
-    .bind(&actor_authz_id)
+    .bind(&usag_authz_id)
+    .bind(user_authz_id)
     .execute(&mut **transaction)
     .await
     .map_err(db)?;
+    sqlx::query(
+        "INSERT INTO authz_group_groups (parent_group_authz_id, child_group_authz_id)
+         VALUES ($1, $2)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(users_group_authz_id)
+    .bind(&usag_authz_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(db)?;
+    Ok(usag_authz_id)
+}
+
+async fn delete_user_specific_group(
+    transaction: &mut Transaction<'_, Postgres>,
+    org_id: &str,
+    user_id: &str,
+) -> Result<(), StoreError> {
+    let authz_id: Option<String> =
+        sqlx::query_scalar("SELECT authz_id FROM groups WHERE org_id = $1 AND name = $2")
+            .bind(org_id)
+            .bind(user_id)
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(db)?;
+    let Some(authz_id) = authz_id else {
+        return Ok(());
+    };
+
+    for statement in [
+        "DELETE FROM authz_acl_actor
+         WHERE target_authz_id = $1 OR actor_authz_id = $1",
+        "DELETE FROM authz_acl_group
+         WHERE target_authz_id = $1 OR group_authz_id = $1",
+        "DELETE FROM authz_group_actors
+         WHERE group_authz_id = $1 OR actor_authz_id = $1",
+        "DELETE FROM authz_group_groups
+         WHERE parent_group_authz_id = $1 OR child_group_authz_id = $1",
+    ] {
+        sqlx::query(statement)
+            .bind(&authz_id)
+            .execute(&mut **transaction)
+            .await
+            .map_err(db)?;
+    }
+    sqlx::query("DELETE FROM groups WHERE authz_id = $1")
+        .bind(&authz_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(db)?;
+    sqlx::query("DELETE FROM authz_entities WHERE authz_id = $1")
+        .bind(&authz_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(db)?;
     Ok(())
 }
 

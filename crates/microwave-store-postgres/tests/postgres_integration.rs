@@ -1066,6 +1066,186 @@ async fn create_test_user(store: &PostgresStore) -> microwave_store::User {
 }
 
 #[tokio::test]
+async fn enforces_authz_entity_policy_and_artifact_constraints() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+
+    let indexes: Vec<String> =
+        sqlx::query_scalar("SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()")
+            .fetch_all(store.pool())
+            .await
+            .expect("list indexes");
+    for expected in [
+        "users_lower_email_index",
+        "users_external_authentication_uid_index",
+        "authz_entities_org_index",
+        "authz_acl_actor_actor_index",
+        "authz_group_actors_actor_index",
+        "sandboxed_checksums_sandbox_index",
+    ] {
+        assert!(
+            indexes.iter().any(|name| name == expected),
+            "missing index {expected}"
+        );
+    }
+
+    let actor = store.create_actor().await.expect("create actor");
+    let group = store
+        .create_group(&format!("group-{}", suffix()))
+        .await
+        .expect("create group");
+    let object = store.create_object().await.expect("create object");
+
+    for (statement, left, right) in [
+        (
+            "INSERT INTO authz_group_actors (group_authz_id, actor_authz_id) VALUES ($1, $2)",
+            group.as_str(),
+            group.as_str(),
+        ),
+        (
+            "INSERT INTO authz_group_groups
+                 (parent_group_authz_id, child_group_authz_id) VALUES ($1, $2)",
+            actor.as_str(),
+            group.as_str(),
+        ),
+        (
+            "INSERT INTO authz_acl_actor (target_authz_id, permission, actor_authz_id)
+                 VALUES ($1, 'read', $2)",
+            object.as_str(),
+            group.as_str(),
+        ),
+        (
+            "INSERT INTO authz_acl_group (target_authz_id, permission, group_authz_id)
+                 VALUES ($1, 'read', $2)",
+            object.as_str(),
+            actor.as_str(),
+        ),
+    ] {
+        let error = sqlx::query(statement)
+            .bind(left)
+            .bind(right)
+            .execute(store.pool())
+            .await
+            .expect_err("row with the wrong entity type must be rejected");
+        assert!(
+            error.to_string().contains("must reference"),
+            "unexpected error: {error}"
+        );
+    }
+
+    sqlx::query("INSERT INTO authz_group_actors (group_authz_id, actor_authz_id) VALUES ($1, $2)")
+        .bind(&group)
+        .bind(&actor)
+        .execute(store.pool())
+        .await
+        .expect("valid actor membership");
+
+    let org = store
+        .create_org(&format!("integrity-{}", suffix()), "Integrity Org")
+        .await
+        .expect("create org");
+    let creator = store.create_actor().await.expect("create creator");
+    for container in ["policies", "policy_groups"] {
+        store
+            .create_container_for_org(&org.id, container)
+            .await
+            .expect("create policy container");
+    }
+
+    let artifact_id: i64 = sqlx::query_scalar(
+        "INSERT INTO cookbook_artifacts (org_id, name, authz_id)
+         VALUES ($1, $2, $3) RETURNING id",
+    )
+    .bind(&org.id)
+    .bind(format!("artifact-{}", suffix()))
+    .bind(&object)
+    .fetch_one(store.pool())
+    .await
+    .expect("insert artifact");
+    sqlx::query(
+        "INSERT INTO cookbook_artifact_versions
+             (cookbook_artifact_id, org_id, identifier, metadata,
+              serialized_object, created_at, created_by)
+         VALUES ($1, $2, '1.0.0', NULL, NULL, $3, '')",
+    )
+    .bind(artifact_id)
+    .bind(&org.id)
+    .bind("2026-01-01T00:00:00Z")
+    .execute(store.pool())
+    .await
+    .expect("insert artifact version");
+    let error = sqlx::query("DELETE FROM cookbook_artifacts WHERE id = $1")
+        .bind(artifact_id)
+        .execute(store.pool())
+        .await
+        .expect_err("artifact with versions must be restricted");
+    assert!(
+        error.to_string().contains("foreign key")
+            || error.to_string().contains("violates")
+            || error.to_string().contains("RESTRICT"),
+        "unexpected artifact delete error: {error}"
+    );
+
+    let revision = store
+        .create_policy_revision(
+            &org.id,
+            "base",
+            "1.0.0",
+            r#"{"name":"base","revision_id":"1.0.0"}"#,
+            &creator,
+        )
+        .await
+        .expect("create policy revision");
+    let policy_group = store
+        .create_policy_group(&org.id, "prod", r#"{"name":"prod"}"#, &creator)
+        .await
+        .expect("create policy group");
+
+    let error = sqlx::query(
+        "INSERT INTO policy_group_revision_associations
+             (id, org_id, policy_revision_id, policy_group_authz_id,
+              policy_revision_name, policy_revision_revision_id, policy_group_name,
+              last_updated_by, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, '', $8, $8)",
+    )
+    .bind(format!("bad-{}", suffix()))
+    .bind(&org.id)
+    .bind(&revision.id)
+    .bind(&policy_group.authz_id)
+    .bind(&revision.name)
+    .bind(&revision.revision_id)
+    .bind("missing")
+    .bind("2026-01-01T00:00:00Z")
+    .execute(store.pool())
+    .await
+    .expect_err("unknown policy group name must be rejected");
+    assert!(
+        error.to_string().contains("foreign key") || error.to_string().contains("violates"),
+        "unexpected policy association error: {error}"
+    );
+
+    sqlx::query(
+        "INSERT INTO policy_group_revision_associations
+             (id, org_id, policy_revision_id, policy_group_authz_id,
+              policy_revision_name, policy_revision_revision_id, policy_group_name,
+              last_updated_by, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, '', $8, $8)",
+    )
+    .bind(format!("ok-{}", suffix()))
+    .bind(&org.id)
+    .bind(&revision.id)
+    .bind(&policy_group.authz_id)
+    .bind(&revision.name)
+    .bind(&revision.revision_id)
+    .bind(&policy_group.name)
+    .bind("2026-01-01T00:00:00Z")
+    .execute(store.pool())
+    .await
+    .expect("valid policy association");
+}
+
+#[tokio::test]
 async fn manages_membership_and_invitations() {
     let Some(store) = test_store().await else {
         return;
@@ -1115,6 +1295,21 @@ async fn manages_membership_and_invitations() {
         .user_in_group(&users_group.authz_id, &user.authz_id)
         .await
         .expect("user is in users group"));
+    let usag = store
+        .find_group(&org.id, &user.id)
+        .await
+        .expect("find user-specific group")
+        .expect("user-specific group exists");
+    assert!(store
+        .user_in_group(&usag.authz_id, &user.authz_id)
+        .await
+        .expect("user is in own USAG"));
+    let members = store
+        .list_group_members(&org.id, &users_group.authz_id)
+        .await
+        .expect("list users group members");
+    assert!(members.users.is_empty());
+    assert_eq!(members.groups, vec![user.id.clone()]);
 
     let entries = store
         .get_acl_entries(&user.authz_id)
@@ -1171,6 +1366,11 @@ async fn manages_membership_and_invitations() {
         .user_in_group(&users_group.authz_id, &user.authz_id)
         .await
         .expect("left users group"));
+    assert!(store
+        .find_group(&org.id, &user.id)
+        .await
+        .expect("find removed USAG")
+        .is_none());
     let entries = store
         .get_acl_entries(&user.authz_id)
         .await
@@ -1235,6 +1435,11 @@ async fn manages_membership_and_invitations() {
         .user_in_group(&users_group.authz_id, &other.authz_id)
         .await
         .expect("invited user in users group"));
+    assert!(store
+        .find_group(&org.id, &other.id)
+        .await
+        .expect("find invited USAG")
+        .is_some());
     assert_eq!(
         store
             .count_user_invitations(&other.id)

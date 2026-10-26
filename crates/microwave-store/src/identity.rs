@@ -467,7 +467,32 @@ impl SqliteStore {
         let mut connection = self.connection();
         let transaction = connection.transaction()?;
 
-        let authz_id = crate::objects::create_acl_object(&transaction, org_id, "clients")?;
+        let authz_id = new_id();
+        let container_authz_id: String = transaction
+            .query_row(
+                "SELECT authz_id FROM containers WHERE org_id = ?1 AND name = 'clients'",
+                [org_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NotFound("container clients".into()))?;
+        transaction.execute(
+            "INSERT INTO authz_entities (authz_id, entity_type, org_id, created_at)
+             VALUES (?1, 'actor', ?2, ?3)",
+            params![authz_id, org_id, now],
+        )?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO authz_acl_actor (target_authz_id, permission, actor_authz_id)
+             SELECT ?1, permission, actor_authz_id FROM authz_acl_actor
+             WHERE target_authz_id = ?2",
+            params![authz_id, container_authz_id],
+        )?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO authz_acl_group (target_authz_id, permission, group_authz_id)
+             SELECT ?1, permission, group_authz_id FROM authz_acl_group
+             WHERE target_authz_id = ?2",
+            params![authz_id, container_authz_id],
+        )?;
         transaction
             .execute(
                 "INSERT INTO clients

@@ -271,6 +271,20 @@ mod suite {
             .await
             .expect("create org group");
         store
+            .create_group_for_org(&org.id, "users")
+            .await
+            .expect("create users group");
+        let member = create_user(store.as_ref(), "deleted-org-member").await;
+        store
+            .add_user_to_org(&org.id, &member.id)
+            .await
+            .expect("add member to deleted org");
+        assert!(store
+            .find_group(&org.id, &member.id)
+            .await
+            .expect("find member USAG")
+            .is_some());
+        store
             .add_group_child(&read_access.authz_id, &child.authz_id)
             .await
             .expect("join read access group to org group");
@@ -292,6 +306,11 @@ mod suite {
             .find_org(&name)
             .await
             .expect("find deleted org")
+            .is_none());
+        assert!(store
+            .find_group(&org.id, &member.id)
+            .await
+            .expect("find deleted member USAG")
             .is_none());
         assert!(store
             .find_global_group(&read_access_name)
@@ -1034,6 +1053,44 @@ mod suite {
             .expect("direct read entry")
             .groups
             .contains(&format!("::{read_group}")));
+
+        // Adding opposite edges concurrently must not produce a cycle. Both
+        // callers lock/check/insert in one transaction; exactly one succeeds
+        // and the other observes the new edge as a cycle.
+        let concurrent_parent = store
+            .create_group_for_org(&org.id, &unique("cycle-parent"))
+            .await
+            .expect("create cycle parent");
+        let concurrent_child = store
+            .create_group_for_org(&org.id, &unique("cycle-child"))
+            .await
+            .expect("create cycle child");
+        let results = run_concurrently(2, {
+            let store = Arc::clone(store);
+            let parent = concurrent_parent.authz_id.clone();
+            let child = concurrent_child.authz_id.clone();
+            move |index| {
+                let store = Arc::clone(&store);
+                let (from, to) = if index % 2 == 0 {
+                    (parent.clone(), child.clone())
+                } else {
+                    (child.clone(), parent.clone())
+                };
+                async move { store.add_group_child(&from, &to).await }
+            }
+        })
+        .await;
+        assert_eq!(
+            results.iter().filter(|result| result.is_ok()).count(),
+            1,
+            "exactly one concurrent edge insertion must succeed: {results:?}"
+        );
+        assert!(
+            results
+                .iter()
+                .any(|result| matches!(result, Err(StoreError::Invalid(_)))),
+            "the losing insertion must report a cycle: {results:?}"
+        );
 
         // Cleanup per-org objects, then the org itself.
         store
@@ -1902,6 +1959,21 @@ mod suite {
             .user_in_group(&users_group.authz_id, &user.authz_id)
             .await
             .expect("member in users group"));
+        let usag = store
+            .find_group(&org.id, &user.id)
+            .await
+            .expect("find user-specific group")
+            .expect("user-specific group exists");
+        assert!(store
+            .user_in_group(&usag.authz_id, &user.authz_id)
+            .await
+            .expect("member in own user-specific group"));
+        let users_members = store
+            .list_group_members(&org.id, &users_group.authz_id)
+            .await
+            .expect("list users group members");
+        assert!(users_members.users.is_empty());
+        assert_eq!(users_members.groups, vec![user.id.clone()]);
         assert_eq!(
             store.list_org_users(&org.id).await.expect("list org users"),
             vec![user.clone()]
@@ -1965,6 +2037,17 @@ mod suite {
             .user_in_group(&users_group.authz_id, &user.authz_id)
             .await
             .expect("member left users group"));
+        assert!(store
+            .find_group(&org.id, &user.id)
+            .await
+            .expect("find removed user-specific group")
+            .is_none());
+        assert!(store
+            .list_group_members(&org.id, &users_group.authz_id)
+            .await
+            .expect("list users group after removal")
+            .groups
+            .is_empty());
         let after_removal = store
             .get_acl_entries(&user.authz_id)
             .await
@@ -2032,6 +2115,19 @@ mod suite {
             .user_in_group(&users_group.authz_id, &other.authz_id)
             .await
             .expect("invitee in users group"));
+        assert!(store
+            .find_group(&org.id, &other.id)
+            .await
+            .expect("find invitee user-specific group")
+            .is_some());
+        assert_eq!(
+            store
+                .list_group_members(&org.id, &users_group.authz_id)
+                .await
+                .expect("list users group after invite")
+                .groups,
+            vec![other.id.clone()]
+        );
         assert_eq!(
             store
                 .count_user_invitations(&other.id)

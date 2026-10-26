@@ -655,8 +655,48 @@ impl IdentityRepository for PostgresStore {
         let timestamp = now();
         let mut transaction = self.pool().begin().await.map_err(db)?;
 
-        let authz_id =
-            crate::objects::create_acl_object(&mut transaction, org_id, "clients").await?;
+        let authz_id = new_id();
+        let container_authz_id: Option<String> = sqlx::query_scalar(
+            "SELECT authz_id FROM containers WHERE org_id = $1 AND name = 'clients'",
+        )
+        .bind(org_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(db)?;
+        let container_authz_id =
+            container_authz_id.ok_or_else(|| StoreError::NotFound("container clients".into()))?;
+        sqlx::query(
+            "INSERT INTO authz_entities (authz_id, entity_type, org_id, created_at)
+             VALUES ($1, 'actor', $2, $3)",
+        )
+        .bind(&authz_id)
+        .bind(org_id)
+        .bind(&timestamp)
+        .execute(&mut *transaction)
+        .await
+        .map_err(db)?;
+        sqlx::query(
+            "INSERT INTO authz_acl_actor (target_authz_id, permission, actor_authz_id)
+             SELECT $1, permission, actor_authz_id FROM authz_acl_actor
+             WHERE target_authz_id = $2
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(&authz_id)
+        .bind(&container_authz_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(db)?;
+        sqlx::query(
+            "INSERT INTO authz_acl_group (target_authz_id, permission, group_authz_id)
+             SELECT $1, permission, group_authz_id FROM authz_acl_group
+             WHERE target_authz_id = $2
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(&authz_id)
+        .bind(&container_authz_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(db)?;
         sqlx::query(
             "INSERT INTO clients
              (id, org_id, authz_id, name, validator, admin, created_at, updated_at)
