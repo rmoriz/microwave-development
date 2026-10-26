@@ -145,7 +145,7 @@ async fn update_environment(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, url_name)): Path<(String, String)>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     NegotiatedChefJson(mut body): NegotiatedChefJson<Value>,
 ) -> Result<Response, ApiError> {
     if let Some(response) = default_environment_response(&url_name) {
@@ -160,8 +160,7 @@ async fn update_environment(
         .ok_or_else(|| ApiError::not_found(format!("Cannot load environment {url_name}")))?;
     require_permission(&state, &auth, &environment.authz_id, Permission::Update).await?;
 
-    let name = normalize_environment(&mut body, Some(&url_name))?;
-    let renamed = name != url_name;
+    normalize_environment(&mut body, Some(&url_name))?;
     let updated = state
         .store
         .update_environment(
@@ -170,23 +169,7 @@ async fn update_environment(
             &serde_json::to_string(&body).map_err(|_| ApiError::internal())?,
         )
         .await
-        .map_err(|error| match error {
-            StoreError::Conflict(_) => ApiError::conflict("Environment already exists"),
-            other => other.into(),
-        })?;
-    if renamed && updated.name != name {
-        // A backend that cannot rename must not leave the new document stored
-        // under the old name. Restore the previous representation and fail
-        // rather than reporting a rename that did not happen.
-        let _ = state
-            .store
-            .update_environment(&org.id, &url_name, &environment.serialized_object)
-            .await;
-        return Err(ApiError::internal());
-    }
-    if renamed {
-        crate::search::index::delete_document(&state, &org.id, &environment.id).await;
-    }
+        .map_err(ApiError::from)?;
     crate::search::index::index_object(
         &state,
         org,
@@ -194,16 +177,7 @@ async fn update_environment(
         &updated,
     )
     .await;
-
-    let document = serialized_body(&updated.serialized_object)?;
-    if !renamed {
-        return Ok(Json(document).into_response());
-    }
-    let base = base_url(&headers, &state);
-    let uri = format!("{base}/organizations/{}/environments/{name}", org.name);
-    let mut response = (StatusCode::CREATED, Json(document)).into_response();
-    response.headers_mut().extend(location_headers(&uri)?);
-    Ok(response)
+    Ok(Json(serialized_body(&updated.serialized_object)?).into_response())
 }
 
 async fn delete_environment(
@@ -481,18 +455,15 @@ fn normalize_environment(body: &mut Value, path_name: Option<&str>) -> Result<St
         ));
     };
 
-    let name = match path_name {
-        Some(path_name) => match object.get("name") {
-            None => path_name.to_string(),
-            Some(Value::String(body_name)) => body_name.clone(),
-            Some(_) => return Err(ApiError::bad_request("Field 'name' invalid")),
-        },
-        None => object
-            .get("name")
-            .ok_or_else(|| ApiError::bad_request("Field 'name' missing"))?
-            .as_str()
-            .ok_or_else(|| ApiError::bad_request("Field 'name' invalid"))?
-            .to_string(),
+    let name = match object.get("name") {
+        None => return Err(ApiError::bad_request("Field 'name' missing")),
+        Some(Value::String(body_name)) => {
+            if path_name.is_some_and(|path_name| path_name != body_name) {
+                return Err(ApiError::bad_request("Environment name mismatch."));
+            }
+            body_name.clone()
+        }
+        Some(_) => return Err(ApiError::bad_request("Field 'name' invalid")),
     };
     if !valid_name(&name) {
         return Err(ApiError::bad_request("Field 'name' invalid"));
