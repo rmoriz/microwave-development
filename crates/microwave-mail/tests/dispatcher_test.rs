@@ -23,11 +23,15 @@ impl RecordingMailer {
         )
     }
 
-    fn with_failures(fail_count: usize) -> Self {
-        Self {
-            messages: Arc::new(Mutex::new(Vec::new())),
-            fail_count: Arc::new(Mutex::new(fail_count)),
-        }
+    fn with_failures(fail_count: usize) -> (Self, Arc<Mutex<Vec<MailMessage>>>) {
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                messages: messages.clone(),
+                fail_count: Arc::new(Mutex::new(fail_count)),
+            },
+            messages,
+        )
     }
 }
 
@@ -128,10 +132,10 @@ async fn dispatcher_returns_queue_full_when_capacity_exceeded() {
 
 #[tokio::test]
 async fn dispatcher_continues_after_inner_send_failure() {
-    let recorder = RecordingMailer::with_failures(1);
+    let (recorder, messages) = RecordingMailer::with_failures(1);
     let dispatcher = MailDispatcher::new(Arc::new(recorder), 10).unwrap();
 
-    // First message should fail
+    // First message should fail internally
     let msg1 = make_test_message("1");
     dispatcher.send(&msg1).await.unwrap();
 
@@ -145,12 +149,17 @@ async fn dispatcher_continues_after_inner_send_failure() {
     // Wait for processing
     timeout(Duration::from_secs(1), async {
         loop {
+            if messages.lock().await.len() == 1 {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .ok();
+    .expect("timeout waiting for second message to be processed");
 
-    // The dispatcher should not have panicked and should have accepted both messages
-    // (though the first one failed internally)
+    // Verify the second message was actually delivered
+    let captured = messages.lock().await;
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].subject, "Test 2");
 }
