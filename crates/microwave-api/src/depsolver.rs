@@ -1,5 +1,5 @@
 use crate::cookbooks::render_manifest;
-use crate::helpers::{container_authz, organization, require_permission};
+use crate::helpers::{container_authz, is_superuser, organization, require_permission};
 use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
@@ -66,11 +66,16 @@ async fn solve(
             for package in solution.packages {
                 let key = (package.name.clone(), package.version.to_string());
                 let stored = stored_versions.get(&key).ok_or_else(ApiError::internal)?;
-                if !state
-                    .store
-                    .check_permission(&auth.principal.authz_id, &stored.authz_id, Permission::Read)
-                    .await
-                    .map_err(ApiError::from)?
+                if !is_superuser(&auth)
+                    && !state
+                        .store
+                        .check_permission(
+                            &auth.principal.authz_id,
+                            &stored.authz_id,
+                            Permission::Read,
+                        )
+                        .await
+                        .map_err(ApiError::from)?
                 {
                     unauthorized.push(json!({
                         "name": package.name,

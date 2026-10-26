@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{Duration, SecondsFormat, Utc};
 use microwave_store::{
     OAuthAccessGrant, OAuthAccessToken, OAuthApplication, OAuthRepository, StoreError,
 };
@@ -60,6 +61,11 @@ fn token_from_row(row: &PgRow) -> Result<OAuthAccessToken, sqlx::Error> {
 
 fn random_token() -> String {
     format!("{}{}", new_id(), new_id())
+}
+
+fn session_cutoff() -> String {
+    (Utc::now() - Duration::seconds(microwave_store::ID_SESSION_TTL_SECONDS))
+        .to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
 fn session_key(token: &str) -> String {
@@ -349,6 +355,11 @@ impl OAuthRepository for PostgresStore {
 
     async fn create_id_session(&self, username: &str) -> Result<String, StoreError> {
         let token = random_token();
+        sqlx::query("DELETE FROM kvpair WHERE key LIKE 'id_session:%' AND updated_at < $1")
+            .bind(session_cutoff())
+            .execute(self.pool())
+            .await
+            .map_err(db)?;
         sqlx::query("INSERT INTO kvpair (key, value, updated_at) VALUES ($1, $2, $3)")
             .bind(session_key(&token))
             .bind(username)
@@ -360,11 +371,24 @@ impl OAuthRepository for PostgresStore {
     }
 
     async fn find_id_session(&self, token: &str) -> Result<Option<String>, StoreError> {
-        sqlx::query_scalar("SELECT value FROM kvpair WHERE key = $1")
-            .bind(session_key(token))
-            .fetch_optional(self.pool())
-            .await
-            .map_err(db)
+        let row: Option<(String, String)> =
+            sqlx::query_as("SELECT value, updated_at FROM kvpair WHERE key = $1")
+                .bind(session_key(token))
+                .fetch_optional(self.pool())
+                .await
+                .map_err(db)?;
+        let Some((username, updated_at)) = row else {
+            return Ok(None);
+        };
+        if updated_at < session_cutoff() {
+            sqlx::query("DELETE FROM kvpair WHERE key = $1")
+                .bind(session_key(token))
+                .execute(self.pool())
+                .await
+                .map_err(db)?;
+            return Ok(None);
+        }
+        Ok(Some(username))
     }
 
     async fn delete_id_session(&self, token: &str) -> Result<(), StoreError> {

@@ -44,6 +44,45 @@ fn add_to_users_group(
 }
 
 #[tokio::test]
+async fn updating_the_admin_flag_syncs_server_admins() {
+    let state = support::state_with_pivotal();
+    let bob = support::add_user(&state, "bob", "bob@example.com", false);
+    let group = state.sqlite().ensure_global_group("server-admins").unwrap();
+    assert!(!state
+        .sqlite()
+        .user_in_group(&group.authz_id, &bob.authz_id)
+        .unwrap());
+    state
+        .sqlite()
+        .update_user_patch(
+            "bob",
+            &microwave_store::UserPatch {
+                admin: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(state
+        .sqlite()
+        .user_in_group(&group.authz_id, &bob.authz_id)
+        .unwrap());
+    state
+        .sqlite()
+        .update_user_patch(
+            "bob",
+            &microwave_store::UserPatch {
+                admin: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(!state
+        .sqlite()
+        .user_in_group(&group.authz_id, &bob.authz_id)
+        .unwrap());
+}
+
+#[tokio::test]
 async fn organization_routes_enforce_authorization() {
     let state = support::state_with_pivotal();
     let alice = support::add_user(&state, "alice", "alice@example.com", false);

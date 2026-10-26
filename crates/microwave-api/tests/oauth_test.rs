@@ -100,9 +100,7 @@ async fn request(
     for (name, value) in headers {
         builder = builder.header(*name, HeaderValue::from_str(value).unwrap());
     }
-    if content_type.starts_with("application/x-www-form-urlencoded")
-        || content_type.starts_with("multipart/form-data")
-    {
+    if matches!(method, "POST" | "PUT" | "PATCH" | "DELETE") {
         builder = builder
             .header(header::HOST, "0.0.0.0:8000")
             .header(header::ORIGIN, "http://0.0.0.0:8000");

@@ -27,22 +27,34 @@ fn is_cookie_form_write(method: &str, path: &str, headers: &axum::http::HeaderMa
     if path == "/id/oauth/token" || path == "/id/oauth/revoke" || path.starts_with("/id/v1/") {
         return false;
     }
-    let form = headers
+    let is_json = headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value.starts_with("application/x-www-form-urlencoded")
-                || value.starts_with("multipart/form-data")
-        });
-    form && (path == "/id/sessions"
-        || path == "/id/auth/chef/callback"
-        || path == "/id/signout"
-        || path.starts_with("/id/oauth/authorize")
-        || path.starts_with("/id/oauth/applications")
-        || path.starts_with("/id/profile"))
+        .is_some_and(|value| value.starts_with("application/json"));
+    // `parse_params` treats every non-JSON body as form data, so guard those
+    // requests too rather than trusting the declared content type.
+    !is_json
+        && (path == "/id/sessions"
+            || path == "/id/auth/chef/callback"
+            || path == "/id/signout"
+            || path.starts_with("/id/oauth/authorize")
+            || path.starts_with("/id/oauth/applications")
+            || path.starts_with("/id/profile"))
 }
 
 fn same_origin(headers: &axum::http::HeaderMap) -> bool {
+    let origin = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok());
+    let referer = headers
+        .get(header::REFERER)
+        .and_then(|value| value.to_str().ok());
+    if origin.is_none() && referer.is_none() {
+        // Non-browser clients (knife, curl, Pedant) do not send Origin/Referer.
+        // SameSite=Lax still prevents cross-site cookie submission.
+        return true;
+    }
+
     let Some(host) = headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
@@ -50,16 +62,21 @@ fn same_origin(headers: &axum::http::HeaderMap) -> bool {
     else {
         return false;
     };
-    let source = headers
-        .get(header::ORIGIN)
-        .or_else(|| headers.get(header::REFERER))
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<axum::http::Uri>().ok());
-    // Non-browser clients (knife, curl, Pedant) do not send Origin/Referer.
-    // SameSite=Lax still prevents cross-site cookie submission; when a browser
-    // does send Origin, it must match the request host.
-    let Some(authority) = source.as_ref().and_then(|uri| uri.authority()) else {
-        return true;
+    let matches = |value: &str| {
+        value
+            .parse::<axum::http::Uri>()
+            .ok()
+            .and_then(|uri| uri.authority().cloned())
+            .is_some_and(|authority| {
+                authority.host().eq_ignore_ascii_case(host.host())
+                    && authority.port_u16() == host.port_u16()
+            })
     };
-    authority.host().eq_ignore_ascii_case(host.host()) && authority.port_u16() == host.port_u16()
+
+    if let Some(origin) = origin {
+        // `Origin: null`, `file:`, and malformed values have no authority and
+        // must never be treated as same-origin.
+        return matches(origin);
+    }
+    referer.is_some_and(matches)
 }

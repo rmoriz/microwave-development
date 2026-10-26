@@ -53,7 +53,7 @@ pub struct OpenSearchBackend {
     client: reqwest::Client,
     base_url: String,
     provider: SearchProvider,
-    index_ready: tokio::sync::OnceCell<()>,
+    index_ready: tokio::sync::Mutex<bool>,
 }
 
 impl OpenSearchBackend {
@@ -86,7 +86,7 @@ impl OpenSearchBackend {
             client,
             base_url: url.trim_end_matches('/').to_string(),
             provider,
-            index_ready: tokio::sync::OnceCell::new(),
+            index_ready: tokio::sync::Mutex::new(false),
         })
     }
 
@@ -97,7 +97,7 @@ impl OpenSearchBackend {
             client,
             base_url: base_url.into().trim_end_matches('/').to_string(),
             provider,
-            index_ready: tokio::sync::OnceCell::new(),
+            index_ready: tokio::sync::Mutex::new(false),
         })
     }
 
@@ -111,29 +111,50 @@ impl OpenSearchBackend {
     /// text, which makes the required sort fail, and uses the standard analyzer
     /// instead of the whitespace analyzer Chef queries expect.
     async fn ensure_index(&self) -> Result<(), SearchError> {
-        self.index_ready
-            .get_or_try_init(|| async {
-                let url = self.url(&format!("/{INDEX}"));
-                let response = self
-                    .client
-                    .put(&url)
-                    .json(&index_definition())
-                    .send()
-                    .await?;
-                let status = response.status().as_u16();
-                if status == 400 {
-                    let body = response.text().await.unwrap_or_default();
-                    if body.contains("resource_already_exists_exception") {
-                        return Ok(());
-                    }
-                    return Err(SearchError::Response(format!(
-                        "could not create the chef index: {body}"
-                    )));
-                }
-                self.check_status(&url, status)
-            })
-            .await
-            .cloned()
+        let mut ready = self.index_ready.lock().await;
+        if *ready {
+            return Ok(());
+        }
+        let url = self.url(&format!("/{INDEX}"));
+        let head = self.client.head(&url).send().await?;
+        match head.status().as_u16() {
+            200..=299 => {
+                *ready = true;
+                return Ok(());
+            }
+            404 => {}
+            // A read-only search credential cannot create the index. Let the
+            // search proceed against an existing index instead of turning an
+            // upgrade into an outage.
+            401 | 403 => return Ok(()),
+            status => {
+                return Err(SearchError::Backend {
+                    status,
+                    url: url.to_string(),
+                })
+            }
+        }
+
+        let response = self
+            .client
+            .put(&url)
+            .json(&index_definition())
+            .send()
+            .await?;
+        let status = response.status().as_u16();
+        if status == 400 {
+            let body = response.text().await.unwrap_or_default();
+            if body.contains("resource_already_exists_exception") {
+                *ready = true;
+                return Ok(());
+            }
+            return Err(SearchError::Response(format!(
+                "could not create the chef index: {body}"
+            )));
+        }
+        self.check_status(&url, status)?;
+        *ready = true;
+        Ok(())
     }
 
     fn filter_query(&self, request: &SearchRequest) -> String {
@@ -503,6 +524,7 @@ impl super::backend::SearchBackend for OpenSearchBackend {
         if status == 404 {
             let body = response.text().await.unwrap_or_default();
             if is_index_not_found(&body) {
+                *self.index_ready.lock().await = false;
                 return Ok(SearchHits {
                     total: 0,
                     ids: Vec::new(),

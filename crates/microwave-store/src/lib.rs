@@ -34,7 +34,7 @@ pub use identity::{ActorKey, ActorType, Client, Org, Principal, User, UserPatch,
 pub use maintenance::MAINTENANCE_KV_KEY;
 pub use membership::Invitation;
 pub use migration::*;
-pub use oauth::{OAuthAccessGrant, OAuthAccessToken, OAuthApplication};
+pub use oauth::{OAuthAccessGrant, OAuthAccessToken, OAuthApplication, ID_SESSION_TTL_SECONDS};
 pub use objects::{NewNode, StoredDataBagItem, StoredNode, StoredObject};
 pub use policies::{
     StoredPolicy, StoredPolicyGroup, StoredPolicyGroupAssociation, StoredPolicyRevision,

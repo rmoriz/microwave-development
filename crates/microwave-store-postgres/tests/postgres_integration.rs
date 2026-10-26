@@ -1507,6 +1507,24 @@ async fn manages_oauth_applications_tokens_sessions_and_resets() {
         store.find_id_session(&session).await.expect("find session"),
         Some(session_user)
     );
+    sqlx::query("UPDATE kvpair SET updated_at = '2000-01-01T00:00:00Z' WHERE key = $1")
+        .bind(format!("id_session:{session}"))
+        .execute(store.pool())
+        .await
+        .expect("age id session");
+    assert_eq!(
+        store
+            .find_id_session(&session)
+            .await
+            .expect("expired session"),
+        None
+    );
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM kvpair WHERE key = $1")
+        .bind(format!("id_session:{session}"))
+        .fetch_one(store.pool())
+        .await
+        .expect("count expired session");
+    assert_eq!(remaining, 0);
     store
         .delete_id_session(&session)
         .await

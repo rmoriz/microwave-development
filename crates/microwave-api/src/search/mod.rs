@@ -196,40 +196,101 @@ async fn execute_search(
         rows,
         actor_authz_id: None,
     };
-    let hits = state
+
+    if !state.config.search.strict_result_acls || is_superuser(auth) {
+        let hits = state
+            .search
+            .search(&request)
+            .await
+            .map_err(ApiError::from)?;
+        return Ok(ExecutedSearch {
+            total: hits.total,
+            start,
+            ids: hits.ids,
+        });
+    }
+
+    // Strict mode must filter before pagination. Ask the backend for pages of
+    // ids, drop unreadable ones, and only then apply start/rows. The reported
+    // total stays the upstream pre-filter count.
+    const SCAN_PAGE: usize = 1000;
+    let first = state
         .search
-        .search(&request)
+        .search(&BackendSearchRequest {
+            org_id: org.id.clone(),
+            kind: kind.clone(),
+            query: request.query.clone(),
+            start: 0,
+            rows: if rows == 0 { 0 } else { SCAN_PAGE },
+            actor_authz_id: None,
+        })
         .await
         .map_err(ApiError::from)?;
+    if first.ids.is_empty() || rows == 0 {
+        return Ok(ExecutedSearch {
+            total: first.total,
+            start,
+            ids: Vec::new(),
+        });
+    }
 
-    let mut ids = hits.ids;
-    if state.config.search.strict_result_acls && !is_superuser(auth) {
-        let entries = index::load_entries(state.store.as_ref(), &org.id, &kind).await?;
-        let authz_by_id: HashMap<&str, &str> = entries
-            .iter()
-            .map(|entry| (entry.id.as_str(), entry.authz_id.as_str()))
-            .collect();
-        let mut allowed = Vec::with_capacity(ids.len());
-        for id in ids {
+    let entries = index::load_entries(state.store.as_ref(), &org.id, &kind).await?;
+    let authz_by_id: HashMap<&str, &str> = entries
+        .iter()
+        .map(|entry| (entry.id.as_str(), entry.authz_id.as_str()))
+        .collect();
+    let mut selected = Vec::with_capacity(rows);
+    let mut readable_seen = 0usize;
+    let total = first.total;
+    let mut page = first;
+    let mut scan_start = 0usize;
+    loop {
+        let page_len = page.ids.len();
+        for id in page.ids {
             let Some(authz_id) = authz_by_id.get(id.as_str()) else {
                 continue;
             };
-            if state
+            if !state
                 .store
                 .check_permission(&auth.principal.authz_id, authz_id, Permission::Read)
                 .await
                 .map_err(ApiError::from)?
             {
-                allowed.push(id);
+                continue;
+            }
+            if readable_seen >= start && selected.len() < rows {
+                selected.push(id);
+            }
+            readable_seen += 1;
+            if selected.len() >= rows {
+                break;
             }
         }
-        ids = allowed;
+        if selected.len() >= rows {
+            break;
+        }
+        scan_start += page_len;
+        if page_len == 0 || scan_start >= page.total {
+            break;
+        }
+        page = state
+            .search
+            .search(&BackendSearchRequest {
+                org_id: org.id.clone(),
+                kind: kind.clone(),
+                query: request.query.clone(),
+                start: scan_start,
+                rows: SCAN_PAGE,
+                actor_authz_id: None,
+            })
+            .await
+            .map_err(ApiError::from)?;
     }
 
     Ok(ExecutedSearch {
-        total: hits.total,
+        total,
         start,
-        ids,
+        ids: selected,
     })
 }
 

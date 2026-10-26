@@ -80,6 +80,18 @@ pub async fn is_server_admin(state: &AppState, auth: &AuthContext) -> Result<boo
     if auth.is_superuser {
         return Ok(true);
     }
+    if auth.principal.actor_type != microwave_store::ActorType::User {
+        return Ok(false);
+    }
+    if state
+        .store
+        .find_user_by_id(&auth.principal.actor_id)
+        .await
+        .map_err(ApiError::from)?
+        .is_some_and(|user| user.admin)
+    {
+        return Ok(true);
+    }
     let Some(group) = state
         .store
         .find_global_group("server-admins")
@@ -88,12 +100,11 @@ pub async fn is_server_admin(state: &AppState, auth: &AuthContext) -> Result<boo
     else {
         return Ok(false);
     };
-    let members = state
+    state
         .store
-        .list_group_members("", &group.authz_id)
+        .user_in_group(&group.authz_id, &auth.principal.authz_id)
         .await
-        .map_err(ApiError::from)?;
-    Ok(members.users.contains(&auth.principal.name))
+        .map_err(ApiError::from)
 }
 
 pub fn require_superuser(auth: &AuthContext) -> Result<(), ApiError> {

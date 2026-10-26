@@ -506,7 +506,8 @@ pub struct SearchConfig {
     /// unresponsive. Must be greater than zero.
     pub timeout_ms: u64,
     /// Hide search rows the caller cannot READ through object ACLs. Upstream
-    /// calls this `strict_search_result_acls`; off by default for compatibility.
+    /// calls this `strict_search_result_acls`; Microwave defaults to `true` so
+    /// remote and embedded backends both filter unless explicitly disabled.
     pub strict_result_acls: bool,
 }
 

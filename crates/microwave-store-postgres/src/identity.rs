@@ -501,6 +501,16 @@ impl IdentityRepository for PostgresStore {
         if result.rows_affected() == 0 {
             return Err(StoreError::NotFound(format!("user {username}")));
         }
+        if let Some(admin) = patch.admin {
+            let group = self.ensure_global_group("server-admins").await?;
+            if admin {
+                self.add_group_member(&group.authz_id, &current.authz_id)
+                    .await?;
+            } else {
+                self.remove_group_member(&group.authz_id, &current.authz_id)
+                    .await?;
+            }
+        }
         self.find_user(new_username)
             .await?
             .ok_or_else(|| StoreError::NotFound(format!("user {new_username}")))
