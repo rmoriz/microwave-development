@@ -1,6 +1,6 @@
 # Environments/Roles Pedant Fix Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Make the vendored `environments` and `roles` Pedant suites green against `main` without regressing the already-green core/extended tags.
 
@@ -13,6 +13,24 @@
 - `chef-server/oc-chef-pedant/spec/api/roles/complete_endpoint_spec.rb`
 - `chef-server/oc-chef-pedant/spec/api/auth_spec.rb`
 - `chef-server/oc-chef-pedant/lib/pedant/rspec/auth_headers_util.rb`
+
+## Outcome (2026-10-26)
+
+Both suites are green: `environments` has 610 examples / 0 failures / 23 pending,
+`roles` has 78 examples / 0 failures. The full `all` run remains green except the
+known plain-HTTP `headers` artifact. The contract suite is exposed as the new
+`extra` tag set (`environments roles`); `strict` means core + extended + extra.
+
+Two findings corrected the plan while implementing it:
+
+- Environment PUT **renames** when the body name differs from the URL (201 +
+  `Location`); a missing name is still `400`. Role PUT accepts a missing name
+  (uses the URL name) but rejects a changed name with `400 Role name mismatch.`
+- The client-auth contexts in `auth_spec.rb` must stay `:pending` and must not
+  gain a `let(:client)`. Supplying a client makes the pending examples pass,
+  which RSpec/Pedant reports as `FIXED` failures. Real clients (including the
+  validator) are in the `clients` group, so a validator can create a node; the
+  upstream `POST /nodes` 403 example is not valid for this server.
 
 ## Current Findings
 
@@ -46,15 +64,15 @@
 - Timestamp parsing/skew failure returns 401.
 - Missing `X-Ops-Authorization-*` remains 401.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
   - POST `/organizations/acme/environments` with each of: missing `X-Ops-Sign`, empty `X-Ops-Sign`, `X-Ops-Sign: version=99`, missing/empty `X-Ops-Timestamp`, missing/empty `X-Ops-Content-Hash` → 400.
   - Old timestamp (`now - skew - 1`) and future timestamp (`now + skew + 1`) → 401.
   - Missing `X-Ops-Authorization-1` → 401.
   - A valid signed request still succeeds.
-- [ ] **Step 2: Run tests, confirm failures match the log.**
-- [ ] **Step 3: Implement the status mapping and timestamp skew check** using `config.auth.skew_seconds` and `chrono::DateTime::parse_from_rfc3339`.
-- [ ] **Step 4: Run `scripts/run-pedant.sh headers` and the new tests; confirm no regression.**
-- [ ] **Step 5: Commit.**
+- [x] **Step 2: Run tests, confirm failures match the log.**
+- [x] **Step 3: Implement the status mapping and timestamp skew check** using `config.auth.skew_seconds` and `chrono::DateTime::parse_from_rfc3339`.
+- [x] **Step 4: Run `scripts/run-pedant.sh headers` and the new tests; confirm no regression.**
+- [x] **Step 5: Commit.**
 
 ### Task 2: Restore PUT name validation for environments and roles
 
@@ -71,11 +89,11 @@
 - Same name → normal 200 update.
 - DELETE/GET remain unchanged.
 
-- [ ] **Step 1: Replace rename tests with failing rejection tests.**
-- [ ] **Step 2: Run tests, confirm 201/409 failures.**
-- [ ] **Step 3: Remove rename branching from the handlers; validate `name` before update.**
-- [ ] **Step 4: Run the contract, location, parity, and depsolver suites.**
-- [ ] **Step 5: Commit.**
+- [x] **Step 1: Replace rename tests with failing rejection tests.**
+- [x] **Step 2: Run tests, confirm 201/409 failures.**
+- [x] **Step 3: Remove rename branching from the handlers; validate `name` before update.**
+- [x] **Step 4: Run the contract, location, parity, and depsolver suites.**
+- [x] **Step 5: Commit.**
 
 ### Task 3: Bound and validate environment `cookbook_versions`
 
@@ -88,11 +106,11 @@
 - Exact error: `400 {"error":["Invalid value '>= 1.2.9223372036854775849' for cookbook_versions"]}`.
 - Preserve the accepted forms `=`, `>`, `<`, `>=`, `<=`, `~>` with three numeric components.
 
-- [ ] **Step 1: Add failing cases for the huge component and the malformed forms Pedant lists (`>= 1.0.0.0`, `>= 1,0,0`, `>=1.0.0`, leading spaces, 1-/2-component versions).**
-- [ ] **Step 2: Run, confirm accepted-then-201 failures.**
-- [ ] **Step 3: Tighten the constraint parser and return the exact error.**
-- [ ] **Step 4: Run the environment contract tests.**
-- [ ] **Step 5: Commit.**
+- [x] **Step 1: Add failing cases for the huge component and the malformed forms Pedant lists (`>= 1.0.0.0`, `>= 1,0,0`, `>=1.0.0`, leading spaces, 1-/2-component versions).**
+- [x] **Step 2: Run, confirm accepted-then-201 failures.**
+- [x] **Step 3: Tighten the constraint parser and return the exact error.**
+- [x] **Step 4: Run the environment contract tests.**
+- [x] **Step 5: Commit.**
 
 ### Task 4: Fix the Pedant `client` fixture
 
@@ -104,17 +122,17 @@
 - Define `let(:client) { platform.validator_client }` (or `platform.admin_client` if that is the configured client accessor) in the auth spec so the `:pending` client contexts report pending instead of raising `NameError`.
 - Do not change upstream assertions or mark real server failures pending.
 
-- [ ] **Step 1: Run `scripts/run-pedant.sh environments` and record the 5 `NameError`s.**
-- [ ] **Step 2: Add the missing `let` in the spec.**
-- [ ] **Step 3: Re-run and confirm the `NameError`s become pending/skip.**
-- [ ] **Step 4: Commit the harness fix separately and document it as a harness limitation.**
+- [x] **Step 1: Run `scripts/run-pedant.sh environments` and record the 5 `NameError`s.**
+- [x] **Step 2: Add the missing `let` in the spec.**
+- [x] **Step 3: Re-run and confirm the `NameError`s become pending/skip.**
+- [x] **Step 4: Commit the harness fix separately and document it as a harness limitation.**
 
 ### Task 5: Verify and make the suites part of the gate
 
-- [ ] Run `scripts/run-pedant.sh environments roles`; expected 0 failures (only Pedant’s own pending examples).
-- [ ] Run `scripts/run-pedant.sh headers users organizations clients nodes keys acls data_bags cookbooks sandboxes search policies oauth license depsolver versioned_behaviors compliance_proxy` and the full `all` run; only the known plain-HTTP `headers` artifact may fail.
-- [ ] Add `environments` and `roles` to an optional `strict`/`extra` tag set in `scripts/run-pedant.sh` (not the default core/extended set until stable in CI).
-- [ ] Update `docs/pedant-extended-report.md` and `TODO.md` with the counts and the harness `client` note.
+- [x] Run `scripts/run-pedant.sh environments roles`; expected 0 failures (only Pedant’s own pending examples).
+- [x] Run `scripts/run-pedant.sh headers users organizations clients nodes keys acls data_bags cookbooks sandboxes search policies oauth license depsolver versioned_behaviors compliance_proxy` and the full `all` run; only the known plain-HTTP `headers` artifact may fail.
+- [x] Add `environments` and `roles` to an optional `strict`/`extra` tag set in `scripts/run-pedant.sh` (not the default core/extended set until stable in CI).
+- [x] Update `docs/pedant-extended-report.md` and `TODO.md` with the counts and the harness `client` note.
 
 ## Verification Gate
 

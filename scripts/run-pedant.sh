@@ -19,6 +19,8 @@
 #                        oauth license depsolver versioned_behaviors
 #                        compliance_proxy
 #   all                  core + extended
+#   extra                environments roles (contract suites outside core/extended)
+#   strict               core + extended + extra
 #
 # Individual tags are passed straight to Pedant's --focus.  Friendly aliases
 # are accepted for a few suites whose RSpec metadata differs:
@@ -96,6 +98,7 @@ fi
 CORE_TAGS=(headers users organizations clients nodes)
 EXTENDED_TAGS=(keys acls data_bags cookbooks sandboxes search policies oauth
                license depsolver versioned_behaviors compliance_proxy)
+EXTRA_TAGS=(environments roles)
 
 expand_tag_sets() {
   local tag
@@ -104,6 +107,8 @@ expand_tag_sets() {
       core) printf '%s\n' "${CORE_TAGS[@]}" ;;
       extended) printf '%s\n' "${EXTENDED_TAGS[@]}" ;;
       all) printf '%s\n' "${CORE_TAGS[@]}" "${EXTENDED_TAGS[@]}" ;;
+      extra) printf '%s\n' "${EXTRA_TAGS[@]}" ;;
+      strict) printf '%s\n' "${CORE_TAGS[@]}" "${EXTENDED_TAGS[@]}" "${EXTRA_TAGS[@]}" ;;
       *) printf '%s\n' "$tag" ;;
     esac
   done

@@ -26,6 +26,13 @@
 > | `compliance_proxy` | 4 | 4 | 0 | 0 |
 > | **Total** | **3,291** | **3,284** | **0** | **7** |
 >
+> **Contract suites added 2026-10-26:** the vendored `environments` suite runs
+> 610 examples with 0 failures and 23 pending; `roles` runs 78 examples with 0
+> failures. Run them with `scripts/run-pedant.sh extra`; `strict` expands to
+> core + extended + extra. The client-auth examples in `auth_spec.rb` remain
+> upstream-pending and intentionally have no `let(:client)`; defining one makes
+> those examples pass and Pedant reports them as `FIXED` failures.
+>
 > The suites were first captured on `41abe62`. `main` then gained the ctl,
 > object-store-secret, and full-depsolver changes; the branch was rebased onto
 > `ad0a865` and `depsolver` and `cookbooks` were re-run. The intervening
@@ -97,6 +104,8 @@ The committed harness also accepts the named sets:
 scripts/run-pedant.sh core        # headers users organizations clients nodes (default)
 scripts/run-pedant.sh extended    # the eleven suites in this report
 scripts/run-pedant.sh all         # core + extended
+scripts/run-pedant.sh extra       # environments roles
+scripts/run-pedant.sh strict      # core + extended + extra
 PEDANT_TAGS=extended scripts/run-pedant.sh
 ```
 
