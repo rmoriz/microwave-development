@@ -43,25 +43,53 @@ fn local_store_rejects_checksum_mismatch() {
 
 #[test]
 fn local_store_presigned_url_uses_bookshelf_path_and_token() {
-    let url = store().presigned_url("PUT", "acme", HELLO_CHECKSUM);
+    let store = LocalObjectStore::new(
+        std::env::temp_dir().join(format!("mw-objectstore-url-{}", std::process::id())),
+        "test-secret",
+        "http://localhost:8000",
+    );
+    let now = microwave_objectstore::unix_timestamp();
+    let url = store.presigned_url("PUT", "acme", HELLO_CHECKSUM);
     assert_eq!(
         url.split('?').next().unwrap(),
         "http://localhost:8000/bookshelf/organizations/acme/checksums/5d41402abc4b2a76b9719d911017c592"
     );
-    let token = url.split("token=").nth(1).unwrap();
+    let query = url.split_once('?').unwrap().1;
+    let token = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("token="))
+        .expect("token parameter");
     assert_eq!(token.len(), 64);
     assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+    let expires_at = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("exp="))
+        .expect("exp parameter")
+        .parse::<u64>()
+        .expect("exp is Unix seconds");
+    assert!(
+        expires_at >= now + microwave_objectstore::DEFAULT_PRESIGN_EXPIRY_SECONDS,
+        "presigned URL must carry the default expiry"
+    );
+    assert!(store.verify("PUT", "acme", HELLO_CHECKSUM, expires_at, token));
 }
 
 #[test]
 fn local_store_token_verification_is_constant_time_and_method_bound() {
-    let token =
-        microwave_objectstore::bookshelf_token("test-secret", "PUT", "acme", HELLO_CHECKSUM);
+    let expires_at = microwave_objectstore::unix_timestamp() + 900;
+    let token = microwave_objectstore::bookshelf_token(
+        "test-secret",
+        "PUT",
+        "acme",
+        HELLO_CHECKSUM,
+        expires_at,
+    );
     assert!(microwave_objectstore::bookshelf_token_matches(
         "test-secret",
         "PUT",
         "acme",
         HELLO_CHECKSUM,
+        expires_at,
         &token
     ));
     assert!(!microwave_objectstore::bookshelf_token_matches(
@@ -69,6 +97,7 @@ fn local_store_token_verification_is_constant_time_and_method_bound() {
         "GET",
         "acme",
         HELLO_CHECKSUM,
+        expires_at,
         &token
     ));
     assert!(!microwave_objectstore::bookshelf_token_matches(
@@ -76,6 +105,52 @@ fn local_store_token_verification_is_constant_time_and_method_bound() {
         "PUT",
         "acme",
         HELLO_CHECKSUM,
+        expires_at,
         "forged"
     ));
+    assert!(
+        !microwave_objectstore::bookshelf_token_matches(
+            "test-secret",
+            "PUT",
+            "acme",
+            HELLO_CHECKSUM,
+            expires_at + 1,
+            &token
+        ),
+        "the expiry is part of the signed payload"
+    );
+}
+
+#[test]
+fn local_store_rejects_expired_and_future_distant_tokens() {
+    let now = microwave_objectstore::unix_timestamp();
+    let store = LocalObjectStore::new(
+        std::env::temp_dir().join(format!("mw-objectstore-exp-{}", std::process::id())),
+        "test-secret",
+        "http://localhost:8000",
+    );
+
+    for expires_at in [
+        now.saturating_sub(1),
+        now + microwave_objectstore::MAX_BOOKSHELF_TOKEN_LIFETIME_SECONDS + 1,
+    ] {
+        let token = store.token_with_expiry("GET", "acme", HELLO_CHECKSUM, expires_at);
+        assert!(!store.verify("GET", "acme", HELLO_CHECKSUM, expires_at, &token));
+    }
+}
+
+#[test]
+fn local_store_presign_expiry_is_configurable() {
+    let now = microwave_objectstore::unix_timestamp();
+    let store = LocalObjectStore::new(
+        std::env::temp_dir().join(format!("mw-objectstore-expiry-{}", std::process::id())),
+        "test-secret",
+        "http://localhost:8000",
+    )
+    .with_presign_expiry_seconds(120);
+    assert_eq!(store.presign_expiry_seconds(), 120);
+    let url = store.presigned_url("GET", "acme", HELLO_CHECKSUM);
+    let expires_at = url.split("exp=").nth(1).unwrap().parse::<u64>().unwrap();
+    assert!(expires_at >= now + 120);
+    assert!(expires_at <= now + 120 + 5);
 }

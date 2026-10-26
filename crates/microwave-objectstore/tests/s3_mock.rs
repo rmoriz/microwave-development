@@ -68,9 +68,38 @@ async fn handler(State(state): State<MockState>, request: Request) -> Response {
     state.requests.lock().unwrap().push(Captured {
         method: method.clone(),
         path: path.clone(),
-        query,
+        query: query.clone(),
         headers,
     });
+
+    if method == "GET"
+        && path == "/chef"
+        && query.as_deref().is_some_and(|q| q.contains("list-type=2"))
+    {
+        let prefix =
+            query_parameter(query.as_deref().unwrap_or_default(), "prefix").unwrap_or_default();
+        let objects = state.objects.lock().unwrap();
+        let mut contents = String::new();
+        let mut count = 0;
+        for (key, data) in objects.iter() {
+            let object_key = key.strip_prefix("/chef/").unwrap_or(key);
+            if !object_key.starts_with(&prefix) {
+                continue;
+            }
+            count += 1;
+            contents.push_str(&format!(
+                "<Contents><Key>{}</Key><Size>{}</Size><ETag>&quot;etag-{object_key}&quot;</ETag></Contents>",
+                escape_xml(object_key),
+                data.len()
+            ));
+        }
+        drop(objects);
+        let xml = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult><Name>chef</Name><Prefix>{}</Prefix><KeyCount>{count}</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>{contents}</ListBucketResult>",
+            escape_xml(&prefix)
+        );
+        return (StatusCode::OK, [("content-type", "application/xml")], xml).into_response();
+    }
 
     match method.as_str() {
         "PUT" => {
@@ -109,6 +138,40 @@ fn header_pairs(headers: &HeaderMap) -> Vec<(String, String)> {
             )
         })
         .collect()
+}
+
+fn query_parameter(query: &str, name: &str) -> Option<String> {
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == name).then(|| percent_decode(value))
+    })
+}
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or_default();
+            if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                decoded.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 async fn start_mock() -> (String, MockState) {
@@ -255,6 +318,45 @@ fn presigned_urls_are_not_sent_to_the_server() {
     ));
     assert!(url.contains("X-Amz-Algorithm=AWS4-HMAC-SHA256"));
     assert!(url.contains("X-Amz-Signature="));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_uses_signed_list_objects_v2_and_returns_entries() {
+    let (endpoint, mock) = start_mock().await;
+    let store = store(&endpoint);
+
+    let put_store = store.clone();
+    run_blocking(move || put_store.put("acme", HELLO_CHECKSUM, HELLO))
+        .await
+        .unwrap();
+    let world_checksum = "7d793037a0760186574b0282f2f435e7";
+    let put_store = store.clone();
+    run_blocking(move || put_store.put("acme", world_checksum, b"world"))
+        .await
+        .unwrap();
+
+    let list_store = store.clone();
+    let entries = run_blocking(move || list_store.list("acme")).await.unwrap();
+    assert_eq!(entries.len(), 2);
+    let hello = entries
+        .iter()
+        .find(|entry| entry.key.ends_with(HELLO_CHECKSUM))
+        .expect("hello entry");
+    assert_eq!(hello.size, HELLO.len() as u64);
+    assert!(hello.etag.as_deref().unwrap().contains("etag-"));
+    assert!(entries
+        .iter()
+        .any(|entry| entry.key.ends_with(world_checksum) && entry.size == 5));
+
+    let captured = mock.last_request();
+    assert_eq!(captured.method, "GET");
+    assert_eq!(captured.path, "/chef");
+    let query = captured.query.as_deref().expect("list query");
+    assert!(query.contains("list-type=2"));
+    assert!(query.contains("max-keys=1000"));
+    assert!(query.contains("prefix=organization-acme%2F"));
+    let authorization = captured.header("authorization").expect("signed request");
+    assert!(authorization.starts_with("AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
