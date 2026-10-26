@@ -1,5 +1,5 @@
 use crate::{ApiError, AppState, AuthContext};
-use axum::http::HeaderMap;
+use axum::http::{header, HeaderMap, HeaderValue};
 use microwave_store::{Org, Permission};
 use serde_json::Value;
 
@@ -29,6 +29,21 @@ pub fn base_url(headers: &HeaderMap, state: &AppState) -> String {
             }
         });
     format!("{proto}://{host}")
+}
+
+/// Build the `Location` header for a 201 response.
+///
+/// Upstream's `create_from_json/3` sets `Location` to the absolute URI of the
+/// newly created (or renamed) resource. Handlers must keep their JSON body
+/// unchanged and only attach this header.
+pub fn location_headers(uri: &str) -> Result<HeaderMap, ApiError> {
+    // Resource names are not restricted to ASCII everywhere (data bag names
+    // accept Unicode alphanumerics), so permit obs-text bytes rather than
+    // failing the whole create with a 500.
+    let value = HeaderValue::from_bytes(uri.as_bytes()).map_err(|_| ApiError::internal())?;
+    let mut headers = HeaderMap::new();
+    headers.insert(header::LOCATION, value);
+    Ok(headers)
 }
 
 pub async fn container_authz(

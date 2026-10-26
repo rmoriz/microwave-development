@@ -1,4 +1,7 @@
-use crate::helpers::{base_url, container_authz, organization, require_permission};
+use crate::chef_json::ChefJson;
+use crate::helpers::{
+    base_url, container_authz, location_headers, organization, require_permission,
+};
 use crate::{ApiError, AppState, AuthContext};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -89,8 +92,8 @@ async fn create_data_bag(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    ChefJson(body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let container = container_authz(&state, org, "data").await?;
     require_permission(&state, &auth, &container, Permission::Create).await?;
@@ -107,11 +110,11 @@ async fn create_data_bag(
         .map_err(ApiError::from)?;
 
     let base = base_url(&headers, &state);
+    let uri = format!("{base}/organizations/{}/data/{name}", org.name);
     Ok((
         StatusCode::CREATED,
-        Json(json!({
-            "uri": format!("{base}/organizations/{}/data/{name}", org.name)
-        })),
+        location_headers(&uri)?,
+        Json(json!({ "uri": uri })),
     ))
 }
 
@@ -186,8 +189,9 @@ async fn create_data_bag_item(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, bag_name)): Path<(String, String)>,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    headers: HeaderMap,
+    ChefJson(body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let bag = state
         .store
@@ -229,7 +233,16 @@ async fn create_data_bag_item(
         .map_err(ApiError::from)?;
     crate::search::index::index_data_bag_item(&state, org, &item).await;
 
-    Ok((StatusCode::CREATED, Json(item_response(&bag_name, &body))))
+    let base = base_url(&headers, &state);
+    let uri = format!(
+        "{base}/organizations/{}/data/{bag_name}/{item_name}",
+        org.name
+    );
+    Ok((
+        StatusCode::CREATED,
+        location_headers(&uri)?,
+        Json(item_response(&bag_name, &body)),
+    ))
 }
 
 async fn get_data_bag_item(
@@ -260,7 +273,7 @@ async fn update_data_bag_item(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, bag_name, item_name)): Path<(String, String, String)>,
-    Json(body): Json<Value>,
+    ChefJson(body): ChefJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
     let bag = state

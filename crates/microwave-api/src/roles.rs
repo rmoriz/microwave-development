@@ -1,4 +1,7 @@
-use crate::helpers::{base_url, container_authz, organization, require_permission};
+use crate::chef_json::ChefJson;
+use crate::helpers::{
+    base_url, container_authz, location_headers, organization, require_permission,
+};
 use crate::{ApiError, AppState, AuthContext};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -79,8 +82,8 @@ async fn create_role(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     headers: HeaderMap,
-    Json(mut body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    ChefJson(mut body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let container = container_authz(&state, org, "roles").await?;
     require_permission(&state, &auth, &container, Permission::Create).await?;
@@ -99,11 +102,11 @@ async fn create_role(
     crate::search::index::index_object(&state, org, crate::search::IndexKind::Role, &role).await;
 
     let base = base_url(&headers, &state);
+    let uri = format!("{base}/organizations/{}/roles/{name}", org.name);
     Ok((
         StatusCode::CREATED,
-        Json(json!({
-            "uri": format!("{base}/organizations/{}/roles/{name}", org.name)
-        })),
+        location_headers(&uri)?,
+        Json(json!({ "uri": uri })),
     ))
 }
 
@@ -232,7 +235,7 @@ async fn update_role(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, name)): Path<(String, String)>,
-    Json(mut body): Json<Value>,
+    ChefJson(mut body): ChefJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
     let role = state

@@ -3,6 +3,7 @@
 pub mod acls;
 pub mod actions;
 pub mod bookshelf;
+pub mod chef_json;
 pub mod clients;
 pub mod compliance_proxy;
 pub mod containers;

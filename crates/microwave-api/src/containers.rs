@@ -1,4 +1,5 @@
-use crate::helpers::{base_url, organization, require_permission};
+use crate::chef_json::ChefJson;
+use crate::helpers::{base_url, location_headers, organization, require_permission};
 use crate::{ApiError, AppState, AuthContext};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -50,8 +51,8 @@ async fn create_container(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    ChefJson(body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let container = container_authz(&state, org, "containers").await?;
     require_permission(&state, &auth, &container, Permission::Create).await?;
@@ -63,14 +64,14 @@ async fn create_container(
         .await
         .map_err(ApiError::from)?;
     let base = base_url(&headers, &state);
+    let uri = format!(
+        "{base}/organizations/{}/containers/{}",
+        org.name, container.name
+    );
     Ok((
         StatusCode::CREATED,
-        Json(json!({
-            "uri": format!(
-                "{base}/organizations/{}/containers/{}",
-                org.name, container.name
-            )
-        })),
+        location_headers(&uri)?,
+        Json(json!({ "uri": uri })),
     ))
 }
 

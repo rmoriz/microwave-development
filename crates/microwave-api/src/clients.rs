@@ -1,4 +1,7 @@
-use crate::helpers::{base_url, is_superuser, organization, parse_public_key, require_permission};
+use crate::chef_json::ChefJson;
+use crate::helpers::{
+    base_url, is_superuser, location_headers, organization, parse_public_key, require_permission,
+};
 use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -55,8 +58,8 @@ async fn create_client(
     Extension(auth): Extension<AuthContext>,
     Extension(api_version): Extension<ApiVersion>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    ChefJson(body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let name = client_name(&body)?;
     let validator = optional_bool(&body, "validator")?.unwrap_or(false);
@@ -161,7 +164,7 @@ async fn create_client(
         }
     };
 
-    Ok((StatusCode::CREATED, Json(response)))
+    Ok((StatusCode::CREATED, location_headers(&uri)?, Json(response)))
 }
 
 async fn get_client(
@@ -186,8 +189,8 @@ async fn update_client(
     Extension(api_version): Extension<ApiVersion>,
     Path((_organization, client_name)): Path<(String, String)>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    ChefJson(body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let client = find_client(&state, org, &client_name).await?;
     authorize_client(&state, &auth, &client, microwave_store::Permission::Update).await?;
@@ -275,7 +278,13 @@ async fn update_client(
     } else {
         StatusCode::OK
     };
-    Ok((status, Json(response)))
+    let response_headers = if renamed {
+        let uri = format!("{base}/organizations/{}/clients/{}", org.name, client.name);
+        location_headers(&uri)?
+    } else {
+        HeaderMap::new()
+    };
+    Ok((status, response_headers, Json(response)))
 }
 
 async fn delete_client(

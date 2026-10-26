@@ -1,4 +1,7 @@
-use crate::helpers::{base_url, container_authz, organization, require_permission};
+use crate::chef_json::ChefJson;
+use crate::helpers::{
+    base_url, container_authz, location_headers, organization, require_permission,
+};
 use crate::{ApiError, AppState, AuthContext};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -123,8 +126,8 @@ async fn create_node(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     headers: HeaderMap,
-    Json(mut body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    ChefJson(mut body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let nodes_container = container_authz(&state, org, "nodes").await?;
     require_permission(&state, &auth, &nodes_container, Permission::Create).await?;
@@ -148,11 +151,14 @@ async fn create_node(
     crate::search::index::index_node(&state, org, &node).await;
 
     let base = base_url(&headers, &state);
+    let uri = format!(
+        "{base}/organizations/{}/nodes/{}",
+        org.name, normalized.name
+    );
     Ok((
         StatusCode::CREATED,
-        Json(json!({
-            "uri": format!("{base}/organizations/{}/nodes/{}", org.name, normalized.name)
-        })),
+        location_headers(&uri)?,
+        Json(json!({ "uri": uri })),
     ))
 }
 
@@ -176,7 +182,7 @@ async fn update_node(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, name)): Path<(String, String)>,
-    Json(mut body): Json<Value>,
+    ChefJson(mut body): ChefJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
     let normalized = normalize_node(&mut body, Some(&name))?;

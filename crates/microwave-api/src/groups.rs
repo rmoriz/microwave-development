@@ -1,4 +1,5 @@
-use crate::helpers::{base_url, organization, require_permission};
+use crate::chef_json::ChefJson;
+use crate::helpers::{base_url, location_headers, organization, require_permission};
 use crate::{ApiError, AppState, AuthContext};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -50,8 +51,8 @@ async fn create_group(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    ChefJson(body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let container = container_authz(&state, org, "groups").await?;
     require_permission(&state, &auth, &container, Permission::Create).await?;
@@ -63,11 +64,11 @@ async fn create_group(
         .await
         .map_err(ApiError::from)?;
     let base = base_url(&headers, &state);
+    let uri = format!("{base}/organizations/{}/groups/{}", org.name, group.name);
     Ok((
         StatusCode::CREATED,
-        Json(json!({
-            "uri": format!("{base}/organizations/{}/groups/{}", org.name, group.name)
-        })),
+        location_headers(&uri)?,
+        Json(json!({ "uri": uri })),
     ))
 }
 
@@ -91,8 +92,9 @@ async fn update_group(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, group_name)): Path<(String, String)>,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    headers: HeaderMap,
+    ChefJson(body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let group = find_group(&state, org, &group_name).await?;
     require_permission(&state, &auth, &group.authz_id, Permission::Update).await?;
@@ -157,7 +159,20 @@ async fn update_group(
     } else {
         StatusCode::OK
     };
-    Ok((status, Json(group_json(org, &group, &members))))
+    let response_headers = if renamed {
+        let base = base_url(&headers, &state);
+        location_headers(&format!(
+            "{base}/organizations/{}/groups/{}",
+            org.name, group.name
+        ))?
+    } else {
+        HeaderMap::new()
+    };
+    Ok((
+        status,
+        response_headers,
+        Json(group_json(org, &group, &members)),
+    ))
 }
 
 async fn delete_group(

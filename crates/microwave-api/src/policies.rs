@@ -1,4 +1,7 @@
-use crate::helpers::{base_url, container_authz, organization, require_permission};
+use crate::chef_json::ChefJson;
+use crate::helpers::{
+    base_url, container_authz, location_headers, organization, require_permission,
+};
 use crate::{ApiError, AppState, AuthContext};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -78,8 +81,8 @@ async fn create_policy(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    ChefJson(body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let (name, revision_id) = validate_policy_revision(&body, None)?;
     require_create_revision_permission(&state, &auth, org, &name).await?;
@@ -97,11 +100,11 @@ async fn create_policy(
         .map_err(ApiError::from)?;
 
     let base = base_url(&headers, &state);
+    let uri = format!("{base}/organizations/{}/policies/{name}", org.name);
     Ok((
         StatusCode::CREATED,
-        Json(json!({
-            "uri": format!("{base}/organizations/{}/policies/{name}", org.name)
-        })),
+        location_headers(&uri)?,
+        Json(json!({ "uri": uri })),
     ))
 }
 
@@ -178,8 +181,9 @@ async fn create_policy_revision(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, name)): Path<(String, String)>,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    headers: HeaderMap,
+    ChefJson(body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let (name, revision_id) = validate_policy_revision(&body, Some(&name))?;
     require_create_revision_permission(&state, &auth, org, &name).await?;
@@ -196,7 +200,12 @@ async fn create_policy_revision(
         .await
         .map_err(ApiError::from)?;
 
-    Ok((StatusCode::CREATED, Json(body)))
+    let base = base_url(&headers, &state);
+    let uri = format!(
+        "{base}/organizations/{}/policies/{name}/revisions/{revision_id}",
+        org.name
+    );
+    Ok((StatusCode::CREATED, location_headers(&uri)?, Json(body)))
 }
 
 async fn get_policy_revision(
@@ -287,8 +296,8 @@ async fn create_policy_group(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    ChefJson(body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let name = body
         .get("name")
@@ -306,11 +315,11 @@ async fn create_policy_group(
         .map_err(ApiError::from)?;
 
     let base = base_url(&headers, &state);
+    let uri = format!("{base}/organizations/{}/policy_groups/{name}", org.name);
     Ok((
         StatusCode::CREATED,
-        Json(json!({
-            "uri": format!("{base}/organizations/{}/policy_groups/{name}", org.name)
-        })),
+        location_headers(&uri)?,
+        Json(json!({ "uri": uri })),
     ))
 }
 
@@ -399,8 +408,9 @@ async fn put_policy_group_association(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, group, policy)): Path<(String, String, String)>,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    headers: HeaderMap,
+    ChefJson(body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let (name, revision_id) = validate_policy_revision(&body, Some(&policy))?;
 
@@ -450,14 +460,21 @@ async fn put_policy_group_association(
         .await
         .map_err(ApiError::from)?;
 
-    Ok((
-        if created {
-            StatusCode::CREATED
-        } else {
-            StatusCode::OK
-        },
-        Json(body),
-    ))
+    let status = if created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    let response_headers = if created {
+        let base = base_url(&headers, &state);
+        location_headers(&format!(
+            "{base}/organizations/{}/policy_groups/{group}/policies/{name}",
+            org.name
+        ))?
+    } else {
+        HeaderMap::new()
+    };
+    Ok((status, response_headers, Json(body)))
 }
 
 async fn delete_policy_group_association(
