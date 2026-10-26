@@ -225,14 +225,125 @@ pub fn ha_status(context: &Context) -> Result<(), CtlError> {
     Ok(())
 }
 
+/// An invocation of the `psql` compatibility command.
+pub(crate) struct PsqlInvocation {
+    pub service: Option<String>,
+    pub write: bool,
+    pub options: Vec<String>,
+    pub args: Vec<String>,
+}
+
+/// Recognizes the upstream `psql SERVICE [--write] [--options VALUE]` form.
+///
+/// `args` comes from clap as a trailing var-arg so unknown client options are
+/// preserved. The first remaining token is treated as a service name only when
+/// it looks like one (and, for a bare single token, only when it is a known
+/// Chef service); this keeps existing calls such as `psql "select 1"` and
+/// `psql some-database.sqlite` working.
+pub(crate) fn parse_psql_args(raw: &[String]) -> Result<PsqlInvocation, CtlError> {
+    let mut write = false;
+    let mut options = Vec::new();
+    let mut passthrough = Vec::new();
+    let mut index = 0;
+
+    while index < raw.len() {
+        let argument = &raw[index];
+        if argument == "--write" {
+            write = true;
+        } else if argument == "--options" {
+            index += 1;
+            let value = raw.get(index).ok_or_else(|| {
+                CtlError::message("--options requires a value for the database client")
+            })?;
+            options.extend(value.split_whitespace().map(str::to_string));
+        } else if let Some(value) = argument.strip_prefix("--options=") {
+            options.extend(value.split_whitespace().map(str::to_string));
+        } else {
+            passthrough.push(argument.clone());
+        }
+        index += 1;
+    }
+
+    let service = if passthrough
+        .first()
+        .map(|value| is_psql_service_name(value, passthrough.len() > 1))
+        .unwrap_or(false)
+    {
+        Some(passthrough.remove(0))
+    } else {
+        None
+    };
+
+    Ok(PsqlInvocation {
+        service,
+        write,
+        options,
+        args: passthrough,
+    })
+}
+
+/// Known upstream service names. These are accepted even as the only argument.
+const KNOWN_PSQL_SERVICES: &[&str] = &[
+    "bifrost",
+    "bookshelf",
+    "chef",
+    "drbd",
+    "erchef",
+    "keepalived",
+    "ldap",
+    "manage",
+    "nginx",
+    "oc_bifrost",
+    "oc_id",
+    "oc-id",
+    "opscode-chef",
+    "opscode-erchef",
+    "opscode-reporting",
+    "postgres",
+    "postgresql",
+    "push-jobs-server",
+    "rabbitmq",
+    "redis",
+    "redis_lb",
+    "saml",
+    "solr4",
+    "stats",
+];
+
+fn is_psql_service_name(value: &str, has_trailing_arguments: bool) -> bool {
+    let plausible = !value.is_empty()
+        && value.len() <= 255
+        && !value.starts_with('-')
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "_-:".contains(character));
+    plausible
+        && (has_trailing_arguments
+            || KNOWN_PSQL_SERVICES
+                .iter()
+                .any(|service| service.eq_ignore_ascii_case(value)))
+}
+
 /// Open an interactive `sqlite3` shell on the configured database, or `psql`
 /// when a PostgreSQL URL is configured. Extra arguments are passed through.
-pub fn psql(context: &Context, args: &[String]) -> Result<(), CtlError> {
+///
+/// The optional upstream service name is accepted but maps to the single
+/// configured database. `--write` disables the default read-only session;
+/// `--options` tokens are prepended to the trailing client arguments.
+pub fn psql(context: &Context, invocation: &PsqlInvocation) -> Result<(), CtlError> {
+    if let Some(service) = &invocation.service {
+        eprintln!("note: psql service {service} maps to the configured database.");
+    }
     let (program, mut command_args, target) = match context.config.database.driver {
         DatabaseDriver::Sqlite => {
             let path = context.sqlite_path()?.to_path_buf();
             // Ensure the file exists and has the current schema before opening it.
             drop(context.open_store()?);
+            // SQLite's `-readonly` cannot open a WAL database when it cannot
+            // create the shared-memory file, so the SQLite backend keeps the
+            // client tool's normal behavior. `--write` is accepted for
+            // upstream compatibility; write access is governed by the file
+            // permissions and the configured credentials.
             ("sqlite3", vec![path.display().to_string()], None)
         }
         DatabaseDriver::Postgres => {
@@ -245,11 +356,16 @@ pub fn psql(context: &Context, args: &[String]) -> Result<(), CtlError> {
         }
     };
 
-    command_args.extend(args.iter().cloned());
+    command_args.splice(0..0, invocation.options.iter().cloned());
+    command_args.extend(invocation.args.iter().cloned());
     let mut command = std::process::Command::new(program);
     command.args(&command_args);
     if let Some(target) = &target {
         target.apply_environment(&mut command);
+    }
+    if target.is_some() && !invocation.write {
+        // Match upstream's read-only default for the named service database.
+        command.env("PGOPTIONS", "-c default_transaction_read_only=on");
     }
     let status = command
         .status()
@@ -355,5 +471,55 @@ pub(crate) fn object_store_backend_name(backend: ObjectStoreBackend) -> &'static
         ObjectStoreBackend::Local => "local",
         ObjectStoreBackend::S3 => "s3",
         ObjectStoreBackend::Garage => "garage",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_psql_args, PsqlInvocation};
+
+    fn parse(arguments: &[&str]) -> PsqlInvocation {
+        let raw: Vec<String> = arguments.iter().map(|value| value.to_string()).collect();
+        parse_psql_args(&raw).unwrap()
+    }
+
+    #[test]
+    fn accepts_a_service_name_write_and_options() {
+        let invocation = parse(&["erchef", "--write", "--options", "-X -q", "-c", "select 1"]);
+        assert_eq!(invocation.service.as_deref(), Some("erchef"));
+        assert!(invocation.write);
+        assert_eq!(invocation.options, vec!["-X", "-q"]);
+        assert_eq!(invocation.args, vec!["-c", "select 1"]);
+    }
+
+    #[test]
+    fn accepts_any_plausible_service_when_arguments_follow() {
+        let invocation = parse(&["my-service", "-c", "select 1"]);
+        assert_eq!(invocation.service.as_deref(), Some("my-service"));
+
+        let invocation = parse(&["my_service", "--options=--no-psqlrc", "select 1"]);
+        assert_eq!(invocation.service.as_deref(), Some("my_service"));
+        assert_eq!(invocation.options, vec!["--no-psqlrc"]);
+        assert_eq!(invocation.args, vec!["select 1"]);
+    }
+
+    #[test]
+    fn keeps_sql_and_database_paths_as_arguments() {
+        let invocation = parse(&["select count(*) from users;"]);
+        assert!(invocation.service.is_none());
+        assert_eq!(invocation.args, vec!["select count(*) from users;"]);
+
+        let invocation = parse(&["some-database.sqlite", "select 1"]);
+        assert!(invocation.service.is_none());
+        assert_eq!(invocation.args, vec!["some-database.sqlite", "select 1"]);
+
+        let invocation = parse(&["-tA", "-c", "select 1"]);
+        assert!(invocation.service.is_none());
+        assert_eq!(invocation.args, vec!["-tA", "-c", "select 1"]);
+    }
+
+    #[test]
+    fn rejects_options_without_a_value() {
+        assert!(parse_psql_args(&["--options".to_string()]).is_err());
     }
 }
