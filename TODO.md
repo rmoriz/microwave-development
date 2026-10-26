@@ -345,6 +345,14 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [x] P2: per-user USAG groups, SQLite indexes, transactional group-cycle checks, authz entity-type triggers, policy/artifact FKs, access log/request IDs, compression, trusted-proxy handling.
 - [x] Integrate the reviewed `backup-keys` branch (`microwave-ctl backup --include-private-keys`) with the newer P1c backup command surface: optional timestamped PATH, `--yes`, `--config-only`, validated `--pg-options`, tar/directory formats, private-key manifest/TLS handling, and restore `--restore-private-keys`/`--private-only`/`--pg-options` all coexist.
 - [ ] Run the non-harness Pedant `environments`/`roles` suites; the vendored harness currently lacks the `client` fixture for their auth cases.
+### 5.4b P3 Compatibility Completion
+- [x] Client update/rename reindexes the search document.
+- [x] Depsolver timeout is configurable (default 20s), runs on `spawn_blocking`, and returns 503 `Dependency solver overloaded` when saturated.
+- [x] Environment/role rename (201 + Location), 409 conflicts, and 406 content negotiation.
+- [x] Remaining `Location`/Chef JSON error coverage (sandboxes, keys, ACLs, cookbooks, artifacts).
+- [x] Bookshelf expiring local tokens, Range/206/416, HEAD metadata, and S3 ListObjectsV2; multipart upload remains a documented gap.
+- [x] Full `microwave-ctl backup --include-private-keys` merged with optional/default backup paths, config-only, and `--pg-options`.
+- [ ] Multi-replica HA / OpenSearch 3.x / Garage load validation; full pedant `all` is green except the known plain-HTTP `headers` artifact.
 ### 5.5 Full Pedant Verification, HA & Performance Benchmarks
 - [ ] Run complete `oc-chef-pedant` suite against Default Embedded mode (SQLite + Tantivy + Local Bookshelf) and achieve 100% pass rate on supported specs.
 - [ ] Run complete `oc-chef-pedant` suite against HA mode (PostgreSQL + OpenSearch + Garage/S3) and achieve 100% pass rate.
