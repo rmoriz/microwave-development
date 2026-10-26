@@ -1,5 +1,6 @@
 use microwave_config::{
-    Config, DatabaseDriver, ObjectStoreBackend, SearchBackend, StorageCompression,
+    Config, DatabaseDriver, MailAuth, MailConfig, MailSecurity, ObjectStoreBackend, SearchBackend,
+    StorageCompression,
 };
 use std::sync::Mutex;
 
@@ -701,4 +702,417 @@ fn rejects_invalid_compliance_proxy_urls_and_headers() {
             "accepted dangerous token header {header}"
         );
     }
+}
+
+#[test]
+fn mail_defaults_are_disabled_and_safe() {
+    let c = Config::default();
+    assert!(!c.mail.enabled);
+    assert!(!c.mail.is_enabled());
+    assert_eq!(c.mail.security, MailSecurity::Starttls);
+    assert_eq!(c.mail.auth, MailAuth::Auto);
+    assert_eq!(c.mail.timeout_ms, 10_000);
+    assert_eq!(c.mail.port, None);
+    assert_eq!(c.server.public_url, None);
+    assert_eq!(c.auth.password_reset_ttl_seconds, 3600);
+}
+
+#[test]
+fn mail_toml_round_trips_remote_auth_fields() {
+    let c = Config::from_toml_str(
+        r#"
+        [server]
+        public_url = "https://chef.example.com/"
+        [mail]
+        enabled = true
+        host = "smtp.example.com"
+        port = 587
+        security = "starttls"
+        username = "mailer"
+        password = "secret"
+        auth = "login"
+        from = "Chef <chef@example.com>"
+        reply_to = "ops@example.com"
+        timeout_ms = 5000
+        hello_name = "chef.example.com"
+        tls_ca_path = "/etc/ssl/private-ca.pem"
+        [auth]
+        password_reset_ttl_seconds = 900
+    "#,
+    )
+    .unwrap();
+    assert!(c.mail.is_enabled());
+    assert_eq!(c.mail.security, MailSecurity::Starttls);
+    assert_eq!(c.mail.auth, MailAuth::Login);
+    assert_eq!(
+        c.server.public_url.as_deref(),
+        Some("https://chef.example.com/")
+    );
+    assert_eq!(c.auth.password_reset_ttl_seconds, 900);
+}
+
+#[test]
+fn mail_is_enabled_requires_a_non_empty_host() {
+    let mut mail = MailConfig::default();
+    assert!(!mail.is_enabled());
+
+    mail.enabled = true;
+    assert!(!mail.is_enabled(), "enabled without a host is not active");
+
+    mail.host = Some("   ".into());
+    assert!(!mail.is_enabled(), "whitespace-only host is not active");
+
+    mail.host = Some("smtp.example.com".into());
+    assert!(mail.is_enabled());
+}
+
+/// Build an enabled mail configuration with the mandatory host/from fields and
+/// an optional public URL so each test only varies the rule under test.
+fn mail_toml_with_auth(public_url: Option<&str>, auth: Option<&str>, extra: &str) -> String {
+    let server = match public_url {
+        Some(url) => format!("[server]\npublic_url = \"{url}\"\n"),
+        None => String::new(),
+    };
+    let auth = auth
+        .map(|auth| format!("auth = \"{auth}\"\n"))
+        .unwrap_or_default();
+    format!(
+        r#"
+        {server}
+        [mail]
+        enabled = true
+        host = "smtp.example.com"
+        from = "Chef <chef@example.com>"
+        {auth}{extra}
+        "#
+    )
+}
+
+/// Enabled mail without authentication. Unauthenticated relays must opt in
+/// with `auth = "none"`; the default `auto` requires credentials.
+fn mail_toml(public_url: Option<&str>, extra: &str) -> String {
+    mail_toml_with_auth(public_url, Some("none"), extra)
+}
+
+#[test]
+fn mail_requires_host_from_timeout_and_public_url_when_enabled() {
+    for (label, input) in [
+        (
+            "missing host",
+            mail_toml(Some("https://chef.example.com"), "")
+                .replace("host = \"smtp.example.com\"", ""),
+        ),
+        (
+            "missing from",
+            mail_toml(Some("https://chef.example.com"), "")
+                .replace("from = \"Chef <chef@example.com>\"", ""),
+        ),
+        ("missing public_url", mail_toml(None, "")),
+        (
+            "zero timeout",
+            mail_toml(Some("https://chef.example.com"), "timeout_ms = 0"),
+        ),
+    ] {
+        assert!(
+            Config::from_toml_str(&input).is_err(),
+            "accepted enabled mail with {label}"
+        );
+    }
+}
+
+#[test]
+fn mail_rejects_incomplete_or_conflicting_credentials() {
+    let public_url = Some("https://chef.example.com");
+    for (label, auth, extra, expected) in [
+        (
+            "username without password",
+            "plain",
+            "username = \"mailer\"",
+            "mail.username requires mail.password",
+        ),
+        (
+            "password without username",
+            "plain",
+            "password = \"secret\"",
+            "mail.password requires mail.username",
+        ),
+        (
+            "credentials with auth = none",
+            "none",
+            "username = \"mailer\"\npassword = \"secret\"",
+            "must not be combined with credentials",
+        ),
+    ] {
+        let error =
+            Config::from_toml_str(&mail_toml_with_auth(public_url, Some(auth), extra)).unwrap_err();
+        assert!(
+            error.to_string().contains(expected),
+            "{label} failed through the wrong validation rule: {error}"
+        );
+    }
+
+    // Every AUTH mechanism other than `none` requires complete credentials.
+    for auth in ["auto", "plain", "login"] {
+        let error =
+            Config::from_toml_str(&mail_toml_with_auth(public_url, Some(auth), "")).unwrap_err();
+        assert!(
+            error.to_string().contains("requires mail.username"),
+            "auth = {auth} without credentials must fail with a credential error: {error}"
+        );
+    }
+
+    // Complete credentials are accepted with the default (auto) and explicit
+    // login mechanisms; an unauthenticated relay needs an explicit `none`.
+    for auth in [None, Some("login")] {
+        assert!(
+            Config::from_toml_str(&mail_toml_with_auth(
+                public_url,
+                auth,
+                "username = \"mailer\"\npassword = \"secret\""
+            ))
+            .is_ok(),
+            "complete credentials with auth {auth:?} must be accepted"
+        );
+    }
+    assert!(
+        Config::from_toml_str(&mail_toml(public_url, "")).is_ok(),
+        "auth = \"none\" without credentials must be accepted"
+    );
+}
+
+#[test]
+fn mail_rejects_plaintext_auth_to_a_remote_host_but_allows_loopback() {
+    let public_url = Some("https://chef.example.com");
+    let credentials = "username = \"mailer\"\npassword = \"secret\"";
+
+    assert!(
+        Config::from_toml_str(&mail_toml_with_auth(
+            public_url,
+            None,
+            &format!("security = \"none\"\n{credentials}")
+        ))
+        .is_err(),
+        "plaintext AUTH to a remote relay must be rejected"
+    );
+
+    for host in ["127.0.0.1", "localhost", "[::1]", "::1"] {
+        let input = mail_toml_with_auth(
+            public_url,
+            None,
+            &format!("security = \"none\"\n{credentials}"),
+        )
+        .replace("host = \"smtp.example.com\"", &format!("host = \"{host}\""));
+        assert!(
+            Config::from_toml_str(&input).is_ok(),
+            "plaintext AUTH to loopback host {host} must be accepted"
+        );
+    }
+}
+
+#[test]
+fn mail_rejects_port_zero() {
+    assert!(
+        Config::from_toml_str(&mail_toml(Some("https://chef.example.com"), "port = 0")).is_err()
+    );
+}
+
+#[test]
+fn public_url_must_be_a_secure_origin_without_path_query_or_fragment() {
+    for url in [
+        "http://example.com",
+        "ftp://chef.example.com",
+        "not a url",
+        "https://chef.example.com/chef",
+        "https://chef.example.com/?a=1",
+        "https://chef.example.com/#frag",
+        "https://user:pass@chef.example.com",
+        "https://",
+    ] {
+        assert!(
+            Config::from_toml_str(&mail_toml(Some(url), "")).is_err(),
+            "accepted invalid public URL {url}"
+        );
+    }
+
+    for url in [
+        "https://chef.example.com",
+        "https://chef.example.com/",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://[::1]:8000",
+    ] {
+        assert!(
+            Config::from_toml_str(&mail_toml(Some(url), "")).is_ok(),
+            "rejected valid public URL {url}"
+        );
+    }
+}
+
+#[test]
+fn public_url_accepts_surrounding_whitespace_without_echoing_it_as_a_different_value() {
+    let input = mail_toml(Some("  https://chef.example.com/  "), "");
+    let config = Config::from_toml_str(&input).unwrap();
+    assert_eq!(
+        config.server.public_url.as_deref().map(str::trim),
+        Some("https://chef.example.com/")
+    );
+}
+
+#[test]
+fn public_url_validation_does_not_echo_embedded_credentials() {
+    let error = Config::from_toml_str(
+        r#"
+        [server]
+        public_url = "https://user:super-secret-password@chef.example.com"
+        "#,
+    )
+    .unwrap_err();
+
+    let display = error.to_string();
+    let debug = format!("{error:?}");
+    assert!(display.contains("server.public_url"));
+    assert!(display.contains("must not include credentials"));
+    assert!(!display.contains("super-secret-password"));
+    assert!(!debug.contains("super-secret-password"));
+}
+
+#[test]
+fn public_url_is_validated_even_when_mail_is_disabled() {
+    assert!(Config::from_toml_str(
+        r#"
+        [server]
+        public_url = "http://example.com"
+    "#
+    )
+    .is_err());
+}
+
+#[test]
+fn password_reset_ttl_is_bounded() {
+    for ttl in ["0", "604801"] {
+        let input = format!(
+            r#"
+            [auth]
+            password_reset_ttl_seconds = {ttl}
+        "#
+        );
+        assert!(
+            Config::from_toml_str(&input).is_err(),
+            "accepted out-of-range TTL {ttl}"
+        );
+    }
+
+    for ttl in ["1", "604800"] {
+        let input = format!(
+            r#"
+            [auth]
+            password_reset_ttl_seconds = {ttl}
+        "#
+        );
+        assert!(
+            Config::from_toml_str(&input).is_ok(),
+            "rejected valid TTL {ttl}"
+        );
+    }
+}
+
+#[test]
+fn mail_and_public_url_can_be_overridden_from_env() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let keys = [
+        "MW_SERVER__PUBLIC_URL",
+        "MW_MAIL__ENABLED",
+        "MW_MAIL__HOST",
+        "MW_MAIL__PORT",
+        "MW_MAIL__SECURITY",
+        "MW_MAIL__USERNAME",
+        "MW_MAIL__PASSWORD",
+        "MW_MAIL__AUTH",
+        "MW_MAIL__FROM",
+        "MW_MAIL__REPLY_TO",
+        "MW_MAIL__TIMEOUT_MS",
+        "MW_MAIL__HELLO_NAME",
+        "MW_MAIL__TLS_CA_PATH",
+        "MW_AUTH__PASSWORD_RESET_TTL_SECONDS",
+    ];
+    for (key, value) in [
+        ("MW_SERVER__PUBLIC_URL", "https://chef.example.com/"),
+        ("MW_MAIL__ENABLED", "true"),
+        ("MW_MAIL__HOST", "smtp.example.com"),
+        ("MW_MAIL__PORT", "2525"),
+        ("MW_MAIL__SECURITY", "tls"),
+        ("MW_MAIL__USERNAME", "mailer"),
+        ("MW_MAIL__PASSWORD", "secret"),
+        ("MW_MAIL__AUTH", "plain"),
+        ("MW_MAIL__FROM", "Chef <chef@example.com>"),
+        ("MW_MAIL__REPLY_TO", "ops@example.com"),
+        ("MW_MAIL__TIMEOUT_MS", "2500"),
+        ("MW_MAIL__HELLO_NAME", "chef.example.com"),
+        ("MW_MAIL__TLS_CA_PATH", "/etc/ssl/private-ca.pem"),
+        ("MW_AUTH__PASSWORD_RESET_TTL_SECONDS", "1200"),
+    ] {
+        std::env::set_var(key, value);
+    }
+
+    let mut c = Config::default();
+    let result = c.apply_env();
+
+    for key in keys {
+        std::env::remove_var(key);
+    }
+    result.unwrap();
+
+    assert!(c.mail.is_enabled());
+    assert_eq!(c.mail.host.as_deref(), Some("smtp.example.com"));
+    assert_eq!(c.mail.port, Some(2525));
+    assert_eq!(c.mail.security, MailSecurity::Tls);
+    assert_eq!(c.mail.username.as_deref(), Some("mailer"));
+    assert_eq!(c.mail.password.as_deref(), Some("secret"));
+    assert_eq!(c.mail.auth, MailAuth::Plain);
+    assert_eq!(c.mail.from.as_deref(), Some("Chef <chef@example.com>"));
+    assert_eq!(c.mail.reply_to.as_deref(), Some("ops@example.com"));
+    assert_eq!(c.mail.timeout_ms, 2500);
+    assert_eq!(c.mail.hello_name.as_deref(), Some("chef.example.com"));
+    assert_eq!(
+        c.mail.tls_ca_path.as_deref(),
+        Some("/etc/ssl/private-ca.pem")
+    );
+    assert_eq!(
+        c.server.public_url.as_deref(),
+        Some("https://chef.example.com/")
+    );
+    assert_eq!(c.auth.password_reset_ttl_seconds, 1200);
+}
+
+#[test]
+fn mail_env_rejects_invalid_enum_port_and_ttl_values() {
+    let _guard = ENV_LOCK.lock().unwrap();
+
+    std::env::set_var("MW_MAIL__SECURITY", "ssl");
+    let mut c = Config::default();
+    assert!(c.apply_env().is_err(), "unknown security must be rejected");
+    std::env::remove_var("MW_MAIL__SECURITY");
+
+    std::env::set_var("MW_MAIL__AUTH", "oauth");
+    let mut c = Config::default();
+    assert!(c.apply_env().is_err(), "unknown auth must be rejected");
+    std::env::remove_var("MW_MAIL__AUTH");
+
+    std::env::set_var("MW_MAIL__PORT", "not-a-number");
+    let mut c = Config::default();
+    assert!(c.apply_env().is_err(), "non-numeric port must be rejected");
+    std::env::remove_var("MW_MAIL__PORT");
+
+    std::env::set_var("MW_AUTH__PASSWORD_RESET_TTL_SECONDS", "0");
+    let mut c = Config::default();
+    assert!(c.apply_env().is_err(), "zero TTL must be rejected");
+    std::env::remove_var("MW_AUTH__PASSWORD_RESET_TTL_SECONDS");
+}
+
+#[test]
+fn mail_password_is_redacted_from_debug_and_serialization() {
+    let mut c = Config::default();
+    c.mail.password = Some("super-secret".into());
+    assert!(!format!("{:?}", c.mail).contains("super-secret"));
+    assert!(!toml::to_string(&c.mail).unwrap().contains("super-secret"));
 }

@@ -6,8 +6,11 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use microwave_crypto::hash_password;
+use microwave_mail::MailMessage;
 use serde_json::json;
 use std::collections::HashMap;
+
+const PASSWORD_RESET_SUBJECT: &str = "Reset your Chef Infra Server password";
 
 pub async fn show(
     State(state): State<OAuthState>,
@@ -15,10 +18,11 @@ pub async fn show(
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Response, OAuthError> {
     let token = query.get("token").filter(|value| !value.is_empty());
+    let ttl_seconds = state.config.auth.password_reset_ttl_seconds as i64;
     let valid = match token {
         Some(token) => state
             .store
-            .find_password_reset_token(token)
+            .find_password_reset_token(token, ttl_seconds)
             .await?
             .is_some(),
         None => false,
@@ -77,7 +81,7 @@ pub async fn create(
 
     let user = find_user(&state, &username).await?;
     let reset_token = match user {
-        Some(user) => Some(
+        Some(ref user) => Some(
             state
                 .store
                 .create_password_reset_token(&user.username)
@@ -85,10 +89,51 @@ pub async fn create(
         ),
         None => None,
     };
+
+    // Send email if conditions are met
+    if let (Some(token), Some(user)) = (reset_token.as_ref(), user.as_ref()) {
+        if state.mailer.is_enabled() {
+            let has_email = user
+                .email
+                .as_deref()
+                .is_some_and(|email| !email.trim().is_empty());
+            if !has_email {
+                tracing::warn!(username = %user.username, "password reset requested for user without an email address");
+            }
+            if let Some(user_email) = &user.email {
+                if !user_email.is_empty() {
+                    if let Some(from_email) = &state.config.mail.from {
+                        let reset_url = absolute_reset_url(&state, token)
+                            .unwrap_or_else(|| format!("/id/password-reset?token={token}"));
+
+                        let message = MailMessage {
+                            from: from_email.clone(),
+                            to: user_email.clone(),
+                            reply_to: state.config.mail.reply_to.clone(),
+                            subject: PASSWORD_RESET_SUBJECT.to_string(),
+                            text_body: password_reset_body(
+                                &reset_url,
+                                state.config.auth.password_reset_ttl_seconds,
+                            ),
+                        };
+
+                        if let Err(error) = state.mailer.send(&message).await {
+                            tracing::warn!(
+                                error_category = error.kind(),
+                                "password reset mail failed"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let reset_url = if state.config.auth.password_reset_token_in_response {
-        reset_token
-            .as_ref()
-            .map(|token| format!("/id/password-reset?token={token}"))
+        reset_token.as_ref().map(|token| {
+            absolute_reset_url(&state, token)
+                .unwrap_or_else(|| format!("/id/password-reset?token={token}"))
+        })
     } else {
         None
     };
@@ -138,7 +183,12 @@ async fn apply_update(
     let token = params
         .get("token")
         .ok_or_else(|| OAuthError::invalid_request("token is required"))?;
-    let Some(username) = state.store.consume_password_reset_token(&token).await? else {
+    let ttl_seconds = state.config.auth.password_reset_ttl_seconds as i64;
+    let Some(username) = state
+        .store
+        .consume_password_reset_token(&token, ttl_seconds)
+        .await?
+    else {
         return Err(OAuthError::forbidden("reset token is invalid or expired"));
     };
     let password = params.get("password").unwrap_or_default();
@@ -192,4 +242,27 @@ async fn find_user(
             .find(|user| user.email.as_deref() == Some(username)));
     }
     Ok(None)
+}
+
+fn absolute_reset_url(state: &OAuthState, token: &str) -> Option<String> {
+    state
+        .config
+        .server
+        .public_url
+        .as_ref()
+        .filter(|url| !url.is_empty())
+        .map(|url| {
+            let base = url.trim().trim_end_matches('/');
+            format!("{base}/id/password-reset?token={token}")
+        })
+}
+
+fn password_reset_body(reset_url: &str, ttl_seconds: u64) -> String {
+    let minutes = ttl_seconds.div_ceil(60);
+    format!(
+        "A password reset has been requested for your Chef Infra Server account.\n\n\
+         To reset your password, visit: {reset_url}\n\n\
+         This link will expire in {minutes} minutes.\n\n\
+         If you did not request this reset, you can safely ignore this email."
+    )
 }

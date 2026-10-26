@@ -14,7 +14,8 @@ The repository contains a working vertical slice:
 - **HTTP API** — `/_status`, `/_stats`, `/server_api_version`, `/license`, users, organizations, clients, principals, key management, organization memberships/invitations, nodes, node `_identifiers`, environments, environment recipes, roles (including environment run lists), data bags, sandboxes, bookshelf uploads, cookbooks, cookbook resolution, policyfiles/policy groups, ACL endpoints, signed-request validation (`/validate/*`), search (node/role/environment/client/data-bag indexes with a query subset and partial search), data-collector forwarding and opt-in mutation action notifications, the compliance profile proxy, the removed analytics `controls` endpoint (`410 Gone`), and the optional server-enforced `required_recipe` endpoint. `/validate/*` and `_identifiers` are internal upstream APIs that Chef Server only routes on its internal listener; Microwave exposes them on the main listener to signed organization members, so restrict them at the reverse proxy if the upstream network split is required.
 - **Operations CLI** — `microwave-ctl` with a `chef-server-ctl` compatibility binary: user/org administration (`user-create`, `user-list`, `user-show`, `user-delete`, `user-edit`), server-admin grant/remove/list, org membership, password reset, key rotation (add/list/delete user and client keys), service credential rotation (`rotate-credentials`, `rotate-all-credentials`, `rotate-shared-secrets`), secrets management, OAuth application inspection (`oc-id-show-app`), filtered metadata dumps (`filtered-dump`), diagnostic log bundles (`gather-logs`), orphan authorization cleanup (`cleanup-bifrost`), maintenance state, `check-config`, `reconfigure`, `ha-status`, `psql`, status, directory or tar backup/restore, `reindex` (embedded count verification or a remote OpenSearch/Elasticsearch backfill), the `oc-chef-pedant` runner, systemd service management with a container-friendly `service start --foreground` mode, and `migrate-from-legacy` snapshot import. The same data commands work against either configured metadata backend.
 - **Migration** — `microwave-migrate` exports a versioned JSON snapshot from SQLite or PostgreSQL (users with password hashes, organizations, clients, keys, authz ACLs, nodes, roles, environments, data bags, checksums, cookbooks, policies, OAuth applications/grants/tokens, telemetry, explicit/empty sandboxes, and `kvpair`) and imports it into either backend with original ids, authz ids, timestamps, hashes, keys, and token state intact. Default exports redact secrets; `--include-secrets` includes `kvpair`, OAuth grants/tokens, and OAuth application secrets, while the independent `--include-private-keys` adds explicit on-disk key/certificate material (`pivotal.pem`, `pivotal.password`, `objectstore.secret`, private-chef secrets, WebUI/oc-id keys, and configured TLS files) under `secrets/` with a manifest. `--archive PATH.tar.gz` adds local `bookshelf/` blobs with tar allowlist, traversal, symlink, absolute-path, and special-file rejection; import is confirmation-gated, restores private files mode `0600`, refuses existing keys or an empty-over-populated bookshelf without `--force`, supports `--secrets-dir`, and pre-stages private files before database changes. Data-dir private manifest entries are limited to the fixed export filename allowlist, telemetry merges without deleting target-local events, and partial-secret imports warn. Use both secret flags for a truly complete self-migration. Snapshots always contain decoded plain JSON even when the database stores compressed values. PostgreSQL imports also advance the sequence-backed identifiers. The live legacy API crawler (`from-api`) is implemented and can copy cookbook file blobs into a local object-store tree with `--bookshelf-dir` (64 MiB per blob, 4 GiB per crawl, checksum-verified and idempotent); without the flag it remains metadata-only. `import-knife-backup` imports a `knife ec backup` directory directly — users, password/key dumps, organizations, memberships, clients, containers, groups, nodes, roles, environments, data bags, ACLs, and ChefFS cookbooks with MD5 addressed blobs — without an HTTP server. With an explicit `--secrets-dir` or `--secrets-archive` it also copies server-owned private material (`pivotal.pem`/`pivotal.password`, web UI keys, `objectstore.secret`, `private-chef-secrets.json`, TLS certificate/key including Chef `nginx/ca/<fqdn>.crt|.key`, and CA files) with overwrite protection, modes, archive validation, staged/rollback writes, and no content logging. Chef client/user private keys are never stored server-side and stay client-owned. `--merge-users` reuses an existing same-named target user (including a bootstrapped `pivotal`) while preserving target credentials/profile/default keys unless `--replace-user-credentials` is given; merged users are reconciled into `server-admins` according to their final admin flag, and replacement removes a target default key the backup does not supply. `--replace-acls` removes revoked grants and membership for groups actually present in the backup, restoring prior ACL state if the import fails. The command supports `--dry-run` and requires `--yes` for non-interactive writes.
-- **OAuth/identity** — `/id` sign-in/sessions, OAuth application management, authorization-code and refresh-token flows, `/id/v1/me`, `/id/v1/me/organizations`, `/id/v1/status`, profile/password/key regeneration, and password-reset tokens.
+- **OAuth/identity** — `/id` sign-in/sessions, OAuth application management, authorization-code and refresh-token flows, `/id/v1/me`, `/id/v1/me/organizations`, `/id/v1/status`, profile/password/key regeneration, password-reset tokens, and password-reset email via SMTP.
+- **Mail** — optional outbound SMTP for password-reset email (`[mail]` / `MW_MAIL__*`), with STARTTLS or implicit TLS for remote relays, AUTH PLAIN/LOGIN/auto, and bounded asynchronous dispatch. Disabled by default; enabling it requires `server.public_url`. Email-change verification and invitation mail are not implemented.
 - **Dependency solving** — Chef version constraints (`=`, `>`, `<`, `>=`, `<=`, `~>`), deterministic backtracking, environment constraints, role expansion, timeouts, and upstream-shaped 412 failures.
 - **External backends** — S3/Garage object storage with SigV4 signing and presigned URLs, and OpenSearch/Elasticsearch search with bulk indexing and query translation. The local object store and embedded search remain the defaults.
 - **Server** — `microwave-server serve` selects the configured metadata backend, bootstraps a `pivotal` superuser and listens on the configured address. It serves plain HTTP by default and HTTPS directly when `server.tls.cert_path` and `server.tls.key_path` are configured. `serve --check` initializes/migrates the backend and prints its type without exposing credentials.
@@ -59,6 +60,58 @@ or reverse proxy terminating TLS in front of plain HTTP remains fully supported;
 see [`docs/deployment.md`](docs/deployment.md#tls-listener).
 
 The full workspace suite is green.
+
+### Mail (SMTP)
+
+Mail is disabled by default and is used only for password-reset messages.
+Enable it with a `[mail]` block and a public origin:
+
+```toml
+[server]
+public_url = "https://chef.example.com"
+
+[auth]
+password_reset_ttl_seconds = 3600
+
+[mail]
+enabled = true
+host = "smtp.example.com"
+port = 587
+security = "starttls"   # starttls | tls | none
+username = "chef-mailer"
+password = "..."        # prefer MW_MAIL__PASSWORD
+auth = "auto"           # auto | plain | login | none
+from = "Chef Infra Server <chef@example.com>"
+reply_to = "ops@example.com"
+```
+
+`server.public_url` is required when mail is enabled and must be an absolute
+`https` origin with no credentials, path, query, or fragment; loopback
+development hosts may use `http`. Reset links are built from it instead of the
+unauthenticated `Host` header.
+
+Remote SMTP with authentication and TLS is the supported production path: use
+STARTTLS (the default, port 587) or implicit TLS (port 465). `security = "none"`
+is explicit plaintext for a trusted local relay and rejects SMTP AUTH for
+non-loopback hosts. `mail.auth` defaults to `auto`; `plain` and `login` force a
+mechanism, and `none` disables AUTH for an unauthenticated relay. `mail.from`
+is required. All other mail keys are ignored while mail is disabled.
+
+The password is never logged or serialized. `MW_MAIL__PASSWORD` overrides
+`mail.password`, and `microwave-config.json` backups omit the value, so supply
+it again after a restore. `auth.password_reset_token_in_response = true` still
+adds `reset_url` to the response even with mail enabled; it is a development
+escape hatch and is unsafe for production.
+
+Delivery is asynchronous: the request returns the same generic success message
+whether the account does not exist, has no email address, the bounded queue is
+full, or the SMTP relay rejects the message. Dispatcher and SMTP failures are
+logged and never change the HTTP response. There are no retries and no durable
+outbox. Email-change verification and organization invitation mail are not part
+of this slice.
+
+See [`docs/deployment.md`](docs/deployment.md#mail-smtp) for the full key table
+and backup/restore notes.
 
 ### Dual-backend store matrix
 
@@ -157,6 +210,9 @@ supported as a `command:`/`docker run` override.
 - Knife backup import gaps. `import-knife-backup` covers the ChefFS repository layout, user/key SQL dumps, ACLs, local cookbook blobs, and explicitly supplied server-owned secrets. It does not evaluate arbitrary Ruby in `metadata.rb`, import cookbook artifacts, policies/policy groups, OAuth applications, or S3/Garage blobs, migrate client/user private keys (those are client-owned), or purge objects removed from the backup. `--merge-users`/`--replace-user-credentials` and `--replace-acls` handle bootstrapped users, credential replacement, and revoked grants; ACL replacement captures and restores prior ACL/group state if the import fails, though it is not one cross-target database transaction. Server-secret writes are staged with set rollback on ordinary errors, but a crash during commit can leave a partial set; recovery requires an operator backup. Server-secret import does not validate TLS pairings or restart the server. See the [`microwave-migrate` README](crates/microwave-migrate/README.md#intentional-gaps) for the exact list.
 - OpenSearch/Garage HA and multi-node performance validation. The `chef` index mapping (whitespace analyzer, keyword `X_CHEF_*` fields) is created automatically, `search.strict_result_acls` filters both backends before pagination, and the S3 backend supports ListObjectsV2; multipart upload and a true multi-replica HA run remain untested.
 - Outbound telemetry export. The `telemetry` table (SQLite and PostgreSQL) and `telemetry.*` / `MW_TELEMETRY__*` configuration exist, but the sender is intentionally not implemented and defaults to disabled: Microwave never phones home. Operators can enable the flag for forward compatibility, but no background worker or external endpoint is contacted.
+- LDAP/Active Directory external authentication and FIPS mode. The API supports Chef's `external_authentication_uid` fields, but there is no LDAP/AD bind, no FIPS-validated crypto mode, and no `chef-server.rb`/`CHEF_SECRETS_DATA` configuration import. Existing Chef configurations must be translated to TOML/`MW_*`.
+- Embedded search performance. The default backend is a relational full scan, not Tantivy. It is correct for small/medium orgs and passes Pedant, but it has no inverted index, no Tantivy index, and no batched search queue mode. Larger installations should use OpenSearch/Elasticsearch.
+- Remaining mail gaps. Only password-reset email is implemented. Email-change verification, invitation mail, SMTP rate limiting, and a durable outbox/retry are not implemented.
 - Opt-in data-collector mutation action notifications (`data_collector.actions_enabled = true`; disabled by default) and the compliance profile proxy (`compliance_proxy.url`) are implemented. The pedant compliance-proxy tag is wired through the harness; there is no vendored data-collector pedant spec.
 
 ### Pedant Compatibility

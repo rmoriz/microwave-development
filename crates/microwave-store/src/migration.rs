@@ -54,8 +54,9 @@ pub struct StoreSnapshot {
     pub oauth_access_grants: Vec<OAuthAccessGrantRow>,
     /// Latest OAuth access tokens. Secret material; omitted from safe exports.
     pub oauth_access_tokens: Vec<OAuthAccessTokenRow>,
-    /// Raw `kvpair` rows, including `secret:*`, session, reset, and
+    /// Raw `kvpair` rows, including `secret:*`, session, and
     /// `maintenance:enabled`. Secret material; omitted from safe exports.
+    /// Ephemeral password-reset rows are excluded from every export mode.
     pub kvpair: Vec<KvPairRow>,
     /// Explicit sandbox rows. Carries empty in-flight sandboxes that have no
     /// uploaded checksums yet.
@@ -461,12 +462,31 @@ pub struct OAuthAccessTokenRow {
     pub revoked_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KvPairRow {
     pub key: String,
     pub value: Option<String>,
     pub updated_at: String,
+}
+
+impl std::fmt::Debug for KvPairRow {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.key.starts_with("id_password_reset:") {
+            return formatter
+                .debug_struct("KvPairRow")
+                .field("key", &"<redacted-password-reset>")
+                .field("value", &self.value.as_ref().map(|_| "<redacted>"))
+                .field("updated_at", &self.updated_at)
+                .finish();
+        }
+        formatter
+            .debug_struct("KvPairRow")
+            .field("key", &self.key)
+            .field("value", &self.value)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1047,7 +1067,9 @@ impl SqliteStore {
             kvpair: if table_exists(&connection, "kvpair")? {
                 collect(
                     &connection,
-                    "SELECT key, value, updated_at FROM kvpair ORDER BY key",
+                    "SELECT key, value, updated_at FROM kvpair
+                     WHERE substr(key, 1, length('id_password_reset:')) <> 'id_password_reset:'
+                     ORDER BY key",
                     |row| {
                         Ok(KvPairRow {
                             key: row.get(0)?,

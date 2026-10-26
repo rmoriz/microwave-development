@@ -45,7 +45,7 @@ use subtle::ConstantTimeEq;
 pub use error::ApiError;
 pub use metrics::{Metrics, MetricsSnapshot};
 pub use microwave_oauth as oauth;
-pub use state::{ApiVersion, AppState, AuthContext};
+pub use state::{ApiVersion, AppState, AuthContext, StateError};
 
 pub fn router(state: AppState) -> Router {
     let mut inner = Router::new()

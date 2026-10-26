@@ -400,36 +400,59 @@ impl SqliteStore {
         Ok(token)
     }
 
-    pub fn find_password_reset_token(&self, token: &str) -> Result<Option<String>, StoreError> {
+    pub fn find_password_reset_token(
+        &self,
+        token: &str,
+        max_age_seconds: i64,
+    ) -> Result<Option<String>, StoreError> {
         let connection = self.connection();
-        Ok(connection
+        let row: Option<(String, String)> = connection
             .query_row(
-                "SELECT value FROM kvpair WHERE key = ?1",
+                "SELECT value, updated_at FROM kvpair WHERE key = ?1",
                 [password_reset_key(token)],
-                |row| row.get(0),
-            )
-            .optional()?)
-    }
-
-    /// Consume a password reset token, returning the username it belongs to.
-    pub fn consume_password_reset_token(&self, token: &str) -> Result<Option<String>, StoreError> {
-        let mut connection = self.connection();
-        let transaction = connection.transaction()?;
-        let username = transaction
-            .query_row(
-                "SELECT value FROM kvpair WHERE key = ?1",
-                [password_reset_key(token)],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        if username.is_some() {
-            transaction.execute(
+        let Some((username, updated_at)) = row else {
+            return Ok(None);
+        };
+        if updated_at <= password_reset_cutoff(max_age_seconds) {
+            connection.execute(
                 "DELETE FROM kvpair WHERE key = ?1",
                 [password_reset_key(token)],
             )?;
+            return Ok(None);
         }
+        Ok(Some(username))
+    }
+
+    /// Consume a password reset token, returning the username it belongs to.
+    pub fn consume_password_reset_token(
+        &self,
+        token: &str,
+        max_age_seconds: i64,
+    ) -> Result<Option<String>, StoreError> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        let row: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT value, updated_at FROM kvpair WHERE key = ?1",
+                [password_reset_key(token)],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((username, updated_at)) = row else {
+            return Ok(None);
+        };
+        transaction.execute(
+            "DELETE FROM kvpair WHERE key = ?1",
+            [password_reset_key(token)],
+        )?;
         transaction.commit()?;
-        Ok(username)
+        if updated_at <= password_reset_cutoff(max_age_seconds) {
+            return Ok(None);
+        }
+        Ok(Some(username))
     }
 }
 
@@ -437,6 +460,11 @@ pub const ID_SESSION_TTL_SECONDS: i64 = 86_400;
 
 fn session_cutoff() -> String {
     (Utc::now() - Duration::seconds(ID_SESSION_TTL_SECONDS))
+        .to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+fn password_reset_cutoff(max_age_seconds: i64) -> String {
+    (Utc::now() - Duration::seconds(max_age_seconds.max(0)))
         .to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 

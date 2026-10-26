@@ -1,5 +1,6 @@
 use crate::{context::Context, CtlError};
 use microwave_config::{DatabaseDriver, ObjectStoreBackend, SearchBackend};
+use microwave_mail::SmtpMailer;
 use microwave_store::SqliteStore;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -189,6 +190,13 @@ pub fn check_config(context: &Context) -> Result<(), CtlError> {
             None => problems.push(
                 "required_recipe.path must be set when required_recipe.enabled is true".to_string(),
             ),
+        }
+    }
+
+    if config.mail.is_enabled() {
+        match SmtpMailer::validate_mail_config(&config.mail) {
+            Ok(()) => checks.push("mail smtp".to_string()),
+            Err(error) => problems.push(format!("mail configuration: {error}")),
         }
     }
 

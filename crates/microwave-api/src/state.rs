@@ -1,12 +1,21 @@
 use crate::health::HealthCache;
 use crate::metrics::Metrics;
 use crate::search::{build_search_backend, SearchBackend, SearchError};
-use microwave_config::Config;
+use microwave_config::{Config, MailSecurity};
 use microwave_crypto::{CryptoError, KeygenCache};
 use microwave_objectstore::ObjectStore;
 use microwave_store::{MetadataStore, Org, Principal, SqliteStore};
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Errors that can occur while building application state.
+#[derive(Debug, thiserror::Error)]
+pub enum StateError {
+    #[error(transparent)]
+    Search(#[from] SearchError),
+    #[error(transparent)]
+    Mail(#[from] microwave_mail::MailError),
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -36,6 +45,8 @@ pub struct AppState {
     /// Bounds concurrent dependency solver runs. Acquired without waiting so
     /// excess requests fail fast with 503.
     pub(crate) depsolver: Arc<tokio::sync::Semaphore>,
+    /// Outbound mail surface for notifications and password resets.
+    pub mailer: Arc<dyn microwave_mail::Mailer>,
 }
 
 impl AppState {
@@ -45,7 +56,8 @@ impl AppState {
         store: Arc<dyn MetadataStore>,
         config: Arc<Config>,
         object_store: Arc<dyn ObjectStore + Send + Sync>,
-    ) -> Result<Self, SearchError> {
+    ) -> Result<Self, StateError> {
+        let mailer = microwave_mail::build_mailer(&config.mail)?;
         let search = build_search_backend(&config.search, store.clone())?;
         let http_client = build_http_client(&config)?;
         let compliance_client = build_compliance_client(&config)?;
@@ -53,6 +65,18 @@ impl AppState {
         let actions =
             crate::actions::ActionDispatcher::new(&config, http_client.clone(), store.clone());
         let depsolver = build_depsolver_semaphore(&config);
+        if config.mail.is_enabled() {
+            if let Some(url) = config.server.public_url.as_deref() {
+                if url.trim().starts_with("http://") {
+                    tracing::warn!(
+                        "mail is enabled with an http public_url; use https in production"
+                    );
+                }
+            }
+            if config.mail.security == MailSecurity::None {
+                tracing::warn!("mail uses plaintext SMTP (security = none); use this only for trusted local relays");
+            }
+        }
         Ok(Self {
             store,
             sqlite: None,
@@ -66,6 +90,7 @@ impl AppState {
             http_client,
             compliance_client,
             depsolver,
+            mailer,
         })
     }
 
@@ -78,7 +103,8 @@ impl AppState {
         store: Arc<SqliteStore>,
         config: Arc<Config>,
         object_store: Arc<dyn ObjectStore + Send + Sync>,
-    ) -> Result<Self, SearchError> {
+    ) -> Result<Self, StateError> {
+        let mailer = microwave_mail::build_mailer(&config.mail)?;
         let search = build_search_backend(&config.search, store.clone())?;
         let http_client = build_http_client(&config)?;
         let compliance_client = build_compliance_client(&config)?;
@@ -86,6 +112,18 @@ impl AppState {
         let actions =
             crate::actions::ActionDispatcher::new(&config, http_client.clone(), store.clone());
         let depsolver = build_depsolver_semaphore(&config);
+        if config.mail.is_enabled() {
+            if let Some(url) = config.server.public_url.as_deref() {
+                if url.trim().starts_with("http://") {
+                    tracing::warn!(
+                        "mail is enabled with an http public_url; use https in production"
+                    );
+                }
+            }
+            if config.mail.security == MailSecurity::None {
+                tracing::warn!("mail uses plaintext SMTP (security = none); use this only for trusted local relays");
+            }
+        }
         Ok(Self {
             store: store.clone(),
             sqlite: Some(store),
@@ -99,6 +137,7 @@ impl AppState {
             http_client,
             compliance_client,
             depsolver,
+            mailer,
         })
     }
 
@@ -112,6 +151,16 @@ impl AppState {
         self.sqlite
             .as_deref()
             .expect("AppState::sqlite() called while running against a non-SQLite backend")
+    }
+
+    /// Replace the mailer on this state and return it.
+    ///
+    /// This is doc-hidden test support: it allows tests to inject a recording or
+    /// stub mailer without changing the configuration.
+    #[doc(hidden)]
+    pub fn with_mailer(mut self, mailer: Arc<dyn microwave_mail::Mailer>) -> Self {
+        self.mailer = mailer;
+        self
     }
 
     /// Produce a fresh 2048-bit RSA keypair for an API response.
@@ -205,6 +254,7 @@ impl microwave_oauth::ProvidesOAuthState for AppState {
             store: self.store.clone(),
             config: self.config.clone(),
             keygen: self.keygen.clone(),
+            mailer: self.mailer.clone(),
         }
     }
 }
@@ -217,5 +267,84 @@ mod tests {
     #[test]
     fn builds_a_shared_http_client_from_defaults() {
         assert!(build_http_client(&Config::default()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn default_config_uses_the_disabled_mailer() {
+        use crate::state::AppState;
+        use microwave_config::Config;
+        use microwave_store::SqliteStore;
+        use std::sync::Arc;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(SqliteStore::open(&temp_dir.path().join("test.db")).unwrap());
+        let config = Arc::new(Config::default());
+        let object_store: Arc<dyn microwave_objectstore::ObjectStore + Send + Sync> =
+            Arc::new(microwave_objectstore::LocalObjectStore::new(
+                temp_dir.path().join("objects"),
+                "secret",
+                "http://0.0.0.0:8000",
+            ));
+
+        let state = AppState::from_sqlite(store, config, object_store).unwrap();
+        assert!(!state.mailer.is_enabled());
+    }
+
+    #[tokio::test]
+    async fn with_mailer_replaces_the_state_mailer_and_oauth_view() {
+        use crate::state::AppState;
+        use microwave_config::Config;
+        use microwave_mail::{MailError, MailMessage, Mailer};
+        use microwave_oauth::ProvidesOAuthState;
+        use microwave_store::SqliteStore;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        use tempfile::TempDir;
+
+        #[derive(Clone)]
+        struct RecordingMailer {
+            count: Arc<AtomicUsize>,
+        }
+
+        impl RecordingMailer {
+            fn new() -> Self {
+                Self {
+                    count: Arc::new(AtomicUsize::new(0)),
+                }
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl Mailer for RecordingMailer {
+            fn is_enabled(&self) -> bool {
+                true
+            }
+
+            async fn send(&self, _message: &MailMessage) -> Result<(), MailError> {
+                self.count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(SqliteStore::open(&temp_dir.path().join("test.db")).unwrap());
+        let config = Arc::new(Config::default());
+        let object_store: Arc<dyn microwave_objectstore::ObjectStore + Send + Sync> =
+            Arc::new(microwave_objectstore::LocalObjectStore::new(
+                temp_dir.path().join("objects"),
+                "secret",
+                "http://0.0.0.0:8000",
+            ));
+
+        let recording = Arc::new(RecordingMailer::new());
+        let state = AppState::from_sqlite(store, config, object_store)
+            .unwrap()
+            .with_mailer(recording.clone());
+
+        assert!(state.mailer.is_enabled());
+        assert!(state.oauth_state().mailer.is_enabled());
     }
 }

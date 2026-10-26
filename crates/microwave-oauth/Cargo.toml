@@ -11,6 +11,7 @@ base64.workspace = true
 chrono.workspace = true
 microwave-config = { path = "../microwave-config" }
 microwave-crypto = { path = "../microwave-crypto" }
+microwave-mail = { path = "../microwave-mail" }
 microwave-store = { path = "../microwave-store" }
 serde_json.workspace = true
 serde_urlencoded = "0.7"

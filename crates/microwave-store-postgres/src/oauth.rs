@@ -68,6 +68,11 @@ fn session_cutoff() -> String {
         .to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
+fn password_reset_cutoff(max_age_seconds: i64) -> String {
+    (Utc::now() - Duration::seconds(max_age_seconds.max(0)))
+        .to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
 fn session_key(token: &str) -> String {
     format!("id_session:{token}")
 }
@@ -462,28 +467,48 @@ impl OAuthRepository for PostgresStore {
         Ok(token)
     }
 
-    async fn find_password_reset_token(&self, token: &str) -> Result<Option<String>, StoreError> {
-        sqlx::query_scalar("SELECT value FROM kvpair WHERE key = $1")
-            .bind(password_reset_key(token))
-            .fetch_optional(self.pool())
-            .await
-            .map_err(db)
+    async fn find_password_reset_token(
+        &self,
+        token: &str,
+        max_age_seconds: i64,
+    ) -> Result<Option<String>, StoreError> {
+        let row: Option<(String, String)> =
+            sqlx::query_as("SELECT value, updated_at FROM kvpair WHERE key = $1")
+                .bind(password_reset_key(token))
+                .fetch_optional(self.pool())
+                .await
+                .map_err(db)?;
+        let Some((username, updated_at)) = row else {
+            return Ok(None);
+        };
+        if updated_at <= password_reset_cutoff(max_age_seconds) {
+            sqlx::query("DELETE FROM kvpair WHERE key = $1")
+                .bind(password_reset_key(token))
+                .execute(self.pool())
+                .await
+                .map_err(db)?;
+            return Ok(None);
+        }
+        Ok(Some(username))
     }
 
     async fn consume_password_reset_token(
         &self,
         token: &str,
+        max_age_seconds: i64,
     ) -> Result<Option<String>, StoreError> {
-        let mut transaction = self.pool().begin().await.map_err(db)?;
-        // Single statement so concurrent consumers cannot both observe the
-        // value before either deletes it.
-        let username: Option<String> =
-            sqlx::query_scalar("DELETE FROM kvpair WHERE key = $1 RETURNING value")
+        let row: Option<(String, String)> =
+            sqlx::query_as("DELETE FROM kvpair WHERE key = $1 RETURNING value, updated_at")
                 .bind(password_reset_key(token))
-                .fetch_optional(&mut *transaction)
+                .fetch_optional(self.pool())
                 .await
                 .map_err(db)?;
-        transaction.commit().await.map_err(db)?;
-        Ok(username)
+        let Some((username, updated_at)) = row else {
+            return Ok(None);
+        };
+        if updated_at <= password_reset_cutoff(max_age_seconds) {
+            return Ok(None);
+        }
+        Ok(Some(username))
     }
 }

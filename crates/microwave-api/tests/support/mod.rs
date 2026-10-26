@@ -276,3 +276,27 @@ pub async fn response_json(response: axum::response::Response) -> serde_json::Va
         .unwrap();
     serde_json::from_slice(&body).unwrap()
 }
+
+#[derive(Clone, Default)]
+pub struct RecordingMailer {
+    pub messages: Arc<std::sync::Mutex<Vec<microwave_mail::MailMessage>>>,
+    pub enabled: bool,
+    pub fail: bool,
+}
+
+#[async_trait::async_trait]
+impl microwave_mail::Mailer for RecordingMailer {
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    async fn send(
+        &self,
+        message: &microwave_mail::MailMessage,
+    ) -> Result<(), microwave_mail::MailError> {
+        if self.fail {
+            return Err(microwave_mail::MailError::Transport("test failure".into()));
+        }
+        self.messages.lock().unwrap().push(message.clone());
+        Ok(())
+    }
+}

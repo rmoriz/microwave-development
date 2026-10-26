@@ -1,0 +1,20 @@
+[package]
+name = "microwave-mail"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+lettre.workspace = true
+microwave-config = { path = "../microwave-config" }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+rcgen.workspace = true
+tempfile.workspace = true
+tracing-subscriber.workspace = true

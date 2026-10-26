@@ -12,6 +12,7 @@ flate2.workspace = true
 microwave-api = { path = "../microwave-api" }
 microwave-authz = { path = "../microwave-authz" }
 microwave-config = { path = "../microwave-config" }
+microwave-mail = { path = "../microwave-mail" }
 microwave-crypto = { path = "../microwave-crypto" }
 microwave-migrate = { path = "../microwave-migrate" }
 microwave-store = { path = "../microwave-store" }

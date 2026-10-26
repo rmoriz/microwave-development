@@ -8,7 +8,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 >
 > **Verified:** `cargo test --workspace`, clippy with `-D warnings`, and `cargo fmt --check` are green. PostgreSQL integration covers the store, HTTP runtime, operational CLI, and snapshot export/import against PostgreSQL 18, and the server can be started with `MW_DATABASE__DRIVER=postgres`. The Debian trixie container image builds and both binaries start. Core pedant: 651 passed / 1 failed / 8 pending; the single failure is the known plain-HTTP `header_spec.rb` artifact. Extended pedant (final, full `all` run): 3,284 passed / 0 failed / 7 pending across all twelve tags. The complete Core+Extended run reports only the known plain-HTTP `headers` artifact; every other tag is green. The separate `environments`/`roles` contract suites are also green (610 examples / 0 failures / 23 pending and 78 / 0). A strict stock `chef-client` converge now passes with both compatibility shims disabled (`MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0`), including validator registration.
 >
-> **Still open:** keeping the extended pedant suite green in CI; extending HTTP parity beyond the current matrix to OAuth HTML session/profile pages and remote OpenSearch/Elasticsearch; OpenSearch 3.x evaluation; HA/performance validation; outbound telemetry export (intentionally disabled, no phone-home); and non-systemd service supervision. `reconfigure`, remote `reindex` (batched `_bulk`, refresh, and optional `--purge`), the pedant runner, systemd `service` management, Docker foreground mode, and the tar backup format are implemented. Data Collector forwarding, `oc_chef_action` mutation notifications, the compliance profile proxy, `required_recipe`, maintenance 503, metrics/`_stats`, transparent compression, TLS (including SIGHUP/periodic certificate rotation), and the keygen cache are implemented.
+> **Still open:** keeping the extended pedant suite green in CI; extending HTTP parity beyond the current matrix to OAuth HTML session/profile pages and remote OpenSearch/Elasticsearch; OpenSearch 3.x evaluation; HA/performance validation; outbound telemetry export (intentionally disabled, no phone-home); non-systemd service supervision; LDAP/Active Directory external authentication; FIPS mode; legacy `/etc/opscode/chef-server.rb` and `CHEF_SECRETS_DATA` import; embedded search indexing (Tantivy or another inverted index) instead of the current relational full scan; and the remaining mail gaps (email-change verification, invitation mail, SMTP rate limiting, durable outbox/retry). `reconfigure`, remote `reindex` (batched `_bulk`, refresh, and optional `--purge`), the pedant runner, systemd `service` management, Docker foreground mode, and the tar backup format are implemented. Data Collector forwarding, `oc_chef_action` mutation notifications, the compliance profile proxy, `required_recipe`, maintenance 503, metrics/`_stats`, transparent compression, TLS (including SIGHUP/periodic certificate rotation), the keygen cache, and password-reset email are implemented.
 
 ---
 
@@ -345,6 +345,12 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [x] P2: per-user USAG groups, SQLite indexes, transactional group-cycle checks, authz entity-type triggers, policy/artifact FKs, access log/request IDs, compression, trusted-proxy handling.
 - [x] Integrate the reviewed `backup-keys` branch (`microwave-ctl backup --include-private-keys`) with the newer P1c backup command surface: optional timestamped PATH, `--yes`, `--config-only`, validated `--pg-options`, tar/directory formats, private-key manifest/TLS handling, and restore `--restore-private-keys`/`--private-only`/`--pg-options` all coexist.
 - [x] Run the non-harness Pedant `environments`/`roles` suites: `environments` 610 examples / 0 failures / 23 pending, `roles` 78 / 0. Exposed as `scripts/run-pedant.sh extra` (`environments roles`); `strict` combines core, extended, and extra.
+### 5.4c P4 SMTP Mail-Out
+- [x] Remote SMTP transport with STARTTLS/implicit TLS, AUTH PLAIN/LOGIN/auto, private CA support, and bounded asynchronous dispatch.
+- [x] Password-reset email with absolute links from `server.public_url`, TTL enforcement, and preservation of `password_reset_token_in_response`.
+- [x] Operator docs and `check-config` validation; password is omitted from `microwave-config.json` backups.
+- [ ] Email-change verification, invitation mail, SMTP rate limiting, and a durable outbox/retry.
+
 ### 5.4b P3 Compatibility Completion
 - [x] Client update/rename reindexes the search document.
 - [x] Depsolver timeout is configurable (default 20s), runs on `spawn_blocking`, and returns 503 `Dependency solver overloaded` when saturated.
@@ -352,6 +358,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [x] Remaining `Location`/Chef JSON error coverage (sandboxes, keys, ACLs, cookbooks, artifacts).
 - [x] Bookshelf expiring local tokens, Range/206/416, HEAD metadata, and S3 ListObjectsV2; multipart upload remains a documented gap.
 - [x] Full `microwave-ctl backup --include-private-keys` merged with optional/default backup paths, config-only, and `--pg-options`.
+- [x] P4: global auth-header statuses/skew, environment/role PUT name semantics, bounded `cookbook_versions`, and the `environments`/`roles` contract suites (610/0/23 and 78/0). Added as `scripts/run-pedant.sh extra`/`strict`.
 - [ ] Multi-replica HA / OpenSearch 3.x / Garage load validation; full pedant `all` is green except the known plain-HTTP `headers` artifact.
 ### 5.5 Full Pedant Verification, HA & Performance Benchmarks
 - [ ] Run complete `oc-chef-pedant` suite against Default Embedded mode (SQLite + Tantivy + Local Bookshelf) and achieve 100% pass rate on supported specs.

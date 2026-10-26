@@ -210,13 +210,30 @@ fn consumes_password_reset_tokens_once() {
 
     assert_eq!(
         store
-            .consume_password_reset_token(&token)
+            .consume_password_reset_token(&token, 3600)
             .unwrap()
             .as_deref(),
         Some("alice")
     );
     assert!(store
-        .consume_password_reset_token(&token)
+        .consume_password_reset_token(&token, 3600)
         .unwrap()
         .is_none());
+}
+
+#[test]
+fn password_reset_tokens_expire() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    let token = store.create_password_reset_token("alice").unwrap();
+
+    assert_eq!(
+        store.find_password_reset_token(&token, 3600).unwrap(),
+        Some("alice".into())
+    );
+    assert_eq!(store.find_password_reset_token(&token, 0).unwrap(), None);
+    assert_eq!(
+        store.consume_password_reset_token(&token, 3600).unwrap(),
+        None,
+        "expired token must not be consumable"
+    );
 }
