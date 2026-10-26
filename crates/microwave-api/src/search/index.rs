@@ -34,7 +34,7 @@ pub(crate) async fn load_entries(
     org_id: &str,
     kind: &IndexKind,
 ) -> Result<Vec<SearchEntry>, ApiError> {
-    match kind {
+    let mut entries = match kind {
         IndexKind::Node => node_entries(store, org_id).await,
         IndexKind::Role => object_entries(
             store.list_roles(org_id).await.map_err(ApiError::from)?,
@@ -51,6 +51,32 @@ pub(crate) async fn load_entries(
         ),
         IndexKind::Client => client_entries(store, org_id).await,
         IndexKind::DataBag(name) => data_bag_entries(store, org_id, name).await,
+    }?;
+
+    // The OpenSearch backend stores these as dedicated keyword fields. The
+    // embedded backend must expose the same names in its flattened view so
+    // queries such as `X_CHEF_type_CHEF_X:node` behave identically.
+    let database = format!("chef_{org_id}");
+    let data_bag = match kind {
+        IndexKind::DataBag(name) => Some(name.as_str()),
+        _ => None,
+    };
+    for entry in &mut entries {
+        add_metadata_field(&mut entry.fields, "X_CHEF_id_CHEF_X", &entry.id);
+        add_metadata_field(&mut entry.fields, "X_CHEF_database_CHEF_X", &database);
+        add_metadata_field(&mut entry.fields, "X_CHEF_type_CHEF_X", kind.object_type());
+        if let Some(data_bag) = data_bag {
+            add_metadata_field(&mut entry.fields, "data_bag", data_bag);
+        }
+    }
+
+    Ok(entries)
+}
+
+fn add_metadata_field(fields: &mut Fields, name: &str, value: &str) {
+    let values = fields.entry(name.to_string()).or_default();
+    if !values.iter().any(|existing| existing == value) {
+        values.push(value.to_string());
     }
 }
 
@@ -117,19 +143,20 @@ pub(crate) fn document_for_entry(
     kind: &IndexKind,
     object_type: &str,
     data_bag: Option<&str>,
-    entry: SearchEntry,
+    mut entry: SearchEntry,
 ) -> SearchDocument {
-    let mut content = String::new();
-    push_pair(&mut content, "X_CHEF_id_CHEF_X", &entry.id);
-    push_pair(
-        &mut content,
+    add_metadata_field(&mut entry.fields, "X_CHEF_id_CHEF_X", &entry.id);
+    add_metadata_field(
+        &mut entry.fields,
         "X_CHEF_database_CHEF_X",
         &format!("chef_{org_id}"),
     );
-    push_pair(&mut content, "X_CHEF_type_CHEF_X", object_type);
+    add_metadata_field(&mut entry.fields, "X_CHEF_type_CHEF_X", object_type);
     if let Some(data_bag) = data_bag {
-        push_pair(&mut content, "data_bag", data_bag);
+        add_metadata_field(&mut entry.fields, "data_bag", data_bag);
     }
+
+    let mut content = String::new();
     for (name, values) in &entry.fields {
         for value in values {
             push_pair(&mut content, name, value);
