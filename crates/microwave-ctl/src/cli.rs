@@ -418,7 +418,8 @@ pub enum Command {
         #[arg(short = 'y', long)]
         yes: bool,
         /// Back up the resolved configuration only, without metadata or
-        /// bookshelf data.
+        /// bookshelf data. Private keys can still be included with
+        /// `--include-private-keys`.
         #[arg(short = 'c', long = "config-only")]
         config_only: bool,
         /// Additional options passed to `pg_dump` (and `pg_restore` during a
@@ -426,6 +427,10 @@ pub enum Command {
         /// managed by this CLI are rejected.
         #[arg(long = "pg-options", value_name = "VALUE", allow_hyphen_values = true)]
         pg_options: Option<String>,
+        /// Also include the fixed server private-key/certificate set under
+        /// `private/`. The backup then contains unencrypted key material.
+        #[arg(long)]
+        include_private_keys: bool,
     },
     /// Restore metadata and bookshelf data from a backup directory or tar
     /// archive. SQLite restores the staged database file; PostgreSQL replays
@@ -447,6 +452,14 @@ pub enum Command {
         /// Additional options passed to `pg_restore` for PostgreSQL backups.
         #[arg(long = "pg-options", value_name = "VALUE", allow_hyphen_values = true)]
         pg_options: Option<String>,
+        /// Also restore private key/certificate material from the backup's
+        /// `private/` subtree. Restoring keys can invalidate existing clients.
+        #[arg(long)]
+        restore_private_keys: bool,
+        /// Restore only the `private/` subtree; do not replace the database or
+        /// bookshelf. Requires `--restore-private-keys`.
+        #[arg(long, requires = "restore_private_keys")]
+        private_only: bool,
     },
 
     /// Edit a user's profile, email, admin flag, or password. Without
@@ -690,6 +703,97 @@ mod tests {
                 format: None,
                 tar: true,
                 yes: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_private_key_backup_and_restore_flags() {
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "backup",
+            "out.tar",
+            "--tar",
+            "--include-private-keys",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Backup {
+                tar: true,
+                include_private_keys: true,
+                ..
+            }
+        ));
+
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "restore",
+            "out.tar",
+            "--tar",
+            "--yes",
+            "--restore-private-keys",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Restore {
+                tar: true,
+                yes: true,
+                restore_private_keys: true,
+                private_only: false,
+                ..
+            }
+        ));
+
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "restore",
+            "out",
+            "--yes",
+            "--restore-private-keys",
+            "--private-only",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Restore {
+                yes: true,
+                restore_private_keys: true,
+                private_only: true,
+                ..
+            }
+        ));
+        assert!(Cli::try_parse_from([
+            "microwave-ctl",
+            "restore",
+            "out",
+            "--yes",
+            "--private-only",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn backup_without_path_and_include_private_keys_combines() {
+        let cli = Cli::try_parse_from([
+            "microwave-ctl",
+            "backup",
+            "-t",
+            "-y",
+            "--config-only",
+            "--include-private-keys",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Backup {
+                path: None,
+                tar: true,
+                yes: true,
+                config_only: true,
+                include_private_keys: true,
                 ..
             }
         ));
