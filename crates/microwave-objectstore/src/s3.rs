@@ -5,7 +5,8 @@
 //! query-string parameters.
 
 use crate::{
-    md5_base64, md5_hex, object_key, ObjectStore, ObjectStoreError, DEFAULT_PRESIGN_EXPIRY_SECONDS,
+    md5_base64, md5_hex, object_key, ObjectMetadata, ObjectStore, ObjectStoreError,
+    DEFAULT_PRESIGN_EXPIRY_SECONDS,
 };
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
@@ -61,6 +62,16 @@ impl S3Config {
 pub struct S3ObjectStore {
     config: S3Config,
     agent: ureq::Agent,
+}
+
+/// One object returned by [`S3ObjectStore::list`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectEntry {
+    /// Full object key, for example `organization-acme/checksum-<md5>`.
+    pub key: String,
+    pub size: u64,
+    /// Quoted S3 ETag, when the service reports one.
+    pub etag: Option<String>,
 }
 
 impl S3ObjectStore {
@@ -160,10 +171,12 @@ impl S3ObjectStore {
         target: &Target,
         body: &[u8],
         now: DateTime<Utc>,
+        query: &[(String, String)],
     ) -> Vec<(String, String)> {
         let amz_date = amz_date(now);
         let date_stamp = now.format("%Y%m%d").to_string();
         let payload_hash = hex::encode(Sha256::digest(body));
+        let query_string = canonical_query(query);
 
         let mut headers = vec![
             ("host".to_string(), target.host.clone()),
@@ -179,7 +192,7 @@ impl S3ObjectStore {
         let signed_headers = signed_header_names(&headers);
         let canonical_headers = canonical_headers(&headers);
         let canonical_request = format!(
-            "{method}\n{}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}",
+            "{method}\n{}\n{query_string}\n{canonical_headers}\n{signed_headers}\n{payload_hash}",
             target.canonical_uri
         );
         let signature = self.signature(&date_stamp, &amz_date, &canonical_request);
@@ -278,13 +291,28 @@ impl S3ObjectStore {
         target: &Target,
         body: &[u8],
     ) -> Result<http::Response<ureq::Body>, ObjectStoreError> {
-        let headers = self.request_headers(method, target, body, Utc::now());
+        self.execute_with_query(method, target, body, &[])
+    }
+
+    fn execute_with_query(
+        &self,
+        method: &str,
+        target: &Target,
+        body: &[u8],
+        query: &[(String, String)],
+    ) -> Result<http::Response<ureq::Body>, ObjectStoreError> {
+        let headers = self.request_headers(method, target, body, Utc::now(), query);
+        let url = if query.is_empty() {
+            target.url.clone()
+        } else {
+            format!("{}?{}", target.url, canonical_query(query))
+        };
         let response = match method {
-            "GET" => with_headers(self.agent.get(&target.url), &headers).call(),
-            "HEAD" => with_headers(self.agent.head(&target.url), &headers).call(),
-            "DELETE" => with_headers(self.agent.delete(&target.url), &headers).call(),
-            "PUT" => with_headers(self.agent.put(&target.url), &headers).send(body),
-            "POST" => with_headers(self.agent.post(&target.url), &headers).send(body),
+            "GET" => with_headers(self.agent.get(&url), &headers).call(),
+            "HEAD" => with_headers(self.agent.head(&url), &headers).call(),
+            "DELETE" => with_headers(self.agent.delete(&url), &headers).call(),
+            "PUT" => with_headers(self.agent.put(&url), &headers).send(body),
+            "POST" => with_headers(self.agent.post(&url), &headers).send(body),
             _ => {
                 return Err(ObjectStoreError::InvalidConfig(format!(
                     "unsupported HTTP method {method}"
@@ -301,6 +329,57 @@ impl S3ObjectStore {
             return Err(ObjectStoreError::HttpStatus(status));
         }
         Ok(response)
+    }
+
+    /// List the objects belonging to `organization_id` using ListObjectsV2.
+    ///
+    /// Results are paginated through `NextContinuationToken` until the service
+    /// reports that the listing is complete.
+    ///
+    /// Multipart upload is intentionally not implemented yet: the current
+    /// [`ObjectStore`] surface is a single buffered `put`, so an upload either
+    /// fits in memory or is rejected by the bookshelf body limit. Adding
+    /// multipart would require a streaming/chunked trait and a caller that can
+    /// supply parts; the single-request path remains correct for the 250 MiB
+    /// cap and is documented as the current gap.
+    pub fn list(&self, organization_id: &str) -> Result<Vec<ObjectEntry>, ObjectStoreError> {
+        self.list_prefix(&format!("organization-{organization_id}/"))
+    }
+
+    /// List keys below `prefix` using ListObjectsV2.
+    pub fn list_prefix(&self, prefix: &str) -> Result<Vec<ObjectEntry>, ObjectStoreError> {
+        let target = self.bucket_target();
+        let mut entries = Vec::new();
+        let mut continuation_token: Option<String> = None;
+
+        loop {
+            let mut query = vec![
+                ("list-type".to_string(), "2".to_string()),
+                ("prefix".to_string(), prefix.to_string()),
+                ("max-keys".to_string(), "1000".to_string()),
+            ];
+            if let Some(token) = &continuation_token {
+                query.push(("continuation-token".to_string(), token.clone()));
+            }
+
+            let mut response = self.execute_with_query("GET", &target, &[], &query)?;
+            let body = response
+                .body_mut()
+                .read_to_vec()
+                .map_err(|error| ObjectStoreError::Http(error.to_string()))?;
+            let xml = String::from_utf8_lossy(&body);
+            entries.extend(parse_list_objects_v2(&xml));
+
+            if !xml_is_true(&xml, "IsTruncated") {
+                break;
+            }
+            match xml_element(&xml, "NextContinuationToken").map(unescape_xml) {
+                Some(token) if !token.is_empty() => continuation_token = Some(token),
+                _ => break,
+            }
+        }
+
+        Ok(entries)
     }
 }
 
@@ -356,13 +435,32 @@ impl ObjectStore for S3ObjectStore {
         }
     }
 
+    fn metadata(
+        &self,
+        organization_id: &str,
+        checksum: &str,
+    ) -> Result<Option<ObjectMetadata>, ObjectStoreError> {
+        let target = self.target(&object_key(organization_id, checksum));
+        let response = self.execute("HEAD", &target, &[])?;
+        let len = response
+            .headers()
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or_default();
+        Ok(Some(ObjectMetadata {
+            len,
+            modified: None,
+        }))
+    }
+
     fn presigned_url(&self, method: &str, organization_id: &str, checksum: &str) -> String {
         self.presigned_url_at(method, organization_id, checksum, Utc::now())
     }
 
     fn health_check(&self) -> Result<(), ObjectStoreError> {
         let target = self.bucket_target();
-        let headers = self.request_headers("HEAD", &target, &[], Utc::now());
+        let headers = self.request_headers("HEAD", &target, &[], Utc::now(), &[]);
         let response = with_headers(
             self.agent
                 .head(&target.url)
@@ -428,6 +526,61 @@ fn canonical_query(params: &[(String, String)]) -> String {
         .map(|(name, value)| format!("{name}={value}"))
         .collect::<Vec<_>>()
         .join("&")
+}
+
+/// Extract the text of the first matching XML element.
+///
+/// The ListObjectsV2 response is small and its schema is fixed, so a full XML
+/// parser would add a dependency for no benefit. S3 may namespace the
+/// document, but element names themselves are not prefixed.
+fn xml_element<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = xml.find(&open)? + open.len();
+    let end = xml[start..].find(&close)? + start;
+    Some(&xml[start..end])
+}
+
+fn xml_is_true(xml: &str, tag: &str) -> bool {
+    xml_element(xml, tag)
+        .map(|value| value.trim().eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn unescape_xml(value: &str) -> String {
+    // Replace named entities first and `&amp;` last so `&amp;lt;` decodes to
+    // the literal `&lt;` instead of `<`.
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+fn parse_list_objects_v2(xml: &str) -> Vec<ObjectEntry> {
+    let mut entries = Vec::new();
+    let mut rest = xml;
+
+    while let Some(start) = rest.find("<Contents>") {
+        let after = &rest[start + "<Contents>".len()..];
+        let Some(end) = after.find("</Contents>") else {
+            break;
+        };
+        let block = &after[..end];
+        if let Some(key) = xml_element(block, "Key") {
+            entries.push(ObjectEntry {
+                key: unescape_xml(key),
+                size: xml_element(block, "Size")
+                    .and_then(|value| value.trim().parse().ok())
+                    .unwrap_or_default(),
+                etag: xml_element(block, "ETag").map(unescape_xml),
+            });
+        }
+        rest = &after[end + "</Contents>".len()..];
+    }
+
+    entries
 }
 
 /// AWS SigV4 URI encoding: unreserved characters stay, everything else is
@@ -578,6 +731,27 @@ mod tests {
         assert_eq!(uri_encode("a b/c", false), "a%20b/c");
         assert_eq!(uri_encode("a/b", true), "a%2Fb");
         assert_eq!(uri_encode("a-_.~", true), "a-_.~");
+    }
+
+    #[test]
+    fn parses_list_objects_v2_response() {
+        let xml = "<?xml version=\"1.0\"?><ListBucketResult>\
+            <IsTruncated>true</IsTruncated>\
+            <Contents><Key>organization-acme/checksum-a&amp;b</Key><Size>5</Size><ETag>&quot;abc&quot;</ETag></Contents>\
+            <Contents><Key>organization-acme/checksum-c</Key><Size>0</Size></Contents>\
+            <NextContinuationToken>next%2Ftoken</NextContinuationToken>\
+            </ListBucketResult>";
+        let entries = parse_list_objects_v2(xml);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].key, "organization-acme/checksum-a&b");
+        assert_eq!(entries[0].size, 5);
+        assert_eq!(entries[0].etag.as_deref(), Some("\"abc\""));
+        assert_eq!(entries[1].size, 0);
+        assert!(xml_is_true(xml, "IsTruncated"));
+        assert_eq!(
+            xml_element(xml, "NextContinuationToken"),
+            Some("next%2Ftoken")
+        );
     }
 
     /// Keep local-network health tests from competing under parallel CI runs.

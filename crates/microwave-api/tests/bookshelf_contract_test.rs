@@ -10,15 +10,31 @@ use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use axum::Router;
 use microwave_api::bookshelf::{CACHE_CONTROL_MAX_AGE, MAX_UPLOAD_BYTES};
-use microwave_objectstore::{bookshelf_token, checksum_md5_base64, md5_hex};
+use microwave_objectstore::{
+    bookshelf_token, checksum_md5_base64, md5_hex, unix_timestamp,
+    MAX_BOOKSHELF_TOKEN_LIFETIME_SECONDS,
+};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tower::ServiceExt;
 
 const ORG: &str = "bookshelf-contract";
 const SECRET: &str = "test-secret";
 
+fn expiry() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 900
+}
+
+fn object_path_with_exp(checksum: &str, method: &str, expires_at: u64) -> String {
+    let token = bookshelf_token(SECRET, method, ORG, checksum, expires_at);
+    format!("/bookshelf/organizations/{ORG}/checksums/{checksum}?token={token}&exp={expires_at}")
+}
+
 fn object_path(checksum: &str, method: &str) -> String {
-    let token = bookshelf_token(SECRET, method, ORG, checksum);
-    format!("/bookshelf/organizations/{ORG}/checksums/{checksum}?token={token}")
+    object_path_with_exp(checksum, method, expiry())
 }
 
 async fn send(app: &Router, method: &str, path: &str, body: &[u8]) -> axum::response::Response {
@@ -28,6 +44,20 @@ async fn send(app: &Router, method: &str, path: &str, body: &[u8]) -> axum::resp
                 .method(method)
                 .uri(path)
                 .body(Body::from(body.to_vec()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+async fn send_range(app: &Router, path: &str, range: &str) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(path)
+                .header(header::RANGE, range)
+                .body(Body::empty())
                 .unwrap(),
         )
         .await
@@ -68,6 +98,11 @@ async fn put_get_head_delete_roundtrip_carries_upstream_statuses_and_headers() {
         "application/octet-stream"
     );
     assert_eq!(header_str(&response, header::ETAG), expected_etag);
+    assert_eq!(header_str(&response, header::ACCEPT_RANGES), "bytes");
+    assert_eq!(
+        header_str(&response, header::CONTENT_LENGTH),
+        contents.len().to_string()
+    );
     assert_eq!(
         header_str(&response, header::CACHE_CONTROL),
         format!("max-age={CACHE_CONTROL_MAX_AGE}")
@@ -83,9 +118,10 @@ async fn put_get_head_delete_roundtrip_carries_upstream_statuses_and_headers() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(header_str(&response, header::ETAG), expected_etag);
     assert_eq!(header_str(&response, header::LAST_MODIFIED), last_modified);
+    assert_eq!(header_str(&response, header::ACCEPT_RANGES), "bytes");
     assert_eq!(
-        header_str(&response, header::CACHE_CONTROL),
-        format!("max-age={CACHE_CONTROL_MAX_AGE}")
+        header_str(&response, header::CONTENT_LENGTH),
+        contents.len().to_string()
     );
     assert!(
         body_bytes(response).await.is_empty(),
@@ -147,7 +183,10 @@ async fn the_token_still_guards_every_method() {
     let app = support::app(support::state_with_pivotal());
     let contents = b"guarded";
     let checksum = md5_hex(contents);
-    let path = format!("/bookshelf/organizations/{ORG}/checksums/{checksum}?token=bogus");
+    let path = format!(
+        "/bookshelf/organizations/{ORG}/checksums/{checksum}?token=bogus&exp={}",
+        expiry()
+    );
 
     for method in ["PUT", "GET", "HEAD", "DELETE"] {
         let response = send(&app, method, &path, contents).await;
@@ -156,6 +195,112 @@ async fn the_token_still_guards_every_method() {
             StatusCode::UNAUTHORIZED,
             "{method} accepted a bogus token"
         );
+    }
+}
+
+#[tokio::test]
+async fn expired_missing_and_future_distant_tokens_are_forbidden() {
+    let app = support::app(support::state_with_pivotal());
+    let contents = b"expiry guarded";
+    let checksum = md5_hex(contents);
+    let now = unix_timestamp();
+
+    let cases = [
+        (
+            "missing expiry",
+            format!(
+                "/bookshelf/organizations/{ORG}/checksums/{checksum}?token={}",
+                bookshelf_token(SECRET, "GET", ORG, &checksum, now + 900)
+            ),
+        ),
+        (
+            "expired",
+            object_path_with_exp(&checksum, "GET", now.saturating_sub(1)),
+        ),
+        (
+            "future-distant",
+            object_path_with_exp(
+                &checksum,
+                "GET",
+                now + MAX_BOOKSHELF_TOKEN_LIFETIME_SECONDS + 1,
+            ),
+        ),
+    ];
+
+    for (label, path) in cases {
+        let response = send(&app, "GET", &path, b"").await;
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "{label} token was not forbidden"
+        );
+    }
+}
+
+#[tokio::test]
+async fn range_requests_return_partial_content_and_correct_lengths() {
+    let app = support::app(support::state_with_pivotal());
+    let contents = b"0123456789";
+    let checksum = md5_hex(contents);
+    let path = object_path(&checksum, "GET");
+
+    let response = send(&app, "PUT", &object_path(&checksum, "PUT"), contents).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let cases = [
+        ("bytes=2-5", "2345", "bytes 2-5/10"),
+        ("bytes=5-", "56789", "bytes 5-9/10"),
+        ("bytes=-3", "789", "bytes 7-9/10"),
+        ("bytes=8-100", "89", "bytes 8-9/10"),
+        ("bytes=-100", "0123456789", "bytes 0-9/10"),
+    ];
+
+    for (range, expected_body, expected_content_range) in cases {
+        let response = send_range(&app, &path, range).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::PARTIAL_CONTENT,
+            "{range} did not produce 206"
+        );
+        assert_eq!(header_str(&response, header::ACCEPT_RANGES), "bytes");
+        assert_eq!(
+            header_str(&response, header::CONTENT_RANGE),
+            expected_content_range
+        );
+        assert_eq!(
+            header_str(&response, header::CONTENT_LENGTH),
+            expected_body.len().to_string()
+        );
+        assert_eq!(body_bytes(response).await, expected_body.as_bytes());
+    }
+}
+
+#[tokio::test]
+async fn invalid_and_unsatisfiable_ranges_return_416() {
+    let app = support::app(support::state_with_pivotal());
+    let contents = b"0123456789";
+    let checksum = md5_hex(contents);
+    let path = object_path(&checksum, "GET");
+
+    let response = send(&app, "PUT", &object_path(&checksum, "PUT"), contents).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    for range in [
+        "bytes=20-30",
+        "bytes=5-2",
+        "bytes=-0",
+        "bytes=",
+        "items=0-1",
+        "bytes=0-1,3-4",
+    ] {
+        let response = send_range(&app, &path, range).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            "{range} was not rejected"
+        );
+        assert_eq!(header_str(&response, header::CONTENT_RANGE), "bytes */10");
+        assert!(body_bytes(response).await.is_empty());
     }
 }
 

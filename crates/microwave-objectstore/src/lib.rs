@@ -19,7 +19,7 @@ use thiserror::Error;
 
 mod s3;
 
-pub use s3::{S3Config, S3ObjectStore};
+pub use s3::{ObjectEntry, S3Config, S3ObjectStore};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -32,8 +32,23 @@ const HEALTH_PROBE_SWEEP_AGE: Duration = Duration::from_secs(3_600);
 /// Minimum interval between orphan sweeps, even on repeated health checks.
 const HEALTH_PROBE_SWEEP_INTERVAL: Duration = Duration::from_secs(3_600);
 
-/// Default lifetime for presigned S3 URLs, matching the upstream bookshelf default.
+/// Default lifetime for presigned URLs, matching the upstream bookshelf default.
 pub const DEFAULT_PRESIGN_EXPIRY_SECONDS: u64 = 900;
+
+/// Upper bound on the lifetime encoded in a local `/bookshelf` token.
+///
+/// Expiry values further in the future are rejected rather than honoured, so a
+/// leaked token cannot be replayed indefinitely. The bound matches the maximum
+/// SigV4 presign lifetime (seven days).
+pub const MAX_BOOKSHELF_TOKEN_LIFETIME_SECONDS: u64 = 7 * 24 * 60 * 60;
+
+/// Current Unix time in whole seconds.
+pub fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default()
+}
 
 #[derive(Debug, Error)]
 pub enum ObjectStoreError {
@@ -126,6 +141,7 @@ pub struct LocalObjectStore {
     root: PathBuf,
     secret: Vec<u8>,
     base_url: String,
+    presign_expiry_seconds: u64,
     last_probe_sweep: Arc<AtomicU64>,
 }
 
@@ -135,30 +151,87 @@ impl LocalObjectStore {
             root: root.into(),
             secret: secret.as_bytes().to_vec(),
             base_url: base_url.into(),
+            presign_expiry_seconds: DEFAULT_PRESIGN_EXPIRY_SECONDS,
             last_probe_sweep: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Override the lifetime of tokens embedded in local presigned URLs.
+    ///
+    /// Values above [`MAX_BOOKSHELF_TOKEN_LIFETIME_SECONDS`] are clamped so a
+    /// generated URL is always accepted by the verifier.
+    pub fn with_presign_expiry_seconds(mut self, seconds: u64) -> Self {
+        self.presign_expiry_seconds = seconds.min(MAX_BOOKSHELF_TOKEN_LIFETIME_SECONDS);
+        self
+    }
+
+    pub fn presign_expiry_seconds(&self) -> u64 {
+        self.presign_expiry_seconds
     }
 
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// Generate a token that expires at the configured lifetime from now.
     pub fn token(&self, method: &str, organization_id: &str, checksum: &str) -> String {
+        let expires_at = unix_timestamp().saturating_add(self.presign_expiry_seconds);
+        self.token_with_expiry(method, organization_id, checksum, expires_at)
+    }
+
+    /// Generate a token bound to an explicit expiry time (Unix seconds).
+    pub fn token_with_expiry(
+        &self,
+        method: &str,
+        organization_id: &str,
+        checksum: &str,
+        expires_at: u64,
+    ) -> String {
         bookshelf_token(
             std::str::from_utf8(&self.secret).expect("secret was built from a string"),
             method,
             organization_id,
             checksum,
+            expires_at,
         )
     }
 
-    pub fn verify(&self, method: &str, organization_id: &str, checksum: &str, token: &str) -> bool {
-        bookshelf_token_matches(
+    pub fn verify(
+        &self,
+        method: &str,
+        organization_id: &str,
+        checksum: &str,
+        expires_at: u64,
+        token: &str,
+    ) -> bool {
+        self.verify_at(
+            method,
+            organization_id,
+            checksum,
+            expires_at,
+            token,
+            unix_timestamp(),
+        )
+    }
+
+    /// Verify a token against a caller-supplied clock. Exposed for tests.
+    pub fn verify_at(
+        &self,
+        method: &str,
+        organization_id: &str,
+        checksum: &str,
+        expires_at: u64,
+        token: &str,
+        now: u64,
+    ) -> bool {
+        bookshelf_token_matches_at(
             std::str::from_utf8(&self.secret).expect("secret was built from a string"),
             method,
             organization_id,
             checksum,
+            expires_at,
             token,
+            now,
         )
     }
 
@@ -229,9 +302,10 @@ impl ObjectStore for LocalObjectStore {
     }
 
     fn presigned_url(&self, method: &str, organization_id: &str, checksum: &str) -> String {
-        let token = self.token(method, organization_id, checksum);
+        let expires_at = unix_timestamp().saturating_add(self.presign_expiry_seconds);
+        let token = self.token_with_expiry(method, organization_id, checksum, expires_at);
         format!(
-            "{}/bookshelf/organizations/{organization_id}/checksums/{checksum}?token={token}",
+            "{}/bookshelf/organizations/{organization_id}/checksums/{checksum}?token={token}&exp={expires_at}",
             self.base_url
         )
     }
@@ -311,18 +385,30 @@ impl ObjectStore for LocalObjectStore {
 }
 
 /// HMAC token used by the local `/bookshelf` routes.
+///
+/// The expiry is part of the signed payload, so clients cannot extend a token
+/// by editing the `exp` query parameter.
 pub fn bookshelf_token(
     secret: &str,
     method: &str,
     organization_id: &str,
     checksum: &str,
+    expires_at: u64,
 ) -> String {
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key");
-    mac.update(format!("{method}:{organization_id}:{checksum}").as_bytes());
+    mac.update(format!("{method}:{organization_id}:{checksum}:{expires_at}").as_bytes());
     hex::encode(mac.finalize().into_bytes())
 }
 
-/// Constant-time verification of a local `/bookshelf` token.
+/// Return whether an expiry is plausible at `now`.
+///
+/// Expiries in the past and expiries more than
+/// [`MAX_BOOKSHELF_TOKEN_LIFETIME_SECONDS`] in the future are rejected.
+pub fn bookshelf_token_expiry_valid(expires_at: u64, now: u64) -> bool {
+    expires_at > now && expires_at <= now.saturating_add(MAX_BOOKSHELF_TOKEN_LIFETIME_SECONDS)
+}
+
+/// Constant-time verification of a local `/bookshelf` token at the current time.
 ///
 /// An empty secret always fails so a missing configuration cannot become an
 /// authentication bypass.
@@ -331,12 +417,34 @@ pub fn bookshelf_token_matches(
     method: &str,
     organization_id: &str,
     checksum: &str,
+    expires_at: u64,
     token: &str,
 ) -> bool {
-    if secret.is_empty() {
+    bookshelf_token_matches_at(
+        secret,
+        method,
+        organization_id,
+        checksum,
+        expires_at,
+        token,
+        unix_timestamp(),
+    )
+}
+
+/// Constant-time verification against a caller-supplied clock.
+pub fn bookshelf_token_matches_at(
+    secret: &str,
+    method: &str,
+    organization_id: &str,
+    checksum: &str,
+    expires_at: u64,
+    token: &str,
+    now: u64,
+) -> bool {
+    if secret.is_empty() || !bookshelf_token_expiry_valid(expires_at, now) {
         return false;
     }
-    let expected = bookshelf_token(secret, method, organization_id, checksum);
+    let expected = bookshelf_token(secret, method, organization_id, checksum, expires_at);
     expected.as_bytes().ct_eq(token.as_bytes()).into()
 }
 
@@ -379,9 +487,28 @@ mod tests {
 
     #[test]
     fn empty_secret_never_authenticates() {
-        assert!(!bookshelf_token_matches(
-            "", "GET", "acme", "abc", "anything"
+        let now = 1_700_000_000;
+        assert!(!bookshelf_token_matches_at(
+            "",
+            "GET",
+            "acme",
+            "abc",
+            now + 900,
+            "anything",
+            now
         ));
+    }
+
+    #[test]
+    fn expiry_bounds_are_enforced() {
+        let now = 1_700_000_000;
+        assert!(bookshelf_token_expiry_valid(now + 1, now));
+        assert!(!bookshelf_token_expiry_valid(now, now), "already expired");
+        assert!(!bookshelf_token_expiry_valid(now - 1, now), "expired");
+        assert!(
+            !bookshelf_token_expiry_valid(now + MAX_BOOKSHELF_TOKEN_LIFETIME_SECONDS + 1, now),
+            "future-distant expiry must be rejected"
+        );
     }
 
     #[test]

@@ -7,8 +7,8 @@ use axum::routing::get;
 use axum::Router;
 use chrono::{DateTime, Utc};
 use microwave_objectstore::{
-    bookshelf_token_matches, checksum_md5_base64, md5_hex, ObjectMetadata, ObjectStoreError,
-    DEFAULT_PRESIGN_EXPIRY_SECONDS,
+    bookshelf_token_expiry_valid, bookshelf_token_matches_at, checksum_md5_base64, md5_hex,
+    unix_timestamp, ObjectMetadata, ObjectStoreError, DEFAULT_PRESIGN_EXPIRY_SECONDS,
 };
 use serde::Deserialize;
 use std::time::SystemTime;
@@ -24,29 +24,57 @@ use std::time::SystemTime;
 pub const MAX_UPLOAD_BYTES: usize = 250 * 1024 * 1024;
 
 /// Cache freshness for blob responses. Upstream emits the presigned URL's
-/// expiry as `Cache-Control: max-age=...`; local tokens do not carry an
-/// expiry, so the default presign lifetime is used.
+/// expiry as `Cache-Control: max-age=...`; local tokens default to the same
+/// lifetime, so the default presign lifetime is used here.
 pub const CACHE_CONTROL_MAX_AGE: u64 = DEFAULT_PRESIGN_EXPIRY_SECONDS;
 
 #[derive(Debug, Deserialize)]
 struct TokenQuery {
-    token: String,
+    token: Option<String>,
+    exp: Option<u64>,
 }
 
+/// Validate a local bookshelf token.
+///
+/// A missing or temporally invalid `exp` is a `403`; a well-formed token with a
+/// bad signature remains a `401`, matching the historical behavior.
 fn authorized(
     state: &AppState,
     method: &str,
     organization: &str,
     checksum: &str,
-    token: &str,
-) -> bool {
+    query: &TokenQuery,
+) -> Result<(), ApiError> {
+    let Some(token) = query.token.as_deref() else {
+        return Err(ApiError::forbidden());
+    };
+    let Some(expires_at) = query.exp else {
+        return Err(ApiError::forbidden());
+    };
+    let now = unix_timestamp();
+    if !bookshelf_token_expiry_valid(expires_at, now) {
+        return Err(ApiError::forbidden());
+    }
+
     let secret = state
         .config
         .object_store
         .secret
         .as_deref()
         .unwrap_or_default();
-    bookshelf_token_matches(secret, method, organization, checksum, token)
+    if bookshelf_token_matches_at(
+        secret,
+        method,
+        organization,
+        checksum,
+        expires_at,
+        token,
+        now,
+    ) {
+        Ok(())
+    } else {
+        Err(ApiError::unauthorized())
+    }
 }
 
 pub fn routes() -> Router<AppState> {
@@ -70,17 +98,37 @@ async fn download(
     State(state): State<AppState>,
     Path((organization, checksum)): Path<(String, String)>,
     Query(query): Query<TokenQuery>,
+    request_headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    if !authorized(&state, "GET", &organization, &checksum, &query.token) {
-        return Err(ApiError::unauthorized());
-    }
+    authorized(&state, "GET", &organization, &checksum, &query)?;
+
+    // The object-store trait returns a complete `Vec<u8>`, so the download is
+    // buffered. Range requests slice the same buffer through `Bytes` instead
+    // of copying the requested window, which keeps peak memory at one object
+    // rather than one object plus the response body.
     let data = match state.object_store.get(&organization, &checksum) {
-        Ok(data) => data,
+        Ok(data) => Bytes::from(data),
         Err(ObjectStoreError::NotFound) => return Err(ApiError::not_found("checksum not found")),
         Err(_) => return Err(ApiError::internal()),
     };
     let metadata = object_metadata(&state, &organization, &checksum);
-    Ok((object_headers(&checksum, metadata), data).into_response())
+    let headers = object_headers(&checksum, metadata);
+    let total = data.len() as u64;
+
+    if let Some(range) = request_headers.get(header::RANGE) {
+        let parsed = range
+            .to_str()
+            .ok()
+            .and_then(|value| parse_range(value, total).ok());
+        return Ok(match parsed {
+            Some((start, end)) => partial_content(headers, data, total, start, end),
+            None => range_not_satisfiable(total),
+        });
+    }
+
+    let mut headers = headers;
+    headers.insert(header::CONTENT_LENGTH, content_length(total));
+    Ok((headers, data).into_response())
 }
 
 async fn head(
@@ -88,12 +136,12 @@ async fn head(
     Path((organization, checksum)): Path<(String, String)>,
     Query(query): Query<TokenQuery>,
 ) -> Result<Response, ApiError> {
-    if !authorized(&state, "GET", &organization, &checksum, &query.token) {
-        return Err(ApiError::unauthorized());
-    }
+    authorized(&state, "GET", &organization, &checksum, &query)?;
     match object_metadata(&state, &organization, &checksum) {
         Some(metadata) => {
-            Ok((object_headers(&checksum, Some(metadata)), StatusCode::OK).into_response())
+            let mut headers = object_headers(&checksum, Some(metadata));
+            headers.insert(header::CONTENT_LENGTH, content_length(metadata.len));
+            Ok((headers, StatusCode::OK).into_response())
         }
         None => Ok(StatusCode::NOT_FOUND.into_response()),
     }
@@ -105,9 +153,7 @@ async fn upload(
     Query(query): Query<TokenQuery>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    if !authorized(&state, "PUT", &organization, &checksum, &query.token) {
-        return Err(ApiError::unauthorized());
-    }
+    authorized(&state, "PUT", &organization, &checksum, &query)?;
     if md5_hex(&body) != checksum {
         return Ok(StatusCode::NOT_ACCEPTABLE.into_response());
     }
@@ -129,9 +175,7 @@ async fn delete_object(
     Path((organization, checksum)): Path<(String, String)>,
     Query(query): Query<TokenQuery>,
 ) -> Result<Response, ApiError> {
-    if !authorized(&state, "DELETE", &organization, &checksum, &query.token) {
-        return Err(ApiError::unauthorized());
-    }
+    authorized(&state, "DELETE", &organization, &checksum, &query)?;
     state
         .object_store
         .delete(&organization, &checksum)
@@ -157,6 +201,7 @@ fn object_headers(checksum: &str, metadata: Option<ObjectMetadata>) -> HeaderMap
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/octet-stream"),
     );
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     if let Some(etag) = etag_value(checksum) {
         headers.insert(header::ETAG, etag);
     }
@@ -171,6 +216,78 @@ fn object_headers(checksum: &str, metadata: Option<ObjectMetadata>) -> HeaderMap
             .expect("constant cache-control value is a valid header"),
     );
     headers
+}
+
+/// Parse a single `Range` header value against a representation of `len`
+/// bytes.
+///
+/// Returns the inclusive `(start, end)` pair. Multi-range requests and
+/// malformed or unsatisfiable ranges return `Err(())`, which the handler maps
+/// to `416` with `Content-Range: bytes */len`.
+fn parse_range(value: &str, len: u64) -> Result<(u64, u64), ()> {
+    let spec = value.trim().strip_prefix("bytes=").ok_or(())?;
+    if spec.contains(',') || len == 0 {
+        return Err(());
+    }
+    let (start_text, end_text) = spec.split_once('-').ok_or(())?;
+
+    if start_text.is_empty() {
+        // Suffix range: `bytes=-N` returns the final N bytes. A suffix larger
+        // than the object is clamped to the whole object.
+        let suffix: u64 = end_text.parse().map_err(|_| ())?;
+        if suffix == 0 {
+            return Err(());
+        }
+        return Ok((len.saturating_sub(suffix), len - 1));
+    }
+
+    let start: u64 = start_text.parse().map_err(|_| ())?;
+    if start >= len {
+        return Err(());
+    }
+    let end = if end_text.is_empty() {
+        len - 1
+    } else {
+        end_text.parse::<u64>().map_err(|_| ())?.min(len - 1)
+    };
+    if end < start {
+        return Err(());
+    }
+    Ok((start, end))
+}
+
+fn partial_content(
+    mut headers: HeaderMap,
+    data: Bytes,
+    total: u64,
+    start: u64,
+    end: u64,
+) -> Response {
+    let length = end - start + 1;
+    headers.insert(header::CONTENT_LENGTH, content_length(length));
+    headers.insert(
+        header::CONTENT_RANGE,
+        HeaderValue::from_str(&format!("bytes {start}-{end}/{total}"))
+            .expect("content-range is a valid header"),
+    );
+    let body = data.slice(start as usize..=end as usize);
+    (StatusCode::PARTIAL_CONTENT, headers, body).into_response()
+}
+
+fn range_not_satisfiable(total: u64) -> Response {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    headers.insert(
+        header::CONTENT_RANGE,
+        HeaderValue::from_str(&format!("bytes */{total}"))
+            .expect("content-range is a valid header"),
+    );
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("0"));
+    (StatusCode::RANGE_NOT_SATISFIABLE, headers).into_response()
+}
+
+fn content_length(value: u64) -> HeaderValue {
+    HeaderValue::from_str(&value.to_string()).expect("decimal length is a valid header")
 }
 
 /// S3-style quoted ETag built from the checksum's MD5 digest.
