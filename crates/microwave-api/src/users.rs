@@ -1,8 +1,9 @@
-use crate::helpers::{base_url, is_superuser, require_superuser};
+use crate::chef_json::ChefJson;
+use crate::helpers::{base_url, is_superuser, location_headers, require_superuser};
 use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::body::Bytes;
 use axum::extract::{Extension, Path, Query, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use microwave_crypto::{
@@ -78,8 +79,8 @@ async fn create_user(
     Extension(auth): Extension<AuthContext>,
     Extension(ApiVersion(api_version)): Extension<ApiVersion>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    ChefJson(body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     require_superuser(&auth)?;
     let body = body
         .as_object()
@@ -156,7 +157,8 @@ async fn create_user(
     }
 
     let base = base_url(&headers, &state);
-    let mut response = json!({ "uri": format!("{base}/users/{username}") });
+    let uri = format!("{base}/users/{username}");
+    let mut response = json!({ "uri": uri });
 
     let (public_key, private_key) = match key {
         CreateKey::None => (None, None),
@@ -194,7 +196,7 @@ async fn create_user(
         response["chef_key"] = chef_key;
     }
 
-    Ok((StatusCode::CREATED, Json(response)))
+    Ok((StatusCode::CREATED, location_headers(&uri)?, Json(response)))
 }
 
 async fn get_user(
@@ -220,7 +222,7 @@ async fn update_user(
     Extension(ApiVersion(api_version)): Extension<ApiVersion>,
     Path(username): Path<String>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    ChefJson(body): ChefJson<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let current = state
         .store
@@ -331,10 +333,7 @@ async fn update_user(
     let mut response_headers = HeaderMap::new();
     let renamed = user.username != username;
     if renamed {
-        response_headers.insert(
-            header::LOCATION,
-            HeaderValue::from_str(&uri).map_err(|_| ApiError::internal())?,
-        );
+        response_headers = location_headers(&uri)?;
     }
     let status = if renamed {
         StatusCode::CREATED

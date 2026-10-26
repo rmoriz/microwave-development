@@ -1,5 +1,8 @@
+use crate::chef_json::ChefJson;
 use crate::cookbooks::{parse_num_versions, NumVersions};
-use crate::helpers::{base_url, container_authz, organization, require_permission};
+use crate::helpers::{
+    base_url, container_authz, location_headers, organization, require_permission,
+};
 use crate::{ApiError, AppState, AuthContext};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -83,8 +86,8 @@ async fn create_environment(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     headers: HeaderMap,
-    Json(mut body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    ChefJson(mut body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let container = container_authz(&state, org, "environments").await?;
     require_permission(&state, &auth, &container, Permission::Create).await?;
@@ -109,11 +112,11 @@ async fn create_environment(
     .await;
 
     let base = base_url(&headers, &state);
+    let uri = format!("{base}/organizations/{}/environments/{name}", org.name);
     Ok((
         StatusCode::CREATED,
-        Json(json!({
-            "uri": format!("{base}/organizations/{}/environments/{name}", org.name)
-        })),
+        location_headers(&uri)?,
+        Json(json!({ "uri": uri })),
     ))
 }
 
@@ -139,7 +142,7 @@ async fn update_environment(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, name)): Path<(String, String)>,
-    Json(mut body): Json<Value>,
+    ChefJson(mut body): ChefJson<Value>,
 ) -> Result<Response, ApiError> {
     if let Some(response) = default_environment_response(&name) {
         return Ok(response);

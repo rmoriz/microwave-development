@@ -1,4 +1,7 @@
-use crate::helpers::{base_url, is_server_admin, require_permission, require_superuser};
+use crate::chef_json::ChefJson;
+use crate::helpers::{
+    base_url, is_server_admin, location_headers, require_permission, require_superuser,
+};
 use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -41,8 +44,8 @@ async fn create_org(
     Extension(auth): Extension<AuthContext>,
     Extension(api_version): Extension<ApiVersion>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    ChefJson(body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     require_superuser(&auth)?;
     let name = required_string(&body, "name")?;
     if !valid_org_name(&name) {
@@ -96,8 +99,9 @@ async fn create_org(
     crate::search::index::index_client(&state, &org, &client).await;
 
     let base = base_url(&headers, &state);
+    let uri = format!("{base}/organizations/{}", org.name);
     let mut response = json!({
-        "uri": format!("{base}/organizations/{}", org.name),
+        "uri": uri,
         "name": org.name,
         "guid": org.id,
         "clientname": client.name,
@@ -116,7 +120,7 @@ async fn create_org(
         });
     }
 
-    Ok((StatusCode::CREATED, Json(response)))
+    Ok((StatusCode::CREATED, location_headers(&uri)?, Json(response)))
 }
 
 async fn provision_validator(
@@ -174,7 +178,7 @@ async fn update_org(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(organization): Path<String>,
-    Json(body): Json<Value>,
+    ChefJson(body): ChefJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let org = state
         .store

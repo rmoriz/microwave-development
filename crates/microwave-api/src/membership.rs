@@ -1,4 +1,5 @@
-use crate::helpers::{base_url, organization, require_permission};
+use crate::chef_json::ChefJson;
+use crate::helpers::{base_url, location_headers, organization, require_permission};
 use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -64,8 +65,8 @@ async fn add_org_user(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    ChefJson(body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     require_superuser(&auth)?;
     let username = username_from_body(&body)?;
@@ -82,6 +83,7 @@ async fn add_org_user(
         // association.
         return Ok((
             StatusCode::CONFLICT,
+            HeaderMap::new(),
             Json(json!({ "error": "The association already exists." })),
         ));
     }
@@ -93,11 +95,11 @@ async fn add_org_user(
         .map_err(ApiError::from)?;
 
     let base = base_url(&headers, &state);
+    let uri = format!("{base}/organizations/{}/users/{}", org.name, user.username);
     Ok((
         StatusCode::CREATED,
-        Json(json!({
-            "uri": format!("{base}/organizations/{}/users/{}", org.name, user.username)
-        })),
+        location_headers(&uri)?,
+        Json(json!({ "uri": uri })),
     ))
 }
 
@@ -160,8 +162,8 @@ async fn create_invitation(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+    ChefJson(body): ChefJson<Value>,
+) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     require_permission(&state, &auth, &org.authz_id, Permission::Update).await?;
     let username = username_from_body(&body)?;
@@ -182,15 +184,17 @@ async fn create_invitation(
         .await
         .map_err(ApiError::from)?;
     let base = base_url(&headers, &state);
+    let uri = format!(
+        "{base}/organizations/{}/association_requests/{}",
+        org.name, invitation.id
+    );
     // Upstream's create response nests the inviting user, the organization and
     // the invited user alongside the URI of the new invitation.
     Ok((
         StatusCode::CREATED,
+        location_headers(&uri)?,
         Json(json!({
-            "uri": format!(
-                "{base}/organizations/{}/association_requests/{}",
-                org.name, invitation.id
-            ),
+            "uri": uri,
             "organization_user": { "username": auth.principal.name },
             "organization": { "name": org.name },
             "user": {
@@ -298,7 +302,7 @@ async fn respond_to_invitation(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((username, id)): Path<(String, String)>,
-    Json(body): Json<Value>,
+    ChefJson(body): ChefJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let user = find_user(&state, &username).await?;
     let invitation = find_invitation(&state, &id).await?;
