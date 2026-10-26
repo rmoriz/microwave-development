@@ -5,7 +5,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{delete, get, put};
 use axum::{Extension, Json, Router};
 use microwave_store::{Invitation, Org, Permission, User};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use std::collections::HashSet;
 
 pub fn routes() -> Router<AppState> {
@@ -44,27 +44,20 @@ pub fn routes() -> Router<AppState> {
 async fn list_org_users(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-    headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
     require_permission(&state, &auth, &org.authz_id, Permission::Read).await?;
-    let base = base_url(&headers, &state);
-    let mut users = Map::new();
-    for user in state
+    let users = state
         .store
         .list_org_users(&org.id)
         .await
-        .map_err(ApiError::from)?
-    {
-        users.insert(
-            user.username.clone(),
-            json!(format!(
-                "{base}/organizations/{}/users/{}",
-                org.name, user.username
-            )),
-        );
-    }
-    Ok(Json(Value::Object(users)))
+        .map_err(ApiError::from)?;
+    Ok(Json(Value::Array(
+        users
+            .iter()
+            .map(|user| json!({ "user": { "username": user.username } }))
+            .collect(),
+    )))
 }
 
 async fn add_org_user(
@@ -126,6 +119,7 @@ async fn get_org_user(
 async fn remove_org_user(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    Extension(ApiVersion(api_version)): Extension<ApiVersion>,
     Path((_organization, username)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
@@ -141,7 +135,11 @@ async fn remove_org_user(
         .remove_user_from_org(&org.id, &user.id, &user.username)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(json!({})))
+    // Upstream returns the removed user's document so the caller can see what
+    // was removed instead of an empty object.
+    Ok(Json(
+        crate::users::user_json(&state, &user, api_version).await?,
+    ))
 }
 
 async fn list_org_invitations(
@@ -155,7 +153,7 @@ async fn list_org_invitations(
         .list_org_invitations(&org.id)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(invitations_json(&invitations)))
+    Ok(Json(org_invitations_json(&invitations)))
 }
 
 async fn create_invitation(
@@ -184,12 +182,23 @@ async fn create_invitation(
         .await
         .map_err(ApiError::from)?;
     let base = base_url(&headers, &state);
-    let mut response = invitation_json(&invitation);
-    response["uri"] = json!(format!(
-        "{base}/organizations/{}/association_requests/{}",
-        org.name, invitation.id
-    ));
-    Ok((StatusCode::CREATED, Json(response)))
+    // Upstream's create response nests the inviting user, the organization and
+    // the invited user alongside the URI of the new invitation.
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "uri": format!(
+                "{base}/organizations/{}/association_requests/{}",
+                org.name, invitation.id
+            ),
+            "organization_user": { "username": auth.principal.name },
+            "organization": { "name": org.name },
+            "user": {
+                "email": user.email.clone().unwrap_or_default(),
+                "first_name": user.first_name.clone().unwrap_or_default(),
+            },
+        })),
+    ))
 }
 
 async fn delete_invitation(
@@ -208,14 +217,13 @@ async fn delete_invitation(
         .delete_invitation(&id)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(json!({})))
+    Ok(Json(invitation_response_json(&invitation)))
 }
 
 async fn list_user_orgs(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(username): Path<String>,
-    headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let user = find_user(&state, &username).await?;
     let mut orgs = state
@@ -239,15 +247,21 @@ async fn list_user_orgs(
         }
     }
 
-    let base = base_url(&headers, &state);
-    let mut result = Map::new();
-    for org in orgs {
-        result.insert(
-            org.name.clone(),
-            json!(format!("{base}/organizations/{}", org.name)),
-        );
-    }
-    Ok(Json(Value::Object(result)))
+    // Upstream returns a list of `{"organization": {...}}` wrappers. The guid
+    // is the same stable organization id used by the organization endpoints.
+    Ok(Json(Value::Array(
+        orgs.iter()
+            .map(|org| {
+                json!({
+                    "organization": {
+                        "name": org.name,
+                        "full_name": org.full_name,
+                        "guid": org.id,
+                    }
+                })
+            })
+            .collect(),
+    )))
 }
 
 async fn list_user_invitations(
@@ -262,7 +276,7 @@ async fn list_user_invitations(
         .list_user_invitations(&user.id)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(invitations_json(&invitations)))
+    Ok(Json(user_invitations_json(&invitations)))
 }
 
 async fn count_user_invitations(
@@ -317,7 +331,7 @@ async fn respond_to_invitation(
             ))
         }
     };
-    Ok(Json(invitation_json(&invitation)))
+    Ok(Json(invitation_response_json(&invitation)))
 }
 
 fn username_from_body(body: &Value) -> Result<String, ApiError> {
@@ -374,16 +388,51 @@ async fn ensure_member(state: &AppState, org: &Org, user: &User) -> Result<(), A
     }
 }
 
-fn invitation_json(invitation: &Invitation) -> Value {
-    json!({
-        "id": invitation.id,
-        "org": invitation.org_name,
-        "user": invitation.username
-    })
+/// Organization-scoped invitation listing: `[{"id": ..., "username": ...}]`.
+fn org_invitations_json(invitations: &[Invitation]) -> Value {
+    Value::Array(
+        invitations
+            .iter()
+            .map(|invitation| {
+                json!({
+                    "id": invitation.id,
+                    "username": invitation.username,
+                })
+            })
+            .collect(),
+    )
 }
 
-fn invitations_json(invitations: &[Invitation]) -> Value {
-    Value::Array(invitations.iter().map(invitation_json).collect())
+/// User-scoped invitation listing: `[{"id": ..., "orgname": ...}]`.
+fn user_invitations_json(invitations: &[Invitation]) -> Value {
+    Value::Array(
+        invitations
+            .iter()
+            .map(|invitation| {
+                json!({
+                    "id": invitation.id,
+                    "orgname": invitation.org_name,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// The upstream invitation document returned when an invitation is accepted,
+/// rejected, or deleted. The `organization`, `user`, and
+/// `organization_admin_actor_id` fields are retained as deprecated markers.
+fn invitation_response_json(invitation: &Invitation) -> Value {
+    json!({
+        "id": invitation.id,
+        "orgname": invitation.org_name,
+        "username": invitation.username,
+        "organization": {
+            "deprecated": true,
+            "name": invitation.org_name,
+        },
+        "user": "deprecated",
+        "organization_admin_actor_id": "deprecated",
+    })
 }
 
 fn is_superuser(auth: &AuthContext) -> bool {

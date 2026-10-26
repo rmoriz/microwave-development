@@ -319,7 +319,13 @@ async fn invitation_delete_reports_the_resolved_user() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
     let invitation = support::response_json(response).await;
-    let id = invitation["id"].as_str().unwrap().to_string();
+    let id = invitation["uri"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
 
     // Let the invitation-create action arrive, then clear it so the delete is
     // the only notification under test.

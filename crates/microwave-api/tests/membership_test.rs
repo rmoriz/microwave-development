@@ -71,17 +71,26 @@ async fn invite(app: &axum::Router, user: &str) -> String {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(invitation["org"], "acme");
-    assert_eq!(invitation["user"], user);
-    invitation["id"].as_str().unwrap().to_string()
+    assert_eq!(invitation["organization"]["name"], "acme");
+    assert_eq!(invitation["organization_user"]["username"], "pivotal");
+    assert_eq!(invitation["user"]["email"], format!("{user}@example.com"));
+    assert_eq!(invitation["user"]["first_name"], user);
+    invitation["uri"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string()
 }
 
 #[tokio::test]
 async fn adds_lists_and_removes_org_members() {
     let state = support::state_with_pivotal();
     add_user(&state, "alice");
-    let app = support::app(state);
+    let app = support::app(state.clone());
     create_org(&app).await;
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
 
     let (status, created) = request(
         &app,
@@ -100,12 +109,11 @@ async fn adds_lists_and_removes_org_members() {
     let (status, users) = request(&app, "GET", "/organizations/acme/users", b"", "pivotal").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        users["alice"],
-        "http://0.0.0.0:8000/organizations/acme/users/alice"
-    );
-    assert_eq!(
-        users["pivotal"],
-        "http://0.0.0.0:8000/organizations/acme/users/pivotal"
+        users,
+        serde_json::json!([
+            { "user": { "username": "alice" } },
+            { "user": { "username": "pivotal" } }
+        ])
     );
 
     let (status, user) = request(
@@ -121,7 +129,16 @@ async fn adds_lists_and_removes_org_members() {
 
     let (status, orgs) = request(&app, "GET", "/users/alice/organizations", b"", "alice").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(orgs["acme"], "http://0.0.0.0:8000/organizations/acme");
+    assert_eq!(
+        orgs,
+        serde_json::json!([{
+            "organization": {
+                "name": "acme",
+                "full_name": "Acme Corp",
+                "guid": org.id
+            }
+        }])
+    );
 
     let (status, deleted) = request(
         &app,
@@ -132,11 +149,12 @@ async fn adds_lists_and_removes_org_members() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(deleted, serde_json::json!({}));
+    assert_eq!(deleted["username"], "alice");
+    assert_eq!(deleted["email"], "alice@example.com");
 
     let (status, orgs) = request(&app, "GET", "/users/alice/organizations", b"", "alice").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(orgs, serde_json::json!({}));
+    assert_eq!(orgs, serde_json::json!([]));
 }
 
 #[tokio::test]
@@ -161,15 +179,18 @@ async fn creates_and_accepts_an_invitation() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(invitations.as_array().unwrap().len(), 1);
-    assert_eq!(invitations[0]["id"], id);
-    assert_eq!(invitations[0]["org"], "acme");
-    assert_eq!(invitations[0]["user"], "bob");
+    assert_eq!(
+        invitations,
+        serde_json::json!([{ "id": id, "username": "bob" }])
+    );
 
     let (status, invitations) =
         request(&app, "GET", "/users/bob/association_requests", b"", "bob").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(invitations.as_array().unwrap().len(), 1);
+    assert_eq!(
+        invitations,
+        serde_json::json!([{ "id": id, "orgname": "acme" }])
+    );
 
     let (status, count) = request(
         &app,
@@ -193,8 +214,13 @@ async fn creates_and_accepts_an_invitation() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(accepted["id"], id);
-    assert_eq!(accepted["org"], "acme");
-    assert_eq!(accepted["user"], "bob");
+    assert_eq!(accepted["orgname"], "acme");
+    assert_eq!(accepted["username"], "bob");
+    assert_eq!(
+        accepted["organization"],
+        serde_json::json!({ "deprecated": true, "name": "acme" })
+    );
+    assert_eq!(accepted["user"], "deprecated");
 
     let (status, count) = request(
         &app,
@@ -209,7 +235,11 @@ async fn creates_and_accepts_an_invitation() {
 
     let (status, users) = request(&app, "GET", "/organizations/acme/users", b"", "pivotal").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(users["bob"].is_string());
+    assert!(users
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["user"]["username"] == "bob"));
 
     let bob = state.sqlite().find_user("bob").unwrap().unwrap();
     let users_group = state
@@ -259,7 +289,11 @@ async fn rejects_an_invitation() {
 
     let (status, users) = request(&app, "GET", "/organizations/acme/users", b"", "pivotal").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(users.get("carol").is_none());
+    assert!(users
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["user"]["username"] != "carol"));
 
     let carol = state.sqlite().find_user("carol").unwrap().unwrap();
     assert!(!state.sqlite().is_user_in_org(&org_id, &carol.id).unwrap());

@@ -3262,9 +3262,17 @@ async fn scenario_membership(h: &Harness) -> Vec<Step> {
         )
         .await
         .expect_status(StatusCode::CREATED);
-    assert_eq!(step.json()["org"], org);
-    assert_eq!(step.json()["user"], bob);
-    let invitation_id = step.json()["id"].as_str().unwrap().to_string();
+    assert_eq!(step.json()["organization"]["name"], org);
+    assert_eq!(step.json()["organization_user"]["username"], "pivotal");
+    assert_eq!(step.json()["user"]["email"], format!("{bob}@example.test"));
+    assert_eq!(step.json()["user"]["first_name"], "Parity");
+    let invitation_id = step.json()["uri"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
     steps.push(step);
 
     let step = h
@@ -3277,7 +3285,10 @@ async fn scenario_membership(h: &Harness) -> Vec<Step> {
         )
         .await
         .expect_ok();
-    assert_eq!(step.json().as_array().unwrap().len(), 1);
+    assert_eq!(
+        step.json(),
+        &json!([{ "id": invitation_id, "username": bob }])
+    );
     steps.push(step);
 
     let step = h
@@ -3290,7 +3301,10 @@ async fn scenario_membership(h: &Harness) -> Vec<Step> {
         )
         .await
         .expect_ok();
-    assert_eq!(step.json().as_array().unwrap().len(), 1);
+    assert_eq!(
+        step.json(),
+        &json!([{ "id": invitation_id, "orgname": org }])
+    );
     steps.push(step);
 
     let step = h
@@ -3316,7 +3330,8 @@ async fn scenario_membership(h: &Harness) -> Vec<Step> {
         )
         .await
         .expect_ok();
-    assert_eq!(step.json()["org"], org);
+    assert_eq!(step.json()["organization"]["name"], org);
+    assert_eq!(step.json()["orgname"], org);
     steps.push(step);
 
     let step = h
@@ -3426,8 +3441,13 @@ async fn scenario_membership(h: &Harness) -> Vec<Step> {
         )
         .await
         .expect_ok();
-    assert!(step.json()["pivotal"].is_string());
-    assert!(step.json()[&bob].is_string());
+    let members = step.json().as_array().unwrap();
+    assert!(members
+        .iter()
+        .any(|entry| entry["user"]["username"] == "pivotal"));
+    assert!(members
+        .iter()
+        .any(|entry| entry["user"]["username"] == bob.as_str()));
     steps.push(step);
 
     let step = h
@@ -3453,7 +3473,11 @@ async fn scenario_membership(h: &Harness) -> Vec<Step> {
         )
         .await
         .expect_ok();
-    assert_eq!(step.json()[&org], format!("{BASE_URL}/organizations/{org}"));
+    assert_eq!(step.json()[0]["organization"]["name"], org);
+    assert_eq!(
+        step.json()[0]["organization"]["full_name"],
+        format!("Parity {org}")
+    );
     steps.push(step);
 
     let step = h
@@ -3466,7 +3490,7 @@ async fn scenario_membership(h: &Harness) -> Vec<Step> {
         )
         .await
         .expect_ok();
-    assert_eq!(step.json(), &json!({}));
+    assert_eq!(step.json()["username"], bob);
     steps.push(step);
 
     let step = h
@@ -3479,7 +3503,7 @@ async fn scenario_membership(h: &Harness) -> Vec<Step> {
         )
         .await
         .expect_ok();
-    assert_eq!(step.json(), &json!({}));
+    assert_eq!(step.json(), &json!([]));
     steps.push(step);
 
     // Re-invite, then delete the invitation instead of accepting it.
@@ -3493,7 +3517,13 @@ async fn scenario_membership(h: &Harness) -> Vec<Step> {
         )
         .await
         .expect_status(StatusCode::CREATED);
-    let second_id = step.json()["id"].as_str().unwrap().to_string();
+    let second_id = step.json()["uri"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
     steps.push(step);
 
     let step = h
@@ -3506,7 +3536,8 @@ async fn scenario_membership(h: &Harness) -> Vec<Step> {
         )
         .await
         .expect_ok();
-    assert_eq!(step.json(), &json!({}));
+    assert_eq!(step.json()["id"], second_id);
+    assert_eq!(step.json()["orgname"], org);
     steps.push(step);
 
     let step = h
