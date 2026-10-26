@@ -230,6 +230,8 @@ async fn malformed_credential_bodies_are_rejected_before_authentication() {
         );
     }
 
+    // A well-formed body reaches authentication. Missing required auth
+    // headers are a bad request, matching the generic auth-header contract.
     let response = app
         .oneshot(
             Request::post("/authenticate_user")
@@ -239,7 +241,7 @@ async fn malformed_credential_bodies_are_rejected_before_authentication() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
