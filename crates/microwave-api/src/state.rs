@@ -33,6 +33,9 @@ pub struct AppState {
     pub(crate) compliance_client: reqwest::Client,
     /// Opt-in data collector mutation notifications.
     pub(crate) actions: Arc<crate::actions::ActionDispatcher>,
+    /// Bounds concurrent dependency solver runs. Acquired without waiting so
+    /// excess requests fail fast with 503.
+    pub(crate) depsolver: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {
@@ -49,6 +52,7 @@ impl AppState {
         let keygen = build_keygen_cache(&config);
         let actions =
             crate::actions::ActionDispatcher::new(&config, http_client.clone(), store.clone());
+        let depsolver = build_depsolver_semaphore(&config);
         Ok(Self {
             store,
             sqlite: None,
@@ -61,6 +65,7 @@ impl AppState {
             health: Arc::new(HealthCache::new()),
             http_client,
             compliance_client,
+            depsolver,
         })
     }
 
@@ -80,6 +85,7 @@ impl AppState {
         let keygen = build_keygen_cache(&config);
         let actions =
             crate::actions::ActionDispatcher::new(&config, http_client.clone(), store.clone());
+        let depsolver = build_depsolver_semaphore(&config);
         Ok(Self {
             store: store.clone(),
             sqlite: Some(store),
@@ -92,6 +98,7 @@ impl AppState {
             health: Arc::new(HealthCache::new()),
             http_client,
             compliance_client,
+            depsolver,
         })
     }
 
@@ -121,6 +128,24 @@ impl AppState {
             .await
             .map_err(|_| CryptoError::InvalidKey("key generation task failed".into()))?
     }
+
+    /// Try to reserve one dependency-solver slot without waiting.
+    ///
+    /// Returns `None` when every configured slot is busy. Exposed so
+    /// integration tests can simulate an overloaded solver.
+    #[doc(hidden)]
+    pub fn try_acquire_depsolver(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.depsolver.clone().try_acquire_owned().ok()
+    }
+}
+
+fn build_depsolver_semaphore(config: &Config) -> Arc<tokio::sync::Semaphore> {
+    // Configuration validation rejects zero, but tests may build a `Config`
+    // directly; clamping keeps such states usable instead of rejecting every
+    // solve.
+    Arc::new(tokio::sync::Semaphore::new(
+        config.depsolver.max_concurrent.max(1),
+    ))
 }
 
 fn build_keygen_cache(config: &Config) -> Arc<KeygenCache> {
