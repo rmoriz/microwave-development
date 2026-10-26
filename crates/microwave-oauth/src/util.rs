@@ -194,12 +194,24 @@ pub fn timestamp_is_fresh(created_at: &str, expires_in: i64) -> bool {
     expires_at > Utc::now()
 }
 
-pub fn cookie_header(token: &str) -> String {
-    format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax")
+pub fn cookie_header(token: &str, secure: bool) -> String {
+    let secure = if secure { "; Secure" } else { "" };
+    format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax{secure}")
 }
 
-pub fn delete_cookie_header() -> String {
-    format!("{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+pub fn delete_cookie_header(secure: bool) -> String {
+    let secure = if secure { "; Secure" } else { "" };
+    format!("{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}")
+}
+
+/// Cookies must be marked `Secure` whenever the public request arrived over
+/// TLS, including through a reverse proxy that terminates TLS.
+pub fn secure_cookies(state: &crate::state::OAuthState, headers: &HeaderMap) -> bool {
+    state.config.server.tls.is_enabled()
+        || headers
+            .get("x-forwarded-proto")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.eq_ignore_ascii_case("https"))
 }
 
 pub fn redirect(location: &str) -> Response {

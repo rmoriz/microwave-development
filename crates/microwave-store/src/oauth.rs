@@ -1,5 +1,6 @@
 use crate::identity::{new_id, now};
 use crate::sqlite::{SqliteStore, StoreError};
+use chrono::{Duration, SecondsFormat, Utc};
 use rusqlite::{params, OptionalExtension, Row};
 
 /// An OAuth application registered with the identity service.
@@ -312,6 +313,10 @@ impl SqliteStore {
         let token = random_token();
         let connection = self.connection();
         connection.execute(
+            "DELETE FROM kvpair WHERE key LIKE 'id_session:%' AND updated_at < ?1",
+            [session_cutoff()],
+        )?;
+        connection.execute(
             "INSERT INTO kvpair (key, value, updated_at) VALUES (?1, ?2, ?3)",
             params![session_key(&token), username, now()],
         )?;
@@ -320,13 +325,21 @@ impl SqliteStore {
 
     pub fn find_id_session(&self, token: &str) -> Result<Option<String>, StoreError> {
         let connection = self.connection();
-        Ok(connection
+        let row: Option<(String, String)> = connection
             .query_row(
-                "SELECT value FROM kvpair WHERE key = ?1",
+                "SELECT value, updated_at FROM kvpair WHERE key = ?1",
                 [session_key(token)],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .optional()?)
+            .optional()?;
+        let Some((username, updated_at)) = row else {
+            return Ok(None);
+        };
+        if updated_at < session_cutoff() {
+            connection.execute("DELETE FROM kvpair WHERE key = ?1", [session_key(token)])?;
+            return Ok(None);
+        }
+        Ok(Some(username))
     }
 
     pub fn delete_id_session(&self, token: &str) -> Result<(), StoreError> {
@@ -377,6 +390,13 @@ impl SqliteStore {
         transaction.commit()?;
         Ok(username)
     }
+}
+
+pub const ID_SESSION_TTL_SECONDS: i64 = 86_400;
+
+fn session_cutoff() -> String {
+    (Utc::now() - Duration::seconds(ID_SESSION_TTL_SECONDS))
+        .to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
 fn session_key(token: &str) -> String {
@@ -431,4 +451,32 @@ fn token_from_row(row: &Row<'_>) -> rusqlite::Result<OAuthAccessToken> {
         created_at: row.get(7)?,
         revoked_at: row.get(8)?,
     })
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn expired_id_sessions_are_removed() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let token = store.create_id_session("alice").unwrap();
+        store
+            .connection()
+            .execute(
+                "UPDATE kvpair SET updated_at = '2000-01-01T00:00:00Z' WHERE key = ?1",
+                [session_key(&token)],
+            )
+            .unwrap();
+        assert_eq!(store.find_id_session(&token).unwrap(), None);
+        let remaining: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM kvpair WHERE key = ?1",
+                [session_key(&token)],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0);
+    }
 }
