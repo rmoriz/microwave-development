@@ -846,8 +846,8 @@ pub enum MailSecurity {
     None,
 }
 
-/// SMTP AUTH mechanism. `auto` lets the mail transport negotiate a mechanism
-/// when credentials are configured.
+/// SMTP AUTH mechanism. `auto`, `plain`, and `login` all require a username
+/// and password; unauthenticated relays must set `auth = "none"` explicitly.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum MailAuth {
@@ -965,14 +965,7 @@ impl MailConfig {
                     return Err("mail.auth = \"none\" must not be combined with credentials".into());
                 }
             }
-            MailAuth::Auto => {
-                if username.is_some() != password.is_some() {
-                    return Err(
-                        "mail.username and mail.password must be configured together".into(),
-                    );
-                }
-            }
-            MailAuth::Plain | MailAuth::Login => {
+            MailAuth::Auto | MailAuth::Plain | MailAuth::Login => {
                 if username.is_some() && password.is_none() {
                     return Err("mail.username requires mail.password".into());
                 }
@@ -981,7 +974,8 @@ impl MailConfig {
                 }
                 if username.is_none() {
                     return Err(format!(
-                        "mail.auth = {:?} requires mail.username and mail.password",
+                        "mail.auth = {:?} requires mail.username and mail.password; \
+                         set mail.auth = \"none\" for an unauthenticated relay",
                         self.auth
                     ));
                 }

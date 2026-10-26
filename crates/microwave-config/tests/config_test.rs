@@ -768,11 +768,14 @@ fn mail_is_enabled_requires_a_non_empty_host() {
 
 /// Build an enabled mail configuration with the mandatory host/from fields and
 /// an optional public URL so each test only varies the rule under test.
-fn mail_toml(public_url: Option<&str>, extra: &str) -> String {
+fn mail_toml_with_auth(public_url: Option<&str>, auth: Option<&str>, extra: &str) -> String {
     let server = match public_url {
         Some(url) => format!("[server]\npublic_url = \"{url}\"\n"),
         None => String::new(),
     };
+    let auth = auth
+        .map(|auth| format!("auth = \"{auth}\"\n"))
+        .unwrap_or_default();
     format!(
         r#"
         {server}
@@ -780,9 +783,15 @@ fn mail_toml(public_url: Option<&str>, extra: &str) -> String {
         enabled = true
         host = "smtp.example.com"
         from = "Chef <chef@example.com>"
-        {extra}
+        {auth}{extra}
         "#
     )
+}
+
+/// Enabled mail without authentication. Unauthenticated relays must opt in
+/// with `auth = "none"`; the default `auto` requires credentials.
+fn mail_toml(public_url: Option<&str>, extra: &str) -> String {
+    mail_toml_with_auth(public_url, Some("none"), extra)
 }
 
 #[test]
@@ -818,10 +827,6 @@ fn mail_rejects_incomplete_or_conflicting_credentials() {
         ("username without password", "username = \"mailer\""),
         ("password without username", "password = \"secret\""),
         (
-            "auth other than none without credentials",
-            "auth = \"plain\"",
-        ),
-        (
             "credentials with auth = none",
             "username = \"mailer\"\npassword = \"secret\"\nauth = \"none\"",
         ),
@@ -832,12 +837,33 @@ fn mail_rejects_incomplete_or_conflicting_credentials() {
         );
     }
 
-    // Complete credentials with the default (auto) auth are accepted.
-    assert!(Config::from_toml_str(&mail_toml(
-        public_url,
-        "username = \"mailer\"\npassword = \"secret\""
-    ))
-    .is_ok());
+    // Every AUTH mechanism other than `none` requires complete credentials.
+    for auth in ["auto", "plain", "login"] {
+        let error =
+            Config::from_toml_str(&mail_toml_with_auth(public_url, Some(auth), "")).unwrap_err();
+        assert!(
+            error.to_string().contains("requires mail.username"),
+            "auth = {auth} without credentials must fail with a credential error: {error}"
+        );
+    }
+
+    // Complete credentials are accepted with the default (auto) and explicit
+    // login mechanisms; an unauthenticated relay needs an explicit `none`.
+    for auth in [None, Some("login")] {
+        assert!(
+            Config::from_toml_str(&mail_toml_with_auth(
+                public_url,
+                auth,
+                "username = \"mailer\"\npassword = \"secret\""
+            ))
+            .is_ok(),
+            "complete credentials with auth {auth:?} must be accepted"
+        );
+    }
+    assert!(
+        Config::from_toml_str(&mail_toml(public_url, "")).is_ok(),
+        "auth = \"none\" without credentials must be accepted"
+    );
 }
 
 #[test]
@@ -846,8 +872,9 @@ fn mail_rejects_plaintext_auth_to_a_remote_host_but_allows_loopback() {
     let credentials = "username = \"mailer\"\npassword = \"secret\"";
 
     assert!(
-        Config::from_toml_str(&mail_toml(
+        Config::from_toml_str(&mail_toml_with_auth(
             public_url,
+            None,
             &format!("security = \"none\"\n{credentials}")
         ))
         .is_err(),
@@ -855,8 +882,12 @@ fn mail_rejects_plaintext_auth_to_a_remote_host_but_allows_loopback() {
     );
 
     for host in ["127.0.0.1", "localhost", "[::1]", "::1"] {
-        let input = mail_toml(public_url, &format!("security = \"none\"\n{credentials}"))
-            .replace("host = \"smtp.example.com\"", &format!("host = \"{host}\""));
+        let input = mail_toml_with_auth(
+            public_url,
+            None,
+            &format!("security = \"none\"\n{credentials}"),
+        )
+        .replace("host = \"smtp.example.com\"", &format!("host = \"{host}\""));
         assert!(
             Config::from_toml_str(&input).is_ok(),
             "plaintext AUTH to loopback host {host} must be accepted"
