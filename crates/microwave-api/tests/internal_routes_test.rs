@@ -273,9 +273,9 @@ async fn identifiers_gate_does_not_shadow_mutating_routes() {
     create_org(&app).await;
 
     // These paths share the generic `_identifiers` shape but are real
-    // mutating routes. Without a signature they must authenticate (401), and
-    // with one they must reach their handlers instead of being forwarded
-    // without an AuthContext (500).
+    // mutating routes. Without auth headers they must be rejected before
+    // routing (400), and with a signature they must reach their handlers
+    // instead of being forwarded without an AuthContext (500).
     for (method, path) in [
         ("PUT", "/organizations/acme/data/secrets/_identifiers"),
         ("DELETE", "/organizations/acme/data/secrets/_identifiers"),
@@ -296,7 +296,7 @@ async fn identifiers_gate_does_not_shadow_mutating_routes() {
         let response = anon_request(&app, method, path).await;
         assert_eq!(
             response.status(),
-            StatusCode::UNAUTHORIZED,
+            StatusCode::BAD_REQUEST,
             "{method} {path}"
         );
     }

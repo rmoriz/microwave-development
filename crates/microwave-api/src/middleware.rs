@@ -728,6 +728,17 @@ async fn authenticate_request(
                 &requested_version.to_string(),
             );
         }
+        // A token-only request with a bad token is unauthenticated, not a
+        // malformed signed request. Signed requests continue to signature
+        // verification so a bad token never blocks a valid signature.
+        if !has_signing_headers(request.headers()) {
+            let response = ApiError::unauthorized().into_response();
+            return with_version_header(
+                response,
+                &requested_version.to_string(),
+                &requested_version.to_string(),
+            );
+        }
     }
 
     if is_compliance_proxy_path(&path) {

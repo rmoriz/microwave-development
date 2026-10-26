@@ -76,8 +76,19 @@ async fn maintenance_mode_keeps_status_and_stats_reachable() {
 async fn stats_reports_json_counters() {
     let app = support::app(support::state_with_pivotal());
 
-    // An unsigned request is rejected by authentication and counted as a 401.
-    let response = get(&app, "/license").await;
+    // A request signed by an unknown client is rejected by authentication and
+    // counted as a 401.
+    let response = app
+        .clone()
+        .oneshot(support::signed_request(
+            "GET",
+            "/license",
+            b"",
+            SignVersion::V1_3,
+            "missing-user",
+        ))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     // A valid signed request is counted as a 2xx.
