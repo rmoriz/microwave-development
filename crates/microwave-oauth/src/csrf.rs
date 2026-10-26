@@ -55,8 +55,11 @@ fn same_origin(headers: &axum::http::HeaderMap) -> bool {
         .or_else(|| headers.get(header::REFERER))
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<axum::http::Uri>().ok());
+    // Non-browser clients (knife, curl, Pedant) do not send Origin/Referer.
+    // SameSite=Lax still prevents cross-site cookie submission; when a browser
+    // does send Origin, it must match the request host.
     let Some(authority) = source.as_ref().and_then(|uri| uri.authority()) else {
-        return false;
+        return true;
     };
     authority.host().eq_ignore_ascii_case(host.host()) && authority.port_u16() == host.port_u16()
 }

@@ -790,10 +790,12 @@ mod tests {
         );
 
         let requests = mock.requests();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].method, "GET");
-        assert_eq!(requests[0].uri, "/chef/_search");
-        let body: Value = serde_json::from_str(&requests[0].body).unwrap();
+        let request = requests
+            .iter()
+            .find(|request| request.uri == "/chef/_search")
+            .unwrap();
+        assert_eq!(request.method, "GET");
+        let body: Value = serde_json::from_str(&request.body).unwrap();
         assert_eq!(body["stored_fields"], json!(["_id"]));
         assert_eq!(body["from"], 5);
         assert_eq!(body["size"], 10);
@@ -822,7 +824,11 @@ mod tests {
         backend.search(&request).await.unwrap();
 
         let requests = mock.requests();
-        let body: Value = serde_json::from_str(&requests[0].body).unwrap();
+        let request = requests
+            .iter()
+            .find(|request| request.uri == "/chef/_search")
+            .unwrap();
+        let body: Value = serde_json::from_str(&request.body).unwrap();
         assert_eq!(
             body["query"]["bool"]["filter"][0]["query_string"]["query"],
             "+X_CHEF_database_CHEF_X:chef_acme +X_CHEF_type_CHEF_X:data_bag_item +data_bag:secrets"
@@ -845,9 +851,12 @@ mod tests {
         assert_eq!(outcome.acknowledged, 1);
 
         let requests = mock.requests();
-        assert_eq!(requests[0].method, "POST");
-        assert_eq!(requests[0].uri, "/_bulk");
-        let lines: Vec<&str> = requests[0].body.lines().collect();
+        let request = requests
+            .iter()
+            .find(|request| request.uri == "/_bulk")
+            .unwrap();
+        assert_eq!(request.method, "POST");
+        let lines: Vec<&str> = request.body.lines().collect();
         assert_eq!(lines.len(), 2);
         let action: Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(
@@ -951,7 +960,11 @@ mod tests {
         backend.index(&document).await.unwrap();
 
         let requests = mock.requests();
-        let lines: Vec<&str> = requests[0].body.lines().collect();
+        let request = requests
+            .iter()
+            .find(|request| request.uri == "/_bulk")
+            .unwrap();
+        let lines: Vec<&str> = request.body.lines().collect();
         let source: Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(source["X_CHEF_type_CHEF_X"], "data_bag_item");
         assert_eq!(source["data_bag"], "secrets");
@@ -1054,8 +1067,11 @@ mod tests {
         backend.delete("acme", "node-guid").await.unwrap();
 
         let requests = mock.requests();
-        assert_eq!(requests[0].uri, "/_bulk");
-        let action: Value = serde_json::from_str(requests[0].body.trim()).unwrap();
+        let request = requests
+            .iter()
+            .find(|request| request.uri == "/_bulk")
+            .unwrap();
+        let action: Value = serde_json::from_str(request.body.trim()).unwrap();
         assert_eq!(
             action,
             json!({ "delete": { "_index": "chef", "_id": "node-guid" } })
@@ -1252,14 +1268,28 @@ mod tests {
 
     #[tokio::test]
     async fn maps_400_to_bad_request_and_other_errors_to_backend_errors() {
-        let server = mock(400, json!({ "error": "bad query" })).await;
+        let server = mock_with(|request| {
+            if request.uri == "/chef" {
+                (200, json!({}))
+            } else {
+                (400, json!({ "error": "bad query" }))
+            }
+        })
+        .await;
         let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &server.base_url).unwrap();
         assert!(matches!(
             backend.search(&request("name:web1")).await,
             Err(SearchError::BadRequest)
         ));
 
-        let server = mock(500, json!({ "error": "boom" })).await;
+        let server = mock_with(|request| {
+            if request.uri == "/chef" {
+                (200, json!({}))
+            } else {
+                (500, json!({ "error": "boom" }))
+            }
+        })
+        .await;
         let backend = OpenSearchBackend::new(SearchProvider::OpenSearch, &server.base_url).unwrap();
         match backend.search(&request("name:web1")).await {
             Err(SearchError::Backend { status: 500, .. }) => {}

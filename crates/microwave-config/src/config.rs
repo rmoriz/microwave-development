@@ -516,7 +516,7 @@ impl Default for SearchConfig {
             backend: SearchBackend::Embedded,
             url: None,
             timeout_ms: 30_000,
-            strict_result_acls: false,
+            strict_result_acls: true,
         }
     }
 }

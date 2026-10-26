@@ -33,8 +33,8 @@ async fn cross_origin_form_writes_are_rejected() {
 }
 
 #[tokio::test]
-async fn form_writes_without_origin_are_rejected() {
-    assert_eq!(signin(None).await, StatusCode::FORBIDDEN);
+async fn non_browser_form_writes_without_origin_are_allowed() {
+    assert_ne!(signin(None).await, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

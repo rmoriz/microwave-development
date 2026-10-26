@@ -121,7 +121,7 @@ A complete annotated example is
 | `search.backend` | `MW_SEARCH__BACKEND` | `embedded` | `embedded`, `opensearch`, `elasticsearch`. |
 | `search.url` | `MW_SEARCH__URL` | unset | Required for the remote backends, e.g. `http://opensearch:9200`. |
 | `search.timeout_ms` | `MW_SEARCH__TIMEOUT_MS` | `30000` | Request timeout for remote backend HTTP calls. Must be greater than zero; bounds `_bulk`, `_delete_by_query`, and `_refresh` so an unresponsive cluster cannot blackhole the server or CLI. |
-| `search.strict_result_acls` | `MW_SEARCH__STRICT_RESULT_ACLS` | `false` | Hide search rows the caller cannot READ. Upstream calls this `strict_search_result_acls`; the reported `total` remains the pre-filter count. |
+| `search.strict_result_acls` | `MW_SEARCH__STRICT_RESULT_ACLS` | `true` | Hide search rows the caller cannot READ. Upstream calls this `strict_search_result_acls`; the reported `total` remains the pre-filter count. |
 | `object_store.backend` | `MW_OBJECT_STORE__BACKEND` | `local` | `local`, `s3`, `garage`. |
 | `object_store.bucket` | `MW_OBJECT_STORE__BUCKET` | unset | Required for `s3`/`garage`. |
 | `object_store.endpoint` | `MW_OBJECT_STORE__ENDPOINT` | unset | Required for `s3`/`garage`. See the reachability caveat below. |
