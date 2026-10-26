@@ -11,8 +11,13 @@
 //! - `*:*`
 //! - `field:value`, `field:"value with spaces"`
 //! - `field:*` (field exists), `field:value*`, `field:*value?`
+//! - wildcard field names: `*:value`, `key*:value`, `k?y:value`
 //! - `field:[a TO b]` and `field:{a TO b}` ranges
-//! - `AND`, `OR`, `NOT`, `!`, `+`, `-`, parentheses and implicit `AND`
+//! - `AND`/`&&`, `OR`/`||`, `NOT`, `!`, `+`, `-`, parentheses
+//! - fuzzy terms (`value~`, `value~1`) and boosts (`value^2`)
+//!
+//! As in Lucene and the upstream Chef grammar, adjacent expressions without an
+//! operator are OR-ed (`a b` means `a OR b`).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -27,6 +32,11 @@ pub enum Query {
     Term {
         field: Option<String>,
         pattern: String,
+        /// `Some("")` for a bare `~` (Lucene's default distance), otherwise
+        /// the numeric edit distance. `None` means an exact term.
+        fuzzy: Option<String>,
+        /// Text after `^`, normalized only by validating that it is numeric.
+        boost: Option<String>,
     },
     /// A field existence check (`field:*`).
     Exists {
@@ -44,7 +54,8 @@ pub enum Query {
     Not(Box<Query>),
 }
 
-/// Flattened document fields: lower-cased field name to values.
+/// Flattened document fields: field name to values. Field lookups are
+/// case-insensitive.
 pub type Fields = BTreeMap<String, Vec<String>>;
 
 impl Query {
@@ -81,12 +92,17 @@ impl Query {
     pub fn matches(&self, fields: &Fields) -> bool {
         match self {
             Query::MatchAll => true,
-            Query::Term { field, pattern } => match field.as_deref() {
+            Query::Term {
+                field,
+                pattern,
+                fuzzy,
+                ..
+            } => match field.as_deref() {
                 Some(name) => match_values(fields, name, |candidate| {
-                    value_matches(pattern, candidate, false)
+                    value_matches(pattern, candidate, false, fuzzy.as_deref())
                 }),
                 None => match_values(fields, "*", |candidate| {
-                    value_matches(pattern, candidate, true)
+                    value_matches(pattern, candidate, true, fuzzy.as_deref())
                 }),
             },
             Query::Exists { field } => fields
@@ -117,15 +133,27 @@ const RANGE_MAX: &str = "\\ufff0";
 fn render_upstream(query: &Query) -> String {
     match query {
         Query::MatchAll => "*:*".to_string(),
-        Query::Term { field, pattern } => match field {
-            Some(field) if field == "*" => escape_value(pattern),
-            Some(field) => format!(
-                "{CONTENT_FIELD}:{}{PAIR_SEPARATOR}{}",
-                escape_field(field),
-                escape_value(pattern)
-            ),
-            None => escape_value(pattern),
-        },
+        Query::Term {
+            field,
+            pattern,
+            fuzzy,
+            boost,
+        } => {
+            let mut rendered = match field {
+                Some(field) if field == "*" => render_term_with_pair("*", pattern),
+                Some(field) => render_term_with_pair(&escape_field(field), pattern),
+                None => escape_value(pattern),
+            };
+            if let Some(fuzzy) = fuzzy {
+                rendered.push('~');
+                rendered.push_str(fuzzy);
+            }
+            if let Some(boost) = boost {
+                rendered.push('^');
+                rendered.push_str(boost);
+            }
+            rendered
+        }
         Query::Exists { field } => {
             format!("{CONTENT_FIELD}:{}{PAIR_SEPARATOR}*", escape_field(field))
         }
@@ -159,8 +187,27 @@ fn render_upstream(query: &Query) -> String {
     }
 }
 
+/// Renders a `content:field__=__value` term. Multi-word values are rendered as
+/// a phrase covering the whole pair, matching upstream's `field_phrase` rule:
+/// `content:"field__=__value with spaces"`.
+fn render_term_with_pair(field: &str, pattern: &str) -> String {
+    if pattern.chars().any(char::is_whitespace) {
+        format!(
+            "{CONTENT_FIELD}:\"{field}{PAIR_SEPARATOR}{}\"",
+            escape_with_wildcards(pattern, true)
+        )
+    } else {
+        format!(
+            "{CONTENT_FIELD}:{field}{PAIR_SEPARATOR}{}",
+            escape_with_wildcards(pattern, true)
+        )
+    }
+}
+
 fn escape_field(field: &str) -> String {
-    escape_with_wildcards(field, false)
+    // Field names may contain `*`/`?` wildcards; they must reach the remote
+    // query parser unescaped so `*:value` and `key*:value` keep their meaning.
+    escape_with_wildcards(field, true)
 }
 
 /// Escapes a value while preserving `*`/`?` wildcards, matching Lucene's
@@ -208,23 +255,72 @@ fn field_name_matches(pattern: &str, name: &str) -> bool {
     }
 }
 
-fn value_matches(pattern: &str, candidate: &str, bare: bool) -> bool {
+fn value_matches(pattern: &str, candidate: &str, bare: bool, fuzzy: Option<&str>) -> bool {
     if bare {
         // Upstream evaluates bare terms against the whitespace-tokenized
         // `content` field. Match whole tokens only, so `bar` does not match
         // the `foo-bar` token (Chef's `foo* AND NOT bar` case).
-        candidate.split_whitespace().any(|token| {
-            if pattern.contains('*') || pattern.contains('?') {
-                glob_match(pattern, token)
-            } else {
-                pattern.eq_ignore_ascii_case(token)
-            }
-        })
+        candidate
+            .split_whitespace()
+            .any(|token| term_matches(pattern, token, fuzzy))
+    } else {
+        term_matches(pattern, candidate, fuzzy)
+    }
+}
+
+fn term_matches(pattern: &str, candidate: &str, fuzzy: Option<&str>) -> bool {
+    if let Some(distance) = fuzzy {
+        // The embedded backend approximates Lucene fuzzy matching with
+        // Levenshtein edit distance. Boosts do not affect matching.
+        levenshtein_within(
+            &pattern.to_lowercase(),
+            &candidate.to_lowercase(),
+            fuzzy_distance(distance),
+        )
     } else if pattern.contains('*') || pattern.contains('?') {
         glob_match(pattern, candidate)
     } else {
         pattern.eq_ignore_ascii_case(candidate)
     }
+}
+
+/// Interprets a Lucene fuzzy parameter. A bare `~` uses the Lucene default of
+/// two edits. Decimal values (the old Lucene similarity form) are rounded up so
+/// `~0.5` behaves like one edit.
+fn fuzzy_distance(value: &str) -> usize {
+    let Ok(parsed) = value.parse::<f64>() else {
+        return 2;
+    };
+    if !parsed.is_finite() || parsed <= 0.0 {
+        return 0;
+    }
+    parsed.ceil().min(2.0) as usize
+}
+
+/// Case-insensitive Levenshtein distance check with an early exit.
+fn levenshtein_within(left: &str, right: &str, max_distance: usize) -> bool {
+    let left: Vec<char> = left.chars().collect();
+    let right: Vec<char> = right.chars().collect();
+    if left.len().abs_diff(right.len()) > max_distance {
+        return false;
+    }
+
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    let mut current = vec![0; right.len() + 1];
+    for (left_index, left_char) in left.iter().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, right_char) in right.iter().enumerate() {
+            let substitution = previous[right_index] + usize::from(left_char != right_char);
+            current[right_index + 1] = (previous[right_index + 1] + 1)
+                .min(current[right_index] + 1)
+                .min(substitution);
+        }
+        if current.iter().min().copied().unwrap_or(0) > max_distance {
+            return false;
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()] <= max_distance
 }
 
 fn range_matches(start: Option<&str>, end: Option<&str>, inclusive: bool, candidate: &str) -> bool {
@@ -345,6 +441,10 @@ impl std::error::Error for QueryError {}
 enum Token {
     Word(String),
     Phrase(String),
+    /// `~` with an optional numeric parameter (`None` for a bare `~`).
+    Fuzzy(Option<String>),
+    /// `^` with its required numeric parameter.
+    Boost(String),
     LeftParen,
     RightParen,
     LeftBracket,
@@ -419,6 +519,33 @@ fn tokenize(input: &str) -> Result<Vec<Token>, QueryError> {
                 tokens.push(Token::Bang);
                 index += 1;
             }
+            '&' => {
+                if characters.get(index + 1) != Some(&'&') {
+                    return Err(QueryError::new("expected '&&' in query"));
+                }
+                tokens.push(Token::Word("&&".to_string()));
+                index += 2;
+            }
+            '|' => {
+                if characters.get(index + 1) != Some(&'|') {
+                    return Err(QueryError::new("expected '||' in query"));
+                }
+                tokens.push(Token::Word("||".to_string()));
+                index += 2;
+            }
+            '~' => {
+                let (parameter, next) = read_modifier_parameter(&characters, index + 1);
+                tokens.push(Token::Fuzzy(parameter));
+                index = next;
+            }
+            '^' => {
+                let (parameter, next) = read_modifier_parameter(&characters, index + 1);
+                let Some(parameter) = parameter else {
+                    return Err(QueryError::new("boost requires a numeric value"));
+                };
+                tokens.push(Token::Boost(parameter));
+                index = next;
+            }
             '"' => {
                 let (phrase, next) = read_phrase(&characters, index + 1)?;
                 tokens.push(Token::Phrase(phrase));
@@ -448,7 +575,10 @@ fn read_word(characters: &[char], mut index: usize) -> Result<(String, usize), Q
     while index < characters.len() {
         let character = characters[index];
         if character.is_whitespace()
-            || matches!(character, '(' | ')' | '[' | ']' | '{' | '}' | ':' | '"')
+            || matches!(
+                character,
+                '(' | ')' | '[' | ']' | '{' | '}' | ':' | '"' | '~' | '^' | '&' | '|'
+            )
         {
             break;
         }
@@ -465,6 +595,32 @@ fn read_word(characters: &[char], mut index: usize) -> Result<(String, usize), Q
         index += 1;
     }
     Ok((word, index))
+}
+
+/// Reads the optional numeric parameter attached to `~` or `^`.
+///
+/// Only contiguous digits (and a single decimal point followed by digits) are
+/// consumed, so `term~ other` does not treat `other` as the fuzzy parameter.
+fn read_modifier_parameter(characters: &[char], mut index: usize) -> (Option<String>, usize) {
+    let start = index;
+    while index < characters.len() && characters[index].is_ascii_digit() {
+        index += 1;
+    }
+    if index > start
+        && index + 1 < characters.len()
+        && characters[index] == '.'
+        && characters[index + 1].is_ascii_digit()
+    {
+        index += 1;
+        while index < characters.len() && characters[index].is_ascii_digit() {
+            index += 1;
+        }
+    }
+    if index == start {
+        (None, index)
+    } else {
+        (Some(characters[start..index].iter().collect()), index)
+    }
 }
 
 fn read_phrase(characters: &[char], mut index: usize) -> Result<(String, usize), QueryError> {
@@ -509,10 +665,28 @@ impl Parser {
 
     fn parse_or(&mut self) -> Result<Query, QueryError> {
         let mut left = self.parse_and()?;
-        while self.peek_word_is("OR") {
-            self.position += 1;
-            let right = self.parse_and()?;
-            left = Query::Or(Box::new(left), Box::new(right));
+        loop {
+            match self.peek() {
+                Some(Token::Word(word)) if word == "OR" || word == "||" => {
+                    self.position += 1;
+                    let right = self.parse_and()?;
+                    left = Query::Or(Box::new(left), Box::new(right));
+                }
+                // Required/prohibited clauses (`a -b`, `a +b`, `a !b`,
+                // `a NOT b`) keep their historic conjunctive meaning rather
+                // than taking on Lucene's default OR for plain adjacency.
+                Some(token) if starts_unary_expression(token) => {
+                    let right = self.parse_and()?;
+                    left = Query::And(Box::new(left), Box::new(right));
+                }
+                // Lucene/Chef treat adjacent expressions as OR-ed. Explicit
+                // `AND` still binds tighter and is handled by `parse_and`.
+                Some(token) if starts_expression(token) => {
+                    let right = self.parse_and()?;
+                    left = Query::Or(Box::new(left), Box::new(right));
+                }
+                _ => break,
+            }
         }
         Ok(left)
     }
@@ -521,18 +695,12 @@ impl Parser {
         let mut left = self.parse_unary()?;
         loop {
             match self.peek() {
-                None | Some(Token::RightParen) => break,
-                Some(Token::Word(word)) if word == "OR" => break,
-                Some(Token::Word(word)) if word == "AND" => {
+                Some(Token::Word(word)) if word == "AND" || word == "&&" => {
                     self.position += 1;
                     let right = self.parse_unary()?;
                     left = Query::And(Box::new(left), Box::new(right));
                 }
-                Some(token) if starts_expression(token) => {
-                    let right = self.parse_unary()?;
-                    left = Query::And(Box::new(left), Box::new(right));
-                }
-                Some(_) => break,
+                _ => break,
             }
         }
         Ok(left)
@@ -573,21 +741,29 @@ impl Parser {
                 if matches!(self.peek(), Some(Token::Colon)) {
                     self.position += 1;
                     self.parse_field_value(name)
-                } else if name == "AND" || name == "OR" || name == "NOT" {
+                } else if is_operator(&name) {
                     Err(QueryError::new(format!("unexpected operator {name}")))
                 } else if name == "*" {
                     Ok(Query::MatchAll)
                 } else {
+                    let (fuzzy, boost) = self.parse_term_modifiers()?;
                     Ok(Query::Term {
                         field: None,
                         pattern: name,
+                        fuzzy,
+                        boost,
                     })
                 }
             }
-            Some(Token::Phrase(phrase)) => Ok(Query::Term {
-                field: None,
-                pattern: phrase,
-            }),
+            Some(Token::Phrase(phrase)) => {
+                let (fuzzy, boost) = self.parse_term_modifiers()?;
+                Ok(Query::Term {
+                    field: None,
+                    pattern: phrase,
+                    fuzzy,
+                    boost,
+                })
+            }
             Some(_) => Err(QueryError::new("expected a search term")),
             None => Err(QueryError::new("unexpected end of query")),
         }
@@ -595,19 +771,28 @@ impl Parser {
 
     fn parse_field_value(&mut self, field: String) -> Result<Query, QueryError> {
         match self.next() {
-            Some(Token::Phrase(phrase)) => Ok(Query::Term {
-                field: Some(field),
-                pattern: phrase,
-            }),
+            Some(Token::Phrase(phrase)) => {
+                let (fuzzy, boost) = self.parse_term_modifiers()?;
+                Ok(Query::Term {
+                    field: Some(field),
+                    pattern: phrase,
+                    fuzzy,
+                    boost,
+                })
+            }
             Some(Token::Word(value)) => {
                 if field == "*" && value == "*" {
                     Ok(Query::MatchAll)
                 } else if value == "*" {
+                    self.reject_term_modifiers()?;
                     Ok(Query::Exists { field })
                 } else {
+                    let (fuzzy, boost) = self.parse_term_modifiers()?;
                     Ok(Query::Term {
                         field: Some(field),
                         pattern: value,
+                        fuzzy,
+                        boost,
                     })
                 }
             }
@@ -616,6 +801,39 @@ impl Parser {
             Some(_) => Err(QueryError::new("expected a value after ':'")),
             None => Err(QueryError::new("expected a value after ':'")),
         }
+    }
+
+    fn parse_term_modifiers(&mut self) -> Result<(Option<String>, Option<String>), QueryError> {
+        let mut fuzzy = None;
+        let mut boost = None;
+        loop {
+            match self.peek() {
+                Some(Token::Fuzzy(parameter)) => {
+                    if fuzzy.is_some() {
+                        return Err(QueryError::new("duplicate fuzzy modifier"));
+                    }
+                    fuzzy = Some(parameter.clone().unwrap_or_default());
+                    self.position += 1;
+                }
+                Some(Token::Boost(parameter)) => {
+                    if boost.is_some() {
+                        return Err(QueryError::new("duplicate boost modifier"));
+                    }
+                    boost = Some(parameter.clone());
+                    self.position += 1;
+                }
+                _ => break,
+            }
+        }
+        Ok((fuzzy, boost))
+    }
+
+    fn reject_term_modifiers(&mut self) -> Result<(), QueryError> {
+        let (fuzzy, boost) = self.parse_term_modifiers()?;
+        if fuzzy.is_some() || boost.is_some() {
+            return Err(QueryError::new("modifiers are not valid here"));
+        }
+        Ok(())
     }
 
     fn parse_range(
@@ -660,9 +878,21 @@ impl Parser {
     }
 }
 
+fn is_operator(word: &str) -> bool {
+    matches!(word, "AND" | "OR" | "NOT" | "&&" | "||")
+}
+
+fn starts_unary_expression(token: &Token) -> bool {
+    match token {
+        Token::Bang | Token::Plus | Token::Minus => true,
+        Token::Word(word) => word == "NOT",
+        _ => false,
+    }
+}
+
 fn starts_expression(token: &Token) -> bool {
     match token {
-        Token::Word(word) => word != "AND" && word != "OR",
+        Token::Word(word) => !is_operator(word),
         Token::Phrase(_) | Token::LeftParen | Token::Bang | Token::Plus | Token::Minus => true,
         _ => false,
     }
@@ -749,9 +979,18 @@ mod tests {
             ("name:web*", "content:name__=__web*"),
             (
                 "description:\"hello world\"",
-                "content:description__=__\"hello world\"",
+                "content:\"description__=__hello world\"",
             ),
             ("platform:*", "content:platform__=__*"),
+            ("*:ubuntu", "content:*__=__ubuntu"),
+            ("na*:web1", "content:na*__=__web1"),
+            ("k?y:value", "content:k?y__=__value"),
+            ("name:web~", "content:name__=__web~"),
+            ("name:web~1", "content:name__=__web~1"),
+            ("name:web~0.5", "content:name__=__web~0.5"),
+            ("name:web^2", "content:name__=__web^2"),
+            ("name:web~1^2", "content:name__=__web~1^2"),
+            ("\"hello world\"^10", "\"hello world\"^10"),
             ("cpu:[5 TO 9]", "content:[cpu__=__5 TO cpu__=__9]"),
             ("cpu:{8 TO 9}", "content:{cpu__=__8 TO cpu__=__9}"),
             (
@@ -785,8 +1024,126 @@ mod tests {
     }
 
     #[test]
+    fn adjacent_terms_default_to_or_and_aliases_match_lucene() {
+        let document = fields(&[("a", "1"), ("b", "2")]);
+
+        assert!(Query::parse("a:1 b:2").unwrap().matches(&document));
+        assert!(
+            Query::parse("a:1 c:3").unwrap().matches(&document),
+            "adjacent terms must be OR-ed like upstream"
+        );
+        assert!(!Query::parse("a:1 AND c:3").unwrap().matches(&document));
+        assert!(Query::parse("a:1 && b:2").unwrap().matches(&document));
+        assert!(Query::parse("a:1&&b:2").unwrap().matches(&document));
+        assert!(!Query::parse("a:1 && c:3").unwrap().matches(&document));
+        assert!(Query::parse("a:1 || c:3").unwrap().matches(&document));
+        assert!(Query::parse("a:1||c:3").unwrap().matches(&document));
+        assert!(!Query::parse("c:3 || d:4").unwrap().matches(&document));
+
+        // Required/prohibited clauses still combine with AND.
+        assert!(!Query::parse("a:1 -b:2").unwrap().matches(&document));
+        assert!(Query::parse("a:1 -c:3").unwrap().matches(&document));
+        assert!(Query::parse("a:1 +b:2").unwrap().matches(&document));
+        assert!(!Query::parse("a:1 +c:3").unwrap().matches(&document));
+        assert!(!Query::parse("a:1 !b:2").unwrap().matches(&document));
+        assert!(!Query::parse("a:1 NOT b:2").unwrap().matches(&document));
+
+        assert_eq!(
+            Query::parse("a:1 && b:2").unwrap().to_upstream_query(),
+            "(content:a__=__1 AND content:b__=__2)"
+        );
+        assert_eq!(
+            Query::parse("a:1 || b:2").unwrap().to_upstream_query(),
+            "(content:a__=__1 OR content:b__=__2)"
+        );
+        assert_eq!(
+            Query::parse("a:1 b:2").unwrap().to_upstream_query(),
+            "(content:a__=__1 OR content:b__=__2)"
+        );
+    }
+
+    #[test]
+    fn wildcard_field_names_and_phrases_are_supported() {
+        let document = fields(&[
+            ("name", "web1"),
+            ("namespace", "web-team"),
+            ("description", "hello big world"),
+        ]);
+
+        for query in ["na*:web1", "n?me:web1", "*:web1"] {
+            assert!(
+                Query::parse(query).unwrap().matches(&document),
+                "query {query}"
+            );
+        }
+        assert!(Query::parse("desc*:\"hello big world\"")
+            .unwrap()
+            .matches(&document));
+        assert!(Query::parse("*:\"hello big world\"")
+            .unwrap()
+            .matches(&document));
+        assert!(!Query::parse("name:web1")
+            .unwrap()
+            .matches(&fields(&[("name", "web1 extra"),])));
+    }
+
+    #[test]
+    fn fuzzy_and_boost_modifiers_are_parsed_and_approximated() {
+        let document = fields(&[("name", "web1"), ("description", "hello world")]);
+
+        assert!(Query::parse("name:web1~").unwrap().matches(&document));
+        assert!(Query::parse("name:wev1~1").unwrap().matches(&document));
+        assert!(Query::parse("name:web1~1").unwrap().matches(&document));
+        assert!(!Query::parse("name:wev1~0").unwrap().matches(&document));
+        assert!(Query::parse("name:web1^2").unwrap().matches(&document));
+        assert!(Query::parse("web1~1").unwrap().matches(&document));
+
+        // Fuzzy matching applies to field values, not to the whitespace
+        // tokens of a multi-word value as a whole.
+        assert!(Query::parse("description:\"hello world\"~1")
+            .unwrap()
+            .matches(&document));
+    }
+
+    #[test]
+    fn metadata_fields_are_queryable_like_content_tokens() {
+        let document = fields(&[
+            ("X_CHEF_id_CHEF_X", "node-guid"),
+            ("X_CHEF_type_CHEF_X", "node"),
+            ("X_CHEF_database_CHEF_X", "chef_acme"),
+            ("data_bag", "secrets"),
+        ]);
+
+        for query in [
+            "X_CHEF_id_CHEF_X:node-guid",
+            "X_CHEF_type_CHEF_X:node",
+            "X_CHEF_database_CHEF_X:chef_*",
+            "data_bag:secrets",
+            "*:node-guid",
+        ] {
+            assert!(
+                Query::parse(query).unwrap().matches(&document),
+                "query {query}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_malformed_queries() {
-        for query in ["", "name:", "(name:web1", "name:[1 TO", "\"unterminated"] {
+        for query in [
+            "",
+            "name:",
+            "(name:web1",
+            "name:[1 TO",
+            "\"unterminated",
+            "^2",
+            "name:web^",
+            "name:web~1~2",
+            "name:web^1^2",
+            "~1",
+            "a:1 & b:2",
+            "a:1 | b:2",
+        ] {
             assert!(Query::parse(query).is_err(), "query {query:?}");
         }
     }

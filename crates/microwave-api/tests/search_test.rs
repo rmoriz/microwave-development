@@ -60,6 +60,9 @@ fn encode(query: &str) -> String {
             '(' => encoded.push_str("%28"),
             ')' => encoded.push_str("%29"),
             '+' => encoded.push_str("%2B"),
+            '&' => encoded.push_str("%26"),
+            '|' => encoded.push_str("%7C"),
+            '^' => encoded.push_str("%5E"),
             other => encoded.push(other),
         }
     }
@@ -241,6 +244,77 @@ async fn searches_nodes_with_the_supported_query_subset() {
 }
 
 #[tokio::test]
+async fn embedded_search_matches_chef_grammar_and_metadata_fields() {
+    let state = support::state_with_pivotal();
+    let app = support::app(state.clone());
+    create_org(&app).await;
+
+    create_node(
+        &app,
+        json!({
+            "name": "web1",
+            "normal": {
+                "platform": "ubuntu",
+                "role": "web",
+                "description": "hello big world"
+            }
+        }),
+    )
+    .await;
+    create_node(
+        &app,
+        json!({
+            "name": "web2",
+            "default": {
+                "platform": "debian",
+                "role": "db",
+                "description": "another world"
+            }
+        }),
+    )
+    .await;
+
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
+    let web1 = state.sqlite().find_node(&org.id, "web1").unwrap().unwrap();
+    let id_query = format!("X_CHEF_id_CHEF_X:{}", web1.id);
+
+    for (query, expected_total) in [
+        // Adjacent terms are OR-ed; explicit AND still intersects.
+        ("name:web1 name:web2", 2),
+        ("name:web1 AND name:web2", 0),
+        // Boolean aliases.
+        ("platform:ubuntu && role:web", 1),
+        ("platform:ubuntu || platform:debian", 2),
+        // Wildcard field names.
+        ("na*:web1", 1),
+        ("n?me:web1", 1),
+        ("*:ubuntu", 1),
+        // Field phrases and multi-word values.
+        ("description:\"hello big world\"", 1),
+        ("description:world", 0),
+        // Fuzzy and boost modifiers.
+        ("name:wev1~1", 1),
+        ("name:wev1~0", 0),
+        ("name:web1^2", 1),
+        // Metadata fields exposed by the embedded backend.
+        ("X_CHEF_type_CHEF_X:node", 2),
+        ("X_CHEF_database_CHEF_X:chef_*", 2),
+        (id_query.as_str(), 1),
+    ] {
+        let (status, result) = search(&app, "node", query).await;
+        assert_eq!(status, StatusCode::OK, "query {query}: {result}");
+        assert_eq!(
+            result["total"], expected_total,
+            "query {query} returned {result}"
+        );
+    }
+
+    let (status, result) = search(&app, "node", "description:\"hello big world\"").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(names(&result["rows"]), vec!["web1"]);
+}
+
+#[tokio::test]
 async fn rejects_empty_or_invalid_queries_and_unknown_indexes() {
     let app = support::app(support::state_with_pivotal());
     create_org(&app).await;
@@ -310,6 +384,16 @@ async fn searches_data_bag_items() {
     let (status, result) = search(&app, "secrets", "raw_data_engine:redis").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result["total"], 0);
+
+    for (query, expected_total) in [
+        ("data_bag:secrets", 2),
+        ("X_CHEF_type_CHEF_X:data_bag_item", 2),
+        ("X_CHEF_database_CHEF_X:chef_*", 2),
+    ] {
+        let (status, result) = search(&app, "secrets", query).await;
+        assert_eq!(status, StatusCode::OK, "query {query}");
+        assert_eq!(result["total"], expected_total, "query {query}: {result}");
+    }
 }
 
 #[tokio::test]
