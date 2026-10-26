@@ -120,7 +120,10 @@ async fn get_cookbook(
         return Err(cookbook_not_found(&name));
     }
     let mut versions = versions;
-    sort_versions_ascending(&mut versions);
+    // Upstream lists cookbook versions newest-first (`ORDER BY name, major
+    // DESC, minor DESC, patch DESC`), so 2.0.0 sorts before 1.10.0, which sorts
+    // before 1.2.3.
+    sort_versions_descending(&mut versions);
     let base = base_url(&headers, &state);
     let mut result = Map::new();
     result.insert(name.clone(), cookbook_entry(&base, org, &name, &versions));
@@ -753,10 +756,6 @@ fn invalid_num_versions() -> ApiError {
 
 fn sort_versions_descending(versions: &mut [StoredCookbookVersion]) {
     versions.sort_by_key(|version| std::cmp::Reverse(version_key(&version.version)));
-}
-
-fn sort_versions_ascending(versions: &mut [StoredCookbookVersion]) {
-    versions.sort_by_key(|version| version_key(&version.version));
 }
 
 fn version_key(version: &str) -> (i64, i64, i64) {

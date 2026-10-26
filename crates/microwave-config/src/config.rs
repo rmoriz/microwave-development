@@ -15,6 +15,7 @@ pub struct Config {
     pub auth: AuthConfig,
     pub keygen: KeygenConfig,
     pub license: LicenseConfig,
+    pub stats: StatsConfig,
     pub data_collector: DataCollectorConfig,
     pub compliance_proxy: ComplianceProxyConfig,
     pub required_recipe: RequiredRecipeConfig,
@@ -116,6 +117,7 @@ impl Config {
     ///   `MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE`
     /// - `MW_KEYGEN__SIZE`, `MW_KEYGEN__WORKERS`, `MW_KEYGEN__WARM_UP`
     /// - `MW_LICENSE__NODE_LICENSE`, `MW_LICENSE__UPGRADE_URL`
+    /// - `MW_STATS__USERNAME`, `MW_STATS__PASSWORD`
     /// - `MW_DATA_COLLECTOR__ROOT_URL`, `MW_DATA_COLLECTOR__TOKEN`,
     ///   `MW_DATA_COLLECTOR__TIMEOUT` (alias `MW_DATA_COLLECTOR__TIMEOUT_MS`),
     ///   `MW_DATA_COLLECTOR__ACTIONS_ENABLED`, `MW_DATA_COLLECTOR__SERVICE_HOSTNAME`
@@ -255,6 +257,12 @@ impl Config {
         }
         if let Ok(value) = std::env::var("MW_LICENSE__UPGRADE_URL") {
             self.license.upgrade_url = value;
+        }
+        if let Ok(value) = std::env::var("MW_STATS__USERNAME") {
+            self.stats.username = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_STATS__PASSWORD") {
+            self.stats.password = non_empty(value);
         }
         if let Ok(value) = std::env::var("MW_DATA_COLLECTOR__ROOT_URL") {
             self.data_collector.root_url = non_empty(value);
@@ -668,6 +676,35 @@ impl Default for LicenseConfig {
             node_license: 1000,
             upgrade_url: "https://www.chef.io/pricing".into(),
         }
+    }
+}
+
+/// Optional HTTP Basic authentication for `GET /_stats`.
+///
+/// Upstream nginx protects `/_stats` with an htpasswd file while leaving
+/// `/_status` public. Microwave accepts a single username/password pair here
+/// and is disabled by default, matching the default deployment where the stats
+/// endpoint is only reachable from trusted networks.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct StatsConfig {
+    pub username: Option<String>,
+    pub password: Option<String>,
+}
+
+impl StatsConfig {
+    /// The credentials to enforce, or `None` when authentication is disabled.
+    ///
+    /// Setting a non-empty username enables the check. A missing password is
+    /// treated as the empty password, so a partially configured `stats`
+    /// section never silently exposes the unauthenticated endpoint.
+    pub fn credentials(&self) -> Option<(&str, &str)> {
+        let username = self.username.as_deref()?;
+        if username.trim().is_empty() {
+            return None;
+        }
+        let password = self.password.as_deref().unwrap_or("");
+        Some((username, password))
     }
 }
 
