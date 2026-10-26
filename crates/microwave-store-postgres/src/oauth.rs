@@ -497,22 +497,15 @@ impl OAuthRepository for PostgresStore {
         token: &str,
         max_age_seconds: i64,
     ) -> Result<Option<String>, StoreError> {
-        let mut transaction = self.pool().begin().await.map_err(db)?;
         let row: Option<(String, String)> =
-            sqlx::query_as("SELECT value, updated_at FROM kvpair WHERE key = $1")
+            sqlx::query_as("DELETE FROM kvpair WHERE key = $1 RETURNING value, updated_at")
                 .bind(password_reset_key(token))
-                .fetch_optional(&mut *transaction)
+                .fetch_optional(self.pool())
                 .await
                 .map_err(db)?;
         let Some((username, updated_at)) = row else {
             return Ok(None);
         };
-        sqlx::query("DELETE FROM kvpair WHERE key = $1")
-            .bind(password_reset_key(token))
-            .execute(&mut *transaction)
-            .await
-            .map_err(db)?;
-        transaction.commit().await.map_err(db)?;
         if updated_at <= password_reset_cutoff(max_age_seconds) {
             return Ok(None);
         }

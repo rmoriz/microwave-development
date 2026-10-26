@@ -998,7 +998,9 @@ async fn collect_kvpair(transaction: &mut PgTransaction<'_>) -> Result<Vec<KvPai
     }
     rows(
         transaction,
-        "SELECT key, value, updated_at FROM kvpair ORDER BY key",
+        "SELECT key, value, updated_at FROM kvpair
+         WHERE substr(key, 1, length('id_password_reset:')) <> 'id_password_reset:'
+         ORDER BY key",
     )
     .await?
     .iter()

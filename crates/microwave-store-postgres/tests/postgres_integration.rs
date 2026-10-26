@@ -14,6 +14,7 @@ use microwave_store::{
 use microwave_store_postgres::PostgresStore;
 use sqlx::Row;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 fn assert_metadata_store<T: microwave_store::MetadataStore>() {}
 
@@ -94,6 +95,34 @@ async fn test_store() -> Option<PostgresStore> {
 
 fn suffix() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..12].to_string()
+}
+
+async fn wait_for_blocked_reset_deletes(store: &PostgresStore, expected: i64) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let blocked: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pg_stat_activity
+                 WHERE datname = current_database()
+                   AND pid <> pg_backend_pid()
+                   AND state = 'active'
+                   AND wait_event_type = 'Lock'
+                   AND query LIKE 'DELETE FROM kvpair%'",
+            )
+            .fetch_one(store.pool())
+            .await
+            .expect("count blocked reset-token deletes");
+            if blocked == expected {
+                break;
+            }
+            assert!(
+                blocked < expected,
+                "expected at most {expected} blocked reset-token deletes, found {blocked}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {expected} overlapping consumers"));
 }
 
 struct Fixture {
@@ -1827,6 +1856,134 @@ async fn manages_oauth_applications_tokens_sessions_and_resets() {
         None,
         "expired token must not be consumable"
     );
+}
+
+#[tokio::test]
+async fn postgres_snapshots_exclude_password_reset_rows_in_every_export_mode() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let username = format!("reset-user-{}", suffix());
+    let token = store
+        .create_password_reset_token(&username)
+        .await
+        .expect("create reset token");
+    let ordinary_key = format!("ordinary-{}", suffix());
+    store.set_kv(&ordinary_key, "ordinary-value").await.unwrap();
+
+    for include_secrets in [false, true] {
+        let snapshot = store
+            .export_snapshot_with_options(include_secrets)
+            .await
+            .expect("export snapshot");
+        assert!(
+            snapshot
+                .kvpair
+                .iter()
+                .all(|row| !row.key.starts_with("id_password_reset:")),
+            "password-reset row exported with include_secrets={include_secrets}"
+        );
+        let serialized = serde_json::to_string(&snapshot).unwrap();
+        assert!(!serialized.contains(&token));
+        assert!(!serialized.contains(&username));
+        if include_secrets {
+            assert!(snapshot.kvpair.iter().any(|row| row.key == ordinary_key));
+        }
+    }
+}
+
+#[tokio::test]
+async fn overlapping_postgres_consumers_use_a_reset_token_exactly_once() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let token = store
+        .create_password_reset_token("overlap-user")
+        .await
+        .expect("create reset token");
+    let reset_key = format!("id_password_reset:{token}");
+    let id = suffix();
+    let function_name = format!("block_reset_delete_{id}");
+    let trigger_name = format!("block_reset_delete_trigger_{id}");
+    let lock_key = (uuid::Uuid::new_v4().as_u128() & 0x7fff_ffff_ffff_ffff) as i64;
+    let ddl = format!(
+        "CREATE FUNCTION {function_name}() RETURNS trigger
+         LANGUAGE plpgsql AS $function$
+         BEGIN
+             PERFORM pg_advisory_xact_lock({lock_key});
+             RETURN OLD;
+         END;
+         $function$;
+         CREATE TRIGGER {trigger_name}
+         BEFORE DELETE ON kvpair
+         FOR EACH ROW
+         WHEN (OLD.key = '{reset_key}')
+         EXECUTE FUNCTION {function_name}();"
+    );
+    sqlx::raw_sql(sqlx::AssertSqlSafe(ddl.as_str()))
+        .execute(store.pool())
+        .await
+        .expect("install deterministic consumer barrier");
+
+    // Hold the advisory lock on one dedicated session. Each consumer must
+    // reach its DELETE (and therefore overlap) before this lock is released.
+    let mut guard = store.pool().acquire().await.expect("acquire lock session");
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(lock_key)
+        .execute(&mut *guard)
+        .await
+        .expect("hold consumer barrier");
+
+    let first_store = store.clone();
+    let first_token = token.clone();
+    let first = tokio::spawn(async move {
+        first_store
+            .consume_password_reset_token(&first_token, 3600)
+            .await
+    });
+    wait_for_blocked_reset_deletes(&store, 1).await;
+
+    let second_store = store.clone();
+    let second_token = token.clone();
+    let second = tokio::spawn(async move {
+        second_store
+            .consume_password_reset_token(&second_token, 3600)
+            .await
+    });
+    wait_for_blocked_reset_deletes(&store, 2).await;
+
+    let unlocked: bool = sqlx::query_scalar("SELECT pg_advisory_unlock($1)")
+        .bind(lock_key)
+        .fetch_one(&mut *guard)
+        .await
+        .expect("release consumer barrier");
+    assert!(unlocked);
+
+    let (left, right) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(first, second)
+    })
+    .await
+    .expect("consumers finish after barrier release");
+    let results = [
+        left.expect("first consumer task").expect("first consume"),
+        right
+            .expect("second consumer task")
+            .expect("second consume"),
+    ];
+
+    let cleanup =
+        format!("DROP TRIGGER {trigger_name} ON kvpair; DROP FUNCTION {function_name}();");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(cleanup.as_str()))
+        .execute(store.pool())
+        .await
+        .expect("remove deterministic consumer barrier");
+
+    assert_eq!(
+        results.iter().filter(|value| value.is_some()).count(),
+        1,
+        "exactly one overlapping consumer must win: {results:?}"
+    );
+    assert!(results.contains(&Some("overlap-user".into())));
 }
 
 #[tokio::test]
