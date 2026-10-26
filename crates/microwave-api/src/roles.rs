@@ -1,4 +1,4 @@
-use crate::chef_json::ChefJson;
+use crate::chef_json::NegotiatedChefJson;
 use crate::helpers::{
     base_url, container_authz, location_headers, organization, require_permission,
 };
@@ -82,7 +82,7 @@ async fn create_role(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     headers: HeaderMap,
-    ChefJson(mut body): ChefJson<Value>,
+    NegotiatedChefJson(mut body): NegotiatedChefJson<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let container = container_authz(&state, org, "roles").await?;
@@ -237,30 +237,56 @@ fn role_document(role: &microwave_store::StoredObject) -> Result<Value, ApiError
 async fn update_role(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-    Path((_organization, name)): Path<(String, String)>,
-    ChefJson(mut body): ChefJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+    Path((_organization, url_name)): Path<(String, String)>,
+    headers: HeaderMap,
+    NegotiatedChefJson(mut body): NegotiatedChefJson<Value>,
+) -> Result<Response, ApiError> {
     let org = organization(&auth)?;
     let role = state
         .store
-        .find_role(&org.id, &name)
+        .find_role(&org.id, &url_name)
         .await
         .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("Cannot load role {name}")))?;
+        .ok_or_else(|| ApiError::not_found(format!("Cannot load role {url_name}")))?;
     require_permission(&state, &auth, &role.authz_id, Permission::Update).await?;
 
-    normalize_role(&mut body, Some(&name))?;
+    let name = normalize_role(&mut body, Some(&url_name))?;
+    let renamed = name != url_name;
     let updated = state
         .store
         .update_role(
             &org.id,
-            &name,
+            &url_name,
             &serde_json::to_string(&body).map_err(|_| ApiError::internal())?,
         )
         .await
-        .map_err(ApiError::from)?;
+        .map_err(|error| match error {
+            StoreError::Conflict(_) => ApiError::conflict("Role already exists"),
+            other => other.into(),
+        })?;
+    if renamed && updated.name != name {
+        // See the environment handler: do not persist a half-renamed object on
+        // a backend whose update path cannot change the name.
+        let _ = state
+            .store
+            .update_role(&org.id, &url_name, &role.serialized_object)
+            .await;
+        return Err(ApiError::internal());
+    }
+    if renamed {
+        crate::search::index::delete_document(&state, &org.id, &role.id).await;
+    }
     crate::search::index::index_object(&state, org, crate::search::IndexKind::Role, &updated).await;
-    Ok(Json(role_document(&updated)?))
+
+    let document = role_document(&updated)?;
+    if !renamed {
+        return Ok(Json(document).into_response());
+    }
+    let base = base_url(&headers, &state);
+    let uri = format!("{base}/organizations/{}/roles/{name}", org.name);
+    let mut response = (StatusCode::CREATED, Json(document)).into_response();
+    response.headers_mut().extend(location_headers(&uri)?);
+    Ok(response)
 }
 
 async fn delete_role(
@@ -289,8 +315,9 @@ async fn delete_role(
 /// Validates and normalizes a role payload following
 /// `chef_role:parse_binary_json/2`.
 ///
-/// `path_name` is `Some` for PUT requests: the body name is optional, but when
-/// present it must match the URL. Create requests require an explicit name.
+/// `path_name` is `Some` for PUT requests: the body name is optional. A
+/// different body name renames the role (keeping its id and ACL). Create
+/// requests require an explicit name.
 fn normalize_role(body: &mut Value, path_name: Option<&str>) -> Result<String, ApiError> {
     let Some(object) = body.as_object_mut() else {
         return Err(ApiError::bad_request(
@@ -299,18 +326,11 @@ fn normalize_role(body: &mut Value, path_name: Option<&str>) -> Result<String, A
     };
 
     let name = match path_name {
-        Some(path_name) => {
-            match object.get("name") {
-                None => {
-                    object.insert("name".into(), json!(path_name));
-                }
-                Some(Value::String(body_name)) if body_name == path_name => {}
-                Some(_) => {
-                    return Err(ApiError::bad_request("Role name mismatch."));
-                }
-            }
-            path_name.to_string()
-        }
+        Some(path_name) => match object.get("name") {
+            None => path_name.to_string(),
+            Some(Value::String(body_name)) => body_name.clone(),
+            Some(_) => return Err(ApiError::bad_request("Field 'name' invalid")),
+        },
         None => object
             .get("name")
             .ok_or_else(|| ApiError::bad_request("Field 'name' missing"))?

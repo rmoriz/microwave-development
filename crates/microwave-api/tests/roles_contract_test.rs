@@ -1,6 +1,6 @@
 mod support;
 
-use axum::http::StatusCode;
+use axum::http::{header, HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
 use microwave_crypto::SignVersion;
 use serde_json::{json, Value};
@@ -32,6 +32,23 @@ async fn request(app: &axum::Router, method: &str, path: &str, body: &[u8]) -> R
         ))
         .await
         .unwrap()
+}
+
+async fn request_with_headers(
+    app: &axum::Router,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    headers: &[(&str, &str)],
+) -> Response {
+    let mut request = support::signed_request(method, path, body, SignVersion::V1_3, "pivotal");
+    for (name, value) in headers {
+        request.headers_mut().insert(
+            HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            HeaderValue::from_str(value).unwrap(),
+        );
+    }
+    app.clone().oneshot(request).await.unwrap()
 }
 
 async fn assert_error(response: Response, status: StatusCode, message: &str) {
@@ -115,7 +132,7 @@ async fn put_uses_the_url_name_when_name_is_missing() {
 }
 
 #[tokio::test]
-async fn put_rejects_a_mismatched_name_and_still_validates_the_body() {
+async fn put_validates_the_body_even_without_a_name() {
     let app = support::app(support::state_with_pivotal());
     create_org(&app).await;
 
@@ -127,15 +144,6 @@ async fn put_rejects_a_mismatched_name_and_still_validates_the_body() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
-
-    let response = request(
-        &app,
-        "PUT",
-        "/organizations/acme/roles/web",
-        br#"{"name":"other"}"#,
-    )
-    .await;
-    assert_error(response, StatusCode::BAD_REQUEST, "Role name mismatch.").await;
 
     let response = request(
         &app,
@@ -156,6 +164,164 @@ async fn put_rejects_a_mismatched_name_and_still_validates_the_body() {
             .await;
     assert_eq!(fetched["name"], "web");
     assert_eq!(fetched["run_list"], json!(["recipe[base]"]));
+}
+
+#[tokio::test]
+async fn put_renames_a_role_and_keeps_its_identity() {
+    let state = support::state_with_pivotal();
+    let app = support::app(state.clone());
+    create_org(&app).await;
+
+    let response = request(
+        &app,
+        "POST",
+        "/organizations/acme/roles",
+        br#"{"name":"web","run_list":["base"],"env_run_lists":{"prod":["foo"]}}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
+    let before = state.sqlite().find_role(&org.id, "web").unwrap().unwrap();
+
+    let response = request(
+        &app,
+        "PUT",
+        "/organizations/acme/roles/web",
+        br#"{"name":"web2","description":"renamed","run_list":["base"],"env_run_lists":{"prod":["foo"]}}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(
+        response.headers().get(header::LOCATION).unwrap(),
+        "http://0.0.0.0:8000/organizations/acme/roles/web2"
+    );
+    let renamed = support::response_json(response).await;
+    assert_eq!(
+        renamed,
+        json!({
+            "name": "web2",
+            "description": "renamed",
+            "json_class": "Chef::Role",
+            "chef_type": "role",
+            "default_attributes": {},
+            "override_attributes": {},
+            "run_list": ["recipe[base]"],
+            "env_run_lists": {"prod": ["recipe[foo]"]}
+        })
+    );
+
+    let response = request(&app, "GET", "/organizations/acme/roles/web", b"").await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let fetched =
+        support::response_json(request(&app, "GET", "/organizations/acme/roles/web2", b"").await)
+            .await;
+    assert_eq!(fetched, renamed);
+
+    let after = state.sqlite().find_role(&org.id, "web2").unwrap().unwrap();
+    assert_eq!(after.id, before.id);
+    assert_eq!(after.authz_id, before.authz_id);
+}
+
+#[tokio::test]
+async fn put_rename_conflicts_leave_both_roles_untouched() {
+    let state = support::state_with_pivotal();
+    let app = support::app(state.clone());
+    create_org(&app).await;
+
+    for name in ["web", "api"] {
+        let body = format!(r#"{{"name":"{name}","run_list":["base"]}}"#);
+        let response = request(&app, "POST", "/organizations/acme/roles", body.as_bytes()).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    let response = request(
+        &app,
+        "PUT",
+        "/organizations/acme/roles/web",
+        br#"{"name":"api","run_list":["other"]}"#,
+    )
+    .await;
+    assert_error(response, StatusCode::CONFLICT, "Role already exists").await;
+
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
+    for name in ["web", "api"] {
+        let stored = state.sqlite().find_role(&org.id, name).unwrap().unwrap();
+        assert_eq!(stored.name, name);
+        let fetched = support::response_json(
+            request(
+                &app,
+                "GET",
+                &format!("/organizations/acme/roles/{name}"),
+                b"",
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(fetched["name"], name);
+        assert_eq!(fetched["run_list"], json!(["recipe[base]"]));
+    }
+}
+
+#[tokio::test]
+async fn create_and_update_negotiate_json_or_return_406_not_acceptable() {
+    let app = support::app(support::state_with_pivotal());
+    create_org(&app).await;
+
+    let response = request(
+        &app,
+        "POST",
+        "/organizations/acme/roles",
+        br#"{"name":"web","run_list":["base"]}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    for (method, path, body, headers) in [
+        (
+            "POST",
+            "/organizations/acme/roles",
+            br#"{"name":"other","run_list":["base"]}"#.as_slice(),
+            vec![("accept", "application/xml")],
+        ),
+        (
+            "PUT",
+            "/organizations/acme/roles/web",
+            br#"{"description":"updated"}"#.as_slice(),
+            vec![("accept", "application/xml")],
+        ),
+        (
+            "POST",
+            "/organizations/acme/roles",
+            br#"{"name":"other","run_list":["base"]}"#.as_slice(),
+            vec![("content-type", "application/xml")],
+        ),
+        (
+            "PUT",
+            "/organizations/acme/roles/web",
+            br#"{"description":"updated"}"#.as_slice(),
+            vec![("content-type", "application/xml")],
+        ),
+    ] {
+        let response = request_with_headers(&app, method, path, body, &headers).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_ACCEPTABLE,
+            "{method} {path} {headers:?}"
+        );
+        let body = support::response_json(response).await;
+        assert_eq!(body, json!({ "error": ["Not Acceptable"] }));
+    }
+
+    let fetched =
+        support::response_json(request(&app, "GET", "/organizations/acme/roles/web", b"").await)
+            .await;
+    assert_eq!(fetched["name"], "web");
+    assert_eq!(fetched["run_list"], json!(["recipe[base]"]));
+
+    let response = request(&app, "GET", "/organizations/acme/roles/other", b"").await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

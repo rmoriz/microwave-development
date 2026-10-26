@@ -505,6 +505,14 @@ impl SqliteStore {
         Ok(objects)
     }
 
+    /// Update a named object, honouring a rename requested by the normalized
+    /// body.
+    ///
+    /// Environments (and, for this server, roles) may be renamed with `PUT`:
+    /// the body's `name` becomes the resource name. The row keeps its `id` and
+    /// `authz_id`, so the ACL and every foreign reference remain intact. A
+    /// rename onto an existing name is rejected as a conflict before anything
+    /// is written.
     fn update_named_object(
         &self,
         table: &str,
@@ -514,18 +522,39 @@ impl SqliteStore {
     ) -> Result<StoredObject, StoreError> {
         let now = now();
         let serialized_object = encode_serialized(body, self.compression())?;
-        let connection = self.connection();
+        let new_name = requested_name(body).unwrap_or_else(|| name.to_string());
+        let mut connection = self.connection();
+        let tx = connection.transaction()?;
+        if new_name != name {
+            let sql = format!("SELECT 1 FROM {table} WHERE org_id = ?1 AND name = ?2");
+            let existing = tx
+                .query_row(&sql, params![org_id, new_name], |_| Ok(()))
+                .optional()?;
+            if existing.is_some() {
+                return Err(StoreError::Conflict(format!(
+                    "{table} {new_name} already exists"
+                )));
+            }
+        }
         let sql = format!(
-            "UPDATE {table} SET serialized_object = ?3, updated_at = ?4
+            "UPDATE {table} SET name = ?3, serialized_object = ?4, updated_at = ?5
              WHERE org_id = ?1 AND name = ?2"
         );
-        let changed = connection.execute(&sql, params![org_id, name, serialized_object, now])?;
+        let changed = tx
+            .execute(
+                &sql,
+                params![org_id, name, new_name, serialized_object, now],
+            )
+            .map_err(|error| {
+                crate::identity::conflict(error, format!("{table} {new_name} already exists"))
+            })?;
         if changed == 0 {
             return Err(StoreError::NotFound(format!("{table} {name}")));
         }
+        tx.commit()?;
         drop(connection);
-        self.find_named_object(table, org_id, name)?
-            .ok_or_else(|| StoreError::NotFound(format!("{table} {name}")))
+        self.find_named_object(table, org_id, &new_name)?
+            .ok_or_else(|| StoreError::NotFound(format!("{table} {new_name}")))
     }
 
     fn delete_named_object(&self, table: &str, org_id: &str, name: &str) -> Result<(), StoreError> {
@@ -619,6 +648,16 @@ fn node_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredNode> {
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
     })
+}
+
+/// Read the `name` member of a normalized named-object body.
+fn requested_name(body: &str) -> Option<String> {
+    let document: serde_json::Value = serde_json::from_str(body).ok()?;
+    document
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string)
 }
 
 fn stored_object_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {

@@ -46,7 +46,7 @@ async fn malformed_json_is_reported_with_the_chef_error_envelope() {
     support::add_user(&state, "alice", "alice@example.com", false);
     let app = support::app(state);
 
-    let cases: [(&str, &str); 22] = [
+    let cases: &[(&str, &str)] = &[
         ("POST", "/users"),
         ("PUT", "/users/pivotal"),
         ("POST", "/organizations"),
@@ -69,9 +69,25 @@ async fn malformed_json_is_reported_with_the_chef_error_envelope() {
         ("POST", "/organizations/acme/policies/app/revisions"),
         ("POST", "/organizations/acme/policy_groups"),
         ("PUT", "/organizations/acme/policy_groups/prod/policies/app"),
+        ("POST", "/organizations/acme/sandboxes"),
+        ("PUT", "/organizations/acme/sandboxes/sandbox"),
+        ("POST", "/users/pivotal/keys"),
+        ("PUT", "/users/pivotal/keys/default"),
+        ("POST", "/organizations/acme/clients/robot/keys"),
+        ("PUT", "/organizations/acme/clients/robot/keys/default"),
+        ("PUT", "/organizations/acme/organizations/_acl/admins"),
+        (
+            "PUT",
+            "/organizations/acme/environments/production/_acl/admins",
+        ),
+        ("PUT", "/organizations/acme/cookbooks/apache/1.0.0"),
+        (
+            "PUT",
+            "/organizations/acme/cookbook_artifacts/apache/abc123",
+        ),
     ];
 
-    for (method, path) in cases {
+    for &(method, path) in cases {
         let (status, body) = send_raw(&app, method, path, br#"{"name": "#).await;
         assert_invalid_json(status, &body, &format!("{method} {path}"));
     }

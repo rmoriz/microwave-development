@@ -1,4 +1,4 @@
-use crate::chef_json::ChefJson;
+use crate::chef_json::NegotiatedChefJson;
 use crate::cookbooks::{parse_num_versions, NumVersions};
 use crate::helpers::{
     base_url, container_authz, location_headers, organization, require_permission,
@@ -86,7 +86,7 @@ async fn create_environment(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     headers: HeaderMap,
-    ChefJson(mut body): ChefJson<Value>,
+    NegotiatedChefJson(mut body): NegotiatedChefJson<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
     let container = container_authz(&state, org, "environments").await?;
@@ -144,31 +144,49 @@ async fn get_environment(
 async fn update_environment(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-    Path((_organization, name)): Path<(String, String)>,
-    ChefJson(mut body): ChefJson<Value>,
+    Path((_organization, url_name)): Path<(String, String)>,
+    headers: HeaderMap,
+    NegotiatedChefJson(mut body): NegotiatedChefJson<Value>,
 ) -> Result<Response, ApiError> {
-    if let Some(response) = default_environment_response(&name) {
+    if let Some(response) = default_environment_response(&url_name) {
         return Ok(response);
     }
     let org = organization(&auth)?;
     let environment = state
         .store
-        .find_environment(&org.id, &name)
+        .find_environment(&org.id, &url_name)
         .await
         .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::not_found(format!("Cannot load environment {name}")))?;
+        .ok_or_else(|| ApiError::not_found(format!("Cannot load environment {url_name}")))?;
     require_permission(&state, &auth, &environment.authz_id, Permission::Update).await?;
 
-    normalize_environment(&mut body, Some(&name))?;
+    let name = normalize_environment(&mut body, Some(&url_name))?;
+    let renamed = name != url_name;
     let updated = state
         .store
         .update_environment(
             &org.id,
-            &name,
+            &url_name,
             &serde_json::to_string(&body).map_err(|_| ApiError::internal())?,
         )
         .await
-        .map_err(ApiError::from)?;
+        .map_err(|error| match error {
+            StoreError::Conflict(_) => ApiError::conflict("Environment already exists"),
+            other => other.into(),
+        })?;
+    if renamed && updated.name != name {
+        // A backend that cannot rename must not leave the new document stored
+        // under the old name. Restore the previous representation and fail
+        // rather than reporting a rename that did not happen.
+        let _ = state
+            .store
+            .update_environment(&org.id, &url_name, &environment.serialized_object)
+            .await;
+        return Err(ApiError::internal());
+    }
+    if renamed {
+        crate::search::index::delete_document(&state, &org.id, &environment.id).await;
+    }
     crate::search::index::index_object(
         &state,
         org,
@@ -176,7 +194,16 @@ async fn update_environment(
         &updated,
     )
     .await;
-    Ok(Json(serialized_body(&updated.serialized_object)?).into_response())
+
+    let document = serialized_body(&updated.serialized_object)?;
+    if !renamed {
+        return Ok(Json(document).into_response());
+    }
+    let base = base_url(&headers, &state);
+    let uri = format!("{base}/organizations/{}/environments/{name}", org.name);
+    let mut response = (StatusCode::CREATED, Json(document)).into_response();
+    response.headers_mut().extend(location_headers(&uri)?);
+    Ok(response)
 }
 
 async fn delete_environment(
@@ -444,8 +471,9 @@ fn serialized_body(serialized: &str) -> Result<Value, ApiError> {
 /// Validates and normalizes an environment payload following
 /// `chef_environment:parse_binary_json/1`.
 ///
-/// `path_name` is `Some` for PUT requests: the body name is optional, but when
-/// present it must match the URL. Create requests require an explicit name.
+/// `path_name` is `Some` for PUT requests: the body name is optional. When it
+/// is present and differs from the URL, upstream renames the environment (the
+/// row keeps its id and ACL). Create requests require an explicit name.
 fn normalize_environment(body: &mut Value, path_name: Option<&str>) -> Result<String, ApiError> {
     let Some(object) = body.as_object_mut() else {
         return Err(ApiError::bad_request(
@@ -454,18 +482,11 @@ fn normalize_environment(body: &mut Value, path_name: Option<&str>) -> Result<St
     };
 
     let name = match path_name {
-        Some(path_name) => {
-            match object.get("name") {
-                None => {
-                    object.insert("name".into(), json!(path_name));
-                }
-                Some(Value::String(body_name)) if body_name == path_name => {}
-                Some(_) => {
-                    return Err(ApiError::bad_request("Environment name mismatch."));
-                }
-            }
-            path_name.to_string()
-        }
+        Some(path_name) => match object.get("name") {
+            None => path_name.to_string(),
+            Some(Value::String(body_name)) => body_name.clone(),
+            Some(_) => return Err(ApiError::bad_request("Field 'name' invalid")),
+        },
         None => object
             .get("name")
             .ok_or_else(|| ApiError::bad_request("Field 'name' missing"))?

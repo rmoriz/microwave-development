@@ -1,7 +1,7 @@
 mod support;
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{header, Request, StatusCode};
 use microwave_crypto::SignVersion;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -86,6 +86,41 @@ async fn sandbox_upload_and_commit() {
     let commit_path = format!("/organizations/acme/sandboxes/{sandbox_id}");
     let (status, _) = request(&app, "PUT", &commit_path, br#"{"is_completed":true}"#).await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn create_sandbox_sets_location() {
+    let app = support::app(support::state_with_pivotal());
+    create_org(&app).await;
+
+    let body = serde_json::to_vec(&json!({
+        "checksums": { HELLO_CHECKSUM: null }
+    }))
+    .unwrap();
+    let response = app
+        .clone()
+        .oneshot(support::signed_request(
+            "POST",
+            "/organizations/acme/sandboxes",
+            &body,
+            SignVersion::V1_3,
+            "pivotal",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .map(ToString::to_string);
+    let created = support::response_json(response).await;
+    let expected = format!(
+        "http://0.0.0.0:8000/organizations/acme/sandboxes/{}",
+        created["sandbox_id"].as_str().unwrap()
+    );
+    assert_eq!(location, Some(expected.clone()));
+    assert_eq!(created["uri"], expected);
 }
 
 #[tokio::test]
