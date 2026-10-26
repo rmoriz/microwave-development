@@ -318,6 +318,14 @@ This document tracks the end-to-end engineering checklist for reimplementing the
   - [x] Crawl cookbook blobs from the legacy bookshelf layout with `--bookshelf-dir`: collect unique `(org_id, checksum, url)` pairs, skip existing local blobs, resolve relative URLs against the legacy base while signing them, fetch absolute presigned URLs directly, verify MD5, write atomically into `organization-<org_id>/checksum-<md5>`, and cap each blob at 64 MiB and each crawl at 4 GiB. Blob files without a `url` stay metadata-only. Use bucket replication for sources that do not expose per-file URLs.
 - [ ] Trigger full search reindex and verify object counts and checksum integrity post-migration.
 
+### 5.4a P1/P2 Compatibility Hardening
+- [x] P0: configurable superuser, organization ACLs, actor-identity key self-service, password-reset non-disclosure, session TTL/Secure cookies, form CSRF checks, OpenSearch mapping, strict search ACLs, depsolver cookbook ACLs.
+- [x] P1a: membership/invitation shapes, environment/role contracts, OAuth PATCH/new/authorized apps/token info, `/_status` 500, `/_stats` text/auth/406, `/version`, newest-first cookbooks, default-org rewrites, trailing slashes.
+- [x] P1b: `Location` headers, Chef JSON error envelopes, bookshelf 250 MiB/ETag/Last-Modified/204, search grammar (default OR, `&&`/`||`, wildcard fields, phrases, fuzzy/boost), embedded `X_CHEF_*` fields.
+- [x] P1c: top-level service aliases, optional/timestamped backups, `psql SERVICE`, upstream `user-create`/`org-create` forms and validator keys, `show-service-credentials`, `require-credential-rotation`, orphan-blob cleanup, org-delete blob/search cleanup.
+- [x] P2: per-user USAG groups, SQLite indexes, transactional group-cycle checks, authz entity-type triggers, policy/artifact FKs, access log/request IDs, compression, trusted-proxy handling.
+- [ ] Integrate the reviewed `backup-keys` branch (`microwave-ctl backup --include-private-keys`) with the newer P1c backup command surface.
+- [ ] Run the non-harness Pedant `environments`/`roles` suites; the vendored harness currently lacks the `client` fixture for their auth cases.
 ### 5.5 Full Pedant Verification, HA & Performance Benchmarks
 - [ ] Run complete `oc-chef-pedant` suite against Default Embedded mode (SQLite + Tantivy + Local Bookshelf) and achieve 100% pass rate on supported specs.
 - [ ] Run complete `oc-chef-pedant` suite against HA mode (PostgreSQL + OpenSearch + Garage/S3) and achieve 100% pass rate.

@@ -132,6 +132,9 @@ A complete annotated example is
 | `object_store.secret` | `MW_OBJECT_STORE__SECRET` | generated | Only used by the local `/bookshelf` backend. |
 | `auth.skew_seconds` | `MW_AUTH__SKEW_SECONDS` | `900` | `X-Ops-Timestamp` tolerance. |
 | `auth.superuser_name` | `MW_AUTH__SUPERUSER_NAME` | `pivotal` | Account that cannot be demoted and receives platform-superuser privileges. |
+| `server.default_orgname` | `MW_SERVER__DEFAULT_ORGNAME` | unset | Rewrite upstream short paths (`/nodes`, `/search`, `/cookbooks`, …) to this organization. Signature verification still uses the client's original path. |
+| `server.trusted_proxies` | `MW_SERVER__TRUSTED_PROXIES` | empty | Comma-separated IPs/CIDRs/socket addresses allowed to set `X-Forwarded-Host`/`X-Forwarded-Proto`. Untrusted peers fall back to `Host`. |
+| `stats.username` / `stats.password` | `MW_STATS__USERNAME` / `MW_STATS__PASSWORD` | unset | Optional Basic auth for `/_stats`; when set, `/_status` remains public. |
 | `auth.password_reset_token_in_response` | `MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE` | `false` | Development-only: return the `/id/password-reset` URL in the HTTP response. Leave disabled in production; it allows account takeover. |
 | `keygen.size` | `MW_KEYGEN__SIZE` | `3` | Maximum number of pre-generated 2048-bit RSA keypairs kept in memory. `0` disables caching and generates on demand. Maximum `1024`. |
 | `keygen.workers` | `MW_KEYGEN__WORKERS` | `1` | Background key-generation threads. Must not exceed `keygen.size`; maximum `8`. `0` leaves refilling to `warm_up`. |
