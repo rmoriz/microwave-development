@@ -12,6 +12,8 @@ pub struct OAuthState {
     pub config: Arc<Config>,
     /// Shared pre-generated keypair cache.
     pub keygen: Arc<KeygenCache>,
+    /// Outbound mail surface for password-reset and invitation emails.
+    pub mailer: Arc<dyn microwave_mail::Mailer>,
 }
 
 impl OAuthState {
