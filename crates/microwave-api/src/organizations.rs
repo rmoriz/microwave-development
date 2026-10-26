@@ -1,4 +1,4 @@
-use crate::helpers::{base_url, require_permission};
+use crate::helpers::{base_url, is_server_admin, require_permission, require_superuser};
 use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -19,8 +19,12 @@ pub fn routes() -> Router<AppState> {
 
 async fn list_orgs(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
+    if !is_server_admin(&state, &auth).await? {
+        return Err(ApiError::forbidden());
+    }
     let base = base_url(&headers, &state);
     let mut orgs = Map::new();
     for org in state.store.list_orgs().await.map_err(ApiError::from)? {
@@ -39,6 +43,7 @@ async fn create_org(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
+    require_superuser(&auth)?;
     let name = required_string(&body, "name")?;
     if !valid_org_name(&name) {
         return Err(ApiError::bad_request("Field 'name' is invalid"));
@@ -148,6 +153,7 @@ async fn provision_validator(
 
 async fn get_org(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(organization): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let org = state
@@ -156,6 +162,7 @@ async fn get_org(
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("organization {organization}")))?;
+    require_permission(&state, &auth, &org.authz_id, Permission::Read).await?;
     Ok(Json(json!({
         "name": org.name,
         "full_name": org.full_name,
@@ -205,6 +212,7 @@ async fn update_org(
 
 async fn delete_org(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(organization): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let org = state
@@ -213,6 +221,7 @@ async fn delete_org(
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("organization {organization}")))?;
+    require_permission(&state, &auth, &org.authz_id, Permission::Delete).await?;
     let org_id = org.id.clone();
     state
         .store

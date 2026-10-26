@@ -73,6 +73,29 @@ pub fn is_superuser(auth: &AuthContext) -> bool {
     auth.is_superuser
 }
 
+/// Whether the caller is the configured superuser or a member of the global
+/// `server-admins` group. Upstream grants the global organizations container
+/// to this set.
+pub async fn is_server_admin(state: &AppState, auth: &AuthContext) -> Result<bool, ApiError> {
+    if auth.is_superuser {
+        return Ok(true);
+    }
+    let Some(group) = state
+        .store
+        .find_global_group("server-admins")
+        .await
+        .map_err(ApiError::from)?
+    else {
+        return Ok(false);
+    };
+    let members = state
+        .store
+        .list_group_members("", &group.authz_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(members.users.contains(&auth.principal.name))
+}
+
 pub fn require_superuser(auth: &AuthContext) -> Result<(), ApiError> {
     if is_superuser(auth) {
         Ok(())
