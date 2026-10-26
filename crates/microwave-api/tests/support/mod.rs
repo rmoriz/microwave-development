@@ -231,12 +231,13 @@ fn signed_request_with_key_api_version_and_signed_path(
     api_version: &str,
 ) -> Request<Body> {
     let canonical_path = signed_path.split('?').next().unwrap_or(signed_path);
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let request = CanonicalRequest {
         method,
         path: canonical_path,
         body: signed_body,
         user_id,
-        timestamp: "2026-10-24T12:00:00Z",
+        timestamp: &timestamp,
         api_version: Some(api_version),
         version,
     };
