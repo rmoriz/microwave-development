@@ -60,20 +60,14 @@ async fn forward_base(
 async fn forward_profile(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-    Path((organization, owner, profile)): Path<(String, String, String)>,
+    Path(params): Path<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
     uri: Uri,
 ) -> Response {
-    forward(
-        state,
-        auth,
-        organization,
-        owner,
-        Some(profile),
-        headers,
-        uri,
-    )
-    .await
+    let organization = params.get("organization").cloned().unwrap_or_default();
+    let owner = params.get("owner").cloned().unwrap_or_default();
+    let profile = params.get("profile").cloned();
+    forward(state, auth, organization, owner, profile, headers, uri).await
 }
 
 #[allow(clippy::too_many_arguments)]

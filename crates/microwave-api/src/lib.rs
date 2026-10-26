@@ -107,9 +107,10 @@ pub fn router(state: AppState) -> Router {
     // /version`).
     Router::new()
         .route("/version", get(version))
-        .fallback_service(tower::service_fn(move |request| {
+        .fallback_service(tower::service_fn(move |mut request| {
             let inner = inner.clone();
             async move {
+                middleware::normalize_trailing_slash(&mut request);
                 let mut response = match tower::ServiceExt::oneshot(inner, request).await {
                     Ok(response) => response,
                     Err(error) => match error {},

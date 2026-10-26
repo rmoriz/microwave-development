@@ -24,7 +24,21 @@ pub async fn authenticate(
     // URI here cannot change which handler was chosen. When a rewrite is
     // needed, re-enter the router once with the new path. The marker also
     // prevents recursion and keeps request metrics counted once.
-    if request.extensions().get::<OriginalRequestPath>().is_some() {
+    if let Some(original) = request.extensions().get::<OriginalRequestPath>().cloned() {
+        // A prior pass already removed a trailing slash. The default-org
+        // rewrite may still be needed, so do not skip routing entirely.
+        let routed_path = routing_path(&original.0, state.config.server.default_orgname.as_deref());
+        if routed_path != request.uri().path() {
+            if let Some(uri) = rewrite_uri_path(request.uri(), &routed_path) {
+                *request.uri_mut() = uri;
+            }
+            let response =
+                match tower::ServiceExt::oneshot(crate::router(state.clone()), request).await {
+                    Ok(response) => response,
+                    Err(error) => match error {},
+                };
+            return response;
+        }
         return authenticate_request(state, request, next).await;
     }
 
@@ -58,7 +72,7 @@ pub async fn authenticate(
 
 /// The path the client signed, before [`routing_path`] rewrote it.
 #[derive(Clone, Debug)]
-struct OriginalRequestPath(String);
+pub(crate) struct OriginalRequestPath(pub(crate) String);
 
 /// Top-level compatibility endpoints upstream nginx maps to `default_orgname`.
 const DEFAULT_ORG_ENDPOINTS: [&str; 11] = [
@@ -97,6 +111,24 @@ fn without_one_trailing_slash(path: &str) -> &str {
         &path[..path.len() - 1]
     } else {
         path
+    }
+}
+
+/// Normalize one trailing slash before axum selects a route.
+///
+/// This wrapper runs before route matching, so path parameters are extracted
+/// from the normalized URI; doing it after matching leaves stale captures for
+/// wildcard routes such as compliance profiles.
+pub(crate) fn normalize_trailing_slash(request: &mut axum::extract::Request) {
+    let signed_path = request.uri().path().to_string();
+    let routed_path = without_one_trailing_slash(&signed_path);
+    if routed_path != signed_path {
+        if let Some(uri) = rewrite_uri_path(request.uri(), routed_path) {
+            *request.uri_mut() = uri;
+        }
+        request
+            .extensions_mut()
+            .insert(OriginalRequestPath(signed_path));
     }
 }
 
