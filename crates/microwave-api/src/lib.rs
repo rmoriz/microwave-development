@@ -32,10 +32,14 @@ pub mod state;
 pub mod users;
 
 use axum::extract::State;
-use axum::response::IntoResponse;
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use serde_json::{json, Value};
+use subtle::ConstantTimeEq;
 
 pub use error::ApiError;
 pub use metrics::{Metrics, MetricsSnapshot};
@@ -96,41 +100,60 @@ pub fn router(state: AppState) -> Router {
     // Axum adds the `Allow` header for method-not-allowed responses in its
     // top-level `RouteFuture`, after all route middleware has run. Wrapping the
     // whole router lets us rewrite it to the upstream spacing and drop `HEAD`.
-    Router::new().fallback_service(tower::service_fn(move |request| {
-        let inner = inner.clone();
-        async move {
-            let mut response = match tower::ServiceExt::oneshot(inner, request).await {
-                Ok(response) => response,
-                Err(error) => match error {},
-            };
-            middleware::normalize_allow_header(&mut response);
-            Ok::<_, std::convert::Infallible>(response)
-        }
-    }))
+    //
+    // `/version` is served by nginx upstream, outside erchef authentication,
+    // so it is mounted on the outer router and bypasses the signed-request
+    // middleware (see `chef_http_lb_common`'s unauthenticated `location
+    // /version`).
+    Router::new()
+        .route("/version", get(version))
+        .fallback_service(tower::service_fn(move |request| {
+            let inner = inner.clone();
+            async move {
+                let mut response = match tower::ServiceExt::oneshot(inner, request).await {
+                    Ok(response) => response,
+                    Err(error) => match error {},
+                };
+                middleware::normalize_allow_header(&mut response);
+                Ok::<_, std::convert::Infallible>(response)
+            }
+        }))
 }
 
-async fn status(State(state): State<AppState>) -> Json<Value> {
+async fn status(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
     let keygen = state.keygen.status();
     let dependencies = state
         .health
         .snapshot(&state.store, &state.search, &state.object_store)
         .await;
-    Json(json!({
-        "status": if dependencies.healthy() { "pong" } else { "fail" },
-        "upstreams": dependencies.upstreams(),
-        "upstream_details": dependencies.details(),
-        "keygen": {
-            "status": if keygen.worker_healthy { "ok" } else { "degraded" },
-            "cached": keygen.cached,
-            "capacity": keygen.capacity,
-            "workers": keygen.workers,
-            "worker_healthy": keygen.worker_healthy,
-            "worker_failures": keygen.worker_failures,
-            "warm_up_failures": keygen.warm_up_failures,
-            "generated_on_demand": keygen.generated_on_demand,
-        },
-        "indexing": { "mode": state.search.name() }
-    }))
+    let healthy = dependencies.healthy();
+    // Upstream `chef_wm_status` halts with HTTP 500 when any dependency probe
+    // fails while still returning the same JSON document. Healthy responses
+    // stay 200.
+    let status = if healthy {
+        StatusCode::OK
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (
+        status,
+        Json(json!({
+            "status": if healthy { "pong" } else { "fail" },
+            "upstreams": dependencies.upstreams(),
+            "upstream_details": dependencies.details(),
+            "keygen": {
+                "status": if keygen.worker_healthy { "ok" } else { "degraded" },
+                "cached": keygen.cached,
+                "capacity": keygen.capacity,
+                "workers": keygen.workers,
+                "worker_healthy": keygen.worker_healthy,
+                "worker_failures": keygen.worker_failures,
+                "warm_up_failures": keygen.warm_up_failures,
+                "generated_on_demand": keygen.generated_on_demand,
+            },
+            "indexing": { "mode": state.search.name() }
+        })),
+    )
 }
 
 #[derive(serde::Deserialize)]
@@ -138,11 +161,47 @@ struct StatsQuery {
     format: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatsFormat {
+    Json,
+    Text,
+}
+
 async fn stats(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<StatsQuery>,
-) -> Result<axum::response::Response, ApiError> {
+) -> Result<Response, ApiError> {
+    // Upstream nginx guards `/_stats` with HTTP Basic auth (`auth_basic
+    // "Chef Server Admin Stats"`) while `/_status` stays public. The check runs
+    // before content negotiation so unauthenticated callers learn nothing about
+    // the requested representation.
+    if !stats_authorized(&state, &headers) {
+        return Ok(stats_unauthorized());
+    }
+
+    // Mirrors `chef_wm_stats`: `format=json` serves JSON, `format=text` serves
+    // the Prometheus text exposition, and no `format` negotiates on `Accept`.
+    // `format=prometheus` is Microwave's existing alias for the same text form.
+    // Upstream advertises no content type for any other value, which surfaces
+    // as HTTP 406 Not Acceptable.
+    let format = match query.format.as_deref() {
+        Some("json") => StatsFormat::Json,
+        Some("text" | "prometheus") => StatsFormat::Text,
+        Some(_) => return Err(stats_not_acceptable()),
+        None => {
+            if headers
+                .get(header::ACCEPT)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.contains("text/plain"))
+            {
+                StatsFormat::Text
+            } else {
+                StatsFormat::Json
+            }
+        }
+    };
+
     let snapshot = state.metrics.snapshot();
     let maintenance = state
         .store
@@ -151,17 +210,7 @@ async fn stats(
         .map_err(ApiError::from)?;
     let node_count = state.store.count_nodes().await.map_err(ApiError::from)?;
 
-    let prometheus = match query.format.as_deref() {
-        Some("prometheus") => true,
-        Some("json") => false,
-        Some(_) => false,
-        None => headers
-            .get(axum::http::header::ACCEPT)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value.contains("text/plain")),
-    };
-
-    if prometheus {
+    if format == StatsFormat::Text {
         let mut body = String::new();
         body.push_str(
             "# HELP microwave_server_requests_total Total HTTP requests received.\n\
@@ -242,6 +291,85 @@ async fn stats(
         "nodes": node_count,
     }))
     .into_response())
+}
+
+fn stats_not_acceptable() -> ApiError {
+    ApiError {
+        status: StatusCode::NOT_ACCEPTABLE,
+        message: "Not Acceptable".into(),
+        not_found_kind: None,
+        error_as_string: false,
+    }
+}
+
+/// Validate the optional Basic credentials configured for `/_stats`.
+///
+/// Returns `true` when authentication is disabled. Comparisons are
+/// constant-time so malformed credentials do not leak the expected secret.
+fn stats_authorized(state: &AppState, headers: &HeaderMap) -> bool {
+    let Some((expected_username, expected_password)) = state.config.stats.credentials() else {
+        return true;
+    };
+    let Some(value) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    let Some((scheme, encoded)) = value.split_once(' ') else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("basic") {
+        return false;
+    }
+    let Ok(decoded) = STANDARD.decode(encoded.trim()) else {
+        return false;
+    };
+    let Ok(decoded) = String::from_utf8(decoded) else {
+        return false;
+    };
+    let Some((username, password)) = decoded.split_once(':') else {
+        return false;
+    };
+    bool::from(expected_username.as_bytes().ct_eq(username.as_bytes()))
+        && bool::from(expected_password.as_bytes().ct_eq(password.as_bytes()))
+}
+
+fn stats_unauthorized() -> Response {
+    let mut response = (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({ "error": ["Unauthorized"] })),
+    )
+        .into_response();
+    response.headers_mut().insert(
+        header::WWW_AUTHENTICATE,
+        HeaderValue::from_static("Basic realm=\"Chef-Server\""),
+    );
+    response
+}
+
+/// Version manifest served at `GET /version`.
+///
+/// Upstream nginx serves `version-manifest.txt` as plain text on the load
+/// balancer (outside erchef authentication). Microwave emits the same
+/// `Key: value` shape with its own package version so operators and tooling get
+/// a stable, machine-readable version string.
+async fn version() -> Response {
+    let version = env!("CARGO_PKG_VERSION");
+    let manifest = format!(
+        "Package: microwave-server/{version}\n\
+         Habitat: microwave-server/{version}\n\
+         Member: microwave-server\n"
+    );
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; charset=utf-8"),
+        )],
+        manifest,
+    )
+        .into_response()
 }
 
 async fn server_api_version() -> Json<Value> {

@@ -56,8 +56,9 @@ async fn status_reports_a_failing_search_backend_without_leaking_credentials() {
 
     let (status, body) = status_body(&app).await;
 
-    // A dependency failure is reported in the payload, never as a 500.
-    assert_eq!(status, StatusCode::OK);
+    // Upstream halts with a 500 when any dependency probe fails while keeping
+    // the same JSON payload.
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body["status"], "fail");
     assert_eq!(body["upstreams"]["chef_index"], "fail");
     assert_eq!(body["upstreams"]["chef_sql"], "pong");
@@ -83,7 +84,7 @@ async fn status_bounds_a_hanging_object_store_probe() {
     let started = Instant::now();
     let (status, body) = status_body(&app).await;
 
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body["status"], "fail");
     assert_eq!(body["upstreams"]["bookshelf"], "fail");
     assert_eq!(
@@ -105,7 +106,7 @@ async fn status_reports_a_failing_object_store() {
 
     let (status, body) = status_body(&app).await;
 
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body["status"], "fail");
     assert_eq!(body["upstreams"]["bookshelf"], "fail");
     assert_eq!(body["upstreams"]["chef_sql"], "pong");
@@ -125,7 +126,7 @@ async fn status_bounds_a_hanging_search_probe() {
     let started = std::time::Instant::now();
     let (status, body) = status_body(&app).await;
 
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body["status"], "fail");
     assert_eq!(body["upstreams"]["chef_index"], "fail");
     assert_eq!(
@@ -185,7 +186,7 @@ async fn status_reports_busy_without_waiting_for_a_held_sqlite_lock() {
     let (status, body) = status_body(&app).await;
     let elapsed = started.elapsed();
 
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body["status"], "fail");
     assert_eq!(body["upstreams"]["chef_sql"], "fail");
     assert!(
