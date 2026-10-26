@@ -45,6 +45,14 @@ impl Config {
                 key: "server.tls".into(),
                 value: message,
             })?;
+        if let Some(orgname) = &self.server.default_orgname {
+            if !valid_org_name(orgname) {
+                return Err(ConfigError::InvalidValue {
+                    key: "server.default_orgname".into(),
+                    value: orgname.clone(),
+                });
+            }
+        }
         if self.search.timeout_ms == 0 {
             return Err(ConfigError::InvalidValue {
                 key: "search.timeout_ms".into(),
@@ -103,7 +111,8 @@ impl Config {
     /// Supported keys:
     /// - `MW_SERVER__BIND`, `MW_SERVER__TLS__ENABLED`,
     ///   `MW_SERVER__TLS__CERT_PATH`, `MW_SERVER__TLS__KEY_PATH`,
-    ///   `MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS`
+    ///   `MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS`,
+    ///   `MW_SERVER__DEFAULT_ORGNAME`
     /// - `MW_PATHS__DATA_DIR`
     /// - `MW_DATABASE__DRIVER`, `MW_DATABASE__URL`
     /// - `MW_STORAGE__COMPRESSION`
@@ -130,6 +139,9 @@ impl Config {
     pub fn apply_env(&mut self) -> Result<(), ConfigError> {
         if let Ok(value) = std::env::var("MW_SERVER__BIND") {
             self.server.bind = value;
+        }
+        if let Ok(value) = std::env::var("MW_SERVER__DEFAULT_ORGNAME") {
+            self.server.default_orgname = non_empty(value);
         }
         if let Ok(value) = std::env::var("MW_SERVER__WORKER_THREADS") {
             self.server.worker_threads = parse_value("MW_SERVER__WORKER_THREADS", value)?;
@@ -348,6 +360,24 @@ fn non_empty(value: String) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
+/// Chef organization names (and therefore `server.default_orgname`) must start
+/// with a lowercase ASCII letter or digit and contain only lowercase letters,
+/// digits, `_` and `-`, up to 255 bytes.
+fn valid_org_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    (first.is_ascii_lowercase() || first.is_ascii_digit())
+        && name.len() <= 255
+        && characters.all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || character == '_'
+                || character == '-'
+        })
+}
+
 fn parse_bool(key: &str, value: &str) -> Result<bool, ConfigError> {
     match value.to_ascii_lowercase().as_str() {
         "true" | "1" | "yes" => Ok(true),
@@ -364,6 +394,13 @@ fn parse_bool(key: &str, value: &str) -> Result<bool, ConfigError> {
 pub struct ServerConfig {
     pub bind: String,
     pub worker_threads: usize,
+    /// Organization that receives top-level compatibility paths such as
+    /// `/nodes` and `/search`. These are routed as
+    /// `/organizations/{default_orgname}/...` while the client-signed URI stays
+    /// unchanged. The value must satisfy Chef's organization-name rules
+    /// (lowercase letters, digits, `_` or `-`, starting with a letter or digit,
+    /// at most 255 bytes); empty and whitespace-only values are rejected.
+    pub default_orgname: Option<String>,
     pub tls: TlsConfig,
 }
 
@@ -372,6 +409,7 @@ impl Default for ServerConfig {
         Self {
             bind: "0.0.0.0:8000".into(),
             worker_threads: 0,
+            default_orgname: None,
             tls: TlsConfig::default(),
         }
     }
