@@ -1003,7 +1003,8 @@ async fn http2_tls_urls_use_the_request_authority() {
         "generated URL must use the HTTP/2 authority, not the bind address"
     );
 
-    // A proxy header must still override the HTTP/2 authority.
+    // Forwarded headers are only trusted from configured proxies; this test
+    // has no trusted proxy, so the HTTP/2 authority must win.
     let mut request = client.get(format!("https://chef.example.com:{port}/users"));
     for (name, value) in &headers {
         request = request.header(name, value);
@@ -1016,7 +1017,10 @@ async fn http2_tls_urls_use_the_request_authority() {
     assert_eq!(response.version(), reqwest::Version::HTTP_2);
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     let body: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(body["pivotal"], "https://proxy.example.com/users/pivotal");
+    assert_eq!(
+        body["pivotal"],
+        format!("https://chef.example.com:{port}/users/pivotal")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
