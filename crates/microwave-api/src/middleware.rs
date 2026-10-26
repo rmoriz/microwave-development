@@ -377,7 +377,8 @@ async fn authenticate_signed(
     let (principal, key_name) = authenticated.ok_or_else(|| authentication_failure(&user_id))?;
     if let Some(org) = &org {
         if principal.actor_type == ActorType::User
-            && principal.name != "pivotal"
+            && !(principal.actor_type == ActorType::User
+                && principal.name == state.config.auth.superuser_name)
             && !state
                 .store
                 .is_user_in_org(&org.id, &principal.actor_id)
@@ -416,6 +417,8 @@ async fn authenticate_signed(
         .extensions_mut()
         .insert(crate::state::ApiVersion(api_version));
     request.extensions_mut().insert(crate::state::AuthContext {
+        is_superuser: principal.actor_type == ActorType::User
+            && principal.name == state.config.auth.superuser_name,
         principal,
         org,
         key_name: Some(key_name),
@@ -440,7 +443,7 @@ async fn impersonated_principal(
 ) -> Result<Option<(microwave_store::Principal, String)>, ApiError> {
     let Some(superuser) = state
         .store
-        .find_user("pivotal")
+        .find_user(&state.config.auth.superuser_name)
         .await
         .map_err(ApiError::from)?
     else {

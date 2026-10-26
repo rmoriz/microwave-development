@@ -70,7 +70,7 @@ pub async fn require_permission(
 }
 
 pub fn is_superuser(auth: &AuthContext) -> bool {
-    auth.principal.name == "pivotal"
+    auth.is_superuser
 }
 
 pub fn require_superuser(auth: &AuthContext) -> Result<(), ApiError> {

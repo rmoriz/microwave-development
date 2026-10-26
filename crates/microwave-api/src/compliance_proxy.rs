@@ -199,7 +199,7 @@ async fn authorize_org(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("organization {organization} not found")))?;
 
-    if auth.principal.actor_type == ActorType::User && auth.principal.name != "pivotal" {
+    if auth.principal.actor_type == ActorType::User && !auth.is_superuser {
         let member = state
             .store
             .is_user_in_org(&org.id, &auth.principal.actor_id)
