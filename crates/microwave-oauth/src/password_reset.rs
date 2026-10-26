@@ -85,17 +85,23 @@ pub async fn create(
         ),
         None => None,
     };
-    let reset_url = reset_token
-        .as_ref()
-        .map(|token| format!("/id/password-reset?token={token}"));
+    let reset_url = if state.config.auth.password_reset_token_in_response {
+        reset_token
+            .as_ref()
+            .map(|token| format!("/id/password-reset?token={token}"))
+    } else {
+        None
+    };
 
     if wants_json(&headers) || params.is_json() {
-        return Ok(Json(json!({
+        let mut payload = json!({
             "status": "ok",
-            "notice": "If the account exists, password reset instructions have been generated.",
-            "reset_url": reset_url
-        }))
-        .into_response());
+            "notice": "If the account exists, password reset instructions have been generated."
+        });
+        if let Some(url) = &reset_url {
+            payload["reset_url"] = json!(url);
+        }
+        return Ok(Json(payload).into_response());
     }
 
     let link = reset_url

@@ -111,7 +111,8 @@ impl Config {
     /// - `MW_OBJECT_STORE__REGION`, `MW_OBJECT_STORE__ACCESS_KEY`,
     ///   `MW_OBJECT_STORE__SECRET_KEY`, `MW_OBJECT_STORE__PATH_STYLE`
     /// - `MW_OBJECT_STORE__SECRET` (local bookshelf token secret)
-    /// - `MW_AUTH__SKEW_SECONDS`, `MW_AUTH__SUPERUSER_NAME`
+    /// - `MW_AUTH__SKEW_SECONDS`, `MW_AUTH__SUPERUSER_NAME`,
+    ///   `MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE`
     /// - `MW_KEYGEN__SIZE`, `MW_KEYGEN__WORKERS`, `MW_KEYGEN__WARM_UP`
     /// - `MW_LICENSE__NODE_LICENSE`, `MW_LICENSE__UPGRADE_URL`
     /// - `MW_DATA_COLLECTOR__ROOT_URL`, `MW_DATA_COLLECTOR__TOKEN`,
@@ -231,6 +232,10 @@ impl Config {
         }
         if let Ok(value) = std::env::var("MW_AUTH__SUPERUSER_NAME") {
             self.auth.superuser_name = value;
+        }
+        if let Ok(value) = std::env::var("MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE") {
+            self.auth.password_reset_token_in_response =
+                parse_bool("MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE", &value)?;
         }
         if let Ok(value) = std::env::var("MW_KEYGEN__SIZE") {
             self.keygen.size = parse_value("MW_KEYGEN__SIZE", value)?;
@@ -560,6 +565,9 @@ pub enum ObjectStoreBackend {
 pub struct AuthConfig {
     pub skew_seconds: u64,
     pub superuser_name: String,
+    /// Development-only: include a usable password-reset URL in the HTTP
+    /// response. Off by default because the caller is unauthenticated.
+    pub password_reset_token_in_response: bool,
 }
 
 impl Default for AuthConfig {
@@ -567,6 +575,7 @@ impl Default for AuthConfig {
         Self {
             skew_seconds: 900,
             superuser_name: "pivotal".into(),
+            password_reset_token_in_response: false,
         }
     }
 }
