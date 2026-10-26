@@ -13,6 +13,7 @@ pub struct Config {
     pub search: SearchConfig,
     pub object_store: ObjectStoreConfig,
     pub auth: AuthConfig,
+    pub mail: MailConfig,
     pub keygen: KeygenConfig,
     pub depsolver: DepsolverConfig,
     pub license: LicenseConfig,
@@ -90,6 +91,42 @@ impl Config {
                 key: "compliance_proxy".into(),
                 value: message,
             })?;
+        self.mail
+            .validate()
+            .map_err(|message| ConfigError::InvalidValue {
+                key: "mail".into(),
+                value: message,
+            })?;
+        let public_url = self
+            .server
+            .public_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty());
+        if public_url.is_none() && self.mail.enabled {
+            return Err(ConfigError::InvalidValue {
+                key: "server.public_url".into(),
+                value: "required when mail is enabled".into(),
+            });
+        }
+        if let Some(public_url) = public_url {
+            validate_public_url(public_url).map_err(|message| ConfigError::InvalidValue {
+                key: "server.public_url".into(),
+                value: format!("{public_url}: {message}"),
+            })?;
+        }
+        if self.auth.password_reset_ttl_seconds == 0 {
+            return Err(ConfigError::InvalidValue {
+                key: "auth.password_reset_ttl_seconds".into(),
+                value: "0".into(),
+            });
+        }
+        if self.auth.password_reset_ttl_seconds > AuthConfig::MAX_PASSWORD_RESET_TTL_SECONDS {
+            return Err(ConfigError::InvalidValue {
+                key: "auth.password_reset_ttl_seconds".into(),
+                value: self.auth.password_reset_ttl_seconds.to_string(),
+            });
+        }
         Ok(())
     }
 
@@ -126,7 +163,7 @@ impl Config {
     ///   `MW_SERVER__TLS__CERT_PATH`, `MW_SERVER__TLS__KEY_PATH`,
     ///   `MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS`,
     ///   `MW_SERVER__DEFAULT_ORGNAME`, `MW_SERVER__TRUSTED_PROXIES`
-    ///   (comma-separated IPs/CIDRs)
+    ///   (comma-separated IPs/CIDRs), `MW_SERVER__PUBLIC_URL`
     /// - `MW_PATHS__DATA_DIR`
     /// - `MW_DATABASE__DRIVER`, `MW_DATABASE__URL`
     /// - `MW_STORAGE__COMPRESSION`
@@ -137,7 +174,12 @@ impl Config {
     ///   `MW_OBJECT_STORE__SECRET_KEY`, `MW_OBJECT_STORE__PATH_STYLE`
     /// - `MW_OBJECT_STORE__SECRET` (local bookshelf token secret)
     /// - `MW_AUTH__SKEW_SECONDS`, `MW_AUTH__SUPERUSER_NAME`,
-    ///   `MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE`
+    ///   `MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE`,
+    ///   `MW_AUTH__PASSWORD_RESET_TTL_SECONDS`
+    /// - `MW_MAIL__ENABLED`, `MW_MAIL__HOST`, `MW_MAIL__PORT`,
+    ///   `MW_MAIL__SECURITY`, `MW_MAIL__USERNAME`, `MW_MAIL__PASSWORD`,
+    ///   `MW_MAIL__AUTH`, `MW_MAIL__FROM`, `MW_MAIL__REPLY_TO`,
+    ///   `MW_MAIL__TIMEOUT_MS`, `MW_MAIL__HELLO_NAME`, `MW_MAIL__TLS_CA_PATH`
     /// - `MW_KEYGEN__SIZE`, `MW_KEYGEN__WORKERS`, `MW_KEYGEN__WARM_UP`
     /// - `MW_DEPSOLVER__TIMEOUT_MS`, `MW_DEPSOLVER__MAX_CONCURRENT`
     /// - `MW_LICENSE__NODE_LICENSE`, `MW_LICENSE__UPGRADE_URL`
@@ -181,6 +223,9 @@ impl Config {
         if let Ok(value) = std::env::var("MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS") {
             self.server.tls.reload_interval_seconds =
                 parse_value("MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_SERVER__PUBLIC_URL") {
+            self.server.public_url = non_empty(value);
         }
         if let Ok(value) = std::env::var("MW_PATHS__DATA_DIR") {
             self.paths.data_dir = value;
@@ -277,6 +322,67 @@ impl Config {
         if let Ok(value) = std::env::var("MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE") {
             self.auth.password_reset_token_in_response =
                 parse_bool("MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE", &value)?;
+        }
+        if let Ok(value) = std::env::var("MW_AUTH__PASSWORD_RESET_TTL_SECONDS") {
+            self.auth.password_reset_ttl_seconds =
+                parse_value("MW_AUTH__PASSWORD_RESET_TTL_SECONDS", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_MAIL__ENABLED") {
+            self.mail.enabled = parse_bool("MW_MAIL__ENABLED", &value)?;
+        }
+        if let Ok(value) = std::env::var("MW_MAIL__HOST") {
+            self.mail.host = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_MAIL__PORT") {
+            self.mail.port = Some(parse_value("MW_MAIL__PORT", value)?);
+        }
+        if let Ok(value) = std::env::var("MW_MAIL__SECURITY") {
+            self.mail.security = match value.to_ascii_lowercase().as_str() {
+                "starttls" => MailSecurity::Starttls,
+                "tls" => MailSecurity::Tls,
+                "none" => MailSecurity::None,
+                _ => {
+                    return Err(ConfigError::InvalidValue {
+                        key: "MW_MAIL__SECURITY".into(),
+                        value,
+                    })
+                }
+            };
+        }
+        if let Ok(value) = std::env::var("MW_MAIL__USERNAME") {
+            self.mail.username = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_MAIL__PASSWORD") {
+            self.mail.password = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_MAIL__AUTH") {
+            self.mail.auth = match value.to_ascii_lowercase().as_str() {
+                "auto" => MailAuth::Auto,
+                "plain" => MailAuth::Plain,
+                "login" => MailAuth::Login,
+                "none" => MailAuth::None,
+                _ => {
+                    return Err(ConfigError::InvalidValue {
+                        key: "MW_MAIL__AUTH".into(),
+                        value,
+                    })
+                }
+            };
+        }
+        if let Ok(value) = std::env::var("MW_MAIL__FROM") {
+            self.mail.from = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_MAIL__REPLY_TO") {
+            self.mail.reply_to = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_MAIL__TIMEOUT_MS") {
+            self.mail.timeout_ms = parse_value("MW_MAIL__TIMEOUT_MS", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_MAIL__HELLO_NAME") {
+            self.mail.hello_name = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_MAIL__TLS_CA_PATH") {
+            self.mail.tls_ca_path = non_empty(value);
         }
         if let Ok(value) = std::env::var("MW_KEYGEN__SIZE") {
             self.keygen.size = parse_value("MW_KEYGEN__SIZE", value)?;
@@ -389,6 +495,10 @@ fn non_empty(value: String) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
+fn has_non_empty(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.trim().is_empty())
+}
+
 /// Chef organization names (and therefore `server.default_orgname`) must start
 /// with a lowercase ASCII letter or digit and contain only lowercase letters,
 /// digits, `_` and `-`, up to 255 bytes.
@@ -418,6 +528,43 @@ fn parse_bool(key: &str, value: &str) -> Result<bool, ConfigError> {
     }
 }
 
+/// Loopback hosts that may use plaintext HTTP or plaintext SMTP AUTH in
+/// development. Bracket-free IPv6 form is accepted for consistency with
+/// `Url::host_str`, while SMTP configuration may also use `[::1]`.
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim().trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+}
+
+/// `server.public_url` must be an absolute origin: no credentials, path,
+/// query, or fragment. Plain HTTP is only accepted for loopback development
+/// addresses because reset links must not be sent over the network unencrypted.
+fn validate_public_url(input: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(input).map_err(|error| format!("invalid URL: {error}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!("must use http or https (got {})", parsed.scheme()));
+    }
+    let Some(host) = parsed.host_str() else {
+        return Err("must include a host".into());
+    };
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("must not include credentials".into());
+    }
+    if parsed.query().is_some() {
+        return Err("must not include a query".into());
+    }
+    if parsed.fragment().is_some() {
+        return Err("must not include a fragment".into());
+    }
+    if !matches!(parsed.path(), "" | "/") {
+        return Err("must be an origin without a path".into());
+    }
+    if parsed.scheme() == "http" && !is_loopback_host(host) {
+        return Err("must use https outside loopback hosts".into());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct ServerConfig {
@@ -437,6 +584,11 @@ pub struct ServerConfig {
     /// this populated when the listener is reachable solely through those
     /// proxies.
     pub trusted_proxies: Vec<String>,
+    /// Public origin clients use to reach this server, for example
+    /// `https://chef.example.com`. Required when mail is enabled so
+    /// password-reset links never depend on the unauthenticated `Host` header.
+    /// Must be an `https` origin; loopback hosts may use `http`.
+    pub public_url: Option<String>,
     pub tls: TlsConfig,
 }
 
@@ -447,6 +599,7 @@ impl Default for ServerConfig {
             worker_threads: 0,
             default_orgname: None,
             trusted_proxies: Vec::new(),
+            public_url: None,
             tls: TlsConfig::default(),
         }
     }
@@ -660,6 +813,14 @@ pub struct AuthConfig {
     /// Development-only: include a usable password-reset URL in the HTTP
     /// response. Off by default because the caller is unauthenticated.
     pub password_reset_token_in_response: bool,
+    /// How long a password-reset token stays valid, in seconds. Must be
+    /// greater than zero and at most [`Self::MAX_PASSWORD_RESET_TTL_SECONDS`].
+    pub password_reset_ttl_seconds: u64,
+}
+
+impl AuthConfig {
+    /// Maximum accepted password-reset token lifetime (seven days).
+    pub const MAX_PASSWORD_RESET_TTL_SECONDS: u64 = 604_800;
 }
 
 impl Default for AuthConfig {
@@ -668,7 +829,176 @@ impl Default for AuthConfig {
             skew_seconds: 900,
             superuser_name: "pivotal".into(),
             password_reset_token_in_response: false,
+            password_reset_ttl_seconds: 3600,
         }
+    }
+}
+
+/// SMTP transport security. `starttls` upgrades plaintext connections on the
+/// configured port, `tls` uses implicit TLS (SMTPS), and `none` is explicit
+/// plaintext for trusted local relays.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MailSecurity {
+    #[default]
+    Starttls,
+    Tls,
+    None,
+}
+
+/// SMTP AUTH mechanism. `auto` lets the mail transport negotiate a mechanism
+/// when credentials are configured.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MailAuth {
+    #[default]
+    Auto,
+    Plain,
+    Login,
+    None,
+}
+
+/// Outbound SMTP configuration, mirroring upstream's `[mail]` section.
+///
+/// Mail is disabled by default and never affects startup unless
+/// `enabled = true`. The password is accepted from TOML or
+/// `MW_MAIL__PASSWORD`, is never serialized, and is redacted from `Debug`.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct MailConfig {
+    pub enabled: bool,
+    pub host: Option<String>,
+    /// Defaults to 587 for STARTTLS, 465 for implicit TLS, and 25 for plaintext
+    /// when omitted.
+    pub port: Option<u16>,
+    pub security: MailSecurity,
+    pub username: Option<String>,
+    /// Never printed, logged, or serialized.
+    #[serde(skip_serializing)]
+    pub password: Option<String>,
+    pub auth: MailAuth,
+    pub from: Option<String>,
+    pub reply_to: Option<String>,
+    pub timeout_ms: u64,
+    pub hello_name: Option<String>,
+    pub tls_ca_path: Option<String>,
+}
+
+impl Default for MailConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: None,
+            port: None,
+            security: MailSecurity::Starttls,
+            username: None,
+            password: None,
+            auth: MailAuth::Auto,
+            from: None,
+            reply_to: None,
+            timeout_ms: 10_000,
+            hello_name: None,
+            tls_ca_path: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for MailConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MailConfig")
+            .field("enabled", &self.enabled)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("security", &self.security)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("auth", &self.auth)
+            .field("from", &self.from)
+            .field("reply_to", &self.reply_to)
+            .field("timeout_ms", &self.timeout_ms)
+            .field("hello_name", &self.hello_name)
+            .field("tls_ca_path", &self.tls_ca_path)
+            .finish()
+    }
+}
+
+impl MailConfig {
+    /// True when mail is explicitly enabled and a usable host is configured.
+    /// All other fields are ignored while this is false.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled && has_non_empty(self.host.as_deref())
+    }
+
+    /// Validate the SMTP configuration. Called by [`Config::validate`] so a
+    /// broken mail setup fails at startup instead of at the first reset email.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if !has_non_empty(self.host.as_deref()) {
+            return Err("mail.host is required when mail is enabled".into());
+        }
+        if !has_non_empty(self.from.as_deref()) {
+            return Err("mail.from is required when mail is enabled".into());
+        }
+        if self.timeout_ms == 0 {
+            return Err("mail.timeout_ms must be greater than zero".into());
+        }
+        if self.port == Some(0) {
+            return Err("mail.port must be greater than zero".into());
+        }
+
+        let username = self
+            .username
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let password = self
+            .password
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+
+        match self.auth {
+            MailAuth::None => {
+                if username.is_some() || password.is_some() {
+                    return Err("mail.auth = \"none\" must not be combined with credentials".into());
+                }
+            }
+            MailAuth::Auto => {
+                if username.is_some() != password.is_some() {
+                    return Err(
+                        "mail.username and mail.password must be configured together".into(),
+                    );
+                }
+            }
+            MailAuth::Plain | MailAuth::Login => {
+                if username.is_some() && password.is_none() {
+                    return Err("mail.username requires mail.password".into());
+                }
+                if password.is_some() && username.is_none() {
+                    return Err("mail.password requires mail.username".into());
+                }
+                if username.is_none() {
+                    return Err(format!(
+                        "mail.auth = {:?} requires mail.username and mail.password",
+                        self.auth
+                    ));
+                }
+            }
+        }
+
+        if self.security == MailSecurity::None
+            && username.is_some()
+            && !self.host.as_deref().is_some_and(is_loopback_host)
+        {
+            return Err(
+                "mail.security = \"none\" with credentials requires a loopback host; \
+                 use starttls or tls for remote relays"
+                    .into(),
+            );
+        }
+        Ok(())
     }
 }
 
