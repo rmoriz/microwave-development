@@ -252,12 +252,16 @@ v1 stores **only `run_converge`**:
 forwarding behavior, and gains a local branch for `run_converge`:
 
 1. Authenticate exactly as today (shared token or Chef signature).
-2. Parse the JSON body if local storage is active. A malformed body, a missing
+2. When local storage is active, resolve the organization from the path. An
+   unknown organization returns 404 and nothing is forwarded; this is the only
+   behavior change for malformed paths. Forward-only mode keeps forwarding
+   without an org lookup, as today.
+3. Parse the JSON body if local storage is active. A malformed body, a missing
    `node_name`, or a missing `run_id` on a `run_converge` message returns 400.
    Non-`run_converge` messages skip parsing and storage.
-3. Store locally first, then forward. A failed store returns 500 without
+4. Store locally first, then forward. A failed store returns 500 without
    forwarding; a failed forward still returns 502/504 but keeps the local row.
-4. Respond with the upstream response if forwarding happened; otherwise 200
+5. Respond with the upstream response if forwarding happened; otherwise 200
    with `{}` (accepted).
 
 Payload handling is defensive: unknown fields are preserved in the stored raw
