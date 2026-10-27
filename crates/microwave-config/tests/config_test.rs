@@ -1,6 +1,6 @@
 use microwave_config::{
-    Config, DatabaseDriver, MailAuth, MailConfig, MailSecurity, ObjectStoreBackend, SearchBackend,
-    StorageCompression,
+    Config, DataCollectorStore, DatabaseDriver, MailAuth, MailConfig, MailSecurity,
+    ObjectStoreBackend, SearchBackend, StorageCompression,
 };
 use std::sync::Mutex;
 
@@ -1115,4 +1115,105 @@ fn mail_password_is_redacted_from_debug_and_serialization() {
     c.mail.password = Some("super-secret".into());
     assert!(!format!("{:?}", c.mail).contains("super-secret"));
     assert!(!toml::to_string(&c.mail).unwrap().contains("super-secret"));
+}
+
+#[test]
+fn data_collector_defaults_to_forward_with_50_runs() {
+    let c = Config::default();
+    assert_eq!(c.data_collector.store, DataCollectorStore::Forward);
+    assert_eq!(c.data_collector.keep_runs, 50);
+    assert!(!c.data_collector.is_enabled());
+    assert!(c.data_collector.forwards());
+    assert!(!c.data_collector.stores_locally());
+}
+
+#[test]
+fn data_collector_local_enables_the_surface_without_forwarding() {
+    let c = Config::from_toml_str(
+        r#"
+        [data_collector]
+        store = "local"
+        keep_runs = 5
+    "#,
+    )
+    .unwrap();
+    assert_eq!(c.data_collector.store, DataCollectorStore::Local);
+    assert_eq!(c.data_collector.keep_runs, 5);
+    assert!(!c.data_collector.is_configured());
+    assert!(c.data_collector.is_enabled());
+    assert!(c.data_collector.stores_locally());
+    assert!(!c.data_collector.forwards());
+}
+
+#[test]
+fn data_collector_both_requires_a_root_url() {
+    assert!(Config::from_toml_str(
+        r#"
+        [data_collector]
+        store = "both"
+    "#
+    )
+    .is_err());
+
+    let c = Config::from_toml_str(
+        r#"
+        [data_collector]
+        store = "both"
+        root_url = "http://127.0.0.1:1/data-collector/v0/"
+    "#,
+    )
+    .unwrap();
+    assert!(c.data_collector.is_enabled());
+    assert!(c.data_collector.forwards());
+    assert!(c.data_collector.stores_locally());
+}
+
+#[test]
+fn data_collector_rejects_unknown_modes_and_negative_retention() {
+    assert!(Config::from_toml_str(
+        r#"
+        [data_collector]
+        store = "sometimes"
+    "#
+    )
+    .is_err());
+    assert!(Config::from_toml_str(
+        r#"
+        [data_collector]
+        keep_runs = -1
+    "#
+    )
+    .is_err());
+}
+
+#[test]
+fn data_collector_local_suppresses_action_notifications() {
+    let c = Config::from_toml_str(
+        r#"
+        [data_collector]
+        store = "local"
+        root_url = "http://127.0.0.1:1/data-collector/v0/"
+        actions_enabled = true
+    "#,
+    )
+    .unwrap();
+    assert!(!c.data_collector.actions_enabled());
+}
+
+#[test]
+fn data_collector_store_and_retention_can_come_from_env() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("MW_DATA_COLLECTOR__STORE", "local");
+    std::env::set_var("MW_DATA_COLLECTOR__KEEP_RUNS", "7");
+    let mut c = Config::default();
+    c.apply_env().unwrap();
+    assert_eq!(c.data_collector.store, DataCollectorStore::Local);
+    assert_eq!(c.data_collector.keep_runs, 7);
+
+    std::env::set_var("MW_DATA_COLLECTOR__STORE", "nope");
+    let mut c = Config::default();
+    assert!(c.apply_env().is_err());
+
+    std::env::remove_var("MW_DATA_COLLECTOR__STORE");
+    std::env::remove_var("MW_DATA_COLLECTOR__KEEP_RUNS");
 }

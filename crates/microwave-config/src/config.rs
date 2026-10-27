@@ -67,6 +67,14 @@ impl Config {
                 value: "0".into(),
             });
         }
+        if self.data_collector.store == DataCollectorStore::Both
+            && !self.data_collector.is_configured()
+        {
+            return Err(ConfigError::InvalidValue {
+                key: "data_collector.root_url".into(),
+                value: "required when data_collector.store is \"both\"".into(),
+            });
+        }
         if self.compliance_proxy.timeout == 0 {
             return Err(ConfigError::InvalidValue {
                 key: "compliance_proxy.timeout".into(),
@@ -186,7 +194,8 @@ impl Config {
     /// - `MW_STATS__USERNAME`, `MW_STATS__PASSWORD`
     /// - `MW_DATA_COLLECTOR__ROOT_URL`, `MW_DATA_COLLECTOR__TOKEN`,
     ///   `MW_DATA_COLLECTOR__TIMEOUT` (alias `MW_DATA_COLLECTOR__TIMEOUT_MS`),
-    ///   `MW_DATA_COLLECTOR__ACTIONS_ENABLED`, `MW_DATA_COLLECTOR__SERVICE_HOSTNAME`
+    ///   `MW_DATA_COLLECTOR__ACTIONS_ENABLED`, `MW_DATA_COLLECTOR__SERVICE_HOSTNAME`,
+    ///   `MW_DATA_COLLECTOR__STORE`, `MW_DATA_COLLECTOR__KEEP_RUNS`
     /// - `MW_COMPLIANCE_PROXY__URL`, `MW_COMPLIANCE_PROXY__TOKEN`,
     ///   `MW_COMPLIANCE_PROXY__TOKEN_HEADER`, `MW_COMPLIANCE_PROXY__TIMEOUT`
     /// - `MW_REQUIRED_RECIPE__ENABLED` (alias `MW_REQUIRED_RECIPE__ENABLE`),
@@ -428,6 +437,22 @@ impl Config {
         }
         if let Ok(value) = std::env::var("MW_DATA_COLLECTOR__SERVICE_HOSTNAME") {
             self.data_collector.service_hostname = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_DATA_COLLECTOR__STORE") {
+            self.data_collector.store = match value.trim().to_ascii_lowercase().as_str() {
+                "forward" => DataCollectorStore::Forward,
+                "local" => DataCollectorStore::Local,
+                "both" => DataCollectorStore::Both,
+                _ => {
+                    return Err(ConfigError::InvalidValue {
+                        key: "MW_DATA_COLLECTOR__STORE".into(),
+                        value,
+                    })
+                }
+            };
+        }
+        if let Ok(value) = std::env::var("MW_DATA_COLLECTOR__KEEP_RUNS") {
+            self.data_collector.keep_runs = parse_value("MW_DATA_COLLECTOR__KEEP_RUNS", value)?;
         }
         if let Ok(value) = std::env::var("MW_COMPLIANCE_PROXY__URL") {
             self.compliance_proxy.url = non_empty(value);
@@ -1129,12 +1154,40 @@ impl StatsConfig {
     }
 }
 
+/// Where data-collector payloads are kept.
+///
+/// `forward` sends them to the external collector (the historic behavior),
+/// `local` stores run reports in this server, and `both` does both.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DataCollectorStore {
+    #[default]
+    Forward,
+    Local,
+    Both,
+}
+
+impl DataCollectorStore {
+    pub fn stores_locally(self) -> bool {
+        matches!(self, Self::Local | Self::Both)
+    }
+
+    pub fn forwards(self) -> bool {
+        matches!(self, Self::Forward | Self::Both)
+    }
+}
+
 /// Data Collector forwarding configuration, mirroring upstream's
 /// `data_collector['root_url']`, `data_collector['token']` and
 /// `data_collector['timeout']` settings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct DataCollectorConfig {
+    /// What happens to incoming data-collector payloads. Defaults to
+    /// `forward`, the historic behavior.
+    pub store: DataCollectorStore,
+    /// Number of local run reports kept per node. `0` keeps everything.
+    pub keep_runs: usize,
     /// Base URL of the external data collector. Setting this enables
     /// `POST /organizations/:org/data-collector`.
     pub root_url: Option<String>,
@@ -1166,13 +1219,31 @@ impl DataCollectorConfig {
 
     /// True when server-side mutation notifications should be dispatched.
     pub fn actions_enabled(&self) -> bool {
-        self.is_configured() && self.actions_enabled
+        self.is_configured() && self.store.forwards() && self.actions_enabled
+    }
+
+    /// True when the data-collector surface is active: either payloads are
+    /// forwarded to a configured collector, or they are stored locally.
+    pub fn is_enabled(&self) -> bool {
+        self.is_configured() || self.store.stores_locally()
+    }
+
+    /// True when payloads are stored on this server.
+    pub fn stores_locally(&self) -> bool {
+        self.store.stores_locally()
+    }
+
+    /// True when payloads are forwarded to the external collector.
+    pub fn forwards(&self) -> bool {
+        self.store.forwards()
     }
 }
 
 impl Default for DataCollectorConfig {
     fn default() -> Self {
         Self {
+            store: DataCollectorStore::Forward,
+            keep_runs: 50,
             root_url: None,
             token: None,
             timeout: 30_000,
