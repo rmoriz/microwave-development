@@ -1,0 +1,42 @@
+---
+import { Picture } from 'astro:assets';
+import { site } from '../data/site';
+import heroImage from '../assets/microwave-hero.png';
+
+const supportHref = `mailto:${site.email}?subject=Microwave%20support`;
+---
+<section class="hero">
+  <div class="container hero-grid">
+    <div class="hero-copy">
+      <p class="eyebrow">Independent · Open source · Rust</p>
+      <h1>Get cooking <span class="hero-accent">without becoming a chef.</span></h1>
+      <p class="hero-sub">
+        Microwave is an independent, open-source Chef Infra Server API
+        implementation written in Rust. Keep your cookbooks, clients, and CLI.
+        Run a simpler server, with the backing services you already trust.
+      </p>
+      <div class="hero-actions">
+        <a class="button button-primary" href={supportHref}>Talk to us about support</a>
+        <a class="button button-ghost" href={site.runFromSource}>Run it from source</a>
+      </div>
+      <ul class="badge-row" aria-label="Compatibility and license">
+        <li class="badge">Cinc Client 19</li>
+        <li class="badge">Chef Infra Client 18/19</li>
+        <li class="badge">AGPL-3.0</li>
+      </ul>
+    </div>
+
+    <figure class="hero-figure">
+      <Picture
+        src={heroImage}
+        formats={['avif', 'webp']}
+        widths={[640, 960, 1280, 1536]}
+        sizes="(min-width: 900px) 46vw, 100vw"
+        alt="A rainbow neon microwave glowing on a dark surface"
+        loading="eager"
+        fetchpriority="high"
+      />
+      <figcaption>Artist's impression. The real thing is a single binary.</figcaption>
+    </figure>
+  </div>
+</section>

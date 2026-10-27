@@ -15,3 +15,15 @@ test('page shell: title, description, skip link, main landmark', () => {
   assert.equal($('a.skip-link').attr('href'), '#main');
   assert.equal($('main#main').length, 1);
 });
+
+test('hero and navigation', () => {
+  assert.equal($('h1').text().trim(), 'Get cooking without becoming a chef.');
+  assert.match($('main').text(), /independent, open-source Chef Infra Server API implementation written in Rust/i);
+  assert.equal($('a[href="mailto:hello@microwave.io?subject=Microwave%20support"]').length >= 1, true);
+  assert.equal($('a[href="https://github.com/rmoriz/microwave-development#run-locally"]').length >= 1, true);
+  assert.match($('body').text(), /Cinc Client 19/);
+  assert.match($('body').text(), /Chef Infra Client 18\/19/);
+  assert.match($('body').text(), /AGPL-3\.0/);
+  assert.match($('picture img').attr('alt'), /rainbow neon microwave/i);
+  assert.equal($('body').text().includes('docker run'), false);
+});

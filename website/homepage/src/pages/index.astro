@@ -1,7 +1,10 @@
 ---
 import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
+import Hero from '../components/Hero.astro';
 import { site } from '../data/site';
 ---
 <Base title={site.title} description={site.description}>
-  <h1>Get cooking without becoming a chef.</h1>
+  <Nav slot="header" />
+  <Hero />
 </Base>
