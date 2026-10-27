@@ -42,5 +42,35 @@ const socialImage = new URL(image, origin);
     <slot name="header" />
     <main id="main"><slot /></main>
     <Footer />
+    <script>
+      document.documentElement.classList.add('js');
+      try {
+        const reveals = Array.from(
+          document.querySelectorAll<HTMLElement>('.reveal'),
+        );
+        const reduceMotion = window.matchMedia(
+          '(prefers-reduced-motion: reduce)',
+        ).matches;
+
+        if (reduceMotion || !('IntersectionObserver' in window)) {
+          reveals.forEach((element) => element.classList.add('is-visible'));
+        } else {
+          const observer = new IntersectionObserver(
+            (entries) => {
+              for (const entry of entries) {
+                if (entry.isIntersecting) {
+                  entry.target.classList.add('is-visible');
+                  observer.unobserve(entry.target);
+                }
+              }
+            },
+            { rootMargin: '0px 0px -10% 0px' },
+          );
+          reveals.forEach((element) => observer.observe(element));
+        }
+      } catch {
+        document.documentElement.classList.remove('js');
+      }
+    </script>
   </body>
 </html>

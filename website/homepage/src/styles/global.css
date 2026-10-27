@@ -128,6 +128,19 @@ pre {
   padding-block: 96px;
 }
 
+.js .reveal {
+  opacity: 0;
+  transform: translateY(12px);
+  transition:
+    opacity 500ms ease,
+    transform 500ms ease;
+}
+
+.js .reveal.is-visible {
+  opacity: 1;
+  transform: none;
+}
+
 @media (min-width: 900px) {
   .section {
     padding-block: 128px;
@@ -137,6 +150,12 @@ pre {
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
+  }
+
+  .js .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
   }
 
   *,
