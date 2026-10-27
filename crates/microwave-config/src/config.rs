@@ -1188,8 +1188,9 @@ pub struct DataCollectorConfig {
     pub store: DataCollectorStore,
     /// Number of local run reports kept per node. `0` keeps everything.
     pub keep_runs: usize,
-    /// Base URL of the external data collector. Setting this enables
-    /// `POST /organizations/:org/data-collector`.
+    /// Base URL of the external data collector. Setting this enables forwarding
+    /// when `store` is `forward` or `both`; `local`/`both` also keep the
+    /// data-collector route enabled.
     pub root_url: Option<String>,
     /// Shared secret accepted from clients as `x-data-collector-token` and
     /// sent upstream. The forwarded value always comes from this server-side
@@ -1200,9 +1201,11 @@ pub struct DataCollectorConfig {
     #[serde(alias = "timeout_ms")]
     pub timeout: u64,
     /// Send `oc_chef_action` mutation notifications for successful writes.
-    /// This is only active when `root_url` is set. It defaults to false so a
-    /// configuration that only enables client payload forwarding does not
-    /// unexpectedly start server-side writes to the collector.
+    /// Notifications additionally require `store` to permit forwarding
+    /// (`forward`/`both`); `local` suppresses them even with `root_url` set.
+    /// This defaults to false so a configuration that only enables client
+    /// payload forwarding does not unexpectedly start server-side writes to the
+    /// collector.
     pub actions_enabled: bool,
     /// Hostname reported as `service_hostname` in action messages. When unset
     /// the request `X-Forwarded-Host` (or `Host`) is used.
@@ -1218,6 +1221,8 @@ impl DataCollectorConfig {
     }
 
     /// True when server-side mutation notifications should be dispatched.
+    /// Notifications additionally require `store` to permit forwarding
+    /// (`forward`/`both`); `local` suppresses them even with `root_url` set.
     pub fn actions_enabled(&self) -> bool {
         self.is_configured() && self.store.forwards() && self.actions_enabled
     }
@@ -1233,7 +1238,8 @@ impl DataCollectorConfig {
         self.store.stores_locally()
     }
 
-    /// True when payloads are forwarded to the external collector.
+    /// True when the configured mode permits forwarding, regardless of whether
+    /// `root_url` is set.
     pub fn forwards(&self) -> bool {
         self.store.forwards()
     }

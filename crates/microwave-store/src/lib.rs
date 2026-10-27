@@ -40,7 +40,7 @@ pub use objects::{NewNode, StoredDataBagItem, StoredNode, StoredObject};
 pub use policies::{
     StoredPolicy, StoredPolicyGroup, StoredPolicyGroupAssociation, StoredPolicyRevision,
 };
-pub use reports::StoredNodeRun;
+pub use reports::{normalize_rfc3339, StoredNodeRun};
 pub use sandboxes::SandboxCheck;
 pub use secrets::{
     secret_kv_key, BOOKSHELF_ACCESS_KEY_ID, BOOKSHELF_SECRET_ACCESS_KEY, BOOKSHELF_SECRET_GROUP,

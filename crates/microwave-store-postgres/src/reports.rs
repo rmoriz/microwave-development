@@ -111,6 +111,11 @@ impl ReportRepository for PostgresStore {
         org_id: &str,
         filter: &NodeRunFilter,
     ) -> Result<Vec<StoredNodeRun>, StoreError> {
+        let since = filter
+            .since
+            .as_deref()
+            .map(microwave_store::normalize_rfc3339)
+            .transpose()?;
         // `usize` can exceed `i64`; saturate instead of wrapping negative.
         let limit = i64::try_from(filter.limit).unwrap_or(i64::MAX);
         let rows = sqlx::query(
@@ -128,7 +133,7 @@ impl ReportRepository for PostgresStore {
         .bind(org_id)
         .bind(filter.node_name.as_deref())
         .bind(filter.status.as_deref())
-        .bind(filter.since.as_deref())
+        .bind(since.as_deref())
         .bind(filter.failures_only)
         .bind(limit)
         .fetch_all(self.pool())

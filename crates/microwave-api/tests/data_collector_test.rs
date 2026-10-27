@@ -587,6 +587,29 @@ async fn local_storage_stores_without_forwarding() {
 }
 
 #[tokio::test]
+async fn local_with_root_url_does_not_forward() {
+    let (root_url, captured) = start_mock(200, "{}", Duration::ZERO).await;
+    let mut config = local_config(Some("server-token"), 50);
+    config.data_collector.root_url = Some(root_url);
+    let state = support::state_with_config(config);
+    let org = support::add_org(&state, "acme").await;
+    let store = state.store.clone();
+    let app = support::app(state);
+
+    let response = app
+        .oneshot(token_request(
+            "/organizations/acme/data-collector",
+            "server-token",
+            RUN_CONVERGE,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(captured.lock().await.is_empty());
+    assert_eq!(runs(&store, &org.id).await.len(), 1);
+}
+
+#[tokio::test]
 async fn both_stores_and_forwards() {
     let (root_url, captured) = start_mock(202, r#"{"status":"accepted"}"#, Duration::ZERO).await;
     let mut config = data_collector_config(&root_url, Some("server-token"), 5_000);

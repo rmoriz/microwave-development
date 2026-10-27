@@ -4,6 +4,16 @@ use crate::identity::{new_id, now};
 use crate::sqlite::{SqliteStore, StoreError};
 use rusqlite::OptionalExtension;
 
+pub fn normalize_rfc3339(value: &str) -> Result<String, StoreError> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|value| {
+            value
+                .with_timezone(&chrono::Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        })
+        .map_err(|_| StoreError::Invalid(format!("invalid RFC 3339 timestamp: {value}")))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredNodeRun {
     pub id: String,
@@ -29,7 +39,10 @@ impl SqliteStore {
     ) -> Result<StoredNodeRun, StoreError> {
         let id = new_id();
         let created_at = now();
-        let start_time = run.start_time.unwrap_or(created_at.as_str()).to_string();
+        let start_time = match run.start_time {
+            Some(value) => value.to_string(),
+            None => chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        };
         let report = encode_serialized(run.report, self.compression())?;
         let mut connection = self.connection();
         let tx = connection.transaction()?;
@@ -114,6 +127,11 @@ impl SqliteStore {
         org_id: &str,
         filter: &NodeRunFilter,
     ) -> Result<Vec<StoredNodeRun>, StoreError> {
+        let since = filter
+            .since
+            .as_deref()
+            .map(crate::normalize_rfc3339)
+            .transpose()?;
         let connection = self.connection();
         let mut statement = connection.prepare(
             "SELECT id, org_id, node_name, run_id, status, start_time, end_time,
@@ -132,7 +150,7 @@ impl SqliteStore {
                 org_id,
                 filter.node_name.as_deref(),
                 filter.status.as_deref(),
-                filter.since.as_deref(),
+                since.as_deref(),
                 filter.failures_only as i64,
                 filter.limit as i64,
             ],

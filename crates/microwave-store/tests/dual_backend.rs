@@ -2924,6 +2924,81 @@ mod suite {
             vec!["run-3", "run-2"]
         );
 
+        let without_start = store
+            .store_node_run(
+                org_id,
+                NewNodeRun {
+                    node_name: "web-none",
+                    run_id: "run-none",
+                    status: "success",
+                    start_time: None,
+                    end_time: None,
+                    resource_count: 1,
+                    updated_resource_count: 1,
+                    error_count: 0,
+                    report: r#"{"message_type":"run_converge","run_id":"run-none"}"#,
+                },
+                10,
+            )
+            .await
+            .expect("store report without start time");
+        assert!(chrono::DateTime::parse_from_rfc3339(&without_start.start_time).is_ok());
+        assert!(without_start.start_time.ends_with('Z'));
+        assert_eq!(without_start.start_time.len(), 24);
+
+        store
+            .store_node_run(
+                org_id,
+                NewNodeRun {
+                    node_name: "web-since",
+                    run_id: "run-since",
+                    status: "success",
+                    start_time: Some("2026-10-27T09:00:00.000Z"),
+                    end_time: None,
+                    resource_count: 1,
+                    updated_resource_count: 1,
+                    error_count: 0,
+                    report: r#"{"message_type":"run_converge","run_id":"run-since"}"#,
+                },
+                10,
+            )
+            .await
+            .expect("store report for offset since filters");
+
+        for (since, expected_len) in [
+            ("2026-10-27T10:00:00+02:00", 1),
+            ("2026-10-27T11:01:00+02:00", 0),
+        ] {
+            let runs = store
+                .list_node_runs(
+                    org_id,
+                    &NodeRunFilter {
+                        node_name: Some("web-since".into()),
+                        status: None,
+                        since: Some(since.into()),
+                        failures_only: false,
+                        limit: 10,
+                    },
+                )
+                .await
+                .expect("list with normalized since");
+            assert_eq!(runs.len(), expected_len, "since = {since}");
+        }
+
+        let invalid_since = store
+            .list_node_runs(
+                org_id,
+                &NodeRunFilter {
+                    node_name: Some("web-since".into()),
+                    status: None,
+                    since: Some("not-a-timestamp".into()),
+                    failures_only: false,
+                    limit: 10,
+                },
+            )
+            .await;
+        assert!(matches!(invalid_since, Err(StoreError::Invalid(_))));
+
         let other = store
             .create_org(&unique("reports-other"), "Other")
             .await
