@@ -23,8 +23,26 @@ test('mobile navigation opens and closes without JavaScript', async ({ browser }
   const summary = page.locator('.nav-mobile summary');
   await expect(summary).toBeVisible();
   await summary.click();
-  await expect(page.locator('.nav-mobile a[href="#product"]')).toBeVisible();
+  await expect(page.locator('.nav-mobile a[href="/#product"]')).toBeVisible();
   await context.close();
+});
+
+test('anchor links clear the sticky header', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('.nav-desktop a[href="/#product"]').click();
+  await expect(page).toHaveURL(/#product$/);
+  const top = await page.locator('#product').evaluate((element) => {
+    return element.getBoundingClientRect().top;
+  });
+  expect(top).toBeGreaterThanOrEqual(72);
+});
+
+test('legal pages keep working primary navigation', async ({ page }) => {
+  await page.goto('/privacy/');
+  await expect(page.locator('header.site-header')).toBeVisible();
+  await page.locator('.nav-desktop a[href="/#product"]').click();
+  await expect(page).toHaveURL(/\/#product$/);
+  await expect(page.locator('#product')).toBeVisible();
 });
 
 test('technical accordions are keyboard operable', async ({ page }) => {

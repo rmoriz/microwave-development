@@ -20,4 +20,5 @@ test('skip link reaches the main landmark', async ({ page }) => {
   await expect(page.locator('a.skip-link')).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(page).toHaveURL(/#main$/);
+  expect(await page.evaluate(() => document.activeElement?.id)).toBe('main');
 });

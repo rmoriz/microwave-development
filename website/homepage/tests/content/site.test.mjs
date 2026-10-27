@@ -84,10 +84,13 @@ test('final CTA, footer, and legal pages', () => {
   assert.match(text, /No cookies, no analytics, no third-party requests/i);
   assert.equal($('a[href="/privacy/"]').length, 1);
   assert.equal($('a[href="/imprint/"]').length, 1);
-  assert.doesNotMatch(text, /cheaper than|drop the license|end of life|official partner/i);
+  assert.doesNotMatch(text, /cheaper than|drop the license|end of life|official partner|invented tiers/i);
+  assert.equal($('link[rel="preload"][as="image"]').length, 1);
 
   for (const page of ['privacy', 'imprint']) {
     const pageHtml = fs.readFileSync(path.join(root, `dist/${page}/index.html`), 'utf8');
+    const pageDoc = cheerio.load(pageHtml);
     assert.match(pageHtml, /hello@microwave\.io/);
+    assert.equal(pageDoc('header.site-header').length, 1);
   }
 });

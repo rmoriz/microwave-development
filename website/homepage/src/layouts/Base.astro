@@ -13,9 +13,21 @@ interface Props {
   description: string;
   image?: string;
   noindex?: boolean;
+  preload?: {
+    href: string;
+    srcset: string;
+    sizes: string;
+    type: string;
+  };
 }
 
-const { title, description, image = '/og.png', noindex = false } = Astro.props;
+const {
+  title,
+  description,
+  image = '/og.png',
+  noindex = false,
+  preload,
+} = Astro.props;
 const origin = Astro.site ?? new URL('https://microwave.io');
 const canonical = new URL(Astro.url.pathname, origin);
 const socialImage = new URL(image, origin);
@@ -43,6 +55,16 @@ const schema = {
     <link rel="manifest" href="/site.webmanifest" />
     <meta name="theme-color" content="#0a0a0b" />
     <link rel="canonical" href={canonical} />
+    {preload && (
+      <link
+        rel="preload"
+        as="image"
+        href={preload.href}
+        imagesrcset={preload.srcset}
+        imagesizes={preload.sizes}
+        type={preload.type}
+      />
+    )}
     <meta property="og:site_name" content={site.name} />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
@@ -62,7 +84,7 @@ const schema = {
   <body>
     <a class="skip-link" href="#main">Skip to content</a>
     <slot name="header" />
-    <main id="main"><slot /></main>
+    <main id="main" tabindex="-1"><slot /></main>
     <Footer />
     <script>
       try {

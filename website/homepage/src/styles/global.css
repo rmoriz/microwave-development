@@ -82,6 +82,15 @@ pre {
   border-radius: 4px;
 }
 
+main:focus {
+  outline: none;
+}
+
+section[id],
+main[id] {
+  scroll-margin-top: 96px;
+}
+
 .container {
   width: min(100% - (var(--gutter) * 2), var(--container));
   margin-inline: auto;

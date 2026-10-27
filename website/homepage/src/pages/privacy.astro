@@ -1,11 +1,13 @@
 ---
 import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
 import { site } from '../data/site';
 ---
 <Base
   title="Privacy — Microwave Server"
   description="Microwave.io sets no cookies, runs no analytics, and makes no third-party requests."
 >
+  <Nav slot="header" />
   <section class="legal-page">
     <div class="container legal-inner">
       <p class="eyebrow">Privacy</p>

@@ -1,5 +1,6 @@
 ---
 import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
 import { site } from '../data/site';
 
 const operator = site.legal.operator || '[to be supplied]';
@@ -10,6 +11,7 @@ const needsCompletion = !site.legal.operator || !site.legal.address;
   title="Imprint — Microwave Server"
   description="Operator and contact details for microwave.io."
 >
+  <Nav slot="header" />
   <section class="legal-page">
     <div class="container legal-inner">
       <p class="eyebrow">Imprint</p>

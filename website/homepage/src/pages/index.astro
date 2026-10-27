@@ -1,6 +1,8 @@
 ---
+import { getImage } from 'astro:assets';
 import Base from '../layouts/Base.astro';
 import Nav from '../components/Nav.astro';
+import heroImage from '../assets/microwave-hero.png';
 import Hero from '../components/Hero.astro';
 import ProofStrip from '../components/ProofStrip.astro';
 import CincSection from '../components/CincSection.astro';
@@ -12,8 +14,23 @@ import Support from '../components/Support.astro';
 import FAQ from '../components/FAQ.astro';
 import FinalCTA from '../components/FinalCTA.astro';
 import { site } from '../data/site';
+
+const heroWidths = [640, 960, 1280, 1536];
+const heroPreloadImages = await Promise.all(
+  heroWidths.map((width) =>
+    getImage({ src: heroImage, width, format: 'avif' }),
+  ),
+);
+const preload = {
+  href: heroPreloadImages[2].src,
+  srcset: heroPreloadImages
+    .map((image, index) => `${image.src} ${heroWidths[index]}w`)
+    .join(', '),
+  sizes: '(min-width: 900px) 46vw, 100vw',
+  type: 'image/avif',
+};
 ---
-<Base title={site.title} description={site.description}>
+<Base title={site.title} description={site.description} preload={preload}>
   <Nav slot="header" />
   <Hero />
   <ProofStrip />
