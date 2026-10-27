@@ -1,0 +1,64 @@
+---
+import { site } from '../data/site';
+---
+<section class="section migration-section">
+  <div class="container">
+    <div class="section-head">
+      <p class="eyebrow">Migration</p>
+      <h2>From your current server.</h2>
+      <p>
+        There are two real paths in, depending on what you have access to.
+        Neither one asks you to rewrite your cookbooks before you start.
+      </p>
+    </div>
+
+    <div class="migration-paths">
+      <article class="path-card">
+        <p class="path-kicker">Path 01 · You have a backup</p>
+        <h3>Import a knife ec backup.</h3>
+        <p>
+          <code>import-knife-backup</code> reads the repository written by
+          <code>knife ec backup</code> directly. It preserves users, password
+          hashes when the key dump contains them, organizations, clients, ACLs,
+          cookbooks, and local cookbook blobs.
+        </p>
+        <p>
+          A knife backup does not contain cookbook artifacts, policies, OAuth
+          applications, search indexes, or <code>kvpair</code> secrets. Those
+          are reconciled separately.
+        </p>
+      </article>
+
+      <article class="path-card">
+        <p class="path-kicker">Path 02 · You have the live server</p>
+        <h3>Crawl the legacy API.</h3>
+        <p>
+          <code>from-api</code> reads the running server through its API:
+          organizations, users, clients, groups, nodes, roles, environments,
+          data bags, cookbooks, policies, and ACLs.
+        </p>
+        <p>
+          The legacy API cannot copy password hashes or the admin flag, so those
+          users need a password reset or an external identity after the move.
+        </p>
+      </article>
+    </div>
+
+    <div class="migration-repoint">
+      <span class="step-number" aria-hidden="true">03</span>
+      <div>
+        <h3>Repoint clients and DNS at your pace.</h3>
+        <p>
+          The API surface is the same. Move a few nodes, watch a converge, then
+          move the rest when you are ready.
+        </p>
+      </div>
+    </div>
+
+    <p class="compat-note">
+      Snapshot export and import move a Microwave store between SQLite and
+      PostgreSQL; they are not the stock-server import path.
+      <a href={site.docs}>Migration documentation <span aria-hidden="true">↗</span></a>
+    </p>
+  </div>
+</section>

@@ -60,3 +60,17 @@ test('compatibility, under the hood, and known gaps', () => {
     assert.equal(text.includes(phrase.replaceAll('`', '')), true, phrase);
   }
 });
+
+test('migration, support, and FAQ', () => {
+  const text = $('body').text();
+  assert.match(text, /knife ec backup/i);
+  assert.match(text, /from-api/);
+  assert.match(text, /cannot copy password hashes or the admin flag/i);
+  assert.match(text, /migration help/i);
+  assert.match(text, /deployment review/i);
+  assert.match(text, /ongoing support/i);
+  assert.equal($('#support').length, 1);
+  assert.equal($('#faq').length, 1);
+  assert.equal($('#faq details').length, 8);
+  assert.equal($('a[href="mailto:hello@microwave.io?subject=Microwave%20support"]').length >= 2, true);
+});

@@ -7,6 +7,9 @@ import CincSection from '../components/CincSection.astro';
 import Compatibility from '../components/Compatibility.astro';
 import UnderTheHood from '../components/UnderTheHood.astro';
 import KnownGaps from '../components/KnownGaps.astro';
+import Migration from '../components/Migration.astro';
+import Support from '../components/Support.astro';
+import FAQ from '../components/FAQ.astro';
 import { site } from '../data/site';
 ---
 <Base title={site.title} description={site.description}>
@@ -17,4 +20,7 @@ import { site } from '../data/site';
   <Compatibility />
   <UnderTheHood />
   <KnownGaps />
+  <Migration />
+  <Support />
+  <FAQ />
 </Base>
