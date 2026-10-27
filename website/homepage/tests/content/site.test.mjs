@@ -74,3 +74,20 @@ test('migration, support, and FAQ', () => {
   assert.equal($('#faq details').length, 8);
   assert.equal($('a[href="mailto:hello@microwave.io?subject=Microwave%20support"]').length >= 2, true);
 });
+
+test('final CTA, footer, and legal pages', () => {
+  const text = $('body').text();
+  assert.match(text, /Bring your own cookbooks\./);
+  assert.match(text, /not affiliated with or endorsed by Progress Software Corporation/i);
+  assert.match(text, /trademarks of Progress Software Corporation/i);
+  assert.match(text, /AGPL-3\.0-only/);
+  assert.match(text, /No cookies, no analytics, no third-party requests/i);
+  assert.equal($('a[href="/privacy/"]').length, 1);
+  assert.equal($('a[href="/imprint/"]').length, 1);
+  assert.doesNotMatch(text, /cheaper than|drop the license|end of life|official partner/i);
+
+  for (const page of ['privacy', 'imprint']) {
+    const pageHtml = fs.readFileSync(path.join(root, `dist/${page}/index.html`), 'utf8');
+    assert.match(pageHtml, /hello@microwave\.io/);
+  }
+});

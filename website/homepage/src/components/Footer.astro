@@ -1,0 +1,42 @@
+---
+import { site } from '../data/site';
+---
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <span class="footer-word">microwave</span>
+        <p>An independent, open-source Chef Infra Server API implementation in Rust.</p>
+        <a href={`mailto:${site.email}`}>{site.email}</a>
+      </div>
+
+      <nav class="footer-nav" aria-label="Project">
+        <h2>Project</h2>
+        <a href={site.github}>GitHub</a>
+        <a href={site.docs}>Documentation</a>
+        <a href={site.license}>License</a>
+      </nav>
+
+      <nav class="footer-nav" aria-label="Site">
+        <h2>Site</h2>
+        <a href="/privacy/">Privacy</a>
+        <a href="/imprint/">Imprint</a>
+        <a href="/#faq">FAQ</a>
+      </nav>
+    </div>
+
+    <p class="footer-disclaimer">
+      Microwave Server is an independent project. It is not affiliated with or
+      endorsed by Progress Software Corporation, Chef Software, or the Cinc
+      Project. Chef, Chef Infra, and Chef Infra Server are trademarks of
+      Progress Software Corporation. Cinc is a project of the Cinc community.
+      Microwave Server is licensed under AGPL-3.0-only; vendored upstream source
+      snapshots retain their original Apache-2.0 licensing.
+    </p>
+
+    <div class="footer-bottom">
+      <span>© 2026 Microwave Server</span>
+      <span>No cookies, no analytics, no third-party requests.</span>
+    </div>
+  </div>
+</footer>

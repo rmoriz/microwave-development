@@ -5,6 +5,7 @@ import '@fontsource-variable/space-grotesk';
 import '../styles/tokens.css';
 import '../styles/global.css';
 import '../styles/components.css';
+import Footer from '../components/Footer.astro';
 
 interface Props {
   title: string;
@@ -40,5 +41,6 @@ const socialImage = new URL(image, origin);
     <a class="skip-link" href="#main">Skip to content</a>
     <slot name="header" />
     <main id="main"><slot /></main>
+    <Footer />
   </body>
 </html>

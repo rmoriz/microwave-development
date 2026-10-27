@@ -1,0 +1,33 @@
+---
+import Base from '../layouts/Base.astro';
+import { site } from '../data/site';
+---
+<Base
+  title="Privacy — Microwave Server"
+  description="Microwave.io sets no cookies, runs no analytics, and makes no third-party requests."
+>
+  <section class="legal-page">
+    <div class="container legal-inner">
+      <p class="eyebrow">Privacy</p>
+      <h1>Privacy</h1>
+      <p>
+        This site sets no cookies, runs no analytics, and makes no third-party
+        requests. Fonts and images are served from this domain.
+      </p>
+      <p>
+        The hosting provider may keep standard server logs, such as request
+        time, requested path, and IP address, for operations and abuse
+        prevention. The exact provider and retention period will be named here
+        once hosting is finalised.
+      </p>
+      <p>
+        If you email us, we use your address and message to reply. We do not
+        add you to a marketing list.
+      </p>
+      <p>
+        Contact: <a href={`mailto:${site.email}`}>{site.email}</a>
+      </p>
+      <a class="text-link" href="/">Back to home <span aria-hidden="true">↗</span></a>
+    </div>
+  </section>
+</Base>

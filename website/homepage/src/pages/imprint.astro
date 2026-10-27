@@ -1,0 +1,29 @@
+---
+import Base from '../layouts/Base.astro';
+import { site } from '../data/site';
+
+const operator = site.legal.operator || '[to be supplied]';
+const address = site.legal.address || '[to be supplied]';
+const needsCompletion = !site.legal.operator || !site.legal.address;
+---
+<Base
+  title="Imprint — Microwave Server"
+  description="Operator and contact details for microwave.io."
+>
+  <section class="legal-page">
+    <div class="container legal-inner">
+      <p class="eyebrow">Imprint</p>
+      <h1>Imprint</h1>
+      <p>Responsible for this site:</p>
+      <address>
+        {operator}<br />
+        {address}<br />
+        <a href={`mailto:${site.legal.email}`}>{site.legal.email}</a>
+      </address>
+      {needsCompletion && (
+        <p class="legal-warning">This page must be completed before launch.</p>
+      )}
+      <a class="text-link" href="/">Back to home <span aria-hidden="true">↗</span></a>
+    </div>
+  </section>
+</Base>

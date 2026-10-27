@@ -1,0 +1,21 @@
+---
+import { site } from '../data/site';
+
+const supportHref = `mailto:${site.email}?subject=Microwave%20support`;
+---
+<section class="section final-cta">
+  <div class="container final-cta-inner">
+    <p class="eyebrow">Your move</p>
+    <h2>Bring your own cookbooks.</h2>
+    <p>
+      Keep the recipes. Choose a smaller server. Add commercial support only
+      when you want it.
+    </p>
+    <div class="final-actions">
+      <a class="button button-primary" href={site.runFromSource}>Run it from source</a>
+      <a class="button button-ghost" href={supportHref}>Talk to us</a>
+      <a class="final-github" href={site.github}>GitHub <span aria-hidden="true">↗</span></a>
+    </div>
+    <p class="final-note">Free to self-host. Supported when you want it.</p>
+  </div>
+</section>
