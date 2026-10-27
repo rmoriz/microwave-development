@@ -268,13 +268,18 @@ git commit -m "feat(config): add data collector store mode and retention"
 - Create: `crates/microwave-store/src/reports.rs`
 - Modify: `crates/microwave-store/src/lib.rs`
 - Modify: `crates/microwave-store/src/backend_sqlite.rs`
+- Create: `crates/microwave-store-postgres/src/reports.rs` (compiling stub only)
+- Modify: `crates/microwave-store-postgres/src/lib.rs`
 - Test: `crates/microwave-store/src/reports.rs` (`#[cfg(test)] mod tests`)
+- Test: `crates/microwave-store/tests/migration_security_test.rs`
 
 **Interfaces:**
 - Produces: `NewNodeRun<'a>`, `NodeRunFilter`, `StoredNodeRun`.
 - Produces: `ReportRepository` with `store_node_run`, `list_node_runs`, `find_node_run`, `latest_node_run`.
 - Adds `ReportRepository` to the `MetadataStore` supertrait list.
 - Produces: `SqliteStore` inherent methods used by the trait impl.
+- Produces: a compiling `ReportRepository for PostgresStore` stub whose methods return
+  `Err(StoreError::Invalid("report repository not implemented yet"))`; Task 3 replaces it.
 
 - [ ] **Step 1: Write the failing SQLite tests**
 
@@ -897,7 +902,20 @@ impl crate::ReportRepository for SqliteStore {
 }
 ```
 
-- [ ] **Step 6: Add the snapshot-exclusion test and run the suite**
+- [ ] **Step 6: Add the PostgreSQL compiling stub**
+
+Task 2 adds `ReportRepository` to `MetadataStore`, so `PostgresStore` must
+implement it or the workspace stops compiling. Create
+`crates/microwave-store-postgres/src/reports.rs` with all four methods
+returning `Err(StoreError::Invalid("report repository not implemented yet".into()))`,
+using `#[async_trait]` and the same `NewNodeRun`/`NodeRunFilter`/`StoredNodeRun`
+types. Add `mod reports;` to `crates/microwave-store-postgres/src/lib.rs`.
+Task 3 replaces this stub with the real implementation.
+
+Run: `cargo check --workspace`
+Expected: PASS.
+
+- [ ] **Step 7: Add the snapshot-exclusion test and run the suite**
 
 Add to `crates/microwave-store/tests/migration_security_test.rs`:
 
@@ -936,7 +954,7 @@ Expected: PASS.
 Run: `cargo test -p microwave-store --test migration_security_test node_runs_are_not_part_of_logical_snapshots`
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add crates/microwave-store/migrations/0001_initial.sql \
@@ -944,7 +962,9 @@ git add crates/microwave-store/migrations/0001_initial.sql \
   crates/microwave-store/src/backend_sqlite.rs \
   crates/microwave-store/src/lib.rs \
   crates/microwave-store/src/reports.rs \
-  crates/microwave-store/tests/migration_security_test.rs
+  crates/microwave-store/tests/migration_security_test.rs \
+  crates/microwave-store-postgres/src/lib.rs \
+  crates/microwave-store-postgres/src/reports.rs
 git commit -m "feat(store): add report repository for SQLite"
 ```
 
@@ -954,7 +974,7 @@ git commit -m "feat(store): add report repository for SQLite"
 
 **Files:**
 - Modify: `crates/microwave-store-postgres/migrations/0001_initial.sql`
-- Create: `crates/microwave-store-postgres/src/reports.rs`
+- Modify: `crates/microwave-store-postgres/src/reports.rs`
 - Modify: `crates/microwave-store-postgres/src/lib.rs`
 - Test: `crates/microwave-store/tests/dual_backend.rs`
 
@@ -1166,8 +1186,8 @@ Expected: FAIL to compile or PostgreSQL test fails because the impl is missing.
 
 - [ ] **Step 4: Implement the PostgreSQL backend**
 
-Create `crates/microwave-store-postgres/src/reports.rs` following the SQLite
-semantics exactly:
+Replace the stub in `crates/microwave-store-postgres/src/reports.rs` while
+keeping the SQLite semantics exactly:
 
 - `store_node_run`: generate `new_id()`/`now()`, compress with
   `encode_serialized(run.report, self.compression())`, `INSERT ... ON CONFLICT
@@ -1183,8 +1203,9 @@ semantics exactly:
 - Map rows with a `run_from_row` helper and `decode_serialized`.
 - Map SQL errors with `crate::store::db`.
 
-Add `mod reports;` and `pub use reports::...` as needed in
-`crates/microwave-store-postgres/src/lib.rs`.
+Add any required re-exports in
+`crates/microwave-store-postgres/src/lib.rs` (the `mod reports;` declaration
+already exists from Task 2).
 
 - [ ] **Step 5: Run the parity suite**
 
