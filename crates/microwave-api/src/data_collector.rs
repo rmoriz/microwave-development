@@ -1,10 +1,11 @@
-//! Forwarding for `POST /organizations/:org/data-collector`.
+//! Forwarding and local storage for `POST /organizations/:org/data-collector`.
 //!
-//! Upstream enables this route only when `data_collector['root_url']` is
-//! configured. A request is accepted either with the configured shared
-//! `x-data-collector-token` or with normal Chef signed authentication; the
-//! payload is then forwarded verbatim to the configured Automate/data
-//! collector URL with a bounded timeout.
+//! The route is enabled when `data_collector['root_url']` is configured or when
+//! `data_collector.store` keeps payloads locally. A request is accepted either
+//! with the configured shared `x-data-collector-token` or with normal Chef
+//! signed authentication. `run_converge` payloads can be stored on this server
+//! and are, when forwarding is enabled, also sent verbatim to the configured
+//! Automate/data collector URL with a bounded timeout.
 
 use crate::{ApiError, AppState};
 use axum::body::{Body, Bytes};
@@ -69,10 +70,59 @@ pub fn routes() -> Router<AppState> {
 
 async fn forward(
     State(state): State<AppState>,
-    Path(_organization): Path<String>,
+    Path(organization): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    let collector = &state.config.data_collector;
+    let storing = collector.stores_locally();
+    let forwarding = collector.is_configured() && collector.forwards();
+
+    if storing {
+        let org = match state.store.find_org(&organization).await {
+            Ok(Some(org)) => org,
+            Ok(None) => return ApiError::not_found("not found").into_response(),
+            Err(error) => {
+                tracing::warn!(%error, org = %organization, "failed to resolve data collector organization");
+                return ApiError::internal().into_response();
+            }
+        };
+
+        match crate::report_ingest::prepare_node_run(&body) {
+            Ok(Some(run)) => {
+                let new_run = microwave_store::NewNodeRun {
+                    node_name: &run.node_name,
+                    run_id: &run.run_id,
+                    status: &run.status,
+                    start_time: Some(&run.start_time),
+                    end_time: run.end_time.as_deref(),
+                    resource_count: run.resource_count,
+                    updated_resource_count: run.updated_resource_count,
+                    error_count: run.error_count,
+                    report: &run.report,
+                };
+                if let Err(error) = state
+                    .store
+                    .store_node_run(&org.id, new_run, collector.keep_runs)
+                    .await
+                {
+                    tracing::warn!(%error, org = %org.name, "failed to store node run");
+                    return ApiError::internal().into_response();
+                }
+            }
+            Ok(None) => {}
+            Err(error) => return error.into_response(),
+        }
+    }
+
+    if forwarding {
+        forward_upstream(&state, headers, body).await
+    } else {
+        (StatusCode::OK, axum::Json(serde_json::json!({}))).into_response()
+    }
+}
+
+async fn forward_upstream(state: &AppState, headers: HeaderMap, body: Bytes) -> Response {
     let Some(root_url) = state
         .config
         .data_collector
@@ -100,7 +150,7 @@ async fn forward(
         .header("x-data-collector-auth", "version=1.0")
         .body(body);
 
-    if let Some(token) = configured_token(&state).await {
+    if let Some(token) = configured_token(state).await {
         request = request.header("x-data-collector-token", token);
     }
 

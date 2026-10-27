@@ -709,10 +709,10 @@ async fn authenticate_request(
     }
 
     if is_data_collector_path(&path) {
-        let configured = state.config.data_collector.is_configured();
+        let enabled = state.config.data_collector.is_enabled();
         // Upstream rejects non-POST before authentication. Do the same while
         // the route is enabled, even when the caller forgot the token.
-        if configured && request.method() != axum::http::Method::POST {
+        if enabled && request.method() != axum::http::Method::POST {
             let response = next.run(request).await;
             return with_version_header(
                 response,
@@ -720,7 +720,7 @@ async fn authenticate_request(
                 &requested_version.to_string(),
             );
         }
-        if !configured || crate::data_collector::has_valid_token(&state, request.headers()).await {
+        if !enabled || crate::data_collector::has_valid_token(&state, request.headers()).await {
             let response = next.run(request).await;
             return with_version_header(
                 response,

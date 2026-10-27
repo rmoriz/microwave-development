@@ -5,11 +5,15 @@ use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
 use axum::response::Response;
 use axum::Router;
 use microwave_config::Config;
+use microwave_config::DataCollectorStore;
+use microwave_store::NodeRunFilter;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
+
+const RUN_CONVERGE: &[u8] = br#"{"message_type":"run_converge","node_name":"web1","run_id":"run-1","status":"failure","start_time":"2026-10-27T10:00:00+02:00","end_time":"2026-10-27T10:05:00+02:00","total_resource_count":4,"updated_resource_count":2,"error":{"class":"RuntimeError","message":"boom"},"resources":[{"status":"updated","error":null},{"status":"failed","error":{"class":"Errno::ENOENT","message":"missing"}}]}"#;
 
 #[derive(Clone, Debug)]
 struct CapturedRequest {
@@ -165,6 +169,54 @@ async fn body_bytes(response: Response) -> Vec<u8> {
         .await
         .unwrap()
         .to_vec()
+}
+
+fn local_config(token: Option<&str>, keep_runs: usize) -> Config {
+    let mut config = Config::default();
+    config.data_collector.store = DataCollectorStore::Local;
+    config.data_collector.token = token.map(ToString::to_string);
+    config.data_collector.keep_runs = keep_runs;
+    config
+}
+
+fn token_request_owned(path: &str, token: &str, body: Vec<u8>) -> Request<Body> {
+    Request::post(path)
+        .header("content-type", "application/json")
+        .header("x-data-collector-token", token)
+        .header("x-data-collector-auth", "version=1.0")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+fn converge_body(run_id: &str, start_time: &str) -> Vec<u8> {
+    json!({
+        "message_type": "run_converge",
+        "node_name": "web1",
+        "run_id": run_id,
+        "status": "success",
+        "start_time": start_time
+    })
+    .to_string()
+    .into_bytes()
+}
+
+async fn runs(
+    store: &Arc<dyn microwave_store::MetadataStore>,
+    org_id: &str,
+) -> Vec<microwave_store::StoredNodeRun> {
+    store
+        .list_node_runs(
+            org_id,
+            &NodeRunFilter {
+                node_name: None,
+                status: None,
+                since: None,
+                failures_only: false,
+                limit: 100,
+            },
+        )
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -508,4 +560,210 @@ async fn config_serializes_data_collector_and_telemetry_defaults() {
     assert!(value["data_collector"]["root_url"].is_null());
     assert_eq!(value["required_recipe"]["enabled"], json!(false));
     assert_eq!(value["telemetry"]["enabled"], json!(false));
+}
+
+#[tokio::test]
+async fn local_storage_stores_without_forwarding() {
+    let state = support::state_with_config(local_config(Some("server-token"), 50));
+    let org = support::add_org(&state, "acme").await;
+    let store = state.store.clone();
+    let app = support::app(state);
+
+    let response = app
+        .oneshot(token_request(
+            "/organizations/acme/data-collector",
+            "server-token",
+            RUN_CONVERGE,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_bytes(response).await, b"{}".to_vec());
+
+    let runs = runs(&store, &org.id).await;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].start_time, "2026-10-27T08:00:00.000Z");
+    assert_eq!(runs[0].error_count, 2);
+}
+
+#[tokio::test]
+async fn both_stores_and_forwards() {
+    let (root_url, captured) = start_mock(202, r#"{"status":"accepted"}"#, Duration::ZERO).await;
+    let mut config = data_collector_config(&root_url, Some("server-token"), 5_000);
+    config.data_collector.store = DataCollectorStore::Both;
+    let state = support::state_with_config(config);
+    let org = support::add_org(&state, "acme").await;
+    let store = state.store.clone();
+    let app = support::app(state);
+
+    let response = app
+        .oneshot(token_request(
+            "/organizations/acme/data-collector",
+            "server-token",
+            RUN_CONVERGE,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert_eq!(captured.lock().await.len(), 1);
+    assert_eq!(runs(&store, &org.id).await.len(), 1);
+}
+
+#[tokio::test]
+async fn both_keeps_the_row_when_forwarding_fails() {
+    let (root_url, _) = start_mock(502, r#"{"error":"down"}"#, Duration::ZERO).await;
+    let mut config = data_collector_config(&root_url, Some("server-token"), 5_000);
+    config.data_collector.store = DataCollectorStore::Both;
+    let state = support::state_with_config(config);
+    let org = support::add_org(&state, "acme").await;
+    let store = state.store.clone();
+    let app = support::app(state);
+
+    let response = app
+        .oneshot(token_request(
+            "/organizations/acme/data-collector",
+            "server-token",
+            RUN_CONVERGE,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(runs(&store, &org.id).await.len(), 1);
+}
+
+#[tokio::test]
+async fn local_storage_rejects_unknown_organizations() {
+    let state = support::state_with_config(local_config(Some("server-token"), 50));
+    support::add_org(&state, "acme").await;
+    let app = support::app(state);
+
+    let response = app
+        .oneshot(token_request(
+            "/organizations/missing/data-collector",
+            "server-token",
+            RUN_CONVERGE,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn local_storage_ignores_run_start_and_action_messages() {
+    let state = support::state_with_config(local_config(Some("server-token"), 50));
+    let org = support::add_org(&state, "acme").await;
+    let store = state.store.clone();
+    let app = support::app(state);
+
+    for body in [
+        br#"{"message_type":"run_start","node_name":"web1","run_id":"run-1"}"#.as_slice(),
+        br#"{"message_type":"action","node_name":"web1"}"#.as_slice(),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(token_request_owned(
+                "/organizations/acme/data-collector",
+                "server-token",
+                body.to_vec(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    assert!(runs(&store, &org.id).await.is_empty());
+}
+
+#[tokio::test]
+async fn local_storage_rejects_invalid_json_and_missing_run_id() {
+    let state = support::state_with_config(local_config(Some("server-token"), 50));
+    let org = support::add_org(&state, "acme").await;
+    let store = state.store.clone();
+    let app = support::app(state);
+
+    for body in [
+        b"not-json".to_vec(),
+        br#"{"message_type":"run_converge","node_name":"web1"}"#.to_vec(),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(token_request_owned(
+                "/organizations/acme/data-collector",
+                "server-token",
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+    assert!(runs(&store, &org.id).await.is_empty());
+}
+
+#[tokio::test]
+async fn local_storage_prunes_to_keep_runs() {
+    let state = support::state_with_config(local_config(Some("server-token"), 2));
+    let org = support::add_org(&state, "acme").await;
+    let store = state.store.clone();
+    let app = support::app(state);
+
+    for (run_id, start) in [
+        ("run-1", "2026-10-27T10:00:00Z"),
+        ("run-2", "2026-10-27T11:00:00Z"),
+        ("run-3", "2026-10-27T12:00:00Z"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(token_request_owned(
+                "/organizations/acme/data-collector",
+                "server-token",
+                converge_body(run_id, start),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let runs = runs(&store, &org.id).await;
+    assert_eq!(
+        runs.iter()
+            .map(|run| run.run_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["run-3", "run-2"]
+    );
+}
+
+#[tokio::test]
+async fn local_storage_accepts_signed_requests() {
+    let state = support::state_with_config(local_config(None, 50));
+    let org = support::add_org(&state, "acme").await;
+    let store = state.store.clone();
+    let app = support::app(state);
+
+    let response = app
+        .oneshot(signed_post(
+            "/organizations/acme/data-collector",
+            RUN_CONVERGE,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(runs(&store, &org.id).await.len(), 1);
+}
+
+#[tokio::test]
+async fn local_storage_still_rejects_a_wrong_token() {
+    let state = support::state_with_config(local_config(Some("server-token"), 50));
+    let org = support::add_org(&state, "acme").await;
+    let store = state.store.clone();
+    let app = support::app(state);
+
+    let response = app
+        .oneshot(token_request(
+            "/organizations/acme/data-collector",
+            "wrong-token",
+            RUN_CONVERGE,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(runs(&store, &org.id).await.is_empty());
 }
