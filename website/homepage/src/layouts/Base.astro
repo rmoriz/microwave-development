@@ -65,7 +65,6 @@ const schema = {
     <main id="main"><slot /></main>
     <Footer />
     <script>
-      document.documentElement.classList.add('js');
       try {
         const reveals = Array.from(
           document.querySelectorAll<HTMLElement>('.reveal'),
@@ -91,7 +90,7 @@ const schema = {
           reveals.forEach((element) => observer.observe(element));
         }
       } catch {
-        document.documentElement.classList.remove('js');
+        // Content is visible by default; animation is optional.
       }
     </script>
   </body>

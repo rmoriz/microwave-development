@@ -128,17 +128,22 @@ pre {
   padding-block: 96px;
 }
 
-.js .reveal {
-  opacity: 0;
-  transform: translateY(12px);
-  transition:
-    opacity 500ms ease,
-    transform 500ms ease;
+@media (prefers-reduced-motion: no-preference) {
+  .reveal.is-visible {
+    animation: reveal-rise 500ms ease both;
+  }
 }
 
-.js .reveal.is-visible {
-  opacity: 1;
-  transform: none;
+@keyframes reveal-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 @media (min-width: 900px) {
@@ -150,12 +155,6 @@ pre {
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
-  }
-
-  .js .reveal {
-    opacity: 1;
-    transform: none;
-    transition: none;
   }
 
   *,

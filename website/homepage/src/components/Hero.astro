@@ -30,6 +30,7 @@ const supportHref = `mailto:${site.email}?subject=Microwave%20support`;
       <Picture
         src={heroImage}
         formats={['avif', 'webp']}
+        fallbackFormat="webp"
         widths={[640, 960, 1280, 1536]}
         sizes="(min-width: 900px) 46vw, 100vw"
         alt="A rainbow neon microwave glowing on a dark surface"
