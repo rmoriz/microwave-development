@@ -4,6 +4,9 @@ import Nav from '../components/Nav.astro';
 import Hero from '../components/Hero.astro';
 import ProofStrip from '../components/ProofStrip.astro';
 import CincSection from '../components/CincSection.astro';
+import Compatibility from '../components/Compatibility.astro';
+import UnderTheHood from '../components/UnderTheHood.astro';
+import KnownGaps from '../components/KnownGaps.astro';
 import { site } from '../data/site';
 ---
 <Base title={site.title} description={site.description}>
@@ -11,4 +14,7 @@ import { site } from '../data/site';
   <Hero />
   <ProofStrip />
   <CincSection />
+  <Compatibility />
+  <UnderTheHood />
+  <KnownGaps />
 </Base>

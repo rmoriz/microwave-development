@@ -40,3 +40,23 @@ test('proof strip and Cinc section', () => {
   assert.match(text, /not affiliated with or endorsed by the Cinc Project/i);
   assert.doesNotMatch(text, /official partner/i);
 });
+
+test('compatibility, under the hood, and known gaps', () => {
+  const text = $('body').text();
+  assert.equal($('#compatibility').length, 1);
+  assert.equal($('#under-the-hood').length, 1);
+  assert.match(text, /Same recipe\. New kitchen\./);
+  assert.match(text, /X-Ops-Sign/);
+  assert.match(text, /knife/);
+  assert.match(text, /chef-server-ctl/);
+  assert.equal($('#under-the-hood details').length, 6);
+  for (const phrase of [
+    'No automatic `chef-server.rb` importer',
+    'password reset',
+    'No LDAP/Active Directory bind',
+    'Multi-replica HA and automated failover are not validated',
+    'relational scan',
+  ]) {
+    assert.equal(text.includes(phrase.replaceAll('`', '')), true, phrase);
+  }
+});

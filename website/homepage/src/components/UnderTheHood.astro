@@ -1,0 +1,140 @@
+---
+import { site } from '../data/site';
+
+const docs = {
+  deployment: `${site.github}/blob/main/docs/deployment.md`,
+  migration: `${site.github}/blob/main/crates/microwave-migrate/README.md`,
+  readme: `${site.github}#readme`,
+};
+---
+<section id="under-the-hood" class="section under-section">
+  <div class="container">
+    <div class="section-head">
+      <p class="eyebrow">For the engineers</p>
+      <h2>Under the hood.</h2>
+      <p>
+        The short version for the person doing due diligence: what runs, what
+        stores the data, how authentication works, and where the edges are.
+      </p>
+    </div>
+
+    <div class="under-list">
+      <details class="under-item">
+        <summary>
+          <span class="under-index" aria-hidden="true">01</span>
+          <span>One binary, two databases.</span>
+          <span class="under-plus" aria-hidden="true"></span>
+        </summary>
+        <div class="under-body">
+          <p>
+            SQLite is the default metadata store and runs in-process. PostgreSQL
+            is supported through the same metadata contract when you need a
+            server-backed database. Documents are stored transparently
+            compressed, and snapshots move between backends.
+          </p>
+          <p>
+            <a class="text-link" href={docs.deployment}>Deployment guide <span aria-hidden="true">↗</span></a>
+          </p>
+        </div>
+      </details>
+
+      <details class="under-item">
+        <summary>
+          <span class="under-index" aria-hidden="true">02</span>
+          <span>Auth that matches.</span>
+          <span class="under-plus" aria-hidden="true"></span>
+        </summary>
+        <div class="under-body">
+          <p>
+            Signed requests use the same canonicalization as Chef Infra Server:
+            X-Ops-Sign 1.0, 1.1, and 1.3, with RSA signing and verification.
+            Keys are reassembled from the request, legacy password hashes still
+            verify, and ACL checks recurse through groups.
+          </p>
+          <p>
+            <a class="text-link" href={docs.readme}>Read the API notes <span aria-hidden="true">↗</span></a>
+          </p>
+        </div>
+      </details>
+
+      <details class="under-item">
+        <summary>
+          <span class="under-index" aria-hidden="true">03</span>
+          <span>Cookbooks and policy.</span>
+          <span class="under-plus" aria-hidden="true"></span>
+        </summary>
+        <div class="under-body">
+          <p>
+            Sandboxes, bookshelf uploads, cookbook resolution, policyfiles, and
+            policy groups are implemented. Cookbook blobs can stay on the local
+            object store or move to S3-compatible storage such as Garage, with
+            presigned URLs for clients.
+          </p>
+          <p>
+            <a class="text-link" href={docs.readme}>Cookbook details <span aria-hidden="true">↗</span></a>
+          </p>
+        </div>
+      </details>
+
+      <details class="under-item">
+        <summary>
+          <span class="under-index" aria-hidden="true">04</span>
+          <span>Search your way.</span>
+          <span class="under-plus" aria-hidden="true"></span>
+        </summary>
+        <div class="under-body">
+          <p>
+            Embedded search is the default and uses a relational scan. Larger
+            installations can point Microwave at OpenSearch or Elasticsearch.
+            Reindexing rebuilds remote documents from the relational store, and
+            result ACL filtering applies before pagination.
+          </p>
+          <p>
+            <a class="text-link" href={docs.readme}>Search notes <span aria-hidden="true">↗</span></a>
+          </p>
+        </div>
+      </details>
+
+      <details class="under-item">
+        <summary>
+          <span class="under-index" aria-hidden="true">05</span>
+          <span>Deploy your way.</span>
+          <span class="under-plus" aria-hidden="true"></span>
+        </summary>
+        <div class="under-body">
+          <p>
+            Run it with Docker, Compose, systemd, or the Debian package. TLS can
+            terminate in the server, with SIGHUP certificate reload, or in front
+            of it. Object storage and search can be external.
+          </p>
+          <p>
+            Documented topologies are single-node or external-backend;
+            multi-replica HA and automated failover are not yet validated.
+          </p>
+          <p>
+            <a class="text-link" href={docs.deployment}>Topologies <span aria-hidden="true">↗</span></a>
+          </p>
+        </div>
+      </details>
+
+      <details class="under-item">
+        <summary>
+          <span class="under-index" aria-hidden="true">06</span>
+          <span>Move in.</span>
+          <span class="under-plus" aria-hidden="true"></span>
+        </summary>
+        <div class="under-body">
+          <p>
+            Import a knife ec backup, crawl a live legacy server through its
+            API, or move a Microwave snapshot between SQLite and PostgreSQL.
+            There is no automatic <code>chef-server.rb</code> importer;
+            configuration is translated with the deployment guide.
+          </p>
+          <p>
+            <a class="text-link" href={docs.migration}>Migration guide <span aria-hidden="true">↗</span></a>
+          </p>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>

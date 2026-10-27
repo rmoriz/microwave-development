@@ -1,0 +1,31 @@
+---
+import { site } from '../data/site';
+
+const gaps = [
+  'No automatic chef-server.rb importer; configuration is translated with the deployment guide.',
+  'from-api migration cannot copy password hashes or the admin flag; those users need a password reset or an external identity.',
+  'No LDAP/Active Directory bind and no FIPS-validated crypto mode.',
+  'Embedded search is a relational scan, not an inverted index; larger installations should use OpenSearch or Elasticsearch.',
+  'Multi-replica HA and automated failover are not validated.',
+  'Only password-reset email is implemented; there is no invitation mail or durable outbox.',
+];
+---
+<section class="section gaps-section">
+  <div class="container gaps-grid">
+    <div class="gaps-copy">
+      <p class="eyebrow">Honest by default</p>
+      <h2>What is not done yet.</h2>
+      <p>
+        A server is infrastructure, not a demo. These are the known gaps you
+        should weigh against your own runbooks before adopting it.
+      </p>
+      <a class="text-link" href={`${site.github}#remaining-work`}>
+        Remaining work in the repository <span aria-hidden="true">↗</span>
+      </a>
+    </div>
+
+    <ul class="gaps-list">
+      {gaps.map((gap) => <li>{gap}</li>)}
+    </ul>
+  </div>
+</section>
