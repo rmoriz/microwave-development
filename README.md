@@ -268,3 +268,8 @@ They are inside the repository's `.git` directory and therefore not tracked or i
 git --git-dir=.git/vendor/chef-server.git --work-tree=chef-server log --oneline -10
 git --git-dir=.git/vendor/chef.git --work-tree=chef log --oneline -10
 ```
+
+## License
+
+Microwave Server is licensed under the GNU Affero General Public License, version 3 only (AGPL-3.0-only). See [LICENSE](LICENSE) for the full text. Vendored upstream sources under `chef/` and `chef-server/` keep their original Apache-2.0 licensing.
+
