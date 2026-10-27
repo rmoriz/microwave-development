@@ -1,0 +1,16 @@
+{
+  "name": "Microwave Server",
+  "short_name": "Microwave",
+  "description": "An independent, open-source Chef Infra Server API implementation in Rust.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0b",
+  "theme_color": "#0a0a0b",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

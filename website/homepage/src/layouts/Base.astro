@@ -6,6 +6,7 @@ import '../styles/tokens.css';
 import '../styles/global.css';
 import '../styles/components.css';
 import Footer from '../components/Footer.astro';
+import { site } from '../data/site';
 
 interface Props {
   title: string;
@@ -18,6 +19,18 @@ const { title, description, image = '/og.png', noindex = false } = Astro.props;
 const origin = Astro.site ?? new URL('https://microwave.io');
 const canonical = new URL(Astro.url.pathname, origin);
 const socialImage = new URL(image, origin);
+const schema = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: site.name,
+  description,
+  url: canonical.href,
+  license: site.license,
+  codeRepository: site.github,
+  applicationCategory: 'DeveloperApplication',
+  operatingSystem: 'Linux, macOS, Docker',
+  isAccessibleForFree: true,
+};
 ---
 <!doctype html>
 <html lang="en">
@@ -27,15 +40,24 @@ const socialImage = new URL(image, origin);
     <title>{title}</title>
     <meta name="description" content={description} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="/site.webmanifest" />
     <meta name="theme-color" content="#0a0a0b" />
     <link rel="canonical" href={canonical} />
+    <meta property="og:site_name" content={site.name} />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
     <meta property="og:url" content={canonical} />
     <meta property="og:image" content={socialImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Microwave Server — Get cooking without becoming a chef." />
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={socialImage} />
     {noindex && <meta name="robots" content="noindex" />}
+    <script type="application/ld+json" set:html={JSON.stringify(schema)} />
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to content</a>
