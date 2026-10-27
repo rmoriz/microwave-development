@@ -59,14 +59,14 @@ async fn list_nodes(
 
     let nodes = state
         .store
-        .list_nodes(&org.id)
+        .list_node_names(&org.id)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(node_map(
         &headers,
         &state,
         org,
-        nodes.iter().map(|n| n.name.as_str()),
+        nodes.iter().map(String::as_str),
     )))
 }
 

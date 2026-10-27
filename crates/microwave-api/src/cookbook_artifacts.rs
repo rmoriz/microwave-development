@@ -125,12 +125,17 @@ async fn put_artifact_version(
     require_permission(&state, &auth, &container, Permission::Create).await?;
 
     let checksums = manifest_checksums(&body);
-    for checksum in &checksums {
-        if !state
+    if !checksums.is_empty() {
+        let existing: std::collections::HashSet<String> = state
             .store
-            .checksum_exists(&org.id, checksum)
+            .existing_checksums(&org.id, &checksums)
             .await
             .map_err(ApiError::from)?
+            .into_iter()
+            .collect();
+        if checksums
+            .iter()
+            .any(|checksum| !existing.contains(checksum))
         {
             return Err(ApiError::bad_request(
                 "Manifest has a checksum that hasn't been uploaded.",

@@ -53,6 +53,9 @@ fn creates_authz_and_performance_indexes_and_constraints() {
         "authz_acl_actor_actor_index",
         "authz_group_actors_actor_index",
         "sandboxed_checksums_sandbox_index",
+        "cookbook_versions_org_name_version_index",
+        "cookbook_artifact_versions_org_artifact_identifier_index",
+        "cookbook_artifact_version_checksums_version_index",
     ] {
         assert!(indexes.iter().any(|name| name == index), "missing {index}");
     }

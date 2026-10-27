@@ -67,15 +67,15 @@ async fn list_environments(
     let mut environments = serde_json::Map::new();
     for environment in state
         .store
-        .list_environments(&org.id)
+        .list_environment_names(&org.id)
         .await
         .map_err(ApiError::from)?
     {
         environments.insert(
-            environment.name.clone(),
+            environment.clone(),
             json!(format!(
                 "{base}/organizations/{}/environments/{}",
-                org.name, environment.name
+                org.name, environment
             )),
         );
     }

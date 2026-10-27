@@ -61,11 +61,8 @@ async fn solve(
         return Ok(overload_error());
     };
     let options = SolveOptions::with_timeout_ms(state.config.depsolver.timeout_ms);
-    let solution = tokio::task::spawn_blocking({
-        let world = world.clone();
-        let goals = goals.clone();
-        let environment_constraints = environment_constraints.clone();
-        move || world.solve(&goals, &environment_constraints, &options)
+    let solution = tokio::task::spawn_blocking(move || {
+        world.solve(&goals, &environment_constraints, &options)
     })
     .await
     .map_err(|_| ApiError::internal())?;

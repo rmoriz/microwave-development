@@ -12,6 +12,7 @@ use microwave_store::{
     ActorType, Client, MetadataStore, Org, StoredDataBagItem, StoredNode, StoredObject,
 };
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 /// A fully hydrated search entry. Entries are loaded from the store after the
 /// backend reports matching document IDs.
@@ -56,12 +57,69 @@ pub(crate) async fn load_entries(
     // The OpenSearch backend stores these as dedicated keyword fields. The
     // embedded backend must expose the same names in its flattened view so
     // queries such as `X_CHEF_type_CHEF_X:node` behave identically.
+    add_entry_metadata(org_id, kind, &mut entries);
+
+    Ok(entries)
+}
+
+/// Loads and expands only the searchable documents whose ids are in `ids`.
+///
+/// Search backends return document ids, so hydration does not need to expand
+/// the whole organization index. Entries are returned in `ids` order.
+pub(crate) async fn load_entries_by_ids(
+    store: &dyn MetadataStore,
+    org_id: &str,
+    kind: &IndexKind,
+    ids: &[String],
+) -> Result<Vec<SearchEntry>, ApiError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut entries = match kind {
+        IndexKind::Node => store
+            .find_nodes_by_ids(org_id, ids)
+            .await
+            .map_err(ApiError::from)?
+            .into_iter()
+            .map(node_entry)
+            .collect::<Result<Vec<_>, _>>(),
+        IndexKind::Role => object_entries(
+            store
+                .find_roles_by_ids(org_id, ids)
+                .await
+                .map_err(ApiError::from)?,
+            "/roles",
+            true,
+        ),
+        IndexKind::Environment => object_entries(
+            store
+                .find_environments_by_ids(org_id, ids)
+                .await
+                .map_err(ApiError::from)?,
+            "/environments",
+            false,
+        ),
+        IndexKind::Client => client_entries_by_ids(store, org_id, ids).await,
+        IndexKind::DataBag(name) => data_bag_entries_by_ids(store, org_id, name, ids).await,
+    }?;
+
+    add_entry_metadata(org_id, kind, &mut entries);
+
+    let mut by_id: HashMap<String, SearchEntry> = entries
+        .drain(..)
+        .map(|entry| (entry.id.clone(), entry))
+        .collect();
+    Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+}
+
+fn add_entry_metadata(org_id: &str, kind: &IndexKind, entries: &mut [SearchEntry]) {
     let database = format!("chef_{org_id}");
     let data_bag = match kind {
         IndexKind::DataBag(name) => Some(name.as_str()),
         _ => None,
     };
-    for entry in &mut entries {
+    for entry in entries {
         add_metadata_field(&mut entry.fields, "X_CHEF_id_CHEF_X", &entry.id);
         add_metadata_field(&mut entry.fields, "X_CHEF_database_CHEF_X", &database);
         add_metadata_field(&mut entry.fields, "X_CHEF_type_CHEF_X", kind.object_type());
@@ -69,8 +127,6 @@ pub(crate) async fn load_entries(
             add_metadata_field(&mut entry.fields, "data_bag", data_bag);
         }
     }
-
-    Ok(entries)
 }
 
 fn add_metadata_field(fields: &mut Fields, name: &str, value: &str) {
@@ -265,6 +321,36 @@ async fn client_entries(
     Ok(entries)
 }
 
+async fn client_entries_by_ids(
+    store: &dyn MetadataStore,
+    org_id: &str,
+    ids: &[String],
+) -> Result<Vec<SearchEntry>, ApiError> {
+    let org = store
+        .find_org_by_id(org_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::not_found(format!("organization {org_id}")))?;
+    let mut entries = Vec::new();
+    for client in store
+        .find_clients_by_ids(org_id, ids)
+        .await
+        .map_err(ApiError::from)?
+    {
+        let keys = store
+            .find_actor_keys(&client.id, ActorType::Client)
+            .await
+            .map_err(ApiError::from)?;
+        let public_key = keys
+            .iter()
+            .find(|key| key.key_name == "default")
+            .or_else(|| keys.first())
+            .map(|key| key.public_key.clone());
+        entries.push(client_entry(client, &org.name, public_key.as_deref()));
+    }
+    Ok(entries)
+}
+
 fn client_entry(client: Client, org_name: &str, public_key: Option<&str>) -> SearchEntry {
     let mut value = json!({
         "name": client.name,
@@ -302,6 +388,27 @@ async fn data_bag_entries(
 
     store
         .list_data_bag_items(org_id, data_bag)
+        .await
+        .map_err(ApiError::from)?
+        .into_iter()
+        .map(|item| data_bag_item_entry(item, data_bag, bag.authz_id.clone()))
+        .collect()
+}
+
+async fn data_bag_entries_by_ids(
+    store: &dyn MetadataStore,
+    org_id: &str,
+    data_bag: &str,
+    ids: &[String],
+) -> Result<Vec<SearchEntry>, ApiError> {
+    let bag = store
+        .find_data_bag(org_id, data_bag)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| unknown_index(data_bag))?;
+
+    store
+        .find_data_bag_items_by_ids(org_id, data_bag, ids)
         .await
         .map_err(ApiError::from)?
         .into_iter()

@@ -793,6 +793,29 @@ impl IdentityRepository for PostgresStore {
             .map_err(db)
     }
 
+    async fn find_clients_by_ids(
+        &self,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<Client>, StoreError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            "SELECT id, org_id, authz_id, name, validator, admin, created_at, updated_at
+             FROM clients WHERE org_id = $1 AND id = ANY($2) ORDER BY name",
+        )
+        .bind(org_id)
+        .bind(ids)
+        .fetch_all(self.pool())
+        .await
+        .map_err(db)?;
+        rows.iter()
+            .map(client_from_row)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db)
+    }
+
     async fn delete_client(&self, org_id: &str, name: &str) -> Result<(), StoreError> {
         let mut transaction = self.pool().begin().await.map_err(db)?;
         let row = sqlx::query("SELECT id, authz_id FROM clients WHERE org_id = $1 AND name = $2")

@@ -2,7 +2,7 @@ use crate::compression::{decode_serialized, encode_serialized};
 use crate::identity::{conflict, new_id, now};
 use crate::sqlite::{SqliteStore, StoreError};
 use rusqlite::{params, OptionalExtension, Transaction};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredCookbookVersion {
@@ -275,11 +275,12 @@ impl SqliteStore {
         })?;
 
         let mut versions = Vec::new();
+        let checksums_by_version = all_version_checksums(&connection, org_id)?;
         for row in rows {
             let (id, name, manifest, created_at, updated_at, authz_id, major, minor, patch, frozen) =
                 row?;
             let manifest = decode_serialized(&manifest)?;
-            let checksums = version_checksums(&connection, &id)?;
+            let checksums = checksums_by_version.get(&id).cloned().unwrap_or_default();
             versions.push(StoredCookbookVersion {
                 id,
                 name,
@@ -398,6 +399,31 @@ fn version_checksums(
         )?
         .query_map([version_id], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?)
+}
+
+/// Loads the checksums of every cookbook version in an organization in one
+/// query, grouped by version id. `list_cookbook_versions` uses this to avoid
+/// one additional statement per version.
+fn all_version_checksums(
+    connection: &rusqlite::Connection,
+    org_id: &str,
+) -> Result<HashMap<String, Vec<String>>, StoreError> {
+    let mut statement = connection.prepare(
+        "SELECT cvc.cookbook_version_id, cvc.checksum
+         FROM cookbook_version_checksums cvc
+         JOIN cookbook_versions cv ON cv.id = cvc.cookbook_version_id
+         WHERE cv.org_id = ?1
+         ORDER BY cvc.cookbook_version_id, cvc.checksum",
+    )?;
+    let rows = statement.query_map([org_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut by_version: HashMap<String, Vec<String>> = HashMap::new();
+    for row in rows {
+        let (version_id, checksum) = row?;
+        by_version.entry(version_id).or_default().push(checksum);
+    }
+    Ok(by_version)
 }
 
 /// Delete checksum rows that are no longer referenced by either a cookbook

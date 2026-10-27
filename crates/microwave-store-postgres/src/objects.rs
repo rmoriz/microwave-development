@@ -176,6 +176,46 @@ impl PostgresStore {
         transaction.commit().await.map_err(db)?;
         Ok(())
     }
+    async fn find_named_objects_by_ids(
+        &self,
+        table: &str,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<StoredObject>, StoreError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sql = format!(
+            "SELECT id, authz_id, name, serialized_object, created_at, updated_at
+             FROM {table} WHERE org_id = $1 AND id = ANY($2) ORDER BY name"
+        );
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(org_id)
+            .bind(ids)
+            .fetch_all(self.pool())
+            .await
+            .map_err(db)?;
+        decode_stored_objects(
+            rows.iter()
+                .map(stored_object_from_row)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?,
+        )
+    }
+
+    async fn list_named_object_names(
+        &self,
+        table: &str,
+        org_id: &str,
+    ) -> Result<Vec<String>, StoreError> {
+        let sql = format!("SELECT name FROM {table} WHERE org_id = $1 ORDER BY name");
+        let names: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+            .bind(org_id)
+            .fetch_all(self.pool())
+            .await
+            .map_err(db)?;
+        Ok(names)
+    }
 }
 
 #[async_trait]
@@ -259,6 +299,42 @@ impl ObjectRepository for PostgresStore {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(db)?,
         )
+    }
+
+    async fn find_nodes_by_ids(
+        &self,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<StoredNode>, StoreError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            "SELECT id, authz_id, name, environment, policy_name, policy_group,
+                    serialized_object, created_at, updated_at
+             FROM nodes WHERE org_id = $1 AND id = ANY($2) ORDER BY name",
+        )
+        .bind(org_id)
+        .bind(ids)
+        .fetch_all(self.pool())
+        .await
+        .map_err(db)?;
+        decode_nodes(
+            rows.iter()
+                .map(node_from_row)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?,
+        )
+    }
+
+    async fn list_node_names(&self, org_id: &str) -> Result<Vec<String>, StoreError> {
+        let names: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM nodes WHERE org_id = $1 ORDER BY name")
+                .bind(org_id)
+                .fetch_all(self.pool())
+                .await
+                .map_err(db)?;
+        Ok(names)
     }
 
     async fn count_nodes(&self) -> Result<u64, StoreError> {
@@ -376,6 +452,19 @@ impl ObjectRepository for PostgresStore {
         self.list_named_objects("environments", org_id).await
     }
 
+    async fn find_environments_by_ids(
+        &self,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<StoredObject>, StoreError> {
+        self.find_named_objects_by_ids("environments", org_id, ids)
+            .await
+    }
+
+    async fn list_environment_names(&self, org_id: &str) -> Result<Vec<String>, StoreError> {
+        self.list_named_object_names("environments", org_id).await
+    }
+
     async fn update_environment(
         &self,
         org_id: &str,
@@ -413,6 +502,18 @@ impl ObjectRepository for PostgresStore {
         self.list_named_objects("roles", org_id).await
     }
 
+    async fn find_roles_by_ids(
+        &self,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<StoredObject>, StoreError> {
+        self.find_named_objects_by_ids("roles", org_id, ids).await
+    }
+
+    async fn list_role_names(&self, org_id: &str) -> Result<Vec<String>, StoreError> {
+        self.list_named_object_names("roles", org_id).await
+    }
+
     async fn update_role(
         &self,
         org_id: &str,
@@ -446,6 +547,10 @@ impl ObjectRepository for PostgresStore {
 
     async fn list_data_bags(&self, org_id: &str) -> Result<Vec<StoredObject>, StoreError> {
         self.list_named_objects("data_bags", org_id).await
+    }
+
+    async fn list_data_bag_names(&self, org_id: &str) -> Result<Vec<String>, StoreError> {
+        self.list_named_object_names("data_bags", org_id).await
     }
 
     async fn delete_data_bag(&self, org_id: &str, name: &str) -> Result<(), StoreError> {
@@ -528,6 +633,35 @@ impl ObjectRepository for PostgresStore {
         )
         .bind(org_id)
         .bind(data_bag_name)
+        .fetch_all(self.pool())
+        .await
+        .map_err(db)?;
+        decode_data_bag_items(
+            rows.iter()
+                .map(data_bag_item_from_row)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?,
+        )
+    }
+
+    async fn find_data_bag_items_by_ids(
+        &self,
+        org_id: &str,
+        data_bag_name: &str,
+        ids: &[String],
+    ) -> Result<Vec<StoredDataBagItem>, StoreError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            "SELECT id, data_bag_name, item_name, serialized_object, created_at, updated_at
+             FROM data_bag_items
+             WHERE org_id = $1 AND data_bag_name = $2 AND id = ANY($3)
+             ORDER BY item_name",
+        )
+        .bind(org_id)
+        .bind(data_bag_name)
+        .bind(ids)
         .fetch_all(self.pool())
         .await
         .map_err(db)?;

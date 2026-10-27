@@ -2623,6 +2623,165 @@ mod suite {
             .expect("remove bootstrap secret");
         Vec::new()
     }
+
+    pub async fn bulk_lookups(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let fixture = fixture(store.as_ref()).await;
+        let org = &fixture.org;
+        let creator = &fixture.creator_authz_id;
+
+        let mut node_names = vec![unique("bulk-node"), unique("bulk-node")];
+        node_names.sort();
+        let mut node_ids = Vec::new();
+        for (index, name) in node_names.iter().enumerate() {
+            let body = format!(r#"{{"name":"{name}"}}"#);
+            let node = store
+                .create_node(
+                    &org.id,
+                    NewNode {
+                        name,
+                        body: &body,
+                        environment: "_default",
+                        policy_name: None,
+                        policy_group: None,
+                        creator_authz_id: creator,
+                    },
+                )
+                .await
+                .expect("create node for bulk lookup");
+            if index == 0 {
+                node_ids.push(node.id);
+            }
+        }
+        assert_eq!(
+            store
+                .list_node_names(&org.id)
+                .await
+                .expect("list node names"),
+            node_names
+        );
+        let nodes = store
+            .find_nodes_by_ids(&org.id, &node_ids)
+            .await
+            .expect("find nodes by id");
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].name, node_names[0]);
+        assert!(store
+            .find_nodes_by_ids(&org.id, &[])
+            .await
+            .expect("empty node id lookup")
+            .is_empty());
+
+        let role_name = unique("bulk-role");
+        let role_body = format!(r#"{{"name":"{role_name}","run_list":[]}}"#);
+        let role = store
+            .create_role(&org.id, &role_name, &role_body, creator)
+            .await
+            .expect("create role for bulk lookup");
+        let roles = store
+            .find_roles_by_ids(&org.id, std::slice::from_ref(&role.id))
+            .await
+            .expect("find roles by id");
+        assert_eq!(roles.len(), 1);
+        assert_eq!(roles[0].name, role_name);
+        assert!(store
+            .list_role_names(&org.id)
+            .await
+            .expect("list role names")
+            .contains(&role_name));
+
+        let environment_name = unique("bulk-env");
+        let environment_body = format!(r#"{{"name":"{environment_name}"}}"#);
+        let environment = store
+            .create_environment(&org.id, &environment_name, &environment_body, creator)
+            .await
+            .expect("create environment for bulk lookup");
+        let environments = store
+            .find_environments_by_ids(&org.id, std::slice::from_ref(&environment.id))
+            .await
+            .expect("find environments by id");
+        assert_eq!(environments.len(), 1);
+        assert_eq!(environments[0].name, environment_name);
+        assert!(store
+            .list_environment_names(&org.id)
+            .await
+            .expect("list environment names")
+            .contains(&environment_name));
+
+        let data_bag_name = unique("bulk-bag");
+        store
+            .create_data_bag(&org.id, &data_bag_name, creator)
+            .await
+            .expect("create data bag for bulk lookup");
+        let item_name = unique("bulk-item");
+        let item = store
+            .create_data_bag_item(&org.id, &data_bag_name, &item_name, "{\"value\":1}")
+            .await
+            .expect("create data bag item for bulk lookup");
+        let items = store
+            .find_data_bag_items_by_ids(&org.id, &data_bag_name, std::slice::from_ref(&item.id))
+            .await
+            .expect("find data bag items by id");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].item_name, item_name);
+        assert!(store
+            .list_data_bag_names(&org.id)
+            .await
+            .expect("list data bag names")
+            .contains(&data_bag_name));
+
+        let client_name = unique("bulk-client");
+        let client = store
+            .create_client(&org.id, &client_name, false, false)
+            .await
+            .expect("create client for bulk lookup");
+        let clients = store
+            .find_clients_by_ids(&org.id, std::slice::from_ref(&client.id))
+            .await
+            .expect("find clients by id");
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].name, client_name);
+
+        let policy_name = unique("bulk-policy");
+        let policy_body =
+            format!(r#"{{"name":"{policy_name}","revision_id":"1.0.0","run_list":[]}}"#);
+        let policy = store
+            .create_policy_revision(&org.id, &policy_name, "1.0.0", &policy_body, creator)
+            .await
+            .expect("create policy for bulk lookup");
+        assert!(store
+            .list_policy_revision_refs(&org.id)
+            .await
+            .expect("list policy revision refs")
+            .contains(&(policy.name.clone(), policy.revision_id.clone())));
+
+        let checksums = vec![checksum(), checksum()];
+        let (sandbox_id, _) = store
+            .create_sandbox(&org.id, &checksums)
+            .await
+            .expect("create sandbox for checksum lookup");
+        store
+            .commit_sandbox(&org.id, &sandbox_id)
+            .await
+            .expect("commit sandbox for checksum lookup");
+        assert_eq!(
+            store
+                .existing_checksums(
+                    &org.id,
+                    &[checksums[0].clone(), "missing-checksum".to_string()]
+                )
+                .await
+                .expect("existing checksums"),
+            vec![checksums[0].clone()]
+        );
+        assert!(store
+            .existing_checksums(&org.id, &[])
+            .await
+            .expect("empty checksum lookup")
+            .is_empty());
+
+        cleanup_org(store.as_ref(), &org.id).await;
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2662,6 +2821,7 @@ matrix!(
         membership,
         oauth,
         kv_secrets,
+        bulk_lookups,
     ]
 );
 
@@ -2679,5 +2839,6 @@ matrix!(
         membership,
         oauth,
         kv_secrets,
+        bulk_lookups,
     ]
 );

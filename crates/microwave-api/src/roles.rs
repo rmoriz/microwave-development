@@ -63,16 +63,13 @@ async fn list_roles(
     let mut roles = serde_json::Map::new();
     for role in state
         .store
-        .list_roles(&org.id)
+        .list_role_names(&org.id)
         .await
         .map_err(ApiError::from)?
     {
         roles.insert(
-            role.name.clone(),
-            json!(format!(
-                "{base}/organizations/{}/roles/{}",
-                org.name, role.name
-            )),
+            role.clone(),
+            json!(format!("{base}/organizations/{}/roles/{}", org.name, role)),
         );
     }
     Ok(Json(Value::Object(roles)))

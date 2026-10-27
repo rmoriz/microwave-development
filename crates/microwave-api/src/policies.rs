@@ -55,23 +55,23 @@ async fn list_policies(
 
     let base = base_url(&headers, &state);
     let mut policies = Map::new();
-    for revision in state
+    for (name, revision_id) in state
         .store
-        .list_all_policy_revisions(&org.id)
+        .list_policy_revision_refs(&org.id)
         .await
         .map_err(ApiError::from)?
     {
-        let entry = policies.entry(revision.name.clone()).or_insert_with(|| {
+        let entry = policies.entry(name.clone()).or_insert_with(|| {
             json!({
                 "uri": format!(
                     "{base}/organizations/{}/policies/{}",
-                    org.name, revision.name
+                    org.name, name
                 ),
                 "revisions": {},
             })
         });
         if let Some(revisions) = entry.get_mut("revisions").and_then(Value::as_object_mut) {
-            revisions.insert(revision.revision_id, json!({}));
+            revisions.insert(revision_id, json!({}));
         }
     }
     Ok(Json(Value::Object(policies)))

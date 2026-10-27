@@ -184,6 +184,14 @@ impl IdentityRepository for SqliteStore {
         self.list_clients(org_id)
     }
 
+    async fn find_clients_by_ids(
+        &self,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<Client>, StoreError> {
+        self.find_clients_by_ids(org_id, ids)
+    }
+
     async fn delete_client(&self, org_id: &str, name: &str) -> Result<(), StoreError> {
         self.delete_client(org_id, name)
     }
@@ -535,6 +543,18 @@ impl ObjectRepository for SqliteStore {
         self.list_nodes(org_id)
     }
 
+    async fn find_nodes_by_ids(
+        &self,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<StoredNode>, StoreError> {
+        self.find_nodes_by_ids(org_id, ids)
+    }
+
+    async fn list_node_names(&self, org_id: &str) -> Result<Vec<String>, StoreError> {
+        self.list_node_names(org_id)
+    }
+
     async fn count_nodes(&self) -> Result<u64, StoreError> {
         self.count_nodes()
     }
@@ -585,6 +605,18 @@ impl ObjectRepository for SqliteStore {
         self.list_environments(org_id)
     }
 
+    async fn find_environments_by_ids(
+        &self,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<StoredObject>, StoreError> {
+        self.find_environments_by_ids(org_id, ids)
+    }
+
+    async fn list_environment_names(&self, org_id: &str) -> Result<Vec<String>, StoreError> {
+        self.list_environment_names(org_id)
+    }
+
     async fn update_environment(
         &self,
         org_id: &str,
@@ -618,6 +650,18 @@ impl ObjectRepository for SqliteStore {
 
     async fn list_roles(&self, org_id: &str) -> Result<Vec<StoredObject>, StoreError> {
         self.list_roles(org_id)
+    }
+
+    async fn find_roles_by_ids(
+        &self,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<StoredObject>, StoreError> {
+        self.find_roles_by_ids(org_id, ids)
+    }
+
+    async fn list_role_names(&self, org_id: &str) -> Result<Vec<String>, StoreError> {
+        self.list_role_names(org_id)
     }
 
     async fn update_role(
@@ -654,6 +698,10 @@ impl ObjectRepository for SqliteStore {
         self.list_data_bags(org_id)
     }
 
+    async fn list_data_bag_names(&self, org_id: &str) -> Result<Vec<String>, StoreError> {
+        self.list_data_bag_names(org_id)
+    }
+
     async fn delete_data_bag(&self, org_id: &str, name: &str) -> Result<(), StoreError> {
         self.delete_data_bag(org_id, name)
     }
@@ -683,6 +731,15 @@ impl ObjectRepository for SqliteStore {
         data_bag_name: &str,
     ) -> Result<Vec<StoredDataBagItem>, StoreError> {
         self.list_data_bag_items(org_id, data_bag_name)
+    }
+
+    async fn find_data_bag_items_by_ids(
+        &self,
+        org_id: &str,
+        data_bag_name: &str,
+        ids: &[String],
+    ) -> Result<Vec<StoredDataBagItem>, StoreError> {
+        self.find_data_bag_items_by_ids(org_id, data_bag_name, ids)
     }
 
     async fn update_data_bag_item(
@@ -741,6 +798,14 @@ impl SandboxRepository for SqliteStore {
 
     async fn checksum_exists(&self, org_id: &str, checksum: &str) -> Result<bool, StoreError> {
         self.checksum_exists(org_id, checksum)
+    }
+
+    async fn existing_checksums(
+        &self,
+        org_id: &str,
+        checksums: &[String],
+    ) -> Result<Vec<String>, StoreError> {
+        self.existing_checksums(org_id, checksums)
     }
 
     async fn find_checksum(
@@ -924,6 +989,13 @@ impl PolicyRepository for SqliteStore {
         org_id: &str,
     ) -> Result<Vec<StoredPolicyRevision>, StoreError> {
         self.list_all_policy_revisions(org_id)
+    }
+
+    async fn list_policy_revision_refs(
+        &self,
+        org_id: &str,
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        self.list_policy_revision_refs(org_id)
     }
 
     async fn delete_policy(&self, org_id: &str, name: &str) -> Result<(), StoreError> {

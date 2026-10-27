@@ -9,7 +9,7 @@ use axum::routing::get;
 use axum::{Extension, Json, Router};
 use microwave_store::{Org, Permission, StoredCookbookVersion};
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub(crate) const SEGMENTS: [&str; 9] = [
     "recipes",
@@ -540,22 +540,28 @@ async fn validate_checksums(
     checksums: &[String],
     style: ChecksumErrorStyle,
 ) -> Result<(), ApiError> {
-    for checksum in checksums {
-        if !state
-            .store
-            .checksum_exists(&org.id, checksum)
-            .await
-            .map_err(ApiError::from)?
-        {
-            return Err(match style {
-                ChecksumErrorStyle::Create => {
-                    ApiError::bad_request("Manifest has a checksum that hasn't been uploaded.")
-                }
-                ChecksumErrorStyle::Update => ApiError::bad_request(format!(
-                    "Manifest has checksum {checksum} but it hasn't yet been uploaded"
-                )),
-            });
-        }
+    if checksums.is_empty() {
+        return Ok(());
+    }
+    let existing: HashSet<String> = state
+        .store
+        .existing_checksums(&org.id, checksums)
+        .await
+        .map_err(ApiError::from)?
+        .into_iter()
+        .collect();
+    if let Some(checksum) = checksums
+        .iter()
+        .find(|checksum| !existing.contains(*checksum))
+    {
+        return Err(match style {
+            ChecksumErrorStyle::Create => {
+                ApiError::bad_request("Manifest has a checksum that hasn't been uploaded.")
+            }
+            ChecksumErrorStyle::Update => ApiError::bad_request(format!(
+                "Manifest has checksum {checksum} but it hasn't yet been uploaded"
+            )),
+        });
     }
     Ok(())
 }
@@ -600,24 +606,29 @@ async fn cookbook_map(
         .await
         .map_err(ApiError::from)?;
     let base = base_url(headers, state);
-    let mut names: Vec<String> = versions
-        .iter()
-        .map(|version| version.name.clone())
-        .filter(|name| only.is_none_or(|only| name == only))
-        .collect();
-    names.sort();
-    names.dedup();
+
+    // The store returns versions ordered by name, so one pass is enough to
+    // group them. Only the selected versions are cloned afterwards.
+    let mut grouped: BTreeMap<&str, Vec<&StoredCookbookVersion>> = BTreeMap::new();
+    for version in &versions {
+        if only.is_some_and(|only| version.name != only) {
+            continue;
+        }
+        grouped
+            .entry(version.name.as_str())
+            .or_default()
+            .push(version);
+    }
 
     let mut map = Map::new();
-    for name in names {
-        let mut selected: Vec<_> = versions
-            .iter()
-            .filter(|version| version.name == name)
-            .cloned()
-            .collect();
-        sort_versions_descending(&mut selected);
-        let selected = select_versions(selected, num_versions);
-        map.insert(name.clone(), cookbook_entry(&base, org, &name, &selected));
+    for (name, mut selected) in grouped {
+        selected.sort_by_key(|version| std::cmp::Reverse(version_key(&version.version)));
+        if let NumVersions::Count(count) = num_versions {
+            selected.truncate(*count);
+        }
+        let selected: Vec<StoredCookbookVersion> = selected.into_iter().cloned().collect();
+        let entry = cookbook_entry(&base, org, name, &selected);
+        map.insert(name.to_string(), entry);
     }
     Ok(Value::Object(map))
 }
@@ -734,16 +745,6 @@ fn cookbook_entry(base: &str, org: &Org, name: &str, versions: &[StoredCookbookV
         "url": format!("{base}/organizations/{}/cookbooks/{name}", org.name),
         "versions": versions
     })
-}
-
-fn select_versions(
-    versions: Vec<StoredCookbookVersion>,
-    num_versions: &NumVersions,
-) -> Vec<StoredCookbookVersion> {
-    match num_versions {
-        NumVersions::All => versions,
-        NumVersions::Count(count) => versions.into_iter().take(*count).collect(),
-    }
 }
 
 pub(crate) fn parse_num_versions(

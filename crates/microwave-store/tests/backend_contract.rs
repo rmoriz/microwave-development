@@ -133,6 +133,28 @@ fn cookbook_update_persists_frozen_and_returns_purged_checksums() {
 }
 
 #[test]
+fn cookbook_list_groups_checksums_by_version() {
+    let (store, org) = cookbook_store();
+    let checksums_a = vec!["checksum-a".to_string(), "checksum-b".to_string()];
+    let checksums_b = vec!["checksum-c".to_string()];
+    for checksum in checksums_a.iter().chain(checksums_b.iter()) {
+        let (sandbox_id, _) =
+            block_on(store.create_sandbox(&org.id, std::slice::from_ref(checksum))).unwrap();
+        block_on(store.commit_sandbox(&org.id, &sandbox_id)).unwrap();
+    }
+
+    create_cookbook(&store, &org, "1.0.0", &checksums_a, false);
+    create_cookbook(&store, &org, "2.0.0", &checksums_b, false);
+
+    let listed = block_on(store.list_cookbook_versions(&org.id)).unwrap();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0].version, "1.0.0");
+    assert_eq!(listed[0].checksums, checksums_a);
+    assert_eq!(listed[1].version, "2.0.0");
+    assert_eq!(listed[1].checksums, checksums_b);
+}
+
+#[test]
 fn cookbook_delete_returns_deleted_record_and_purges_checksums() {
     let (store, org) = cookbook_store();
     let checksums = vec!["checksum-a".to_string()];

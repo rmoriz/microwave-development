@@ -322,10 +322,9 @@ impl Search<'_> {
     fn search(&self, state: State) -> Result<State, SearchFailure> {
         self.check_timeout()?;
 
-        let Some(name) = self.next_package(&state) else {
+        let Some((name, candidates)) = self.next_package(&state) else {
             return Ok(state);
         };
-        let candidates = self.candidates(&name, &state);
         if candidates.is_empty() {
             return Err(SearchFailure::Conflict(Failure {
                 package: name,
@@ -386,22 +385,21 @@ impl Search<'_> {
 
     /// Pick the unselected package with the fewest admissible versions, then
     /// break ties by name. This keeps the search deterministic and fails fast
-    /// on over-constrained packages.
-    fn next_package(&self, state: &State) -> Option<String> {
+    /// on over-constrained packages. The candidate list is computed once per
+    /// open package and returned for the caller, so it is not recomputed after
+    /// selection.
+    fn next_package(&self, state: &State) -> Option<(String, Vec<Version>)> {
         state
             .constraints
             .keys()
             .filter(|name| !state.selected.contains_key(*name))
-            .min_by(|left, right| {
-                self.candidate_count(left, state)
-                    .cmp(&self.candidate_count(right, state))
-                    .then_with(|| left.cmp(right))
+            .map(|name| (name, self.candidates(name, state)))
+            .min_by(|(left_name, left), (right_name, right)| {
+                left.len()
+                    .cmp(&right.len())
+                    .then_with(|| left_name.cmp(right_name))
             })
-            .cloned()
-    }
-
-    fn candidate_count(&self, name: &str, state: &State) -> usize {
-        self.candidates(name, state).len()
+            .map(|(name, candidates)| (name.clone(), candidates))
     }
 
     fn candidates(&self, name: &str, state: &State) -> Vec<Version> {

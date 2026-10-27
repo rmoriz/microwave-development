@@ -234,11 +234,6 @@ async fn execute_search(
         });
     }
 
-    let entries = index::load_entries(state.store.as_ref(), &org.id, &kind).await?;
-    let authz_by_id: HashMap<&str, &str> = entries
-        .iter()
-        .map(|entry| (entry.id.as_str(), entry.authz_id.as_str()))
-        .collect();
     let mut selected = Vec::with_capacity(rows);
     let mut readable_seen = 0usize;
     let total = first.total;
@@ -246,6 +241,14 @@ async fn execute_search(
     let mut scan_start = 0usize;
     loop {
         let page_len = page.ids.len();
+        // Only the current page's ids are needed for the ACL mapping. Loading
+        // the whole index here would make strict mode O(index size) per page.
+        let page_entries =
+            index::load_entries_by_ids(state.store.as_ref(), &org.id, &kind, &page.ids).await?;
+        let authz_by_id: HashMap<&str, &str> = page_entries
+            .iter()
+            .map(|entry| (entry.id.as_str(), entry.authz_id.as_str()))
+            .collect();
         for id in page.ids {
             let Some(authz_id) = authz_by_id.get(id.as_str()) else {
                 continue;
@@ -332,12 +335,7 @@ async fn hydrate(
     ids: &[String],
 ) -> Result<Vec<index::SearchEntry>, ApiError> {
     let kind = IndexKind::from_index(index);
-    let mut entries = index::load_entries(state.store.as_ref(), &org.id, &kind).await?;
-    let mut by_id: HashMap<String, index::SearchEntry> = entries
-        .drain(..)
-        .map(|entry| (entry.id.clone(), entry))
-        .collect();
-    Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+    index::load_entries_by_ids(state.store.as_ref(), &org.id, &kind, ids).await
 }
 
 fn parse_query(raw: Option<&str>) -> Result<SearchQuery, ApiError> {

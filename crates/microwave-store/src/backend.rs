@@ -136,6 +136,11 @@ pub trait IdentityRepository: Send + Sync {
 
     async fn find_client(&self, org_id: &str, name: &str) -> Result<Option<Client>, StoreError>;
     async fn list_clients(&self, org_id: &str) -> Result<Vec<Client>, StoreError>;
+    async fn find_clients_by_ids(
+        &self,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<Client>, StoreError>;
     async fn delete_client(&self, org_id: &str, name: &str) -> Result<(), StoreError>;
 
     async fn add_actor_key(
@@ -377,6 +382,12 @@ pub trait ObjectRepository: Send + Sync {
     async fn create_node(&self, org_id: &str, node: NewNode<'_>) -> Result<StoredNode, StoreError>;
     async fn find_node(&self, org_id: &str, name: &str) -> Result<Option<StoredNode>, StoreError>;
     async fn list_nodes(&self, org_id: &str) -> Result<Vec<StoredNode>, StoreError>;
+    async fn find_nodes_by_ids(
+        &self,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<StoredNode>, StoreError>;
+    async fn list_node_names(&self, org_id: &str) -> Result<Vec<String>, StoreError>;
     async fn count_nodes(&self) -> Result<u64, StoreError>;
     async fn list_nodes_in_environment(
         &self,
@@ -407,6 +418,12 @@ pub trait ObjectRepository: Send + Sync {
         name: &str,
     ) -> Result<Option<StoredObject>, StoreError>;
     async fn list_environments(&self, org_id: &str) -> Result<Vec<StoredObject>, StoreError>;
+    async fn find_environments_by_ids(
+        &self,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<StoredObject>, StoreError>;
+    async fn list_environment_names(&self, org_id: &str) -> Result<Vec<String>, StoreError>;
     async fn update_environment(
         &self,
         org_id: &str,
@@ -425,6 +442,12 @@ pub trait ObjectRepository: Send + Sync {
     async fn find_role(&self, org_id: &str, name: &str)
         -> Result<Option<StoredObject>, StoreError>;
     async fn list_roles(&self, org_id: &str) -> Result<Vec<StoredObject>, StoreError>;
+    async fn find_roles_by_ids(
+        &self,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<StoredObject>, StoreError>;
+    async fn list_role_names(&self, org_id: &str) -> Result<Vec<String>, StoreError>;
     async fn update_role(
         &self,
         org_id: &str,
@@ -445,6 +468,7 @@ pub trait ObjectRepository: Send + Sync {
         name: &str,
     ) -> Result<Option<StoredObject>, StoreError>;
     async fn list_data_bags(&self, org_id: &str) -> Result<Vec<StoredObject>, StoreError>;
+    async fn list_data_bag_names(&self, org_id: &str) -> Result<Vec<String>, StoreError>;
     async fn delete_data_bag(&self, org_id: &str, name: &str) -> Result<(), StoreError>;
 
     async fn create_data_bag_item(
@@ -464,6 +488,12 @@ pub trait ObjectRepository: Send + Sync {
         &self,
         org_id: &str,
         data_bag_name: &str,
+    ) -> Result<Vec<StoredDataBagItem>, StoreError>;
+    async fn find_data_bag_items_by_ids(
+        &self,
+        org_id: &str,
+        data_bag_name: &str,
+        ids: &[String],
     ) -> Result<Vec<StoredDataBagItem>, StoreError>;
     async fn update_data_bag_item(
         &self,
@@ -503,6 +533,11 @@ pub trait SandboxRepository: Send + Sync {
     ) -> Result<Option<String>, StoreError>;
     async fn commit_sandbox(&self, org_id: &str, sandbox_id: &str) -> Result<(), StoreError>;
     async fn checksum_exists(&self, org_id: &str, checksum: &str) -> Result<bool, StoreError>;
+    async fn existing_checksums(
+        &self,
+        org_id: &str,
+        checksums: &[String],
+    ) -> Result<Vec<String>, StoreError>;
     async fn find_checksum(
         &self,
         org_id: &str,
@@ -590,6 +625,10 @@ pub trait PolicyRepository: Send + Sync {
         &self,
         org_id: &str,
     ) -> Result<Vec<StoredPolicyRevision>, StoreError>;
+    async fn list_policy_revision_refs(
+        &self,
+        org_id: &str,
+    ) -> Result<Vec<(String, String)>, StoreError>;
     async fn delete_policy(&self, org_id: &str, name: &str) -> Result<(), StoreError>;
     async fn delete_policy_revision(
         &self,

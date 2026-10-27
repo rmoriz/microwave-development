@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use microwave_store::{SandboxCheck, SandboxRepository, StoreError};
+use std::collections::HashSet;
 
 use crate::store::{db, new_id, now, PostgresStore};
 
@@ -27,30 +28,39 @@ impl SandboxRepository for PostgresStore {
         .map_err(db)?;
 
         let mut checks = Vec::with_capacity(checksums.len());
-        for checksum in checksums {
-            let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM checksums WHERE org_id = $1 AND checksum = $2)",
+        // One query for all checksums instead of one `EXISTS` per checksum.
+        let existing: HashSet<String> = if checksums.is_empty() {
+            HashSet::new()
+        } else {
+            sqlx::query_scalar(
+                "SELECT checksum FROM checksums WHERE org_id = $1 AND checksum = ANY($2)",
             )
             .bind(org_id)
-            .bind(checksum)
-            .fetch_one(&mut *transaction)
+            .bind(checksums)
+            .fetch_all(&mut *transaction)
             .await
-            .map_err(db)?;
+            .map_err(db)?
+            .into_iter()
+            .collect()
+        };
+        if !checksums.is_empty() {
             sqlx::query(
                 "INSERT INTO sandboxed_checksums (org_id, sandbox_id, checksum, created_at)
-                 VALUES ($1, $2, $3, $4)
+                 SELECT $1, $2, item, $4 FROM UNNEST($3::text[]) AS checksums(item)
                  ON CONFLICT DO NOTHING",
             )
             .bind(org_id)
             .bind(&sandbox_id)
-            .bind(checksum)
+            .bind(checksums)
             .bind(&timestamp)
             .execute(&mut *transaction)
             .await
             .map_err(db)?;
+        }
+        for checksum in checksums {
             checks.push(SandboxCheck {
                 checksum: checksum.clone(),
-                needs_upload: !exists,
+                needs_upload: !existing.contains(checksum),
             });
         }
         transaction.commit().await.map_err(db)?;
@@ -143,6 +153,26 @@ impl SandboxRepository for PostgresStore {
         .await
         .map_err(db)?;
         Ok(exists)
+    }
+
+    async fn existing_checksums(
+        &self,
+        org_id: &str,
+        checksums: &[String],
+    ) -> Result<Vec<String>, StoreError> {
+        if checksums.is_empty() {
+            return Ok(Vec::new());
+        }
+        let found: Vec<String> = sqlx::query_scalar(
+            "SELECT checksum FROM checksums
+             WHERE org_id = $1 AND checksum = ANY($2) ORDER BY checksum",
+        )
+        .bind(org_id)
+        .bind(checksums)
+        .fetch_all(self.pool())
+        .await
+        .map_err(db)?;
+        Ok(found)
     }
 
     async fn find_checksum(

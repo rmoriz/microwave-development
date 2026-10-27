@@ -162,6 +162,25 @@ impl SqliteStore {
         self.list_revisions(org_id, None)
     }
 
+    /// Lists policy name and revision id pairs without decoding the revision
+    /// documents.
+    pub fn list_policy_revision_refs(
+        &self,
+        org_id: &str,
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT name, revision_id FROM policy_revisions
+             WHERE org_id = ?1 ORDER BY name, revision_id",
+        )?;
+        let rows = statement.query_map([org_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let mut refs = Vec::new();
+        for row in rows {
+            refs.push(row?);
+        }
+        Ok(refs)
+    }
+
     fn list_revisions(
         &self,
         org_id: &str,

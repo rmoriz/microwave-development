@@ -207,6 +207,11 @@ fn migrate(connection: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// SQL `?` placeholders for a dynamically sized `IN (...)` list.
+pub(crate) fn in_placeholders(count: usize) -> String {
+    vec!["?"; count].join(", ")
+}
+
 fn add_column_if_missing(
     connection: &Connection,
     table: &str,

@@ -1,8 +1,8 @@
 use crate::authz::Permission;
 use crate::compression::{decode_serialized, encode_serialized};
 use crate::identity::{new_id, now};
-use crate::sqlite::{SqliteStore, StoreError};
-use rusqlite::{params, OptionalExtension, Transaction};
+use crate::sqlite::{in_placeholders, SqliteStore, StoreError};
+use rusqlite::{params, params_from_iter, OptionalExtension, Transaction};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredNode {
@@ -125,6 +125,47 @@ impl SqliteStore {
         Ok(nodes)
     }
 
+    /// Loads only the nodes whose ids are in `ids`.
+    pub fn find_nodes_by_ids(
+        &self,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<StoredNode>, StoreError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let connection = self.connection();
+        let sql = format!(
+            "SELECT id, authz_id, name, environment, policy_name, policy_group,
+                    serialized_object, created_at, updated_at
+             FROM nodes WHERE org_id = ? AND id IN ({}) ORDER BY name",
+            in_placeholders(ids.len())
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let mut values: Vec<&str> = Vec::with_capacity(ids.len() + 1);
+        values.push(org_id);
+        values.extend(ids.iter().map(String::as_str));
+        let rows = statement.query_map(params_from_iter(values), node_from_row)?;
+        let mut nodes = Vec::new();
+        for row in rows {
+            nodes.push(decode_node(row?)?);
+        }
+        Ok(nodes)
+    }
+
+    /// Lists node names without loading or decoding the node documents.
+    pub fn list_node_names(&self, org_id: &str) -> Result<Vec<String>, StoreError> {
+        let connection = self.connection();
+        let mut statement =
+            connection.prepare("SELECT name FROM nodes WHERE org_id = ?1 ORDER BY name")?;
+        let rows = statement.query_map([org_id], |row| row.get::<_, String>(0))?;
+        let mut names = Vec::new();
+        for row in rows {
+            names.push(row?);
+        }
+        Ok(names)
+    }
+
     /// Number of nodes across every organization, matching upstream
     /// `chef_db:count_nodes/1` used by the license endpoint.
     pub fn count_nodes(&self) -> Result<u64, StoreError> {
@@ -233,6 +274,19 @@ impl SqliteStore {
         self.list_named_objects("environments", org_id)
     }
 
+    /// Loads only the environments whose ids are in `ids`.
+    pub fn find_environments_by_ids(
+        &self,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<StoredObject>, StoreError> {
+        self.find_named_objects_by_ids("environments", org_id, ids)
+    }
+
+    pub fn list_environment_names(&self, org_id: &str) -> Result<Vec<String>, StoreError> {
+        self.list_named_object_names("environments", org_id)
+    }
+
     pub fn update_environment(
         &self,
         org_id: &str,
@@ -262,6 +316,19 @@ impl SqliteStore {
 
     pub fn list_roles(&self, org_id: &str) -> Result<Vec<StoredObject>, StoreError> {
         self.list_named_objects("roles", org_id)
+    }
+
+    /// Loads only the roles whose ids are in `ids`.
+    pub fn find_roles_by_ids(
+        &self,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<StoredObject>, StoreError> {
+        self.find_named_objects_by_ids("roles", org_id, ids)
+    }
+
+    pub fn list_role_names(&self, org_id: &str) -> Result<Vec<String>, StoreError> {
+        self.list_named_object_names("roles", org_id)
     }
 
     pub fn update_role(
@@ -296,6 +363,10 @@ impl SqliteStore {
 
     pub fn list_data_bags(&self, org_id: &str) -> Result<Vec<StoredObject>, StoreError> {
         self.list_named_objects("data_bags", org_id)
+    }
+
+    pub fn list_data_bag_names(&self, org_id: &str) -> Result<Vec<String>, StoreError> {
+        self.list_named_object_names("data_bags", org_id)
     }
 
     pub fn delete_data_bag(&self, org_id: &str, name: &str) -> Result<(), StoreError> {
@@ -368,6 +439,37 @@ impl SqliteStore {
              WHERE org_id = ?1 AND data_bag_name = ?2 ORDER BY item_name",
         )?;
         let rows = statement.query_map(params![org_id, data_bag_name], data_bag_item_from_row)?;
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(decode_data_bag_item(row?)?);
+        }
+        Ok(items)
+    }
+
+    /// Loads only the data bag items whose ids are in `ids`.
+    pub fn find_data_bag_items_by_ids(
+        &self,
+        org_id: &str,
+        data_bag_name: &str,
+        ids: &[String],
+    ) -> Result<Vec<StoredDataBagItem>, StoreError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let connection = self.connection();
+        let sql = format!(
+            "SELECT id, data_bag_name, item_name, serialized_object, created_at, updated_at
+             FROM data_bag_items
+             WHERE org_id = ? AND data_bag_name = ? AND id IN ({})
+             ORDER BY item_name",
+            in_placeholders(ids.len())
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let mut values: Vec<&str> = Vec::with_capacity(ids.len() + 2);
+        values.push(org_id);
+        values.push(data_bag_name);
+        values.extend(ids.iter().map(String::as_str));
+        let rows = statement.query_map(params_from_iter(values), data_bag_item_from_row)?;
         let mut items = Vec::new();
         for row in rows {
             items.push(decode_data_bag_item(row?)?);
@@ -503,6 +605,49 @@ impl SqliteStore {
             objects.push(decode_stored_object(row?)?);
         }
         Ok(objects)
+    }
+
+    fn find_named_objects_by_ids(
+        &self,
+        table: &str,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<StoredObject>, StoreError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let connection = self.connection();
+        let sql = format!(
+            "SELECT id, authz_id, name, serialized_object, created_at, updated_at
+             FROM {table} WHERE org_id = ? AND id IN ({}) ORDER BY name",
+            in_placeholders(ids.len())
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let mut values: Vec<&str> = Vec::with_capacity(ids.len() + 1);
+        values.push(org_id);
+        values.extend(ids.iter().map(String::as_str));
+        let rows = statement.query_map(params_from_iter(values), stored_object_from_row)?;
+        let mut objects = Vec::new();
+        for row in rows {
+            objects.push(decode_stored_object(row?)?);
+        }
+        Ok(objects)
+    }
+
+    fn list_named_object_names(
+        &self,
+        table: &str,
+        org_id: &str,
+    ) -> Result<Vec<String>, StoreError> {
+        let connection = self.connection();
+        let sql = format!("SELECT name FROM {table} WHERE org_id = ?1 ORDER BY name");
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map([org_id], |row| row.get::<_, String>(0))?;
+        let mut names = Vec::new();
+        for row in rows {
+            names.push(row?);
+        }
+        Ok(names)
     }
 
     /// Update a named object, honouring a rename requested by the normalized

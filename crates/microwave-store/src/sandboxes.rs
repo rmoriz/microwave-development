@@ -1,6 +1,7 @@
 use crate::identity::{new_id, now};
-use crate::sqlite::{SqliteStore, StoreError};
-use rusqlite::{params, OptionalExtension};
+use crate::sqlite::{in_placeholders, SqliteStore, StoreError};
+use rusqlite::{params, params_from_iter, OptionalExtension};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxCheck {
@@ -22,30 +23,54 @@ impl SqliteStore {
             "INSERT INTO sandboxes (org_id, sandbox_id, created_at) VALUES (?1, ?2, ?3)",
             params![org_id, sandbox_id, timestamp],
         )?;
-        let mut checks = Vec::with_capacity(checksums.len());
-        for checksum in checksums {
-            let exists: i64 = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM checksums WHERE org_id = ?1 AND checksum = ?2)",
-                params![org_id, checksum],
-                |row| row.get(0),
-            )?;
-            tx.execute(
-                "INSERT OR IGNORE INTO sandboxed_checksums
-                 (org_id, sandbox_id, checksum, created_at)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![org_id, sandbox_id, checksum, timestamp],
-            )?;
-            tx.execute(
-                "INSERT OR IGNORE INTO sandbox_checksums
-                 (org_id, sandbox_id, checksum, created_at)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![org_id, sandbox_id, checksum, timestamp],
-            )?;
-            checks.push(SandboxCheck {
-                checksum: checksum.clone(),
-                needs_upload: exists == 0,
-            });
+
+        // One query for all checksums instead of one `EXISTS` per checksum.
+        let existing: HashSet<String> = if checksums.is_empty() {
+            HashSet::new()
+        } else {
+            let sql = format!(
+                "SELECT checksum FROM checksums WHERE org_id = ? AND checksum IN ({})",
+                in_placeholders(checksums.len())
+            );
+            let mut statement = tx.prepare(&sql)?;
+            let mut values: Vec<&str> = Vec::with_capacity(checksums.len() + 1);
+            values.push(org_id);
+            values.extend(checksums.iter().map(String::as_str));
+            let rows =
+                statement.query_map(params_from_iter(values), |row| row.get::<_, String>(0))?;
+            let mut found = HashSet::new();
+            for row in rows {
+                found.insert(row?);
+            }
+            found
+        };
+
+        // Both tables get the whole sandbox in one multi-row insert.
+        if !checksums.is_empty() {
+            let placeholders = ["(?, ?, ?, ?)"].repeat(checksums.len()).join(", ");
+            let mut bindings: Vec<&str> = Vec::with_capacity(checksums.len() * 4);
+            for checksum in checksums {
+                bindings.push(org_id);
+                bindings.push(sandbox_id.as_str());
+                bindings.push(checksum.as_str());
+                bindings.push(timestamp.as_str());
+            }
+            for table in ["sandboxed_checksums", "sandbox_checksums"] {
+                let sql = format!(
+                    "INSERT OR IGNORE INTO {table}
+                     (org_id, sandbox_id, checksum, created_at) VALUES {placeholders}"
+                );
+                tx.execute(&sql, params_from_iter(bindings.iter().copied()))?;
+            }
         }
+
+        let checks = checksums
+            .iter()
+            .map(|checksum| SandboxCheck {
+                checksum: checksum.clone(),
+                needs_upload: !existing.contains(checksum),
+            })
+            .collect();
         tx.commit()?;
         Ok((sandbox_id, checks))
     }
@@ -130,6 +155,34 @@ impl SqliteStore {
             |row| row.get(0),
         )?;
         Ok(exists != 0)
+    }
+
+    /// Returns the subset of `checksums` that has already been committed for
+    /// the organization, using one query instead of one per checksum.
+    pub fn existing_checksums(
+        &self,
+        org_id: &str,
+        checksums: &[String],
+    ) -> Result<Vec<String>, StoreError> {
+        if checksums.is_empty() {
+            return Ok(Vec::new());
+        }
+        let connection = self.connection();
+        let sql = format!(
+            "SELECT checksum FROM checksums
+             WHERE org_id = ? AND checksum IN ({}) ORDER BY checksum",
+            in_placeholders(checksums.len())
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let mut values: Vec<&str> = Vec::with_capacity(checksums.len() + 1);
+        values.push(org_id);
+        values.extend(checksums.iter().map(String::as_str));
+        let rows = statement.query_map(params_from_iter(values), |row| row.get::<_, String>(0))?;
+        let mut found = Vec::new();
+        for row in rows {
+            found.push(row?);
+        }
+        Ok(found)
     }
 
     pub fn find_checksum(

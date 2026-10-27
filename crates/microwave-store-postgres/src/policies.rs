@@ -139,6 +139,28 @@ impl PolicyRepository for PostgresStore {
         self.list_revisions(org_id, None).await
     }
 
+    async fn list_policy_revision_refs(
+        &self,
+        org_id: &str,
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT name, revision_id FROM policy_revisions
+             WHERE org_id = $1 ORDER BY name, revision_id",
+        )
+        .bind(org_id)
+        .fetch_all(self.pool())
+        .await
+        .map_err(db)?;
+        rows.iter()
+            .map(|row| {
+                Ok((
+                    row.try_get::<String, _>(0).map_err(db)?,
+                    row.try_get::<String, _>(1).map_err(db)?,
+                ))
+            })
+            .collect()
+    }
+
     async fn delete_policy(&self, org_id: &str, name: &str) -> Result<(), StoreError> {
         let mut transaction = self.pool().begin().await.map_err(db)?;
         let authz_id: String =

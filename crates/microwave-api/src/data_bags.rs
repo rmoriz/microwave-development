@@ -73,16 +73,13 @@ async fn list_data_bags(
     let mut bags = Map::new();
     for bag in state
         .store
-        .list_data_bags(&org.id)
+        .list_data_bag_names(&org.id)
         .await
         .map_err(ApiError::from)?
     {
         bags.insert(
-            bag.name.clone(),
-            json!(format!(
-                "{base}/organizations/{}/data/{}",
-                org.name, bag.name
-            )),
+            bag.clone(),
+            json!(format!("{base}/organizations/{}/data/{}", org.name, bag)),
         );
     }
     Ok(Json(Value::Object(bags)))

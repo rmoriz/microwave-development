@@ -1,7 +1,7 @@
-use crate::sqlite::{SqliteStore, StoreError};
+use crate::sqlite::{in_placeholders, SqliteStore, StoreError};
 use crate::Permission;
 use chrono::{DateTime, SecondsFormat, Utc};
-use rusqlite::{params, OptionalExtension, Row};
+use rusqlite::{params, params_from_iter, OptionalExtension, Row};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -588,6 +588,44 @@ impl SqliteStore {
              FROM clients WHERE org_id = ?1 ORDER BY name",
         )?;
         let rows = statement.query_map([org_id], |row| {
+            Ok(Client {
+                id: row.get(0)?,
+                org_id: row.get(1)?,
+                authz_id: row.get(2)?,
+                name: row.get(3)?,
+                validator: row.get::<_, i64>(4)? != 0,
+                admin: row.get::<_, i64>(5)? != 0,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?;
+        let mut clients = Vec::new();
+        for row in rows {
+            clients.push(row?);
+        }
+        Ok(clients)
+    }
+
+    /// Loads only the clients whose ids are in `ids`.
+    pub fn find_clients_by_ids(
+        &self,
+        org_id: &str,
+        ids: &[String],
+    ) -> Result<Vec<Client>, StoreError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let connection = self.connection();
+        let sql = format!(
+            "SELECT id, org_id, authz_id, name, validator, admin, created_at, updated_at
+             FROM clients WHERE org_id = ? AND id IN ({}) ORDER BY name",
+            in_placeholders(ids.len())
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let mut values: Vec<&str> = Vec::with_capacity(ids.len() + 1);
+        values.push(org_id);
+        values.extend(ids.iter().map(String::as_str));
+        let rows = statement.query_map(params_from_iter(values), |row| {
             Ok(Client {
                 id: row.get(0)?,
                 org_id: row.get(1)?,

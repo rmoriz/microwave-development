@@ -419,6 +419,9 @@ CREATE TABLE IF NOT EXISTS cookbook_versions (
     UNIQUE (cookbook_id, major, minor, patch)
 );
 
+CREATE INDEX IF NOT EXISTS cookbook_versions_org_name_version_index
+    ON cookbook_versions (org_id, name, major, minor, patch);
+
 CREATE TABLE IF NOT EXISTS cookbook_version_checksums (
     cookbook_version_id TEXT NOT NULL REFERENCES cookbook_versions(id) ON DELETE CASCADE,
     org_id TEXT NOT NULL,
@@ -450,6 +453,9 @@ CREATE TABLE IF NOT EXISTS cookbook_artifact_versions (
     UNIQUE (cookbook_artifact_id, identifier)
 );
 
+CREATE INDEX IF NOT EXISTS cookbook_artifact_versions_org_artifact_identifier_index
+    ON cookbook_artifact_versions (org_id, cookbook_artifact_id, identifier);
+
 -- Older databases were created with ON DELETE CASCADE. SQLite cannot alter an
 -- existing foreign key, so the trigger enforces the upstream RESTRICT behavior
 -- for those databases as well.
@@ -471,6 +477,9 @@ CREATE TABLE IF NOT EXISTS cookbook_artifact_version_checksums (
     FOREIGN KEY (org_id, checksum)
         REFERENCES checksums (org_id, checksum) ON UPDATE CASCADE ON DELETE RESTRICT
 );
+
+CREATE INDEX IF NOT EXISTS cookbook_artifact_version_checksums_version_index
+    ON cookbook_artifact_version_checksums (cookbook_artifact_version_id);
 
 CREATE TABLE IF NOT EXISTS policies (
     id TEXT PRIMARY KEY,

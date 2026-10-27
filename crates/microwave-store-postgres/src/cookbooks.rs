@@ -5,7 +5,7 @@ use microwave_store::{
 };
 use sqlx::postgres::Postgres;
 use sqlx::{Row, Transaction};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::store::{db, new_id, now, unique, PostgresStore};
 
@@ -173,9 +173,10 @@ impl CookbookRepository for PostgresStore {
         .map_err(db)?;
 
         let mut versions = Vec::with_capacity(rows.len());
+        let mut checksums_by_version = self.all_version_checksums(org_id).await?;
         for row in rows {
             let id: String = row.try_get(0).map_err(db)?;
-            let checksums = self.version_checksums(&id).await?;
+            let checksums = checksums_by_version.remove(&id).unwrap_or_default();
             let manifest = decode_serialized(&row.try_get::<String, _>(2).map_err(db)?)?;
             versions.push(StoredCookbookVersion {
                 id,
@@ -394,6 +395,32 @@ impl PostgresStore {
         .fetch_all(self.pool())
         .await
         .map_err(db)
+    }
+
+    /// Loads the checksums of every cookbook version in an organization in one
+    /// query, grouped by version id.
+    async fn all_version_checksums(
+        &self,
+        org_id: &str,
+    ) -> Result<HashMap<String, Vec<String>>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT cvc.cookbook_version_id, cvc.checksum
+             FROM cookbook_version_checksums cvc
+             JOIN cookbook_versions cv ON cv.id = cvc.cookbook_version_id
+             WHERE cv.org_id = $1
+             ORDER BY cvc.cookbook_version_id, cvc.checksum",
+        )
+        .bind(org_id)
+        .fetch_all(self.pool())
+        .await
+        .map_err(db)?;
+        let mut by_version: HashMap<String, Vec<String>> = HashMap::new();
+        for row in rows {
+            let version_id: String = row.try_get(0).map_err(db)?;
+            let checksum: String = row.try_get(1).map_err(db)?;
+            by_version.entry(version_id).or_default().push(checksum);
+        }
+        Ok(by_version)
     }
 }
 
