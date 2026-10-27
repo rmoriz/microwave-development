@@ -1,5 +1,7 @@
 # Microwave Server
 
+![Funkelnde Regenbogen-Mikrowelle im Neonlicht](docs/images/microwave-hero.png)
+
 A Rust reimplementation of the Chef Infra Server API, designed as a drop-in replacement for existing clients and operations tooling. This is an independent project, not affiliated with or endorsed by Progress Software Corporation.
 
 ## Status
