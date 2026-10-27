@@ -155,10 +155,12 @@ A complete annotated example is
 | `keygen.size` | `MW_KEYGEN__SIZE` | `3` | Maximum number of pre-generated 2048-bit RSA keypairs kept in memory. `0` disables caching and generates on demand. Maximum `1024`. |
 | `keygen.workers` | `MW_KEYGEN__WORKERS` | `1` | Background key-generation threads. Must not exceed `keygen.size`; maximum `8`. `0` leaves refilling to `warm_up`. |
 | `keygen.warm_up` | `MW_KEYGEN__WARM_UP` | `false` | Fill the cache synchronously during startup. Requires `keygen.size > 0`. Leave `false` to keep startup fast and let workers refill in the background. |
-| `data_collector.root_url` | `MW_DATA_COLLECTOR__ROOT_URL` | unset | Enables `POST /organizations/:org/data-collector` and receives the forwarded payload, e.g. `https://automate.example.com/data-collector/v0/`. |
+| `data_collector.store` | `MW_DATA_COLLECTOR__STORE` | `forward` | `forward`, `local`, or `both`. `local`/`both` persist `run_converge` reports locally, and `local`/`both` also keep `POST /organizations/:org/data-collector` enabled without `root_url`. |
+| `data_collector.keep_runs` | `MW_DATA_COLLECTOR__KEEP_RUNS` | `50` | Reports kept per `(organization, node)`; `0` keeps everything. Old reports are pruned after each successful insert. |
+| `data_collector.root_url` | `MW_DATA_COLLECTOR__ROOT_URL` | unset | Enables forwarding of the payload to the external collector, e.g. `https://automate.example.com/data-collector/v0/`. |
 | `data_collector.token` | `MW_DATA_COLLECTOR__TOKEN` | unset | Shared bearer token accepted inbound and sent upstream as `x-data-collector-token`. Falls back to the `data_collector.token` secret. |
 | `data_collector.timeout` | `MW_DATA_COLLECTOR__TIMEOUT` (alias `MW_DATA_COLLECTOR__TIMEOUT_MS`) | `30000` | Upstream forwarding and response-read timeout in milliseconds (TOML alias `timeout_ms`). Must be greater than zero; `check-config` rejects `0`. |
-| `data_collector.actions_enabled` | `MW_DATA_COLLECTOR__ACTIONS_ENABLED` | `false` | Opt in to `oc_chef_action` mutation notifications while `root_url` is configured. `root_url` alone only enables client payload forwarding. Disabled automatically when `root_url` is unset. |
+| `data_collector.actions_enabled` | `MW_DATA_COLLECTOR__ACTIONS_ENABLED` | `false` | Opt in to `oc_chef_action` mutation notifications while `root_url` is configured. `root_url` alone only enables client payload forwarding. Actions are only sent when `store` allows forwarding (`forward`/`both`), and are disabled automatically when `root_url` is unset. |
 | `data_collector.service_hostname` | `MW_DATA_COLLECTOR__SERVICE_HOSTNAME` | unset | `service_hostname` reported in action messages. Falls back to the request `X-Forwarded-Host` (or `Host`), then `localhost`. |
 | `compliance_proxy.url` | `MW_COMPLIANCE_PROXY__URL` | unset | Enables the Automate compliance profile proxy routes. Non-empty value only; unset means every method returns `404`. |
 | `compliance_proxy.token` | `MW_COMPLIANCE_PROXY__TOKEN` | unset | Service token sent upstream. Falls back to `data_collector.token` or the `data_collector.token` secret. |
@@ -1553,7 +1555,7 @@ deployments, the same parallel-run approach applies.
 | `GET /_stats` | none | Request counters, authentication failures, uptime, maintenance state, and node count. JSON by default, Prometheus text with `Accept: text/plain` or `?format=prometheus`. |
 | `GET /server_api_version` | none | `min_api_version` / `max_api_version` (`0`/`2`). |
 | `GET /license` | signed | Static license payload; telemetry is disabled. |
-| `POST /organizations/:org/data-collector` | signed or `x-data-collector-token` | Present only when `data_collector.root_url` is configured. Forwards the JSON body to the configured collector and preserves its status and body. Timeouts map to `504`, other upstream failures to `502`; a disabled endpoint returns `404`. |
+| `POST /organizations/:org/data-collector` | signed or `x-data-collector-token` | Present when `data_collector.root_url` is configured or `data_collector.store` is `local`/`both`. Forwards the JSON body to the configured collector and preserves its status and body; `local`/`both` also store `run_converge` reports. Timeouts map to `504`, other upstream failures to `502`; a disabled endpoint returns `404`. |
 | `GET /organizations/:org/owners/:owner/compliance[/profile]` | signed | Present only when `compliance_proxy.url` is configured. Rewrites to `/compliance/profiles/:owner[/profile]` and preserves the upstream status and body. Timeouts map to `504`, other upstream failures to `502`. |
 | `GET /compliance/organizations/:org/owners/:owner/compliance[/profile]` | signed | Legacy chef-gate spelling of the same compliance proxy route. |
 | `GET /organizations/:org/required_recipe` | signed | Present only when `required_recipe.enabled` is true. Returns the configured recipe file as `text/plain`; `POST` returns `405`, and the disabled endpoint returns `404` for every method. |
@@ -1572,16 +1574,19 @@ not hold database locks across the outbound request.
 `data_collector.store` can be `forward` (default), `local`, or `both`.
 `local`/`both` persist Chef `run_converge` reports in the metadata database,
 one row per `(organization, node, run)` with 50 runs kept per node by default.
-The stable database grows with report volume; size `keep_runs` accordingly.
+The metadata database grows with retained reports (bounded by `keep_runs` per
+node); size `keep_runs` accordingly.
 Reports are not included in logical snapshots or `microwave-migrate`.
 Set `keep_runs = 0` to keep every report; only `run_converge` payloads are
 stored (`run_start` and `action` payloads are not).
 
-While `data_collector.root_url` is set and `data_collector.actions_enabled` is
-explicitly true (the default is false), successful node, role, environment,
-data bag/item, client, key, policy, membership, ACL, cookbook, and organization
-mutations also produce an `oc_chef_action` message (`message_type: action`,
-`message_version: 0.1.1`) to the same collector URL. The payload follows
+While `data_collector.root_url` is set, `data_collector.actions_enabled` is
+explicitly true (the default is false), and `data_collector.store` allows
+forwarding (`forward` or `both`; `local` disables actions), successful node,
+role, environment, data bag/item, client, key, policy, membership, ACL,
+cookbook, and organization mutations also produce an `oc_chef_action` message
+(`message_type: action`, `message_version: 0.1.1`) to the same collector URL.
+The payload follows
 upstream's entity/task fields, uses the server-side token, and recursively
 redacts `password`, `private_key`, `secret`, and `token` values. Payload
 construction and the token-secret lookup happen in the worker, not on the

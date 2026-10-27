@@ -204,10 +204,9 @@ store = "forward"
 # Keep this many reports per node; 0 keeps everything. Old reports are pruned
 # after each successful insert.
 keep_runs = 50
-# Setting root_url enables POST /organizations/:org/data-collector and forwards
-# the JSON payload to Automate or another collector. Leave unset to disable
-# forwarding (with the default `store = "forward"` the endpoint then returns
-# 404, which chef-client treats as normal).
+# Setting root_url enables forwarding to Automate or another collector. Leave
+# unset to disable forwarding (with the default `store = "forward"` the
+# endpoint then returns 404, which chef-client treats as normal).
 # root_url = "https://automate.example.com/data-collector/v0/"
 # Shared token accepted from clients and sent upstream. It may also be stored
 # as the `data_collector.token` secret with:
@@ -218,8 +217,9 @@ keep_runs = 50
 timeout = 30000
 # Emit server-side mutation notifications (`oc_chef_action`) for successful
 # writes while the collector is configured. This is opt-in: root_url alone
-# only enables client payload forwarding. Notifications use a bounded
-# in-process queue and never delay the API response.
+# only enables client payload forwarding. Actions are only sent when `store`
+# allows forwarding (`forward`/`both`); `local` disables them. Notifications
+# use a bounded in-process queue and never delay the API response.
 actions_enabled = false
 # Hostname reported as `service_hostname` in action messages. When unset the
 # request X-Forwarded-Host (or Host) is used.
