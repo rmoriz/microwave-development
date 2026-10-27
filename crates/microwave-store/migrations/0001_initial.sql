@@ -648,3 +648,25 @@ CREATE TABLE IF NOT EXISTS telemetry (
 );
 
 CREATE INDEX IF NOT EXISTS telemetry_property_index ON telemetry (property);
+
+CREATE TABLE IF NOT EXISTS node_runs (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    node_name TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    end_time TEXT,
+    resource_count INTEGER NOT NULL DEFAULT 0,
+    updated_resource_count INTEGER NOT NULL DEFAULT 0,
+    error_count INTEGER NOT NULL DEFAULT 0,
+    report TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, node_name, run_id),
+    FOREIGN KEY (org_id) REFERENCES orgs (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS node_runs_org_node_time_index
+    ON node_runs (org_id, node_name, start_time DESC);
+CREATE INDEX IF NOT EXISTS node_runs_org_time_index
+    ON node_runs (org_id, start_time DESC);

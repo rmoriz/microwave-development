@@ -14,6 +14,7 @@ mod migration;
 mod oauth;
 mod objects;
 mod policies;
+mod reports;
 mod sandboxes;
 mod secrets;
 mod sqlite;
@@ -22,8 +23,8 @@ pub use artifacts::{StoredCookbookArtifact, StoredCookbookArtifactVersion};
 pub use authz::{Acl, AclEntry, Container, Group, GroupMembers, Permission};
 pub use backend::{
     ArtifactRepository, AuthzRepository, CookbookRepository, HealthRepository, IdentityRepository,
-    KvRepository, MembershipRepository, MetadataStore, OAuthRepository, ObjectRepository,
-    PolicyRepository, SandboxRepository, SecretsRepository,
+    KvRepository, MembershipRepository, MetadataStore, NewNodeRun, NodeRunFilter, OAuthRepository,
+    ObjectRepository, PolicyRepository, ReportRepository, SandboxRepository, SecretsRepository,
 };
 pub use compression::{
     decode_serialized, decode_serialized_optional, encode_serialized, encode_serialized_optional,
@@ -39,6 +40,7 @@ pub use objects::{NewNode, StoredDataBagItem, StoredNode, StoredObject};
 pub use policies::{
     StoredPolicy, StoredPolicyGroup, StoredPolicyGroupAssociation, StoredPolicyRevision,
 };
+pub use reports::StoredNodeRun;
 pub use sandboxes::SandboxCheck;
 pub use secrets::{
     secret_kv_key, BOOKSHELF_ACCESS_KEY_ID, BOOKSHELF_SECRET_ACCESS_KEY, BOOKSHELF_SECRET_GROUP,

@@ -9,8 +9,8 @@ use crate::artifacts::{StoredCookbookArtifact, StoredCookbookArtifactVersion};
 use crate::authz::{Acl, AclEntry, Container, Group, GroupMembers, Permission};
 use crate::backend::{
     ArtifactRepository, AuthzRepository, CookbookRepository, HealthRepository, IdentityRepository,
-    KvRepository, MembershipRepository, OAuthRepository, ObjectRepository, PolicyRepository,
-    SandboxRepository, SecretsRepository,
+    KvRepository, MembershipRepository, NewNodeRun, NodeRunFilter, OAuthRepository,
+    ObjectRepository, PolicyRepository, ReportRepository, SandboxRepository, SecretsRepository,
 };
 use crate::cookbooks::StoredCookbookVersion;
 use crate::identity::{ActorKey, ActorType, Client, Org, Principal, User, UserPatch, UserProfile};
@@ -20,6 +20,7 @@ use crate::objects::{NewNode, StoredDataBagItem, StoredNode, StoredObject};
 use crate::policies::{
     StoredPolicy, StoredPolicyGroup, StoredPolicyGroupAssociation, StoredPolicyRevision,
 };
+use crate::reports::StoredNodeRun;
 use crate::sandboxes::SandboxCheck;
 use crate::sqlite::{SqliteStore, StoreError};
 use async_trait::async_trait;
@@ -1433,6 +1434,43 @@ impl SecretsRepository for SqliteStore {
 
     async fn remove_secret(&self, group: &str, name: &str) -> Result<(), StoreError> {
         self.remove_secret(group, name)
+    }
+}
+
+#[async_trait]
+impl ReportRepository for SqliteStore {
+    async fn store_node_run(
+        &self,
+        org_id: &str,
+        run: NewNodeRun<'_>,
+        keep_runs: usize,
+    ) -> Result<StoredNodeRun, StoreError> {
+        self.store_node_run(org_id, run, keep_runs)
+    }
+
+    async fn list_node_runs(
+        &self,
+        org_id: &str,
+        filter: &NodeRunFilter,
+    ) -> Result<Vec<StoredNodeRun>, StoreError> {
+        self.list_node_runs(org_id, filter)
+    }
+
+    async fn find_node_run(
+        &self,
+        org_id: &str,
+        node_name: &str,
+        run_id: &str,
+    ) -> Result<Option<StoredNodeRun>, StoreError> {
+        self.find_node_run(org_id, node_name, run_id)
+    }
+
+    async fn latest_node_run(
+        &self,
+        org_id: &str,
+        node_name: &str,
+    ) -> Result<Option<StoredNodeRun>, StoreError> {
+        self.latest_node_run(org_id, node_name)
     }
 }
 

@@ -18,6 +18,7 @@
 //!   password-reset tokens.
 //! * [`KvRepository`] — the raw key/value table and maintenance flag.
 //! * [`SecretsRepository`] — operator-managed secrets stored in the KV table.
+//! * [`ReportRepository`] — persisted Chef `run_converge` node runs.
 //!
 //! [`MetadataStore`] is a blanket supertrait, so a backend only implements the
 //! repository traits. Code that is generic over one domain accepts
@@ -906,6 +907,60 @@ pub trait SecretsRepository: Send + Sync {
     async fn remove_secret(&self, group: &str, name: &str) -> Result<(), StoreError>;
 }
 
+/// A Chef `run_converge` report to persist for one node run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewNodeRun<'a> {
+    pub node_name: &'a str,
+    pub run_id: &'a str,
+    pub status: &'a str,
+    pub start_time: Option<&'a str>,
+    pub end_time: Option<&'a str>,
+    pub resource_count: i64,
+    pub updated_resource_count: i64,
+    pub error_count: i64,
+    pub report: &'a str,
+}
+
+/// Filter and result limit for listing stored node runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeRunFilter {
+    pub node_name: Option<String>,
+    pub status: Option<String>,
+    pub since: Option<String>,
+    pub failures_only: bool,
+    pub limit: usize,
+}
+
+/// Persisted Chef `run_converge` node runs.
+#[async_trait]
+pub trait ReportRepository: Send + Sync {
+    async fn store_node_run(
+        &self,
+        org_id: &str,
+        run: NewNodeRun<'_>,
+        keep_runs: usize,
+    ) -> Result<crate::StoredNodeRun, StoreError>;
+
+    async fn list_node_runs(
+        &self,
+        org_id: &str,
+        filter: &NodeRunFilter,
+    ) -> Result<Vec<crate::StoredNodeRun>, StoreError>;
+
+    async fn find_node_run(
+        &self,
+        org_id: &str,
+        node_name: &str,
+        run_id: &str,
+    ) -> Result<Option<crate::StoredNodeRun>, StoreError>;
+
+    async fn latest_node_run(
+        &self,
+        org_id: &str,
+        node_name: &str,
+    ) -> Result<Option<crate::StoredNodeRun>, StoreError>;
+}
+
 /// The complete metadata store contract.
 ///
 /// The server holds `Arc<dyn MetadataStore>`. The legacy `MigrationRepository`
@@ -923,6 +978,7 @@ pub trait MetadataStore:
     + KvRepository
     + HealthRepository
     + SecretsRepository
+    + ReportRepository
     + Send
     + Sync
 {
@@ -941,6 +997,7 @@ impl<T> MetadataStore for T where
         + KvRepository
         + HealthRepository
         + SecretsRepository
+        + ReportRepository
         + Send
         + Sync
 {

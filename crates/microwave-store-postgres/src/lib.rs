@@ -33,6 +33,7 @@ mod migration;
 mod oauth;
 mod objects;
 mod policies;
+mod reports;
 mod sandboxes;
 mod secrets;
 mod store;
