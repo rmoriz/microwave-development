@@ -1,7 +1,7 @@
 # Experimental MCP server and local run reports
 
 Date: 2026-10-27
-Status: draft for approval (revision 2)
+Status: approved (2026-10-27)
 Approach: C — HTTP MCP endpoint inside the server
 
 ## Intent
