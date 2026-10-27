@@ -11,8 +11,8 @@
 //! `microwave-store-postgres` integration tests.
 
 use microwave_store::{
-    ActorType, GroupMembers, MetadataStore, NewNode, Org, Permission, SqliteStore, StoreError,
-    UserPatch, UserProfile,
+    ActorType, GroupMembers, MetadataStore, NewNode, NewNodeRun, NodeRunFilter, Org, Permission,
+    SqliteStore, StoreError, UserPatch, UserProfile,
 };
 use std::sync::{Arc, Once, OnceLock};
 use uuid::Uuid;
@@ -2782,6 +2782,171 @@ mod suite {
         cleanup_org(store.as_ref(), &org.id).await;
         Vec::new()
     }
+
+    pub async fn reports(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let fixture = fixture(store.as_ref()).await;
+        let org_id = &fixture.org.id;
+
+        let stored = store
+            .store_node_run(
+                org_id,
+                NewNodeRun {
+                    node_name: "web1",
+                    run_id: "run-1",
+                    status: "success",
+                    start_time: Some("2026-10-27T10:00:00.000Z"),
+                    end_time: Some("2026-10-27T10:01:00.000Z"),
+                    resource_count: 3,
+                    updated_resource_count: 2,
+                    error_count: 0,
+                    report: r#"{"message_type":"run_converge","run_id":"run-1"}"#,
+                },
+                10,
+            )
+            .await
+            .expect("store report");
+        assert_eq!(stored.node_name, "web1");
+        assert_eq!(stored.start_time, "2026-10-27T10:00:00.000Z");
+        assert_eq!(
+            stored.report,
+            r#"{"message_type":"run_converge","run_id":"run-1"}"#
+        );
+
+        let retry = store
+            .store_node_run(
+                org_id,
+                NewNodeRun {
+                    node_name: "web1",
+                    run_id: "run-1",
+                    status: "failure",
+                    start_time: Some("2026-10-27T10:00:00.000Z"),
+                    end_time: Some("2026-10-27T10:02:00.000Z"),
+                    resource_count: 3,
+                    updated_resource_count: 1,
+                    error_count: 1,
+                    report: r#"{"message_type":"run_converge","run_id":"retry"}"#,
+                },
+                10,
+            )
+            .await
+            .expect("retry report");
+        assert_eq!(retry.id, stored.id);
+        assert_eq!(retry.status, "failure");
+
+        let failures = store
+            .list_node_runs(
+                org_id,
+                &NodeRunFilter {
+                    node_name: Some("web1".into()),
+                    status: None,
+                    since: None,
+                    failures_only: true,
+                    limit: 10,
+                },
+            )
+            .await
+            .expect("list failures");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].run_id, "run-1");
+
+        let since = store
+            .list_node_runs(
+                org_id,
+                &NodeRunFilter {
+                    node_name: None,
+                    status: None,
+                    since: Some("2026-10-27T09:30:00.000Z".into()),
+                    failures_only: false,
+                    limit: 10,
+                },
+            )
+            .await
+            .expect("list since");
+        assert_eq!(since.len(), 1);
+
+        assert_eq!(
+            store
+                .find_node_run(org_id, "web1", "run-1")
+                .await
+                .expect("find report")
+                .map(|run| run.id),
+            Some(stored.id.clone())
+        );
+        assert_eq!(
+            store
+                .latest_node_run(org_id, "web1")
+                .await
+                .expect("latest report")
+                .map(|run| run.run_id),
+            Some("run-1".to_string())
+        );
+
+        for (run_id, start) in [
+            ("run-2", "2026-10-27T11:00:00.000Z"),
+            ("run-3", "2026-10-27T12:00:00.000Z"),
+        ] {
+            store
+                .store_node_run(
+                    org_id,
+                    NewNodeRun {
+                        node_name: "web1",
+                        run_id,
+                        status: "success",
+                        start_time: Some(start),
+                        end_time: None,
+                        resource_count: 1,
+                        updated_resource_count: 1,
+                        error_count: 0,
+                        report: r#"{"message_type":"run_converge"}"#,
+                    },
+                    2,
+                )
+                .await
+                .expect("store pruned report");
+        }
+        let kept = store
+            .list_node_runs(
+                org_id,
+                &NodeRunFilter {
+                    node_name: Some("web1".into()),
+                    status: None,
+                    since: None,
+                    failures_only: false,
+                    limit: 10,
+                },
+            )
+            .await
+            .expect("list kept");
+        assert_eq!(
+            kept.iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-3", "run-2"]
+        );
+
+        let other = store
+            .create_org(&unique("reports-other"), "Other")
+            .await
+            .expect("create other org");
+        assert!(store
+            .list_node_runs(
+                &other.id,
+                &NodeRunFilter {
+                    node_name: None,
+                    status: None,
+                    since: None,
+                    failures_only: false,
+                    limit: 10,
+                },
+            )
+            .await
+            .expect("list other org")
+            .is_empty());
+
+        cleanup_org(store.as_ref(), &fixture.org.id).await;
+        cleanup_org(store.as_ref(), &other.id).await;
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2822,6 +2987,7 @@ matrix!(
         oauth,
         kv_secrets,
         bulk_lookups,
+        reports,
     ]
 );
 
@@ -2840,5 +3006,6 @@ matrix!(
         oauth,
         kv_secrets,
         bulk_lookups,
+        reports,
     ]
 );

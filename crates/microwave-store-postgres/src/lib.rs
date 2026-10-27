@@ -4,7 +4,8 @@
 //! `microwave-store` (`IdentityRepository`, `AuthzRepository`,
 //! `ObjectRepository`, `SandboxRepository`, `CookbookRepository`,
 //! `ArtifactRepository`, `PolicyRepository`, `MembershipRepository`,
-//! `OAuthRepository`, `KvRepository` and `SecretsRepository`) against the
+//! `OAuthRepository`, `KvRepository`, `SecretsRepository` and
+//! `ReportRepository`) against the
 //! unified PostgreSQL schema in `migrations/0001_initial.sql`. `PostgresStore`
 //! therefore satisfies [`MetadataStore`](microwave_store::MetadataStore).
 //!
