@@ -1,0 +1,41 @@
+---
+import { site } from '../data/site';
+
+const points = [
+  'Cinc Client 19 and Chef Infra Client 18/19 speak the same API.',
+  'Cookbooks, roles, data bags, policyfiles, search, and ACLs keep working.',
+  'One server binary; SQLite by default, PostgreSQL when you need it.',
+  'AGPL-3.0, with no seat count and no vendor lock-in.',
+];
+---
+<section id="product" class="section cinc-section reveal">
+  <div class="container cinc-grid">
+    <div class="cinc-copy">
+      <p class="eyebrow">Built for Cinc Client</p>
+      <h2>Cinc Client, meet Microwave.</h2>
+      <p>
+        Cinc gives teams a free, community-built client. Microwave gives that
+        client an independent server. Keep the cookbooks, pipelines, and
+        operational habits you already have, and change the part underneath.
+      </p>
+      <p class="cinc-compat">
+        Tested with Cinc Client 19 on Debian, Ubuntu, and Fedora. The repository
+        ships the Compose stack behind that test.
+      </p>
+      <a class="text-link" href={site.cinc}>Meet the Cinc Project <span aria-hidden="true">↗</span></a>
+      <p class="fine-print">
+        Cinc is a separate project. Microwave is not affiliated with or endorsed
+        by the Cinc Project.
+      </p>
+    </div>
+
+    <ul class="cinc-points">
+      {points.map((point, index) => (
+        <li>
+          <span class="cinc-index" aria-hidden="true">0{index + 1}</span>
+          <span>{point}</span>
+        </li>
+      ))}
+    </ul>
+  </div>
+</section>

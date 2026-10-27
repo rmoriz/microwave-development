@@ -1,0 +1,22 @@
+---
+import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
+---
+<Base
+  title="404 — Microwave Server"
+  description="This page went cold. Head back to the Microwave Server homepage."
+  noindex
+>
+  <Nav slot="header" />
+  <section class="legal-page">
+    <div class="container legal-inner">
+      <p class="eyebrow">404</p>
+      <h1>This page went cold.</h1>
+      <p>
+        The link is stale or the page moved. The homepage has the product story,
+        the compatibility evidence, and the way in.
+      </p>
+      <a class="text-link" href="/">Back to home <span aria-hidden="true">↗</span></a>
+    </div>
+  </section>
+</Base>

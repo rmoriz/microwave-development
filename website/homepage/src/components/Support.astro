@@ -1,0 +1,48 @@
+---
+import { site } from '../data/site';
+
+const supportHref = `mailto:${site.email}?subject=Microwave%20support`;
+
+const options = [
+  {
+    title: 'Migration help',
+    copy: 'Plan the move, pick the right import path, and work through the parts a backup does not carry.',
+  },
+  {
+    title: 'Deployment review',
+    copy: 'Review your topology, storage, TLS, and backup plan before the server carries production traffic.',
+  },
+  {
+    title: 'Ongoing support',
+    copy: 'A named engineer for upgrades, troubleshooting, and the questions that come up after launch.',
+  },
+];
+---
+<section id="support" class="section support-section reveal">
+  <div class="container">
+    <div class="support-head">
+      <p class="eyebrow">Support</p>
+      <h2>Free software. Real support.</h2>
+      <p>
+        Microwave Server is AGPL-3.0-only. Self-hosting is free: no seat count,
+        no licence fee, no lock-in. Commercial support is available when you
+        want a named engineer, migration help, or a production review.
+      </p>
+    </div>
+
+    <div class="support-grid">
+      {options.map((option, index) => (
+        <article class="support-card">
+          <span class="support-index" aria-hidden="true">0{index + 1}</span>
+          <h3>{option.title}</h3>
+          <p>{option.copy}</p>
+        </article>
+      ))}
+    </div>
+
+    <div class="support-cta">
+      <a class="button button-primary" href={supportHref}>Talk to us about support</a>
+      <p>Scope and terms are agreed directly.</p>
+    </div>
+  </div>
+</section>

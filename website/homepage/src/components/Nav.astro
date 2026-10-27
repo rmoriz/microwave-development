@@ -1,0 +1,45 @@
+---
+import { site } from '../data/site';
+import Logo from './Logo.astro';
+
+const links = [
+  { href: '/#product', label: 'Product' },
+  { href: '/#compatibility', label: 'Compatibility' },
+  { href: '/#under-the-hood', label: 'Under the hood' },
+  { href: '/#support', label: 'Support' },
+  { href: '/#faq', label: 'FAQ' },
+];
+
+const supportHref = `mailto:${site.email}?subject=Microwave%20support`;
+---
+<header class="site-header">
+  <div class="container nav-shell">
+    <Logo />
+
+    <nav class="nav-desktop" aria-label="Primary">
+      <ul class="nav-links">
+        {links.map((link) => (
+          <li><a href={link.href}>{link.label}</a></li>
+        ))}
+      </ul>
+    </nav>
+
+    <div class="nav-actions">
+      <a class="nav-github" href={site.github}>GitHub</a>
+      <a class="button button-primary button-small" href={supportHref}>Talk to us</a>
+    </div>
+
+    <details class="nav-mobile">
+      <summary aria-label="Open menu">Menu</summary>
+      <nav aria-label="Mobile">
+        <ul>
+          {links.map((link) => (
+            <li><a href={link.href}>{link.label}</a></li>
+          ))}
+          <li><a href={site.github}>GitHub</a></li>
+          <li><a class="button button-primary" href={supportHref}>Talk to us</a></li>
+        </ul>
+      </nav>
+    </details>
+  </div>
+</header>

@@ -1,0 +1,62 @@
+---
+import { site } from '../data/site';
+
+const faqs = [
+  {
+    q: 'Is Microwave affiliated with Chef, Progress, or the Cinc Project?',
+    a: 'No. Microwave is an independent project. It is not affiliated with or endorsed by Progress Software Corporation, Chef Software, or the Cinc Project.',
+  },
+  {
+    q: 'Is this a fork of Chef Infra Server?',
+    a: 'No. It is an independent Rust implementation of the API. Upstream source snapshots are vendored for compatibility testing under their original Apache-2.0 licensing.',
+  },
+  {
+    q: 'Does it work with Cinc Client?',
+    a: 'Yes. It is tested with Cinc Client 19 on Debian, Ubuntu, and Fedora, and the Compose stack behind that test is in the repository.',
+  },
+  {
+    q: 'Is it really free?',
+    a: 'The server is free to self-host under AGPL-3.0-only. There is no seat count or licence fee. Commercial support is optional and scoped directly with you.',
+  },
+  {
+    q: 'Can we migrate our existing server?',
+    a: 'Yes, through a knife ec backup or the live legacy API crawler. The live path cannot copy password hashes or the admin flag, so those users need a reset or an external identity. There is no automatic chef-server.rb importer.',
+  },
+  {
+    q: 'Is it production-ready?',
+    a: 'It is a working implementation with extensive test coverage, not a blanket promise. Evaluate it against your own runbooks and the documented gaps; use the support option if you want a second pair of eyes before launch.',
+  },
+  {
+    q: 'What is missing today?',
+    a: 'No automatic chef-server.rb import, no LDAP/AD bind, no FIPS mode, no validated multi-replica HA, and embedded search is a relational scan rather than an inverted index. The full list is in the repository.',
+  },
+  {
+    q: 'How do we get commercial support?',
+    a: `Email ${site.email} with a short description of your environment and timeline. We will reply with the scope that fits.`,
+  },
+];
+---
+<section id="faq" class="section faq-section reveal">
+  <div class="container faq-grid">
+    <div class="faq-copy">
+      <p class="eyebrow">FAQ</p>
+      <h2>Questions your boss will ask.</h2>
+      <p>
+        Short answers for the procurement conversation, and links to the longer
+        ones in the repository.
+      </p>
+    </div>
+
+    <div class="faq-list">
+      {faqs.map((faq) => (
+        <details class="faq-item">
+          <summary>
+            <span>{faq.q}</span>
+            <span class="faq-plus" aria-hidden="true"></span>
+          </summary>
+          <p>{faq.a}</p>
+        </details>
+      ))}
+    </div>
+  </div>
+</section>
