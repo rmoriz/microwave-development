@@ -1,0 +1,22 @@
+[server]
+# Bind to the Compose service name, not 0.0.0.0. microwave-server builds the
+# presigned /bookshelf URLs from this value, so the seed container and the
+# Chef nodes must be able to reach it by this name.
+bind = "microwave:8000"
+
+[paths]
+data_dir = "/var/lib/microwave"
+
+[database]
+driver = "sqlite"
+
+[search]
+backend = "embedded"
+
+[object_store]
+backend = "local"
+
+[keygen]
+size = 3
+workers = 1
+warm_up = true

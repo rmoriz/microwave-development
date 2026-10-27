@@ -1,0 +1,10 @@
+[Unit]
+Description=Re-run the converge after the seed published a new generation
+After=cinc-e2e-converge.service
+
+[Service]
+Type=oneshot
+# The converge unit is a oneshot with RemainAfterExit=yes, so it stays
+# "active (exited)" after a successful run. A restart is needed to run it
+# again; --no-block avoids a start job deadlock while this unit is active.
+ExecStart=/bin/systemctl restart --no-block cinc-e2e-converge.service

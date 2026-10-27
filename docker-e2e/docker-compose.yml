@@ -1,0 +1,173 @@
+# Microwave Server end-to-end test stack.
+#
+#   cd docker-e2e
+#   docker compose up --build
+#
+# Services:
+#   microwave    - microwave-server built from the repository root Dockerfile
+#   seed         - knife + Berkshelf: downloads nginx/postgres from Supermarket,
+#                  uploads them, creates the role, writes client config
+#   node-debian  - Debian node running Cinc Client against the role
+#   node-ubuntu  - Ubuntu node running Cinc Client against the role
+#   node-fedora  - Fedora node running Cinc Client against the role
+#
+# The microwave listener binds to its Compose DNS name instead of 0.0.0.0 so
+# the presigned /bookshelf URLs it hands to knife and the nodes are reachable
+# from the other containers.
+name: microwave-e2e
+
+services:
+  microwave:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        RUST_VERSION: ${RUST_VERSION:-1}
+    image: ${MW_IMAGE:-microwave-server:e2e}
+    command:
+      [
+        "microwave-ctl",
+        "service",
+        "start",
+        "--foreground",
+        "--config",
+        "/etc/microwave/microwave.toml",
+      ]
+    environment:
+      MW_CONFIG: /etc/microwave/microwave.toml
+      # The healthcheck runs inside this container and must use the same
+      # name the listener is bound to.
+      MW_HEALTHCHECK_HOST: microwave
+      MW_HTTP_PORT: "8000"
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - microwave-data:/var/lib/microwave
+      - ./microwave/microwave.toml:/etc/microwave/microwave.toml:ro
+    ports:
+      - "${MW_E2E_PORT:-18080}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://microwave:8000/_status >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 10s
+
+  seed:
+    build:
+      context: ./seed
+    depends_on:
+      microwave:
+        condition: service_healthy
+    environment:
+      MW_SERVER_URL: http://microwave:8000
+      MW_ORG: ${MW_ORG:-e2e}
+      MW_ORG_FULL_NAME: ${MW_ORG_FULL_NAME:-Microwave E2E}
+      ROLE_NAME: ${ROLE_NAME:-e2e_role}
+      # Supermarket cookbook names and versions. Both are the newest releases
+      # of their cookbook: nginx 12.3.4 is resource-only (the e2e_nginx wrapper
+      # in seed/site-cookbooks drives nginx_install/nginx_service), postgres
+      # 2.17.3 is the newest `postgres` release.
+      NGINX_COOKBOOK: ${NGINX_COOKBOOK:-nginx}
+      NGINX_VERSION: ${NGINX_VERSION:-12.3.4}
+      POSTGRES_COOKBOOK: ${POSTGRES_COOKBOOK:-postgres}
+      POSTGRES_VERSION: ${POSTGRES_VERSION:-2.17.3}
+      # Recipes placed in the role's run_list. e2e_nginx is the local wrapper
+      # cookbook that drives the resource-only nginx cookbook.
+      NGINX_RECIPE: ${NGINX_RECIPE:-e2e_nginx}
+      POSTGRES_RECIPE: ${POSTGRES_RECIPE:-postgres}
+      # Client names used by the node services; leftovers are deleted before
+      # the role is created so repeated runs can bootstrap again.
+      NODE_NAMES: ${NODE_NAMES:-node-debian node-ubuntu node-fedora}
+    volumes:
+      # Read the bootstrap superuser key the server writes on first start.
+      - microwave-data:/mw-data:ro
+      # Pass the validator key and client config to the test nodes.
+      - chef-shared:/shared
+
+  node-debian:
+    build:
+      context: ./client
+      args:
+        BASE_IMAGE: ${DEBIAN_IMAGE:-debian:bookworm}
+        CINC_VERSION: ${CINC_VERSION:-19}
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      NODE_NAME: node-debian
+      # Plain-text unit output on the console instead of ANSI escapes.
+      SYSTEMD_COLORS: "0"
+    # A TTY gives the container a /dev/console. systemd writes its console
+    # output there, so `docker compose logs` shows the boot and converge
+    # progress instead of staying empty.
+    tty: true
+    # systemd as PID 1 keeps the container alive after the converge and lets
+    # the service resource manage nginx. This needs the privileges and the
+    # cgroup mount below.
+    privileged: true
+    cgroup: host
+    stop_signal: SIGRTMIN+3
+    tmpfs:
+      - /run
+      - /tmp
+    volumes:
+      - chef-shared:/shared:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+  node-ubuntu:
+    build:
+      context: ./client
+      args:
+        BASE_IMAGE: ${UBUNTU_IMAGE:-ubuntu:24.04}
+        CINC_VERSION: ${CINC_VERSION:-19}
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      NODE_NAME: node-ubuntu
+      # Plain-text unit output on the console instead of ANSI escapes.
+      SYSTEMD_COLORS: "0"
+    # A TTY gives the container a /dev/console. systemd writes its console
+    # output there, so `docker compose logs` shows the boot and converge
+    # progress instead of staying empty.
+    tty: true
+    privileged: true
+    cgroup: host
+    stop_signal: SIGRTMIN+3
+    tmpfs:
+      - /run
+      - /tmp
+    volumes:
+      - chef-shared:/shared:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+  node-fedora:
+    build:
+      context: ./client
+      args:
+        BASE_IMAGE: ${FEDORA_IMAGE:-fedora:41}
+        CINC_VERSION: ${CINC_VERSION:-19}
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      NODE_NAME: node-fedora
+      # Plain-text unit output on the console instead of ANSI escapes.
+      SYSTEMD_COLORS: "0"
+    # A TTY gives the container a /dev/console. systemd writes its console
+    # output there, so `docker compose logs` shows the boot and converge
+    # progress instead of staying empty.
+    tty: true
+    privileged: true
+    cgroup: host
+    stop_signal: SIGRTMIN+3
+    tmpfs:
+      - /run
+      - /tmp
+    volumes:
+      - chef-shared:/shared:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+volumes:
+  microwave-data:
+  chef-shared:
