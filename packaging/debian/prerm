@@ -1,0 +1,12 @@
+#!/bin/sh
+# Stop the service before its files disappear. Upgrades leave it running; the
+# unit is restarted by the postinst of the new version.
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
+    if [ -d /run/systemd/system ]; then
+        systemctl stop microwave-server.service >/dev/null 2>&1 || true
+    fi
+fi
+
+exit 0

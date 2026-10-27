@@ -2,6 +2,9 @@
 /target/
 **/target/
 
+# Local package output
+/dist/
+
 # Local editor and OS files
 .DS_Store
 *.swp

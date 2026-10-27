@@ -173,7 +173,9 @@ OpenSearch/Elasticsearch search, which rely on their dedicated suites.
 Docker, Docker Compose, systemd, backup/restore, migration, and the supported
 HA topology are documented in [`docs/deployment.md`](docs/deployment.md).
 Packaging artifacts: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
-`docker-compose.ha.yml`, and `packaging/`.
+`docker-compose.ha.yml`, and `packaging/`. A local Debian/Ubuntu package can be
+built with [`scripts/build-deb.sh`](scripts/build-deb.sh); see
+[`docs/debian-package.md`](docs/debian-package.md).
 
 The image default command is the supported container entrypoint:
 
@@ -246,7 +248,7 @@ See `docs/superpowers/specs/2026-10-24-microwave-server-design.md` and `TODO.md`
 | `crates/` | Rust workspace crates. |
 | `bin/` | Server and compatibility binaries. |
 | `docs/superpowers/specs/` | Architecture and design specifications. |
-| `packaging/` | systemd unit, example configuration, Garage config/bootstrap for Compose. |
+| `packaging/` | systemd unit, Debian package metadata, example configuration, Garage config/bootstrap for Compose. |
 | `TODO.md` | Master implementation checklist. |
 
 ## Naming and Trademarks

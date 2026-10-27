@@ -1,0 +1,20 @@
+Package: microwave-server
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: @MAINTAINER@
+Section: admin
+Priority: optional
+Depends: libc6@LIBC_DEP@, libgcc-s1, ca-certificates, adduser
+Recommends: sqlite3
+Homepage: https://github.com/rmoriz/microwave-development
+Description: Chef Infra Server API-compatible server
+ Microwave Server is a Rust reimplementation of the Chef Infra Server API,
+ designed as a drop-in replacement for existing clients and operations
+ tooling. It supports SQLite and PostgreSQL metadata backends, an embedded
+ search index or OpenSearch, local or S3-compatible object storage, signed
+ request authentication, and the policyfile/ACL surface.
+ .
+ This package installs the microwave-server service, the microwave-ctl and
+ chef-server-ctl administration tools, the microwave-migrate snapshot
+ importer, a systemd unit, and a default configuration under
+ /etc/microwave.

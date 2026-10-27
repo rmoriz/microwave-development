@@ -1,0 +1,23 @@
+#!/bin/sh
+# Refresh systemd after the unit has been removed. Only a purge removes
+# mutable state; a plain remove keeps /var/lib/microwave so a reinstall can
+# pick up the existing database.
+set -e
+
+if [ -d /run/systemd/system ]; then
+    systemctl --system daemon-reload >/dev/null 2>&1 || true
+fi
+
+if [ "$1" = "purge" ]; then
+    rm -rf /var/lib/microwave
+    rm -rf /etc/microwave
+
+    if getent passwd microwave >/dev/null 2>&1; then
+        deluser --system microwave >/dev/null 2>&1 || true
+    fi
+    if getent group microwave >/dev/null 2>&1; then
+        delgroup --system microwave >/dev/null 2>&1 || true
+    fi
+fi
+
+exit 0

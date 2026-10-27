@@ -1,0 +1,35 @@
+#!/bin/sh
+# Create the service account and its directories, then enable and start the
+# unit on systems that run systemd. Package upgrades keep existing data.
+set -e
+
+if [ "$1" = "configure" ]; then
+    if ! getent group microwave >/dev/null 2>&1; then
+        addgroup --system microwave
+    fi
+    if ! getent passwd microwave >/dev/null 2>&1; then
+        adduser --system --ingroup microwave --home /var/lib/microwave \
+            --no-create-home --shell /usr/sbin/nologin \
+            --gecos "Microwave Server" microwave
+    fi
+
+    install -d -o microwave -g microwave -m 0700 /var/lib/microwave
+    install -d -o root -g microwave -m 0750 /etc/microwave
+
+    # The shipped configuration is readable by the service group but not by
+    # other local users; it may contain object-store or SMTP credentials.
+    if [ -f /etc/microwave/microwave.toml ]; then
+        chown root:microwave /etc/microwave/microwave.toml
+        chmod 0640 /etc/microwave/microwave.toml
+    fi
+
+    if [ -d /run/systemd/system ]; then
+        systemctl --system daemon-reload || true
+        systemctl enable microwave-server.service >/dev/null 2>&1 || true
+        # A failed first start (for example a busy port) must not fail the
+        # package installation; it is logged and the unit stays enabled.
+        systemctl start microwave-server.service >/dev/null 2>&1 || true
+    fi
+fi
+
+exit 0

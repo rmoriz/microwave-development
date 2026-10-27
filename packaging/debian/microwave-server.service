@@ -1,0 +1,66 @@
+[Unit]
+Description=Microwave Server (Chef Infra Server API-compatible)
+Documentation=https://github.com/rmoriz/microwave-development
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=microwave
+Group=microwave
+
+# The package installs /etc/microwave/microwave.toml as a conffile with mode
+# 0640 root:microwave. Edit it and restart the unit; environment overrides
+# belong in a drop-in such as /etc/systemd/system/microwave-server.service.d/.
+ExecStartPre=/usr/bin/microwave-ctl --config /etc/microwave/microwave.toml check-config
+ExecStart=/usr/bin/microwave-server serve --config /etc/microwave/microwave.toml
+# SIGHUP reloads the TLS certificate/key pair when the TLS listener is enabled.
+# With plain HTTP it logs that there is nothing to reload and continues, so
+# `systemctl reload` is always safe. It does not re-read the rest of the
+# configuration; restart for that.
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+
+# Creates /var/lib/microwave (0700) and /etc/microwave. The binary only writes
+# below the data directory.
+StateDirectory=microwave
+StateDirectoryMode=0700
+ConfigurationDirectory=microwave
+ConfigurationDirectoryMode=0755
+
+Environment=RUST_LOG=info
+UMask=0077
+LimitNOFILE=65536
+
+# Hardening. The server does not need privileges, a writable home, or access
+# to anything outside its data directory. If the listener is changed to a
+# privileged port (<1024), add:
+#   AmbientCapabilities=CAP_NET_BIND_SERVICE
+#   CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+ReadWritePaths=/var/lib/microwave
+
+[Install]
+WantedBy=multi-user.target

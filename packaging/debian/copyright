@@ -1,0 +1,17 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: microwave-server
+Source: https://github.com/rmoriz/microwave-development
+
+Files: *
+Copyright: 2026 Roland Moriz <roland@moriz.de>
+License: AGPL-3.0-only
+ Microwave Server is free software: you can redistribute it and/or modify it
+ under the terms of the GNU Affero General Public License as published by the
+ Free Software Foundation, version 3.
+ .
+ On Debian systems the complete license text is available at
+ /usr/share/common-licenses/AGPL-3 and is installed with this package as
+ /usr/share/doc/microwave-server/LICENSE.
+ .
+ The vendored upstream sources under chef/ and chef-server/ are not part of
+ this binary package and keep their original Apache-2.0 licensing.
