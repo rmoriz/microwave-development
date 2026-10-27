@@ -195,9 +195,19 @@ workers = 1
 warm_up = false
 
 [data_collector]
+# Where run reports go:
+#   forward (default) - forward only, no local storage
+#   local             - store in the metadata database, do not forward
+#   both              - store locally and forward
+# `local` enables the route even when root_url is unset.
+store = "forward"
+# Keep this many reports per node; 0 keeps everything. Old reports are pruned
+# after each successful insert.
+keep_runs = 50
 # Setting root_url enables POST /organizations/:org/data-collector and forwards
-# the JSON payload to Automate or another collector. Leave unset to disable the
-# endpoint (it then returns 404, which chef-client treats as normal).
+# the JSON payload to Automate or another collector. Leave unset to disable
+# forwarding (with the default `store = "forward"` the endpoint then returns
+# 404, which chef-client treats as normal).
 # root_url = "https://automate.example.com/data-collector/v0/"
 # Shared token accepted from clients and sent upstream. It may also be stored
 # as the `data_collector.token` secret with:

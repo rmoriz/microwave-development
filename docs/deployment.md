@@ -1569,6 +1569,14 @@ The forwarder uses a shared connection pool, applies the configured timeout to
 both the request and response body, caps upstream responses at 1 MiB, and does
 not hold database locks across the outbound request.
 
+`data_collector.store` can be `forward` (default), `local`, or `both`.
+`local`/`both` persist Chef `run_converge` reports in the metadata database,
+one row per `(organization, node, run)` with 50 runs kept per node by default.
+The stable database grows with report volume; size `keep_runs` accordingly.
+Reports are not included in logical snapshots or `microwave-migrate`.
+Set `keep_runs = 0` to keep every report; only `run_converge` payloads are
+stored (`run_start` and `action` payloads are not).
+
 While `data_collector.root_url` is set and `data_collector.actions_enabled` is
 explicitly true (the default is false), successful node, role, environment,
 data bag/item, client, key, policy, membership, ACL, cookbook, and organization
