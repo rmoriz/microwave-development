@@ -25,6 +25,7 @@ pub mod middleware;
 pub mod nodes;
 pub mod organizations;
 pub mod policies;
+mod report_ingest;
 pub mod required_recipe;
 pub mod roles;
 pub mod sandboxes;
