@@ -1,0 +1,37 @@
+---
+import { site } from '../data/site';
+
+const stats = [
+  {
+    value: '3,284',
+    label: 'extended Pedant examples passing, 0 failures',
+    href: `${site.github}/blob/main/docs/pedant-extended-report.md`,
+  },
+  {
+    value: '0',
+    label: 'compatibility shims needed for the strict chef-client converge',
+    href: `${site.github}/blob/main/docs/chef-client-e2e-report.md`,
+  },
+  {
+    value: '3',
+    label: 'distros in the Cinc Client 19 Compose e2e stack',
+    href: `${site.github}/tree/main/docker-e2e`,
+  },
+  {
+    value: '1',
+    label: 'binary to run; SQLite by default',
+    href: `${site.github}#readme`,
+  },
+];
+---
+<section class="proof-strip" aria-label="Verified compatibility evidence">
+  <div class="container proof-grid">
+    {stats.map((stat) => (
+      <a class="proof-stat" href={stat.href}>
+        <span class="proof-number">{stat.value}</span>
+        <span class="proof-label">{stat.label}</span>
+        <span class="proof-arrow" aria-hidden="true">↗</span>
+      </a>
+    ))}
+  </div>
+</section>

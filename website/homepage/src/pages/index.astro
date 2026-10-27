@@ -2,9 +2,13 @@
 import Base from '../layouts/Base.astro';
 import Nav from '../components/Nav.astro';
 import Hero from '../components/Hero.astro';
+import ProofStrip from '../components/ProofStrip.astro';
+import CincSection from '../components/CincSection.astro';
 import { site } from '../data/site';
 ---
 <Base title={site.title} description={site.description}>
   <Nav slot="header" />
   <Hero />
+  <ProofStrip />
+  <CincSection />
 </Base>

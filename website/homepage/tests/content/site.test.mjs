@@ -27,3 +27,16 @@ test('hero and navigation', () => {
   assert.match($('picture img').attr('alt'), /rainbow neon microwave/i);
   assert.equal($('body').text().includes('docker run'), false);
 });
+
+test('proof strip and Cinc section', () => {
+  const text = $('body').text();
+  assert.match(text, /3,284/);
+  assert.match(text, /extended Pedant examples passing/);
+  assert.match(text, /compatibility shims/);
+  assert.match(text, /Debian, Ubuntu, and Fedora/);
+  assert.match(text, /Cinc Client 19/);
+  assert.match(text, /ships an end-to-end Compose stack|tested with Cinc Client 19/i);
+  assert.equal($('a[href="https://cinc.sh/"]').length >= 1, true);
+  assert.match(text, /not affiliated with or endorsed by the Cinc Project/i);
+  assert.doesNotMatch(text, /official partner/i);
+});

@@ -310,6 +310,142 @@
   text-align: right;
 }
 
+.proof-strip {
+  border-block: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.proof-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.proof-stat {
+  position: relative;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  min-height: 150px;
+  padding: 28px 24px;
+  border-left: 1px solid var(--line);
+  text-decoration: none;
+  transition: background-color 180ms ease;
+}
+
+.proof-stat:first-child {
+  border-left: 0;
+  padding-left: 0;
+}
+
+.proof-stat:hover {
+  background: rgba(244, 241, 232, 0.03);
+}
+
+.proof-number {
+  font-family: var(--font-mono);
+  font-size: clamp(2rem, 3.4vw, 2.8rem);
+  line-height: 1;
+  letter-spacing: -0.06em;
+}
+
+.proof-label {
+  max-width: 24ch;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.proof-arrow {
+  position: absolute;
+  top: 26px;
+  right: 20px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  transition: color 160ms ease;
+}
+
+.proof-stat:hover .proof-arrow {
+  color: var(--green);
+}
+
+.cinc-section {
+  position: relative;
+}
+
+.cinc-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: clamp(48px, 7vw, 96px);
+  align-items: start;
+}
+
+.cinc-copy h2 {
+  margin-top: 18px;
+  font-size: clamp(2.2rem, 4vw, 3.6rem);
+}
+
+.cinc-copy > p {
+  max-width: 55ch;
+  margin-top: 22px;
+  color: #c9c6bd;
+}
+
+.cinc-compat {
+  padding-left: 16px;
+  border-left: 2px solid var(--green);
+  color: var(--text) !important;
+  font-size: 0.98rem;
+}
+
+.text-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 26px;
+  color: var(--text);
+  font-weight: 600;
+  text-decoration-color: rgba(77, 255, 158, 0.5);
+  text-underline-offset: 0.25em;
+}
+
+.text-link:hover {
+  text-decoration-color: var(--green);
+}
+
+.fine-print {
+  max-width: 52ch;
+  margin-top: 28px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  line-height: 1.6;
+}
+
+.cinc-points {
+  display: grid;
+  padding: 0;
+  margin: 0;
+  border-top: 1px solid var(--line);
+  list-style: none;
+}
+
+.cinc-points li {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 20px;
+  padding: 24px 0;
+  border-bottom: 1px solid var(--line);
+  color: #d6d3ca;
+}
+
+.cinc-index {
+  color: var(--green);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+}
+
 @media (max-width: 800px) {
   .nav-desktop,
   .nav-actions {
