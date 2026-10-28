@@ -24,6 +24,10 @@ test('hero and navigation', () => {
   assert.match($('body').text(), /Cinc Client 19/);
   assert.match($('body').text(), /Chef Infra Client 18\/19/);
   assert.match($('body').text(), /AGPL-3\.0/);
+  assert.match($('body').text(), /Agent-ready/);
+  assert.match($('body').text(), /MCP for AI agents/);
+  assert.equal($('.nav-desktop a[href="/#agents"]').length, 1);
+  assert.equal($('.nav-mobile a[href="/#agents"]').length, 1);
   assert.match($('picture img').attr('alt'), /rainbow neon microwave/i);
   assert.equal($('body').text().includes('docker run'), false);
 });
@@ -49,7 +53,12 @@ test('compatibility, under the hood, and known gaps', () => {
   assert.match(text, /X-Ops-Sign/);
   assert.match(text, /knife/);
   assert.match(text, /chef-server-ctl/);
-  assert.equal($('#under-the-hood details').length, 6);
+  assert.equal($('#under-the-hood details').length, 7);
+  assert.match(text, /Per-organization MCP endpoint/);
+  assert.match(text, /MCP-capable AI agents/);
+  assert.match(text, /Agents in the kitchen\./);
+  assert.match(text, /MCP is experimental: no durable audit table/);
+  assert.match(text, /Tool calls are only structured log lines/);
   for (const phrase of [
     'No automatic `chef-server.rb` importer',
     'password reset',
@@ -71,7 +80,11 @@ test('migration, support, and FAQ', () => {
   assert.match(text, /ongoing support/i);
   assert.equal($('#support').length, 1);
   assert.equal($('#faq').length, 1);
-  assert.equal($('#faq details').length, 8);
+  assert.equal($('#faq details').length, 9);
+  assert.match(text, /Can an AI agent operate the server\?/);
+  assert.match(text, /not a built-in assistant/);
+  assert.match(text, /superuser default skips them/);
+  assert.match(text, /only server log lines, not a durable audit table/);
   assert.equal($('a[href="mailto:hello@microwave.io?subject=Microwave%20support"]').length >= 2, true);
 });
 
@@ -109,6 +122,7 @@ test('agent MCP sales section', () => {
 test('final CTA, footer, and legal pages', () => {
   const text = $('body').text();
   assert.match(text, /Bring your own cookbooks\./);
+  assert.match(text, /Then bring your own agent\./);
   assert.match(text, /not affiliated with or endorsed by Progress Software Corporation/i);
   assert.match(text, /trademarks of Progress Software Corporation/i);
   assert.match(text, /AGPL-3\.0-only/);

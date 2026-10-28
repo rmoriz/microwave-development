@@ -24,6 +24,7 @@ test('mobile navigation opens and closes without JavaScript', async ({ browser }
   await expect(summary).toBeVisible();
   await summary.click();
   await expect(page.locator('.nav-mobile a[href="/#product"]')).toBeVisible();
+  await expect(page.locator('.nav-mobile a[href="/#agents"]')).toBeVisible();
   await context.close();
 });
 
@@ -35,6 +36,13 @@ test('anchor links clear the sticky header', async ({ page }) => {
     return element.getBoundingClientRect().top;
   });
   expect(top).toBeGreaterThanOrEqual(72);
+
+  await page.locator('.nav-desktop a[href="/#agents"]').click();
+  await expect(page).toHaveURL(/#agents$/);
+  const agentTop = await page.locator('#agents').evaluate((element) => {
+    return element.getBoundingClientRect().top;
+  });
+  expect(agentTop).toBeGreaterThanOrEqual(72);
 });
 
 test('legal pages keep working primary navigation', async ({ page }) => {
@@ -59,6 +67,7 @@ test('JavaScript-disabled content is complete', async ({ browser }) => {
   const page = await context.newPage();
   await page.goto('/');
   await expect(page.locator('h1')).toHaveText('Get cooking without becoming a chef.');
+  await expect(page.locator('#agents')).toBeVisible();
   await expect(page.locator('#support')).toBeVisible();
   await context.close();
 });

@@ -4,6 +4,7 @@ import { site } from '../data/site';
 const docs = {
   deployment: `${site.github}/blob/main/docs/deployment.md`,
   migration: `${site.github}/blob/main/crates/microwave-migrate/README.md`,
+  mcp: `${site.github}/blob/main/docs/mcp.md`,
   readme: `${site.github}#readme`,
 };
 ---
@@ -132,6 +133,38 @@ const docs = {
           </p>
           <p>
             <a class="text-link" href={docs.migration}>Migration guide <span aria-hidden="true">↗</span></a>
+          </p>
+        </div>
+      </details>
+
+      <details class="under-item">
+        <summary>
+          <span class="under-index" aria-hidden="true">07</span>
+          <span>Agents in the kitchen.</span>
+          <span class="under-plus" aria-hidden="true"></span>
+        </summary>
+        <div class="under-body">
+          <p>
+            MCP is a Streamable HTTP endpoint per organization, authenticated
+            with a per-organization bearer token that maps to a Chef principal.
+            Read tools cover nodes, environments, cookbooks, runs, and converge
+            errors; write tools cover nodes, environments, and cookbook
+            versions.
+          </p>
+          <p>
+            Writes are opt-in per organization and reuse the HTTP API's ACL,
+            normalization, and validation paths. The default principal is the
+            superuser and bypasses ACLs, so a scoped user is the production
+            setting.
+          </p>
+          <p>
+            Tool calls emit one structured log line with organization,
+            principal, tool, duration, and result count; writes also log the
+            target. There is no durable audit table. The surface is otherwise
+            experimental: no token expiry, per-tool scope, or UI.
+          </p>
+          <p>
+            <a class="text-link" href={docs.mcp}>MCP guide <span aria-hidden="true">↗</span></a>
           </p>
         </div>
       </details>

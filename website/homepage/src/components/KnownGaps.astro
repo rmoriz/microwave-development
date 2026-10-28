@@ -8,6 +8,7 @@ const gaps = [
   'Embedded search is a relational scan, not an inverted index; larger installations should use OpenSearch or Elasticsearch.',
   'Multi-replica HA and automated failover are not validated.',
   'Only password-reset email is implemented; there is no invitation mail or durable outbox.',
+  'MCP is experimental: no durable audit table, no per-tool scopes or token expiry, and no UI. Tool calls are only structured log lines. Remote agents need allowed_hosts and a reverse-proxy review.',
 ];
 ---
 <section class="section gaps-section reveal">

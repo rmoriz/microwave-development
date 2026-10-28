@@ -31,6 +31,10 @@ const faqs = [
     a: 'No automatic chef-server.rb import, no LDAP/AD bind, no FIPS mode, no validated multi-replica HA, and embedded search is a relational scan rather than an inverted index. The full list is in the repository.',
   },
   {
+    q: 'Can an AI agent operate the server?',
+    a: 'Yes, through the experimental MCP endpoint. Bring an MCP-capable client, give it a per-organization token and a scoped principal, and choose whether writes are enabled. ACLs apply to scoped users; the superuser default skips them. It is not a built-in assistant, and tool calls are only server log lines, not a durable audit table.',
+  },
+  {
     q: 'How do we get commercial support?',
     a: `Email ${site.email} with a short description of your environment and timeline. We will reply with the scope that fits.`,
   },
