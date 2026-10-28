@@ -1490,6 +1490,44 @@ async fn upload_honors_frozen_and_force() {
 }
 
 #[tokio::test]
+async fn delete_cookbook_version_reports_the_resolved_version() {
+    let (_state, _org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+
+    for (id, version) in [(2, "1.0.0"), (3, "2.0.0")] {
+        call_tool(
+            &app,
+            "acme",
+            "a",
+            id,
+            "upload_cookbook_version",
+            upload_args(
+                "nginx",
+                version,
+                json!([inline_file(
+                    "recipes/default.rb",
+                    "Y29va2Jvb2sgY29udGVudHM="
+                )]),
+            ),
+        )
+        .await;
+    }
+
+    let deleted = call_tool(
+        &app,
+        "acme",
+        "a",
+        4,
+        "delete_cookbook_version",
+        json!({ "name": "nginx", "version": "latest" }),
+    )
+    .await;
+    assert_eq!(
+        deleted,
+        json!({ "name": "nginx", "version": "2.0.0", "deleted": true })
+    );
+}
+
+#[tokio::test]
 async fn delete_cookbook_version_removes_the_version() {
     let (_state, _org, app) = fixture(mcp_config(&[("acme", "a")])).await;
 

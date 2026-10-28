@@ -492,7 +492,7 @@ impl McpServer {
     ) -> Result<CallToolResult, ApiError> {
         let ctx = &self.ctx;
         let auth = ctx.auth_context();
-        crate::cookbooks::delete_cookbook_version_object(
+        let deleted = crate::cookbooks::delete_cookbook_version_object(
             &ctx.state,
             &auth,
             &ctx.org,
@@ -501,9 +501,17 @@ impl McpServer {
             2,
         )
         .await?;
+        let name = deleted
+            .get("cookbook_name")
+            .and_then(Value::as_str)
+            .unwrap_or(&args.name);
+        let version = deleted
+            .get("version")
+            .and_then(Value::as_str)
+            .unwrap_or(&args.version);
         Ok(self.json_result(&json!({
-            "name": args.name,
-            "version": args.version,
+            "name": name,
+            "version": version,
             "deleted": true,
         })))
     }
