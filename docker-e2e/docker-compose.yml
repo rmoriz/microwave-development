@@ -116,7 +116,7 @@ services:
     # A workstation whose prepare unit never succeeded has no knife config and
     # no MCP connection; surface that instead of only showing "running".
     healthcheck:
-      test: ["CMD-SHELL", "test -r /root/.chef/knife.rb"]
+      test: ["CMD-SHELL", "test -r /home/dev/.chef/knife.rb"]
       interval: 10s
       timeout: 3s
       retries: 12

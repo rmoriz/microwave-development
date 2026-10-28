@@ -229,7 +229,7 @@ git commit -m "feat(e2e): install PostgreSQL 18 through the postgresql cookbook"
 
 **Interfaces:**
 - Produces: image `mw-workstation-e2e`, unit `workstation-prepare.service`,
-  `/work/opencode.json`, and `/root/.chef/knife.rb` for Task 4 and Task 7.
+  `/work/opencode.json`, and `/home/dev/.chef/knife.rb` for Task 4 and Task 7.
 
 - [ ] **Step 1: Write the Dockerfile**
 
@@ -239,18 +239,37 @@ BASE_IMAGE=debian:trixie`, Cinc Workstation install as in Task 1, plus:
 ```dockerfile
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+ARG USER_NAME=dev
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates curl git gnupg less procps systemd systemd-sysv vim-tiny \
-    && apt-get clean
+    && apt-get clean \
+    && useradd --create-home --uid 1000 --shell /bin/bash "$USER_NAME" \
+    && install -d -o "$USER_NAME" -g "$USER_NAME" \
+        /work "/home/$USER_NAME/.chef" \
+        "/home/$USER_NAME/.local/share/opencode" \
+        "/home/$USER_NAME/.local/state/opencode" \
+        "/home/$USER_NAME/.config/opencode" \
+    && chown -R "$USER_NAME":"$USER_NAME" "/home/$USER_NAME"
 
 ARG OPENCODE_VERSION=2.2.0
 
 RUN curl -fsSL https://opencode.ai/v2/install \
         | bash -s -- --no-modify-path --version "$OPENCODE_VERSION" \
-    && mv /root/.opencode/bin/opencode /usr/local/bin/opencode \
-    && opencode --version | grep -qx "opencode v${OPENCODE_VERSION}" \
-    && opencode --version
+    && install -D -m 0755 /root/.opencode/bin/opencode /usr/local/libexec/opencode \
+    && /usr/local/libexec/opencode --version | grep -qx "opencode v${OPENCODE_VERSION}"
+
+# systemd cannot be PID 1 as a non-root user here, so the container stays root
+# and the wrapper drops OpenCode to `dev`.
+RUN printf '%s\n' \
+        '#!/bin/sh' \
+        'if [ "$(id -u)" = 0 ]; then' \
+        '    exec runuser -u dev -- /usr/local/libexec/opencode "$@"' \
+        'fi' \
+        'exec /usr/local/libexec/opencode "$@"' \
+        > /usr/local/bin/opencode \
+    && chmod 0755 /usr/local/bin/opencode
 
 COPY workstation-prepare.sh /usr/local/bin/workstation-prepare
 COPY workstation-prepare.service /etc/systemd/system/workstation-prepare.service
@@ -267,7 +286,7 @@ COPY AGENTS.md /work/AGENTS.md
 ENV MW_MCP_TOKEN=e2e-mcp-token
 
 # knife 19 finds ~/.chef/knife.rb only through KNIFE_HOME.
-ENV KNIFE_HOME=/root/.chef
+ENV KNIFE_HOME=/home/dev/.chef
 
 # OpenCode writes scratch state below TMPDIR; /tmp is a tmpfs in Compose.
 ENV TMPDIR=/tmp
@@ -287,14 +306,14 @@ CMD ["/sbin/init"]
 
 `workstation-prepare.sh` waits for `/shared/knife.rb` and
 `/shared/pivotal.pem` (up to 300 × 2 s, exit 1 with a message), then
-`install -d -m 0700 /root/.chef`, copies both files, sets `0600`, and rewrites
+`install -d -m 0700 /home/dev/.chef`, copies both files, sets `0600`, and rewrites
 the key path:
 
 ```bash
-sed -i 's|client_key "/shared/pivotal.pem"|client_key "/root/.chef/pivotal.pem"|' /root/.chef/knife.rb
+sed -i 's|client_key "/shared/pivotal.pem"|client_key "/home/dev/.chef/pivotal.pem"|' /root/.chef/knife.rb
 ```
 
-It ends by printing `knife node list`, then connects the OpenCode MCP client:
+It chowns the staged files to `dev`, ends by printing `knife node list`, then connects the OpenCode MCP client:
 `cd /work`, one `opencode mcp list` to start the background service, an
 `opencode reload` (2.2.0 registers MCP servers only on a reload, not on the
 first service start), then a poll of up to 30 × 2 s for a `connected` status
@@ -305,8 +324,8 @@ and a final `opencode mcp list || true`. It exits 0 either way.
 `ExecStart=/usr/local/bin/workstation-prepare`,
 `StandardOutput=journal+console`, `StandardError=journal+console`,
 `Restart=on-failure`, `RestartSec=5`, plus three
-environment lines: `Environment=HOME=/root` (systemd system units have no
-`HOME` and the knife plugin loader joins it), `Environment=KNIFE_HOME=/root/.chef`,
+environment lines: `Environment=HOME=/home/dev` (systemd system units have no
+`HOME` and the knife plugin loader joins it), `Environment=KNIFE_HOME=/home/dev/.chef`,
 and `Environment=TMPDIR=/tmp` (systemd services get a clean env and /tmp is a
 tmpfs),
 and `PassEnvironment=MW_MCP_TOKEN` (systemd services get a clean environment, and
@@ -401,6 +420,12 @@ After `seed`, add:
       - workstation-opencode:/root/.local/share/opencode
       - workstation-opencode-config:/root/.config/opencode
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    healthcheck:
+      test: ["CMD-SHELL", "test -r /home/dev/.chef/knife.rb"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 120s
 ```
 
 Add both volumes under `volumes:`. Update the header service list with

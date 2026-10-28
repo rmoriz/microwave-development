@@ -10,7 +10,7 @@
 set -euo pipefail
 
 SHARED=/shared
-CHEF_DIR=/root/.chef
+CHEF_DIR=/home/dev/.chef
 
 echo "workstation: waiting for the seed to write $SHARED/knife.rb"
 for _ in $(seq 1 300); do
@@ -27,6 +27,8 @@ fi
 install -d -m 0700 "$CHEF_DIR"
 cp "$SHARED/knife.rb" "$CHEF_DIR/knife.rb"
 cp "$SHARED/pivotal.pem" "$CHEF_DIR/pivotal.pem"
+# The hand-over is root-owned 0600; hand the staged copy to the OpenCode user.
+chown dev:dev "$CHEF_DIR" "$CHEF_DIR/knife.rb" "$CHEF_DIR/pivotal.pem"
 chmod 0600 "$CHEF_DIR/knife.rb" "$CHEF_DIR/pivotal.pem"
 # The shared volume is read-only here; point the config at the staged key.
 sed -i "s|client_key \"$SHARED/pivotal.pem\"|client_key \"$CHEF_DIR/pivotal.pem\"|" \

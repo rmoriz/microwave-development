@@ -7,9 +7,13 @@ After=network-online.target network.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# Run as root: the seed hand-over files are root-owned 0600, and systemd needs
+# a root PID 1.
+Type=oneshot
+RemainAfterExit=yes
 # systemd system units have no HOME; knife loads plugins that join it.
-Environment=HOME=/root
-Environment=KNIFE_HOME=/root/.chef
+Environment=HOME=/home/dev
+Environment=KNIFE_HOME=/home/dev/.chef
 # /tmp is a tmpfs; be explicit because systemd services get a clean env.
 Environment=TMPDIR=/tmp
 # Pass the image/compose token into the unit environment. systemd services get

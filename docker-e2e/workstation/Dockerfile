@@ -7,9 +7,12 @@
 # knife and Berkshelf come from the Cinc Workstation package; OpenCode is
 # installed from the official installer and configured against the stack's MCP
 # endpoint in /work.
+#
+# Interactive use runs as the unprivileged `dev` user, not root.
 ARG BASE_IMAGE=debian:trixie
 FROM ${BASE_IMAGE}
 
+ARG USER_NAME=dev
 ARG CINC_WORKSTATION_VERSION=26.4.0
 ARG CINC_WORKSTATION_URL=https://downloads.cinc.sh/files/stable/cinc-workstation
 
@@ -31,7 +34,15 @@ RUN apt-get update \
         systemd-sysv \
         vim-tiny \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 1000 --shell /bin/bash "$USER_NAME" \
+    && install -d -o "$USER_NAME" -g "$USER_NAME" \
+        /work \
+        "/home/$USER_NAME/.chef" \
+        "/home/$USER_NAME/.local/share/opencode" \
+        "/home/$USER_NAME/.local/state/opencode" \
+        "/home/$USER_NAME/.config/opencode" \
+    && chown -R "$USER_NAME":"$USER_NAME" "/home/$USER_NAME"
 
 # Pick the Debian architecture package (amd64 or arm64).
 RUN set -eux; \
@@ -44,21 +55,36 @@ RUN set -eux; \
 
 RUN curl -fsSL https://opencode.ai/v2/install \
         | bash -s -- --no-modify-path --version "$OPENCODE_VERSION" \
-    && mv /root/.opencode/bin/opencode /usr/local/bin/opencode \
-    && opencode --version | grep -qx "opencode v${OPENCODE_VERSION}" \
-    && opencode --version
+    && install -D -m 0755 /root/.opencode/bin/opencode /usr/local/libexec/opencode \
+    && /usr/local/libexec/opencode --version | grep -qx "opencode v${OPENCODE_VERSION}" \
+    && /usr/local/libexec/opencode --version
+
+# systemd cannot run as a non-root PID 1 here, so the container starts as root.
+# `opencode` drops to the unprivileged user instead, so editors and MCP tools
+# never run as root.
+RUN printf '%s\n' \
+        '#!/bin/sh' \
+        '# systemd needs PID 1 to stay root; run the client unprivileged.' \
+        'if [ "$(id -u)" = 0 ]; then' \
+        '    exec runuser -u dev -- /usr/local/libexec/opencode "$@"' \
+        'fi' \
+        'exec /usr/local/libexec/opencode "$@"' \
+        > /usr/local/bin/opencode \
+    && chmod 0755 /usr/local/bin/opencode
 
 COPY workstation-prepare.sh /usr/local/bin/workstation-prepare
 COPY workstation-prepare.service /etc/systemd/system/workstation-prepare.service
 RUN chmod 0755 /usr/local/bin/workstation-prepare \
-    && mkdir -p /etc/systemd/system/multi-user.target.wants /work \
+    && mkdir -p /etc/systemd/system/multi-user.target.wants \
     && ln -sf /etc/systemd/system/workstation-prepare.service \
               /etc/systemd/system/multi-user.target.wants/workstation-prepare.service
 
 COPY opencode.json /work/opencode.json
 COPY AGENTS.md /work/AGENTS.md
+RUN chown -R "$USER_NAME":"$USER_NAME" /work
 
-# Every exec session starts here so OpenCode picks up the project config.
+# Every exec session starts here so OpenCode picks up the project config. The
+# USER below makes exec sessions run unprivileged.
 WORKDIR /work
 
 # The e2e token is baked in so an exec session needs no prefix. Compose can
@@ -67,7 +93,7 @@ ENV MW_MCP_TOKEN=e2e-mcp-token
 
 # knife 19 only reads ~/.chef/knife.rb through KNIFE_HOME, not through HOME
 # alone, and systemd units have no HOME at all.
-ENV KNIFE_HOME=/root/.chef
+ENV KNIFE_HOME=/home/dev/.chef
 
 # OpenCode writes scratch state below TMPDIR. /tmp is a tmpfs in Compose and
 # systemd does not set TMPDIR for services.

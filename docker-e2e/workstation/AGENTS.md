@@ -9,6 +9,7 @@ This container is part of the disposable `docker-e2e` stack.
   tools over the same organization.
 - Write tools run as the `pivotal` superuser. Destructive calls (`delete_node`,
   `delete_environment`, `delete_cookbook_version`) take effect immediately.
+- OpenCode runs as the unprivileged `dev` user; knife works from `su dev` too.
 - MCP is experimental. The bearer token is a fixed e2e value and is not a
   production credential.
 
