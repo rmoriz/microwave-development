@@ -20,3 +20,18 @@ backend = "local"
 size = 3
 workers = 1
 warm_up = true
+
+[mcp]
+enabled = true
+# Requests from inside the Compose network carry this Host header. Without the
+# entry the MCP transport rejects them with 403.
+allowed_hosts = ["microwave:8000"]
+
+[mcp.organizations.e2e]
+token = "e2e-mcp-token"
+principal = "pivotal"
+writes = true
+
+[data_collector]
+# Keep run reports so the MCP run tools have data to return.
+store = "local"

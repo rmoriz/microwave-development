@@ -5,11 +5,12 @@
 #
 # Services:
 #   microwave    - microwave-server built from the repository root Dockerfile
-#   seed         - knife + Berkshelf: downloads nginx/postgres from Supermarket,
+#   seed         - knife + Berkshelf: downloads nginx/postgresql from Supermarket,
 #                  uploads them, creates the role, writes client config
 #   node-debian  - Debian node running Cinc Client against the role
 #   node-ubuntu  - Ubuntu node running Cinc Client against the role
 #   node-fedora  - Fedora node running Cinc Client against the role
+#   workstation  - knife + OpenCode against the stack, for `docker exec`
 #
 # The microwave listener binds to its Compose DNS name instead of 0.0.0.0 so
 # the presigned /bookshelf URLs it hands to knife and the nodes are reachable
@@ -65,16 +66,17 @@ services:
       ROLE_NAME: ${ROLE_NAME:-e2e_role}
       # Supermarket cookbook names and versions. Both are the newest releases
       # of their cookbook: nginx 12.3.4 is resource-only (the e2e_nginx wrapper
-      # in seed/site-cookbooks drives nginx_install/nginx_service), postgres
-      # 2.17.3 is the newest `postgres` release.
+      # in seed/site-cookbooks drives nginx_install/nginx_service), postgresql
+      # 13.0.5 is resource-only too (the e2e_postgresql wrapper drives
+      # postgresql_install with PostgreSQL 18).
       NGINX_COOKBOOK: ${NGINX_COOKBOOK:-nginx}
       NGINX_VERSION: ${NGINX_VERSION:-12.3.4}
-      POSTGRES_COOKBOOK: ${POSTGRES_COOKBOOK:-postgres}
-      POSTGRES_VERSION: ${POSTGRES_VERSION:-2.17.3}
-      # Recipes placed in the role's run_list. e2e_nginx is the local wrapper
-      # cookbook that drives the resource-only nginx cookbook.
+      POSTGRES_COOKBOOK: ${POSTGRES_COOKBOOK:-postgresql}
+      POSTGRES_VERSION: ${POSTGRES_VERSION:-13.0.5}
+      # Recipes placed in the role's run_list. e2e_nginx and e2e_postgresql are
+      # the local wrapper cookbooks for the resource-only Supermarket ones.
       NGINX_RECIPE: ${NGINX_RECIPE:-e2e_nginx}
-      POSTGRES_RECIPE: ${POSTGRES_RECIPE:-postgres}
+      POSTGRES_RECIPE: ${POSTGRES_RECIPE:-e2e_postgresql}
       # Client names used by the node services; leftovers are deleted before
       # the role is created so repeated runs can bootstrap again.
       NODE_NAMES: ${NODE_NAMES:-node-debian node-ubuntu node-fedora}
@@ -83,6 +85,34 @@ services:
       - microwave-data:/mw-data:ro
       # Pass the validator key and client config to the test nodes.
       - chef-shared:/shared
+
+  workstation:
+    build:
+      context: ./workstation
+    image: ${MW_WORKSTATION_IMAGE:-microwave-workstation:e2e}
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      # Optional override; the image already bakes the e2e token in.
+      MW_MCP_TOKEN: ${MW_MCP_TOKEN:-e2e-mcp-token}
+      SYSTEMD_COLORS: "0"
+    # Runs systemd and stays up after the prepare unit, so the box is used with
+    # `docker compose exec workstation …`. Nothing is published.
+    tty: true
+    privileged: true
+    cgroup: host
+    stop_signal: SIGRTMIN+3
+    tmpfs:
+      - /run
+      - /tmp
+    volumes:
+      # Read-only hand-over of the knife config the seed wrote.
+      - chef-shared:/shared:ro
+      # Keep the OpenCode login and session state across `up` runs.
+      - workstation-opencode:/root/.local/share/opencode
+      - workstation-opencode-config:/root/.config/opencode
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
 
   node-debian:
     build:
@@ -171,3 +201,5 @@ services:
 volumes:
   microwave-data:
   chef-shared:
+  workstation-opencode:
+  workstation-opencode-config:
