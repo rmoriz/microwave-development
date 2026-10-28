@@ -44,6 +44,26 @@ impl McpContext {
             .map_err(ApiError::from)
     }
 
+    /// Whether the authenticated principal may read the node named
+    /// `node_name`. Runs and converge errors have no ACL of their own, so they
+    /// inherit the node's: superusers can read every run, other principals only
+    /// when the node still exists and is readable.
+    pub async fn node_readable(&self, node_name: &str) -> Result<bool, ApiError> {
+        if self.is_superuser {
+            return Ok(true);
+        }
+        let Some(node) = self
+            .state
+            .store
+            .find_node(&self.org.id, node_name)
+            .await
+            .map_err(ApiError::from)?
+        else {
+            return Ok(false);
+        };
+        self.can_read(&node.authz_id).await
+    }
+
     /// Fail with the API's forbidden error unless the principal may read
     /// `authz_id`.
     pub async fn require_read(&self, authz_id: &str) -> Result<(), ApiError> {

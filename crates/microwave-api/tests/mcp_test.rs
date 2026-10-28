@@ -5,7 +5,7 @@ use axum::http::{Request, StatusCode};
 use microwave_api::AppState;
 use microwave_config::{Config, McpOrgConfig};
 use microwave_crypto::SignVersion;
-use microwave_store::Org;
+use microwave_store::{NewNodeRun, Org};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -191,6 +191,126 @@ async fn upload_cookbook(state: &AppState, app: &axum::Router, org: &Org, versio
     assert_eq!(response.status(), StatusCode::CREATED);
 }
 
+async fn insert_run(
+    state: &AppState,
+    org: &Org,
+    run_id: &str,
+    status: &str,
+    start_time: &str,
+    error_count: i64,
+    report: &Value,
+) {
+    let node_name = "web1";
+    let report = report.to_string();
+    state
+        .store
+        .store_node_run(
+            &org.id,
+            NewNodeRun {
+                node_name,
+                run_id,
+                status,
+                start_time: Some(start_time),
+                end_time: Some(start_time),
+                resource_count: 3,
+                updated_resource_count: 1,
+                error_count,
+                report: &report,
+            },
+            50,
+        )
+        .await
+        .unwrap();
+}
+
+/// Three runs for `web1`: two clean successes and a newer failed run with both
+/// a top-level error and a resource error.
+async fn seed_web1_runs(state: &AppState, org: &Org) {
+    insert_run(
+        state,
+        org,
+        "run-1",
+        "success",
+        "2026-10-27T10:00:00.000Z",
+        0,
+        &json!({
+            "message_type": "run_converge",
+            "node_name": "web1",
+            "run_id": "run-1",
+            "status": "success",
+            "start_time": "2026-10-27T10:00:00.000Z",
+            "end_time": "2026-10-27T10:01:00.000Z",
+            "resources": [{ "type": "file", "name": "/etc/motd", "status": "updated" }]
+        }),
+    )
+    .await;
+    insert_run(
+        state,
+        org,
+        "run-2",
+        "success",
+        "2026-10-27T11:00:00.000Z",
+        0,
+        &json!({
+            "message_type": "run_converge",
+            "node_name": "web1",
+            "run_id": "run-2",
+            "status": "success",
+            "start_time": "2026-10-27T11:00:00.000Z",
+            "end_time": "2026-10-27T11:01:00.000Z",
+            "resources": [{ "type": "file", "name": "/etc/hosts", "status": "updated" }]
+        }),
+    )
+    .await;
+    insert_run(
+        state,
+        org,
+        "run-3",
+        "failed",
+        "2026-10-27T12:00:00.000Z",
+        2,
+        &json!({
+            "message_type": "run_converge",
+            "node_name": "web1",
+            "run_id": "run-3",
+            "status": "failed",
+            "start_time": "2026-10-27T12:00:00.000Z",
+            "end_time": "2026-10-27T12:01:00.000Z",
+            "error": {
+                "class": "RuntimeError",
+                "message": "converge failed",
+                "backtrace": ["/var/chef/cache/cookbooks/apache/recipes/default.rb:1"],
+                "description": {}
+            },
+            "resources": [
+                { "type": "file", "name": "/etc/motd", "status": "updated" },
+                {
+                    "type": "service",
+                    "name": "nginx",
+                    "status": "failed",
+                    "error": {
+                        "class": "Chef::Exceptions::Service",
+                        "message": "service nginx failed"
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+}
+
+async fn delete_node(app: &axum::Router, name: &str) {
+    let response = api(
+        app,
+        "DELETE",
+        &format!("/organizations/acme/nodes/{name}"),
+        &json!({}),
+        "pivotal",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
 async fn call_tool_raw(
     app: &axum::Router,
     org: &str,
@@ -345,6 +465,10 @@ async fn initialize_and_tools_list_work() {
         "list_cookbooks",
         "list_cookbook_versions",
         "get_cookbook_version",
+        "list_runs",
+        "latest_run",
+        "get_run",
+        "list_converge_errors",
     ] {
         assert!(names.contains(&tool), "missing tool {tool} in {names:?}");
     }
@@ -584,4 +708,271 @@ async fn oversized_request_body_is_413() {
     let response = mcp(&app, "acme", "a", body).await;
 
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn list_runs_filters_and_orders() {
+    let (state, org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+    seed_web1_runs(&state, &org).await;
+
+    let runs = call_tool(
+        &app,
+        "acme",
+        "a",
+        2,
+        "list_runs",
+        json!({ "node_name": "web1" }),
+    )
+    .await;
+    let run_ids: Vec<&str> = runs["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|run| run["run_id"].as_str())
+        .collect();
+    assert_eq!(run_ids, ["run-3", "run-2", "run-1"]);
+    assert_eq!(runs["runs"][0]["status"], "failed");
+    assert_eq!(runs["runs"][0]["error_count"], 2);
+    assert_eq!(runs["runs"][0]["start_time"], "2026-10-27T12:00:00.000Z");
+
+    let failures = call_tool(
+        &app,
+        "acme",
+        "a",
+        3,
+        "list_runs",
+        json!({ "node_name": "web1", "failures_only": true }),
+    )
+    .await;
+    let run_ids: Vec<&str> = failures["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|run| run["run_id"].as_str())
+        .collect();
+    assert_eq!(run_ids, ["run-3"]);
+
+    let since = call_tool(
+        &app,
+        "acme",
+        "a",
+        4,
+        "list_runs",
+        json!({ "since": "2026-10-27T11:30:00Z" }),
+    )
+    .await;
+    let run_ids: Vec<&str> = since["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|run| run["run_id"].as_str())
+        .collect();
+    assert_eq!(run_ids, ["run-3"]);
+}
+
+#[tokio::test]
+async fn latest_run_includes_errors() {
+    let (state, org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+    seed_web1_runs(&state, &org).await;
+
+    let latest = call_tool(
+        &app,
+        "acme",
+        "a",
+        2,
+        "latest_run",
+        json!({ "node_name": "web1" }),
+    )
+    .await;
+
+    assert_eq!(latest["run_id"], "run-3");
+    assert_eq!(latest["node_name"], "web1");
+    assert_eq!(latest["error"]["class"], "RuntimeError");
+    assert_eq!(latest["error"]["message"], "converge failed");
+    let resource_errors = latest["resource_errors"].as_array().unwrap();
+    assert_eq!(resource_errors.len(), 1);
+    assert_eq!(resource_errors[0]["resource_type"], "service");
+    assert_eq!(resource_errors[0]["resource_name"], "nginx");
+    assert_eq!(
+        resource_errors[0]["error_class"],
+        "Chef::Exceptions::Service"
+    );
+    assert_eq!(resource_errors[0]["error_message"], "service nginx failed");
+}
+
+#[tokio::test]
+async fn get_run_returns_the_full_report() {
+    let (state, org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+    seed_web1_runs(&state, &org).await;
+
+    let run = call_tool(
+        &app,
+        "acme",
+        "a",
+        2,
+        "get_run",
+        json!({ "node_name": "web1", "run_id": "run-2" }),
+    )
+    .await;
+
+    assert_eq!(run["run_id"], "run-2");
+    assert_eq!(run["node_name"], "web1");
+    let resources = run["resources"].as_array().unwrap();
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0]["name"], "/etc/hosts");
+}
+
+#[tokio::test]
+async fn list_converge_errors_returns_top_level_and_resource_errors() {
+    let (state, org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+    seed_web1_runs(&state, &org).await;
+
+    let result = call_tool(
+        &app,
+        "acme",
+        "a",
+        2,
+        "list_converge_errors",
+        json!({ "node_name": "web1" }),
+    )
+    .await;
+
+    let errors = result["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 2);
+
+    let top_level = errors
+        .iter()
+        .find(|error| error["resource_type"].is_null())
+        .expect("top-level error entry");
+    assert!(top_level["resource_name"].is_null());
+    assert_eq!(top_level["run_id"], "run-3");
+    assert_eq!(top_level["node_name"], "web1");
+    assert_eq!(top_level["start_time"], "2026-10-27T12:00:00.000Z");
+    assert_eq!(top_level["error_class"], "RuntimeError");
+    assert_eq!(top_level["error_message"], "converge failed");
+
+    let resource = errors
+        .iter()
+        .find(|error| !error["resource_type"].is_null())
+        .expect("resource error entry");
+    assert_eq!(resource["run_id"], "run-3");
+    assert_eq!(resource["resource_type"], "service");
+    assert_eq!(resource["resource_name"], "nginx");
+    assert_eq!(resource["error_class"], "Chef::Exceptions::Service");
+    assert_eq!(resource["error_message"], "service nginx failed");
+}
+
+#[tokio::test]
+async fn invalid_since_is_an_invalid_argument_error() {
+    let (_state, _org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+
+    for (id, tool) in [(2, "list_runs"), (3, "list_converge_errors")] {
+        let result =
+            call_tool_raw(&app, "acme", "a", id, tool, json!({ "since": "yesterday" })).await;
+        assert_eq!(result["result"]["isError"], json!(true), "{tool}");
+        let message = result["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(message.contains("RFC 3339"), "{tool}: {message}");
+    }
+}
+
+#[tokio::test]
+async fn reports_of_deleted_nodes_are_hidden_from_non_superusers() {
+    let state = support::state_with_config(mcp_config_with_principal("acme", "a", "agent"));
+    let org = support::add_org(&state, "acme").await;
+    let agent = support::add_user(&state, "agent", "agent@example.com", false);
+    support::associate(&state, &org, &agent);
+    let app = support::app(state.clone());
+
+    create_node(&app, json!({ "name": "web1" })).await;
+    seed_web1_runs(&state, &org).await;
+
+    let before = call_tool(
+        &app,
+        "acme",
+        "a",
+        2,
+        "list_runs",
+        json!({ "node_name": "web1" }),
+    )
+    .await;
+    assert_eq!(before["runs"].as_array().unwrap().len(), 3);
+
+    delete_node(&app, "web1").await;
+
+    assert_eq!(
+        call_tool(&app, "acme", "a", 3, "list_runs", json!({})).await,
+        json!({ "runs": [] })
+    );
+    let forbidden = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        4,
+        "list_runs",
+        json!({ "node_name": "web1" }),
+    )
+    .await;
+    assert_eq!(forbidden["result"]["isError"], json!(true));
+    assert_eq!(forbidden["result"]["content"][0]["text"], "forbidden");
+}
+
+#[tokio::test]
+async fn reports_of_deleted_nodes_stay_visible_to_superusers() {
+    let (state, org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+    create_node(&app, json!({ "name": "web1" })).await;
+    seed_web1_runs(&state, &org).await;
+    delete_node(&app, "web1").await;
+
+    let runs = call_tool(
+        &app,
+        "acme",
+        "a",
+        2,
+        "list_runs",
+        json!({ "node_name": "web1" }),
+    )
+    .await;
+
+    assert_eq!(runs["runs"].as_array().unwrap().len(), 3);
+    assert_eq!(runs["runs"][0]["run_id"], "run-3");
+}
+
+#[tokio::test]
+async fn oversized_get_run_is_an_error_not_truncated() {
+    let mut config = mcp_config(&[("acme", "a")]);
+    config.mcp.max_result_bytes = 1024;
+    let (state, org, app) = fixture(config).await;
+    insert_run(
+        &state,
+        &org,
+        "big-run",
+        "success",
+        "2026-10-27T13:00:00.000Z",
+        0,
+        &json!({
+            "message_type": "run_converge",
+            "node_name": "web1",
+            "run_id": "big-run",
+            "status": "success",
+            "start_time": "2026-10-27T13:00:00.000Z",
+            "padding": "x".repeat(2048)
+        }),
+    )
+    .await;
+
+    let result = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        2,
+        "get_run",
+        json!({ "node_name": "web1", "run_id": "big-run" }),
+    )
+    .await;
+
+    assert_eq!(result["result"]["isError"], json!(true));
+    assert_eq!(
+        result["result"]["content"][0]["text"],
+        "result exceeds max_result_bytes"
+    );
 }

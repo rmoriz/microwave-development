@@ -2,7 +2,8 @@ use crate::cookbooks::{render_manifest, resolve_version, sort_versions_descendin
 use crate::mcp::context::McpContext;
 use crate::ApiError;
 use axum::http::StatusCode;
-use microwave_store::StoredCookbookVersion;
+use chrono::DateTime;
+use microwave_store::{NodeRunFilter, StoredCookbookVersion, StoredNodeRun};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerConfig};
@@ -64,6 +65,33 @@ struct CookbookNameArgs {
 struct CookbookVersionArgs {
     name: String,
     version: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ListRunsArgs {
+    node_name: Option<String>,
+    status: Option<String>,
+    failures_only: Option<bool>,
+    since: Option<String>,
+    limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct LatestRunArgs {
+    node_name: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct GetRunArgs {
+    node_name: String,
+    run_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ListConvergeErrorsArgs {
+    node_name: Option<String>,
+    since: Option<String>,
+    limit: Option<u32>,
 }
 
 #[tool_router(router = read_tool_router, vis = "pub(crate)")]
@@ -131,6 +159,42 @@ impl McpServer {
         Parameters(args): Parameters<CookbookVersionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         tool_result(self.get_cookbook_version_inner(args).await)
+    }
+
+    /// List stored run reports, newest first.
+    #[tool(description = "List stored run_converge reports for readable nodes, newest first")]
+    async fn list_runs(
+        &self,
+        Parameters(args): Parameters<ListRunsArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tool_result(self.list_runs_inner(args).await)
+    }
+
+    /// Fetch the newest run report summary for one node.
+    #[tool(description = "Fetch the newest run_converge summary for a node, including its errors")]
+    async fn latest_run(
+        &self,
+        Parameters(args): Parameters<LatestRunArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tool_result(self.latest_run_inner(args).await)
+    }
+
+    /// Fetch one full run report.
+    #[tool(description = "Fetch the full stored run_converge report for one node run")]
+    async fn get_run(
+        &self,
+        Parameters(args): Parameters<GetRunArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tool_result(self.get_run_inner(args).await)
+    }
+
+    /// List converge errors across stored run reports.
+    #[tool(description = "List converge errors across readable node runs, newest first")]
+    async fn list_converge_errors(
+        &self,
+        Parameters(args): Parameters<ListConvergeErrorsArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tool_result(self.list_converge_errors_inner(args).await)
     }
 }
 
@@ -355,6 +419,110 @@ impl McpServer {
         Ok(self.json_result(&manifest))
     }
 
+    async fn list_runs_inner(&self, args: ListRunsArgs) -> Result<CallToolResult, ApiError> {
+        let runs = self
+            .filtered_runs(
+                args.node_name,
+                args.status,
+                args.failures_only,
+                args.since,
+                args.limit,
+            )
+            .await?;
+        let runs: Vec<Value> = runs.iter().map(|run| run_summary(run, None)).collect();
+        Ok(self.json_result(&json!({ "runs": runs })))
+    }
+
+    async fn latest_run_inner(&self, args: LatestRunArgs) -> Result<CallToolResult, ApiError> {
+        let ctx = &self.ctx;
+        let run = ctx
+            .state
+            .store
+            .latest_node_run(&ctx.org.id, &args.node_name)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| ApiError::not_found(format!("no runs for node '{}'", args.node_name)))?;
+        require_node_read(ctx, &args.node_name).await?;
+
+        let report = parse_report(&run).unwrap_or(Value::Null);
+        Ok(self.json_result(&run_summary(&run, Some(&report))))
+    }
+
+    async fn get_run_inner(&self, args: GetRunArgs) -> Result<CallToolResult, ApiError> {
+        let ctx = &self.ctx;
+        let run = ctx
+            .state
+            .store
+            .find_node_run(&ctx.org.id, &args.node_name, &args.run_id)
+            .await
+            .map_err(ApiError::from)?
+            .ok_or_else(|| {
+                ApiError::not_found(format!(
+                    "run '{}' for node '{}' not found",
+                    args.run_id, args.node_name
+                ))
+            })?;
+        require_node_read(ctx, &args.node_name).await?;
+        let report: Value = serde_json::from_str(&run.report).map_err(|_| ApiError::internal())?;
+        Ok(self.json_result(&report))
+    }
+
+    async fn list_converge_errors_inner(
+        &self,
+        args: ListConvergeErrorsArgs,
+    ) -> Result<CallToolResult, ApiError> {
+        let runs = self
+            .filtered_runs(args.node_name, None, None, args.since, args.limit)
+            .await?;
+        let mut errors = Vec::new();
+        for run in &runs {
+            errors.extend(converge_errors(run));
+        }
+        Ok(self.json_result(&json!({ "errors": errors })))
+    }
+
+    /// Fetch the runs matching the given filters, dropping rows whose node the
+    /// principal cannot read. A named but unreadable node is a forbidden error
+    /// instead of an empty result, so callers can tell "no runs" from "not
+    /// allowed".
+    async fn filtered_runs(
+        &self,
+        node_name: Option<String>,
+        status: Option<String>,
+        failures_only: Option<bool>,
+        since: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<Vec<StoredNodeRun>, ApiError> {
+        let ctx = &self.ctx;
+        let since = parse_since(since)?;
+        if let Some(node_name) = &node_name {
+            require_node_read(ctx, node_name).await?;
+        }
+        let runs = ctx
+            .state
+            .store
+            .list_node_runs(
+                &ctx.org.id,
+                &NodeRunFilter {
+                    node_name,
+                    status,
+                    since,
+                    failures_only: failures_only.unwrap_or(false),
+                    limit: ctx.clamped_limit(limit),
+                },
+            )
+            .await
+            .map_err(ApiError::from)?;
+
+        let mut readable = Vec::new();
+        for run in runs {
+            if ctx.node_readable(&run.node_name).await? {
+                readable.push(run);
+            }
+        }
+        Ok(readable)
+    }
+
     fn json_result<T: serde::Serialize>(&self, value: &T) -> CallToolResult {
         match serde_json::to_string(value) {
             Ok(serialized) if serialized.len() > self.ctx.max_result_bytes => {
@@ -367,6 +535,116 @@ impl McpServer {
             }
         }
     }
+}
+
+/// The list-view summary of one run. With `report`, the summary is extended
+/// with the run's top-level `error` and normalized `resource_errors`.
+fn run_summary(run: &StoredNodeRun, report: Option<&Value>) -> Value {
+    let mut summary = json!({
+        "run_id": run.run_id,
+        "node_name": run.node_name,
+        "status": run.status,
+        "start_time": run.start_time,
+        "end_time": run.end_time,
+        "resource_count": run.resource_count,
+        "updated_resource_count": run.updated_resource_count,
+        "error_count": run.error_count,
+    });
+    if let (Some(report), Some(summary)) = (report, summary.as_object_mut()) {
+        summary.insert(
+            "error".to_string(),
+            report.get("error").cloned().unwrap_or(Value::Null),
+        );
+        summary.insert(
+            "resource_errors".to_string(),
+            Value::Array(resource_errors(report)),
+        );
+    }
+    summary
+}
+
+fn parse_since(since: Option<String>) -> Result<Option<String>, ApiError> {
+    let Some(since) = since else {
+        return Ok(None);
+    };
+    DateTime::parse_from_rfc3339(&since)
+        .map_err(|_| ApiError::bad_request("since must be an RFC 3339 timestamp"))?;
+    Ok(Some(since))
+}
+
+async fn require_node_read(ctx: &McpContext, node_name: &str) -> Result<(), ApiError> {
+    if ctx.node_readable(node_name).await? {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden_with("missing read permission"))
+    }
+}
+
+fn parse_report(run: &StoredNodeRun) -> Option<Value> {
+    match serde_json::from_str(&run.report) {
+        Ok(report) => Some(report),
+        Err(error) => {
+            tracing::warn!(
+                node_name = %run.node_name,
+                run_id = %run.run_id,
+                %error,
+                "stored run report is not valid JSON"
+            );
+            None
+        }
+    }
+}
+
+/// The summary entries for every resource in `report` that carries an error.
+fn resource_errors(report: &Value) -> Vec<Value> {
+    report
+        .get("resources")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|resource| {
+            let error = resource.get("error").filter(|error| !error.is_null())?;
+            Some(json!({
+                "resource_type": resource.get("type").cloned().unwrap_or(Value::Null),
+                "resource_name": resource.get("name").cloned().unwrap_or(Value::Null),
+                "error_class": error.get("class").cloned().unwrap_or(Value::Null),
+                "error_message": error.get("message").cloned().unwrap_or(Value::Null),
+            }))
+        })
+        .collect()
+}
+
+/// Flatten one run's top-level and resource errors into `list_converge_errors`
+/// rows. Reports are written by this server, so a parse failure is logged and
+/// treated as "no errors" rather than failing the whole listing.
+fn converge_errors(run: &StoredNodeRun) -> Vec<Value> {
+    let Some(report) = parse_report(run) else {
+        return Vec::new();
+    };
+    let mut errors = Vec::new();
+    if let Some(error) = report.get("error").filter(|error| !error.is_null()) {
+        errors.push(json!({
+            "run_id": run.run_id,
+            "node_name": run.node_name,
+            "start_time": run.start_time,
+            "resource_type": Value::Null,
+            "resource_name": Value::Null,
+            "error_class": error.get("class").cloned().unwrap_or(Value::Null),
+            "error_message": error.get("message").cloned().unwrap_or(Value::Null),
+        }));
+    }
+    for resource in resource_errors(&report) {
+        errors.push(json!({
+            "run_id": run.run_id,
+            "node_name": run.node_name,
+            "start_time": run.start_time,
+            "resource_type": resource.get("resource_type").cloned().unwrap_or(Value::Null),
+            "resource_name": resource.get("resource_name").cloned().unwrap_or(Value::Null),
+            "error_class": resource.get("error_class").cloned().unwrap_or(Value::Null),
+            "error_message": resource.get("error_message").cloned().unwrap_or(Value::Null),
+        }));
+    }
+    errors
 }
 
 fn tool_result(result: Result<CallToolResult, ApiError>) -> Result<CallToolResult, ErrorData> {
