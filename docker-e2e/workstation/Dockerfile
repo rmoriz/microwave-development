@@ -52,9 +52,16 @@ RUN chmod 0755 /usr/local/bin/workstation-prepare \
 COPY opencode.json /work/opencode.json
 COPY AGENTS.md /work/AGENTS.md
 
+# Every exec session starts here so OpenCode picks up the project config.
+WORKDIR /work
+
 # The e2e token is baked in so an exec session needs no prefix. Compose can
 # still override it with MW_MCP_TOKEN.
 ENV MW_MCP_TOKEN=e2e-mcp-token
+
+# knife 19 only reads ~/.chef/knife.rb through KNIFE_HOME, not through HOME
+# alone, and systemd units have no HOME at all.
+ENV KNIFE_HOME=/root/.chef
 
 # systemd-resolved is enabled by some distro presets and would take over
 # lookups from the glibc resolver. Mask it so Docker's embedded DNS is used.

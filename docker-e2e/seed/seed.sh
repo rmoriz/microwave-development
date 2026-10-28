@@ -132,18 +132,20 @@ knife cookbook upload --all \
     --cookbook-path "$COOKBOOKS" \
     --config "$SHARED/knife.rb"
 
-# The nginx cookbook is resource-only, so the role points at the local wrapper
-# recipe. Upload it after the vendored cookbooks so its nginx dependency is
-# already on the server.
-log "uploading wrapper cookbook e2e_nginx"
-knife cookbook upload e2e_nginx \
-    --cookbook-path /seed/site-cookbooks \
-    --config "$SHARED/knife.rb"
+# Both Supermarket cookbooks are resource-only, so the role points at the local
+# wrapper recipes. Upload them after the vendored cookbooks so their
+# dependencies are already on the server.
+for wrapper in e2e_nginx e2e_postgresql; do
+    log "uploading wrapper cookbook $wrapper"
+    knife cookbook upload "$wrapper" \
+        --cookbook-path /seed/site-cookbooks \
+        --config "$SHARED/knife.rb"
+done
 
 # ---- 6. Role ---------------------------------------------------------------
 cat >"$SHARED/role.rb" <<EOF
 name "$ROLE_NAME"
-description "nginx + postgres from Chef Supermarket"
+description "nginx + PostgreSQL 18 from Chef Supermarket"
 run_list "recipe[$NGINX_RECIPE]", "recipe[$POSTGRES_RECIPE]"
 default_attributes({})
 override_attributes({})

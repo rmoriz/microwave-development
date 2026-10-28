@@ -119,18 +119,20 @@ hand. It publishes no port; use `docker compose exec`:
 
 ```sh
 docker compose exec workstation bash
-docker compose exec --workdir /work workstation opencode
+docker compose exec workstation opencode
 ```
 
 `knife` is preconfigured for the `e2e` organization: `knife node list`,
 `knife cookbook list`, and the other commands work without a `-c` flag or a
-`--server-url`. OpenCode reads the MCP server from `/work/opencode.json`, so
-start it in `/work`. It needs a model provider once; the login is kept in the
+`--server-url`. Exec sessions start in `/work`, where OpenCode picks up
+`opencode.json`. It needs a model provider once; the login is kept in the
 `workstation-opencode-config` volume:
 
 ```sh
-docker compose exec --workdir /work workstation opencode auth login
+docker compose exec workstation opencode auth login
 ```
+
+Check the MCP connection with `docker compose exec workstation opencode mcp list`.
 
 The MCP endpoint is `http://microwave:8000/organizations/e2e/mcp`. The bearer
 token is already set as `MW_MCP_TOKEN` in the container, so a client needs no

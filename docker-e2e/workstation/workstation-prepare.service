@@ -7,6 +7,13 @@ After=network-online.target network.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# systemd system units have no HOME; knife loads plugins that join it.
+Environment=HOME=/root
+Environment=KNIFE_HOME=/root/.chef
+# Pass the image/compose token into the unit environment. systemd services get
+# a clean environment, and OpenCode's `{env:MW_MCP_TOKEN}` header substitution
+# reads the background service's environment.
+PassEnvironment=MW_MCP_TOKEN
 ExecStart=/usr/local/bin/workstation-prepare
 StandardOutput=journal+console
 StandardError=journal+console
