@@ -64,6 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Serve { config, check } => {
             let mut config = Config::load(config.as_deref())?;
+            warn_implicit_mcp_superuser(&config);
             // Load and validate the pair before touching the database so a bad
             // certificate fails fast for both `serve` and `serve --check`.
             let tls = if config.server.tls.is_enabled() {
@@ -209,6 +210,32 @@ fn sqlite_path(database_url: &str) -> &str {
     database_url
         .strip_prefix("sqlite://")
         .unwrap_or(database_url)
+}
+
+/// Warn when an MCP organization resolves to the superuser principal (because
+/// `principal` is unset or names the superuser) while writes are enabled. The
+/// safe defaults stay unchanged; this only makes the risky combination visible
+/// at startup.
+fn warn_implicit_mcp_superuser(config: &Config) {
+    if !config.mcp.enabled {
+        return;
+    }
+    for (organization, entry) in &config.mcp.organizations {
+        let configured = entry
+            .principal
+            .as_deref()
+            .map(str::trim)
+            .filter(|principal| !principal.is_empty());
+        let implicit =
+            configured.is_none() || configured == Some(config.auth.superuser_name.as_str());
+        if implicit && entry.writes {
+            tracing::warn!(
+                organization = %organization,
+                principal = configured.unwrap_or(config.auth.superuser_name.as_str()),
+                "MCP organization uses the superuser principal with writes enabled; configure an explicit non-superuser principal or set writes = false"
+            );
+        }
+    }
 }
 
 fn store_compression(compression: StorageCompression) -> Compression {

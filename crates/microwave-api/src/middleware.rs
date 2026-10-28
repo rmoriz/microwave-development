@@ -1134,7 +1134,13 @@ fn is_controls_path(path: &str) -> bool {
         && parts.next().is_none()
 }
 
-/// `/organizations/:org/mcp` (exact, no trailing slash).
+/// `/organizations/:org/mcp`.
+///
+/// The bypass runs whenever the path has that shape. Leading and trailing
+/// slashes are trimmed for matching, so both `/organizations/acme/mcp/` and
+/// `/organizations/acme/mcp` are bypassed; the route itself is mounted only
+/// when `mcp.enabled`, so a disabled endpoint falls through to the router's
+/// 404 instead of the signed-request middleware.
 fn is_mcp_path(path: &str) -> bool {
     let mut parts = path.trim_matches('/').split('/');
     parts.next() == Some("organizations")

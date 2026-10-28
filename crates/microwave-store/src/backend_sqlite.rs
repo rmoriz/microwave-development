@@ -1460,6 +1460,14 @@ impl ReportRepository for SqliteStore {
         self.list_node_runs(org_id, filter)
     }
 
+    async fn list_node_run_summaries(
+        &self,
+        org_id: &str,
+        filter: &NodeRunFilter,
+    ) -> Result<Vec<crate::NodeRunSummary>, StoreError> {
+        self.list_node_run_summaries(org_id, filter)
+    }
+
     async fn find_node_run(
         &self,
         org_id: &str,

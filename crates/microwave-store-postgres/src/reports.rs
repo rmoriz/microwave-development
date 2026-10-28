@@ -8,8 +8,8 @@
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
 use microwave_store::{
-    decode_serialized, encode_serialized, NewNodeRun, NodeRunFilter, ReportRepository, StoreError,
-    StoredNodeRun,
+    decode_serialized, encode_serialized, NewNodeRun, NodeRunFilter, NodeRunSummary,
+    ReportRepository, StoreError, StoredNodeRun,
 };
 use sqlx::postgres::PgRow;
 use sqlx::Row;
@@ -142,6 +142,42 @@ impl ReportRepository for PostgresStore {
         rows.iter().map(run_from_row).collect()
     }
 
+    async fn list_node_run_summaries(
+        &self,
+        org_id: &str,
+        filter: &NodeRunFilter,
+    ) -> Result<Vec<NodeRunSummary>, StoreError> {
+        let since = filter
+            .since
+            .as_deref()
+            .map(microwave_store::normalize_rfc3339)
+            .transpose()?;
+        // `usize` can exceed `i64`; saturate instead of wrapping negative.
+        let limit = i64::try_from(filter.limit).unwrap_or(i64::MAX);
+        let rows = sqlx::query(
+            "SELECT id, org_id, node_name, run_id, status, start_time, end_time,
+                    resource_count, updated_resource_count, error_count, created_at
+             FROM node_runs
+             WHERE org_id = $1
+               AND ($2::text IS NULL OR node_name = $2)
+               AND ($3::text IS NULL OR status = $3)
+               AND ($4::text IS NULL OR start_time >= $4)
+               AND (NOT $5 OR status <> 'success' OR error_count > 0)
+             ORDER BY start_time DESC, created_at DESC
+             LIMIT $6",
+        )
+        .bind(org_id)
+        .bind(filter.node_name.as_deref())
+        .bind(filter.status.as_deref())
+        .bind(since.as_deref())
+        .bind(filter.failures_only)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await
+        .map_err(db)?;
+        rows.iter().map(summary_from_row).collect()
+    }
+
     async fn find_node_run(
         &self,
         org_id: &str,
@@ -200,5 +236,23 @@ fn run_from_row(row: &PgRow) -> Result<StoredNodeRun, StoreError> {
         error_count: row.try_get(9).map_err(db)?,
         report: decode_serialized(&report)?,
         created_at: row.try_get(11).map_err(db)?,
+    })
+}
+
+/// Decode the summary projection: the same columns as [`run_from_row`] but
+/// without the compressed report body.
+fn summary_from_row(row: &PgRow) -> Result<NodeRunSummary, StoreError> {
+    Ok(NodeRunSummary {
+        id: row.try_get(0).map_err(db)?,
+        org_id: row.try_get(1).map_err(db)?,
+        node_name: row.try_get(2).map_err(db)?,
+        run_id: row.try_get(3).map_err(db)?,
+        status: row.try_get(4).map_err(db)?,
+        start_time: row.try_get(5).map_err(db)?,
+        end_time: row.try_get(6).map_err(db)?,
+        resource_count: row.try_get(7).map_err(db)?,
+        updated_resource_count: row.try_get(8).map_err(db)?,
+        error_count: row.try_get(9).map_err(db)?,
+        created_at: row.try_get(10).map_err(db)?,
     })
 }

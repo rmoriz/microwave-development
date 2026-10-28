@@ -1369,6 +1369,27 @@ fn mcp_fallback_hosts_bracket_ipv6_ports() {
 }
 
 #[test]
+fn mcp_organization_keys_must_be_valid_org_names() {
+    let mut config = Config::default();
+    config
+        .mcp
+        .organizations
+        .insert("team-1".to_string(), McpOrgConfig::default());
+    config.validate().expect("valid org name");
+
+    config
+        .mcp
+        .organizations
+        .insert("BadOrg".to_string(), McpOrgConfig::default());
+    let error = config.validate().expect_err("invalid org name");
+    assert!(matches!(
+        error,
+        microwave_config::ConfigError::InvalidValue { ref key, ref value }
+            if key == "mcp.organizations.BadOrg" && value == "BadOrg"
+    ));
+}
+
+#[test]
 fn shipped_example_config_parses_with_safe_defaults() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../packaging/microwave.toml.example");

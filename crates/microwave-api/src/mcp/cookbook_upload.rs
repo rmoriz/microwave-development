@@ -12,7 +12,8 @@ use base64::Engine;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-/// The HTTP API accepts at most this many files per cookbook version.
+/// MCP-only cap on the number of files in one `upload_cookbook_version` call.
+/// The signed HTTP API has no equivalent per-version file-count limit.
 const MAX_FILES: usize = 100;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

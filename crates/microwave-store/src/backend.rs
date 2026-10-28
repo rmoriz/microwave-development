@@ -949,6 +949,13 @@ pub trait ReportRepository: Send + Sync {
         filter: &NodeRunFilter,
     ) -> Result<Vec<crate::StoredNodeRun>, StoreError>;
 
+    /// List run summaries without decoding the stored report body.
+    async fn list_node_run_summaries(
+        &self,
+        org_id: &str,
+        filter: &NodeRunFilter,
+    ) -> Result<Vec<crate::NodeRunSummary>, StoreError>;
+
     async fn find_node_run(
         &self,
         org_id: &str,

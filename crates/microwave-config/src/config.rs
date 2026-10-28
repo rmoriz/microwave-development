@@ -57,6 +57,14 @@ impl Config {
                 });
             }
         }
+        for key in self.mcp.organizations.keys() {
+            if !valid_org_name(key) {
+                return Err(ConfigError::InvalidValue {
+                    key: format!("mcp.organizations.{key}"),
+                    value: key.clone(),
+                });
+            }
+        }
         if self.search.timeout_ms == 0 {
             return Err(ConfigError::InvalidValue {
                 key: "search.timeout_ms".into(),

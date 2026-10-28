@@ -478,8 +478,9 @@ Limits: every list tool clamps `limit` to `mcp.max_results` (default 100).
 Reports are loaded only for the selected rows; the raw report is decoded lazily
 for `get_run` and `list_converge_errors`. Every tool serializes its result and
 rejects it with an `isError` message when it exceeds `mcp.max_result_bytes`;
-results are never silently truncated. `since` must parse as RFC 3339, otherwise
-the tool returns an invalid-argument error.
+results are never silently truncated. `since` must parse as RFC 3339,
+otherwise the tool returns an `isError` result with the validation message;
+there is no separate invalid-argument error class.
 
 ### 7. Write tools
 
@@ -579,8 +580,9 @@ call fails unless `force: true` is passed; a new upload keeps `frozen` sticky.
 - `crates/microwave-api/src/lib.rs`: merge the route only when
   `config.mcp.enabled`.
 - `crates/microwave-api/src/middleware.rs`: bypass branch for
-  `/organizations/{org}/mcp`, active only when `mcp.enabled` is true and the
-  path has exactly the MCP segment shape (no trailing-slash surprise).
+  `/organizations/{org}/mcp`. The bypass runs whenever the path shape matches
+  (leading and trailing slashes are trimmed for matching); the route is mounted
+  only when `mcp.enabled`, so a disabled endpoint returns the router's 404.
 - `crates/microwave-api/src/data_collector.rs`: local store branch.
 - `crates/microwave-api/src/nodes.rs`,
   `crates/microwave-api/src/environments.rs`,

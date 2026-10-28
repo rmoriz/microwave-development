@@ -30,6 +30,44 @@ pub struct StoredNodeRun {
     pub created_at: String,
 }
 
+/// One stored node run without its (potentially large) decoded report.
+///
+/// List tools that only return summary columns use this projection so they do
+/// not decompress every selected report. `get_run`, `latest_run`, and
+/// `list_converge_errors` still use [`StoredNodeRun`] and decode the report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeRunSummary {
+    pub id: String,
+    pub org_id: String,
+    pub node_name: String,
+    pub run_id: String,
+    pub status: String,
+    pub start_time: String,
+    pub end_time: Option<String>,
+    pub resource_count: i64,
+    pub updated_resource_count: i64,
+    pub error_count: i64,
+    pub created_at: String,
+}
+
+impl From<&StoredNodeRun> for NodeRunSummary {
+    fn from(run: &StoredNodeRun) -> Self {
+        Self {
+            id: run.id.clone(),
+            org_id: run.org_id.clone(),
+            node_name: run.node_name.clone(),
+            run_id: run.run_id.clone(),
+            status: run.status.clone(),
+            start_time: run.start_time.clone(),
+            end_time: run.end_time.clone(),
+            resource_count: run.resource_count,
+            updated_resource_count: run.updated_resource_count,
+            error_count: run.error_count,
+            created_at: run.created_at.clone(),
+        }
+    }
+}
+
 impl SqliteStore {
     pub fn store_node_run(
         &self,
@@ -170,6 +208,58 @@ impl SqliteStore {
                         rusqlite::Error::ToSqlConversionFailure(Box::new(error))
                     })?,
                     created_at: row.get(11)?,
+                })
+            },
+        )?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    pub fn list_node_run_summaries(
+        &self,
+        org_id: &str,
+        filter: &NodeRunFilter,
+    ) -> Result<Vec<NodeRunSummary>, StoreError> {
+        let since = filter
+            .since
+            .as_deref()
+            .map(crate::normalize_rfc3339)
+            .transpose()?;
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, org_id, node_name, run_id, status, start_time, end_time,
+                    resource_count, updated_resource_count, error_count, created_at
+             FROM node_runs
+             WHERE org_id = ?1
+               AND (?2 IS NULL OR node_name = ?2)
+               AND (?3 IS NULL OR status = ?3)
+               AND (?4 IS NULL OR start_time >= ?4)
+               AND (?5 = 0 OR status <> 'success' OR error_count > 0)
+             ORDER BY start_time DESC, created_at DESC
+             LIMIT ?6",
+        )?;
+        let rows = statement.query_map(
+            rusqlite::params![
+                org_id,
+                filter.node_name.as_deref(),
+                filter.status.as_deref(),
+                since.as_deref(),
+                filter.failures_only as i64,
+                filter.limit as i64,
+            ],
+            |row| {
+                Ok(NodeRunSummary {
+                    id: row.get(0)?,
+                    org_id: row.get(1)?,
+                    node_name: row.get(2)?,
+                    run_id: row.get(3)?,
+                    status: row.get(4)?,
+                    start_time: row.get(5)?,
+                    end_time: row.get(6)?,
+                    resource_count: row.get(7)?,
+                    updated_resource_count: row.get(8)?,
+                    error_count: row.get(9)?,
+                    created_at: row.get(10)?,
                 })
             },
         )?;
@@ -442,6 +532,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(web2.len(), 2);
+    }
+
+    #[test]
+    fn summaries_do_not_decode_the_report() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let org = store.create_org("reports-org", "Reports").unwrap();
+        store
+            .store_node_run(
+                &org.id,
+                run("web1", "run-1", "2026-10-27T10:00:00.000Z"),
+                10,
+            )
+            .unwrap();
+        // Replace the compressed report with a value that cannot be decoded.
+        // List tools that only need summary columns must still work; anything
+        // that reads the report must fail.
+        store
+            .connection()
+            .execute("UPDATE node_runs SET report = 'mwz1:not base64!'", [])
+            .unwrap();
+
+        let filter = NodeRunFilter {
+            node_name: None,
+            status: None,
+            since: None,
+            failures_only: false,
+            limit: 10,
+        };
+        assert!(store.list_node_runs(&org.id, &filter).is_err());
+        let summaries = store.list_node_run_summaries(&org.id, &filter).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].run_id, "run-1");
+        assert_eq!(summaries[0].node_name, "web1");
     }
 
     #[tokio::test]

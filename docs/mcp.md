@@ -127,6 +127,11 @@ writes = false
 With `writes = false`, the write tools are absent from `tools/list` and calls
 to them fail as unknown tools. Read tools are always registered.
 
+When `mcp.enabled` is true, the server logs a startup warning for every
+organization whose `principal` is unset (or names `auth.superuser_name`) while
+`writes = true`. The defaults are unchanged; the warning exists because that
+combination gives a bearer token full destructive superuser capability.
+
 > **Destructive surface.** When `writes = true`, `delete_node`,
 > `delete_environment`, and `delete_cookbook_version` are available to the
 > agent. There is no dry-run and no confirmation prompt. Point experimental
@@ -152,10 +157,12 @@ Configure `allowed_hosts` directly when the agent reaches the server under a
 different name than `public_url`, or when `public_url` is unset. Without
 either setting the endpoint is reachable only with a loopback `Host`.
 
-`allowed_origins` is optional and only relevant to browser-based clients. An
-empty list disables Origin validation, which is the intended setting for
-non-browser agents. Set it explicitly when a browser client calls the
-endpoint:
+`allowed_origins` is optional and only validates the `Origin` header. The
+transport does not emit `Access-Control-Allow-*` response headers, so a
+cross-origin browser client still needs CORS handling from the reverse proxy.
+Same-origin browser clients work without it. An empty list disables Origin
+validation, which is the intended setting for non-browser agents. Set it
+explicitly when a browser client calls the endpoint:
 
 ```toml
 [mcp]
@@ -288,6 +295,13 @@ Always registered.
 the tools scan every node the principal can read. `since` must be an RFC 3339
 timestamp.
 
+`status` matches the stored Chef status exactly (`success` or `failure`;
+ingestion stores `unknown` when the payload omits it). `failures_only` keeps
+runs whose stored status is not `success` or whose error count is non-zero.
+`limit` on `list_converge_errors` bounds the number of runs that have errors,
+not the number of emitted error rows, so older failures are not hidden behind
+newer clean runs.
+
 ### Write tools
 
 Registered only when the organization has `writes = true`.
@@ -302,6 +316,21 @@ Registered only when the organization has `writes = true`.
 | `delete_environment` | `name` | Environment Delete ACL. `_default` is rejected like the HTTP API. |
 | `upload_cookbook_version` | `name`, `version`, `metadata`, `files`, `frozen?`, `force?` | Uploads inline or pre-existing checksum files, then runs the normal create/update path. See [Cookbook upload](#cookbook-upload). |
 | `delete_cookbook_version` | `name`, `version` | Cookbook version Delete ACL. |
+
+`create_environment` accepts only an `attributes` object with optional
+`default` and `override` maps; any other key is rejected as an invalid
+argument:
+
+```json
+{
+  "name": "prod",
+  "attributes": {
+    "default": { "app": { "port": 80 } },
+    "override": { "app": { "port": 8080 } }
+  },
+  "cookbook_versions": { "apache": "= 1.0.0" }
+}
+```
 
 Write tools return a compact summary rather than the full object:
 
@@ -372,7 +401,8 @@ Rules:
   stores the blob) or `checksum`: a lowercase 32-character hex MD5 that must
   already exist in the organization. The checksum form supports an
   out-of-band upload, for example the sandbox/bookshelf flow.
-- `name` defaults to `path`, and `specificity` defaults to `default`.
+- `name` and `path` in the manifest are both set from `path`; `specificity`
+  defaults to `default`.
 - `metadata.version` is injected from the top-level `version`.
 - The manifest's `frozen?` comes from `frozen`.
 - Updating an existing frozen version requires `force: true`. A forced update
@@ -386,7 +416,7 @@ behavior and is a v1 limitation.
 ## Limitations
 
 - **Experimental.** The tool names, arguments, and behavior may change.
-- **No durable audit table.** Successful calls are logged as structured lines
+- **No durable audit table.** Tool calls are logged as structured lines
   with the organization, principal, tool, duration, and result count; writes
   also log the target. Logs go to the server log (journald or the container
   log), are not stored in the database, and are not a queryable audit record.

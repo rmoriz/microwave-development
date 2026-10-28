@@ -4,7 +4,9 @@ use crate::mcp::cookbook_upload::{build_manifest, UploadCookbookArgs};
 use crate::ApiError;
 use axum::http::StatusCode;
 use chrono::DateTime;
-use microwave_store::{NodeRunFilter, StoredCookbookVersion, StoredNode, StoredNodeRun};
+use microwave_store::{
+    NodeRunFilter, NodeRunSummary, StoredCookbookVersion, StoredNode, StoredNodeRun,
+};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerConfig};
@@ -121,8 +123,19 @@ struct DeleteNodeArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct CreateEnvironmentArgs {
     name: String,
-    attributes: Option<Value>,
+    attributes: Option<EnvironmentAttributes>,
     cookbook_versions: Option<Value>,
+}
+
+/// The only attribute maps `create_environment` accepts. Unknown keys are a
+/// deserialization error instead of being silently dropped.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EnvironmentAttributes {
+    #[serde(default)]
+    default: Option<Value>,
+    #[serde(default, rename = "override")]
+    override_: Option<Value>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -332,7 +345,9 @@ impl McpServer {
     }
 
     /// Create an environment document.
-    #[tool(description = "Create an environment from attributes and cookbook version constraints")]
+    #[tool(
+        description = "Create an environment from attributes (only `default` and `override` maps are accepted) and cookbook version constraints"
+    )]
     async fn create_environment(
         &self,
         Parameters(args): Parameters<CreateEnvironmentArgs>,
@@ -467,11 +482,11 @@ impl McpServer {
         let mut body = json!({ "name": args.name });
         let object = body.as_object_mut().ok_or_else(ApiError::internal)?;
         if let Some(attributes) = args.attributes {
-            if let Some(default) = attributes.get("default").filter(|value| !value.is_null()) {
-                object.insert("default_attributes".into(), default.clone());
+            if let Some(default) = attributes.default.filter(|value| !value.is_null()) {
+                object.insert("default_attributes".into(), default);
             }
-            if let Some(override_) = attributes.get("override").filter(|value| !value.is_null()) {
-                object.insert("override_attributes".into(), override_.clone());
+            if let Some(override_) = attributes.override_.filter(|value| !value.is_null()) {
+                object.insert("override_attributes".into(), override_);
             }
         }
         if let Some(cookbook_versions) = args.cookbook_versions {
@@ -601,6 +616,13 @@ impl McpServer {
         let version = deleted
             .get("version")
             .and_then(Value::as_str)
+            .or_else(|| {
+                deleted
+                    .get("metadata")
+                    .and_then(Value::as_object)
+                    .and_then(|metadata| metadata.get("version"))
+                    .and_then(Value::as_str)
+            })
             .unwrap_or(&args.version);
         Ok(self.json_result(&json!({
             "name": name,
@@ -833,7 +855,7 @@ impl McpServer {
 
     async fn list_runs_inner(&self, args: ListRunsArgs) -> Result<CallToolResult, ApiError> {
         let runs = self
-            .filtered_runs(
+            .filtered_run_summaries(
                 args.node_name,
                 args.status,
                 args.failures_only,
@@ -857,7 +879,8 @@ impl McpServer {
         require_node_read(ctx, &args.node_name).await?;
 
         let report = parse_report(&run).unwrap_or(Value::Null);
-        Ok(self.json_result(&run_summary(&run, Some(&report))))
+        let summary = NodeRunSummary::from(&run);
+        Ok(self.json_result(&run_summary(&summary, Some(&report))))
     }
 
     async fn get_run_inner(&self, args: GetRunArgs) -> Result<CallToolResult, ApiError> {
@@ -884,7 +907,7 @@ impl McpServer {
         args: ListConvergeErrorsArgs,
     ) -> Result<CallToolResult, ApiError> {
         let runs = self
-            .filtered_runs(args.node_name, None, None, args.since, args.limit)
+            .filtered_runs(args.node_name, None, Some(true), args.since, args.limit)
             .await?;
         let mut errors = Vec::new();
         for run in &runs {
@@ -905,31 +928,84 @@ impl McpServer {
         since: Option<String>,
         limit: Option<u32>,
     ) -> Result<Vec<StoredNodeRun>, ApiError> {
-        let ctx = &self.ctx;
-        let since = parse_since(since)?;
-        if let Some(node_name) = &node_name {
-            require_node_read(ctx, node_name).await?;
-        }
-        let runs = ctx
+        let filter = self
+            .run_filter(
+                node_name,
+                status,
+                failures_only.unwrap_or(false),
+                since,
+                limit,
+            )
+            .await?;
+        let runs = self
+            .ctx
             .state
             .store
-            .list_node_runs(
-                &ctx.org.id,
-                &NodeRunFilter {
-                    node_name,
-                    status,
-                    since,
-                    failures_only: failures_only.unwrap_or(false),
-                    limit: ctx.clamped_limit(limit),
-                },
-            )
+            .list_node_runs(&self.ctx.org.id, &filter)
             .await
             .map_err(ApiError::from)?;
+        self.retain_readable(runs).await
+    }
 
+    /// The same filter and ACL behavior as [`Self::filtered_runs`], but without
+    /// decoding report bodies. Used by `list_runs`, which only returns summary
+    /// columns.
+    async fn filtered_run_summaries(
+        &self,
+        node_name: Option<String>,
+        status: Option<String>,
+        failures_only: Option<bool>,
+        since: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<Vec<NodeRunSummary>, ApiError> {
+        let filter = self
+            .run_filter(
+                node_name,
+                status,
+                failures_only.unwrap_or(false),
+                since,
+                limit,
+            )
+            .await?;
+        let runs = self
+            .ctx
+            .state
+            .store
+            .list_node_run_summaries(&self.ctx.org.id, &filter)
+            .await
+            .map_err(ApiError::from)?;
+        self.retain_readable(runs).await
+    }
+
+    /// Validate the `since` argument, reject a named unreadable node, and build
+    /// the store filter with the clamped limit.
+    async fn run_filter(
+        &self,
+        node_name: Option<String>,
+        status: Option<String>,
+        failures_only: bool,
+        since: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<NodeRunFilter, ApiError> {
+        let since = parse_since(since)?;
+        if let Some(node_name) = &node_name {
+            require_node_read(&self.ctx, node_name).await?;
+        }
+        Ok(NodeRunFilter {
+            node_name,
+            status,
+            since,
+            failures_only,
+            limit: self.ctx.clamped_limit(limit),
+        })
+    }
+
+    /// Drop rows whose node the principal cannot read, keeping the input order.
+    async fn retain_readable<T: RunNodeName>(&self, rows: Vec<T>) -> Result<Vec<T>, ApiError> {
         let mut readable = Vec::new();
-        for run in runs {
-            if ctx.node_readable(&run.node_name).await? {
-                readable.push(run);
+        for row in rows {
+            if self.ctx.node_readable(row.node_name()).await? {
+                readable.push(row);
             }
         }
         Ok(readable)
@@ -960,9 +1036,26 @@ fn node_summary(node: &StoredNode) -> Value {
     })
 }
 
+/// The node name shared by full runs and summary projections.
+trait RunNodeName {
+    fn node_name(&self) -> &str;
+}
+
+impl RunNodeName for StoredNodeRun {
+    fn node_name(&self) -> &str {
+        &self.node_name
+    }
+}
+
+impl RunNodeName for NodeRunSummary {
+    fn node_name(&self) -> &str {
+        &self.node_name
+    }
+}
+
 /// The list-view summary of one run. With `report`, the summary is extended
 /// with the run's top-level `error` and normalized `resource_errors`.
-fn run_summary(run: &StoredNodeRun, report: Option<&Value>) -> Value {
+fn run_summary(run: &NodeRunSummary, report: Option<&Value>) -> Value {
     let mut summary = json!({
         "run_id": run.run_id,
         "node_name": run.node_name,
@@ -1073,6 +1166,8 @@ fn converge_errors(run: &StoredNodeRun) -> Vec<Value> {
 /// Time one tool call and emit the single structured log line required by the
 /// MCP design: organization, principal, tool, duration, and result size. Write
 /// callers pass the target; arguments and result bodies are never logged.
+/// Server-side failures are logged once here with their organization, tool, and
+/// internal message before the caller sees the generic error text.
 async fn logged_tool<F>(
     ctx: &McpContext,
     tool: &'static str,
@@ -1083,19 +1178,46 @@ where
     F: std::future::Future<Output = Result<CallToolResult, ApiError>>,
 {
     let started = Instant::now();
-    let result = tool_result(future.await)?;
+    let result = match future.await {
+        Ok(result) => result,
+        Err(error) => {
+            if error.status.is_server_error() {
+                tracing::error!(
+                    organization = %ctx.org.name,
+                    tool = tool,
+                    message = %error.message,
+                    "mcp tool failed"
+                );
+            }
+            api_error_result(error)
+        }
+    };
     let elapsed = started.elapsed();
     let error = result.is_error == Some(true);
-    tracing::info!(
-        organization = %ctx.org.name,
-        principal = %ctx.principal.name,
-        tool = tool,
-        target = target.unwrap_or(""),
-        duration_ms = elapsed.as_millis() as u64,
-        result_count = result_count(&result),
-        outcome = if error { "error" } else { "ok" },
-        "mcp tool call"
-    );
+    let result_count = result_count(&result);
+    let outcome = if error { "error" } else { "ok" };
+    if let Some(target) = target {
+        tracing::info!(
+            organization = %ctx.org.name,
+            principal = %ctx.principal.name,
+            tool = tool,
+            target = target,
+            duration_ms = elapsed.as_millis() as u64,
+            result_count = result_count,
+            outcome = outcome,
+            "mcp tool call"
+        );
+    } else {
+        tracing::info!(
+            organization = %ctx.org.name,
+            principal = %ctx.principal.name,
+            tool = tool,
+            duration_ms = elapsed.as_millis() as u64,
+            result_count = result_count,
+            outcome = outcome,
+            "mcp tool call"
+        );
+    }
     Ok(result)
 }
 
@@ -1122,13 +1244,6 @@ fn result_count(result: &CallToolResult) -> usize {
     }
 }
 
-fn tool_result(result: Result<CallToolResult, ApiError>) -> Result<CallToolResult, ErrorData> {
-    Ok(match result {
-        Ok(result) => result,
-        Err(error) => api_error_result(error),
-    })
-}
-
 /// Map an API failure onto the caller-visible tool error text. 404 and 403
 /// become stable short strings; other client errors keep their message.
 fn api_error_result(error: ApiError) -> CallToolResult {
@@ -1137,7 +1252,6 @@ fn api_error_result(error: ApiError) -> CallToolResult {
     } else if error.status == StatusCode::NOT_FOUND {
         "not found".to_string()
     } else if error.status.is_server_error() {
-        tracing::error!(message = %error.message, "mcp tool failed");
         "internal error".to_string()
     } else {
         error.message

@@ -6,7 +6,7 @@ use microwave_api::AppState;
 use microwave_config::{Config, McpOrgConfig};
 use microwave_crypto::SignVersion;
 use microwave_objectstore::md5_hex;
-use microwave_store::{NewNodeRun, Org};
+use microwave_store::{NewNodeRun, Org, Permission};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -33,6 +33,21 @@ fn mcp_config_with_principal(org: &str, token: &str, principal: &str) -> Config 
         .get_mut(org)
         .expect("test config contains the organization")
         .principal = Some(principal.to_string());
+    config
+}
+
+/// One organization whose MCP entry has no inline token, so it can only
+/// authenticate through the `mcp/<org>` secret store.
+fn mcp_config_without_token(org: &str) -> Config {
+    let mut config = Config::default();
+    config.mcp.enabled = true;
+    config.mcp.organizations.insert(
+        org.to_string(),
+        McpOrgConfig {
+            token: None,
+            ..Default::default()
+        },
+    );
     config
 }
 
@@ -267,14 +282,14 @@ async fn seed_web1_runs(state: &AppState, org: &Org) {
         state,
         org,
         "run-3",
-        "failed",
+        "failure",
         "2026-10-27T12:00:00.000Z",
         2,
         &json!({
             "message_type": "run_converge",
             "node_name": "web1",
             "run_id": "run-3",
-            "status": "failed",
+            "status": "failure",
             "start_time": "2026-10-27T12:00:00.000Z",
             "end_time": "2026-10-27T12:01:00.000Z",
             "error": {
@@ -379,6 +394,62 @@ async fn mcp_token_is_bound_to_its_org() {
             .and_then(|value| value.to_str().ok()),
         Some("Bearer")
     );
+}
+
+#[tokio::test]
+async fn secret_backed_token_authenticates() {
+    let (state, _org, app) = fixture(mcp_config_without_token("acme")).await;
+    state
+        .store
+        .set_secret("mcp", "acme", "s3cret")
+        .await
+        .unwrap();
+
+    let response = mcp(&app, "acme", "s3cret", initialize()).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn config_token_shadows_a_stored_secret() {
+    let (state, _org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+    state.store.set_secret("mcp", "acme", "b").await.unwrap();
+
+    let configured = mcp(&app, "acme", "a", initialize()).await;
+    let secret = mcp(&app, "acme", "b", initialize()).await;
+
+    assert_eq!(configured.status(), StatusCode::OK);
+    assert_eq!(secret.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn removed_secret_no_longer_authenticates() {
+    let (state, _org, app) = fixture(mcp_config_without_token("acme")).await;
+    state
+        .store
+        .set_secret("mcp", "acme", "s3cret")
+        .await
+        .unwrap();
+    state.store.remove_secret("mcp", "acme").await.unwrap();
+
+    let response = mcp_with(&app, "acme", Some("s3cret"), "localhost", initialize()).await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn entry_without_a_token_source_is_401() {
+    let app = acme_app(mcp_config_without_token("acme")).await;
+
+    let response = mcp_with(&app, "acme", Some("anything"), "localhost", initialize()).await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let challenge = response
+        .headers()
+        .get("www-authenticate")
+        .and_then(|value| value.to_str().ok())
+        .unwrap();
+    assert!(challenge.starts_with("Bearer"), "{challenge}");
 }
 
 #[tokio::test]
@@ -673,6 +744,213 @@ async fn read_tools_filter_objects_the_principal_cannot_read() {
 }
 
 #[tokio::test]
+async fn scoped_principal_can_read_and_write_what_it_owns() {
+    let (state, org, app) = agent_fixture(mcp_config_with_principal("acme", "a", "agent")).await;
+    create_node(&app, json!({ "name": "web1" })).await;
+    create_node(&app, json!({ "name": "web2" })).await;
+    create_environment(&app, "prod").await;
+    upload_cookbook(&state, &app, &org, "1.0.0").await;
+    // A second cookbook the principal cannot read. It is created through the
+    // same shared service the MCP upload tool calls, using the already
+    // registered checksum.
+    let nginx_manifest = json!({
+        "name": "nginx-1.0.0",
+        "cookbook_name": "nginx",
+        "version": "1.0.0",
+        "metadata": { "version": "1.0.0" },
+        "all_files": [{
+            "name": "recipes/default.rb",
+            "path": "recipes/default.rb",
+            "checksum": "98bf7d8c15784f0a3d63204441e1e2aa",
+            "specificity": "default"
+        }]
+    });
+    let response = api(
+        &app,
+        "PUT",
+        "/organizations/acme/cookbooks/nginx/1.0.0",
+        &nginx_manifest,
+        "pivotal",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    seed_web1_runs(&state, &org).await;
+
+    for (kind, name) in [
+        ("nodes", "web1"),
+        ("environments", "prod"),
+        ("cookbooks", "apache"),
+    ] {
+        let authz_id = state
+            .store
+            .find_acl_target(&org.id, kind, name)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("missing authz id for {kind}/{name}"));
+        state
+            .sqlite()
+            .set_acl_for_permission_split(
+                &authz_id,
+                Permission::Read,
+                &["agent".to_string()],
+                &[],
+                &[],
+            )
+            .unwrap();
+    }
+    let nodes_container = state
+        .store
+        .find_acl_target(&org.id, "containers", "nodes")
+        .await
+        .unwrap()
+        .unwrap();
+    state
+        .sqlite()
+        .set_acl_for_permission_split(
+            &nodes_container,
+            Permission::Create,
+            &["agent".to_string()],
+            &[],
+            &[],
+        )
+        .unwrap();
+
+    let nodes = call_tool(&app, "acme", "a", 2, "list_nodes", json!({})).await;
+    let names: Vec<&str> = nodes["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|node| node["name"].as_str())
+        .collect();
+    assert_eq!(names, ["web1"]);
+    let node = call_tool(&app, "acme", "a", 3, "get_node", json!({ "name": "web1" })).await;
+    assert_eq!(node["name"], "web1");
+    let denied = call_tool_raw(&app, "acme", "a", 4, "get_node", json!({ "name": "web2" })).await;
+    assert_eq!(denied["result"]["isError"], json!(true), "{denied}");
+    assert_eq!(denied["result"]["content"][0]["text"], "forbidden");
+
+    let environments = call_tool(&app, "acme", "a", 5, "list_environments", json!({})).await;
+    let names: Vec<&str> = environments["environments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|environment| environment["name"].as_str())
+        .collect();
+    assert_eq!(names, ["prod"]);
+    let environment = call_tool(
+        &app,
+        "acme",
+        "a",
+        6,
+        "get_environment",
+        json!({ "name": "prod" }),
+    )
+    .await;
+    assert_eq!(environment["name"], "prod");
+    let denied = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        7,
+        "get_environment",
+        json!({ "name": "_default" }),
+    )
+    .await;
+    assert_eq!(denied["result"]["isError"], json!(true), "{denied}");
+    assert_eq!(denied["result"]["content"][0]["text"], "forbidden");
+
+    let cookbooks = call_tool(&app, "acme", "a", 8, "list_cookbooks", json!({})).await;
+    let names: Vec<&str> = cookbooks["cookbooks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|cookbook| cookbook["name"].as_str())
+        .collect();
+    assert_eq!(names, ["apache"]);
+    let versions = call_tool(
+        &app,
+        "acme",
+        "a",
+        9,
+        "list_cookbook_versions",
+        json!({ "name": "apache" }),
+    )
+    .await;
+    assert!(!versions["versions"].as_array().unwrap().is_empty());
+    let manifest = call_tool(
+        &app,
+        "acme",
+        "a",
+        10,
+        "get_cookbook_version",
+        json!({ "name": "apache", "version": "1.0.0" }),
+    )
+    .await;
+    assert_eq!(manifest["name"], "apache-1.0.0");
+    let denied = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        11,
+        "get_cookbook_version",
+        json!({ "name": "nginx", "version": "1.0.0" }),
+    )
+    .await;
+    assert_eq!(denied["result"]["isError"], json!(true), "{denied}");
+    assert_eq!(denied["result"]["content"][0]["text"], "forbidden");
+
+    let runs = call_tool(
+        &app,
+        "acme",
+        "a",
+        12,
+        "list_runs",
+        json!({ "node_name": "web1" }),
+    )
+    .await;
+    let run_ids: Vec<&str> = runs["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|run| run["run_id"].as_str())
+        .collect();
+    assert_eq!(run_ids, ["run-3", "run-2", "run-1"]);
+    let latest = call_tool(
+        &app,
+        "acme",
+        "a",
+        13,
+        "latest_run",
+        json!({ "node_name": "web1" }),
+    )
+    .await;
+    assert_eq!(latest["run_id"], "run-3");
+    let run = call_tool(
+        &app,
+        "acme",
+        "a",
+        14,
+        "get_run",
+        json!({ "node_name": "web1", "run_id": "run-3" }),
+    )
+    .await;
+    assert_eq!(run["run_id"], "run-3");
+
+    let created = call_tool(
+        &app,
+        "acme",
+        "a",
+        15,
+        "create_node",
+        json!({ "name": "web3" }),
+    )
+    .await;
+    assert_eq!(created["name"], "web3");
+    let node = call_tool(&app, "acme", "a", 16, "get_node", json!({ "name": "web3" })).await;
+    assert_eq!(node["name"], "web3");
+}
+
+#[tokio::test]
 async fn list_tools_clamp_to_max_results() {
     let mut config = mcp_config(&[("acme", "a")]);
     config.mcp.max_results = 2;
@@ -732,7 +1010,7 @@ async fn list_runs_filters_and_orders() {
         .filter_map(|run| run["run_id"].as_str())
         .collect();
     assert_eq!(run_ids, ["run-3", "run-2", "run-1"]);
-    assert_eq!(runs["runs"][0]["status"], "failed");
+    assert_eq!(runs["runs"][0]["status"], "failure");
     assert_eq!(runs["runs"][0]["error_count"], 2);
     assert_eq!(runs["runs"][0]["start_time"], "2026-10-27T12:00:00.000Z");
 
@@ -763,6 +1041,30 @@ async fn list_runs_filters_and_orders() {
     )
     .await;
     let run_ids: Vec<&str> = since["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|run| run["run_id"].as_str())
+        .collect();
+    assert_eq!(run_ids, ["run-3"]);
+}
+
+#[tokio::test]
+async fn list_runs_filters_by_stored_status() {
+    let (state, org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+    seed_web1_runs(&state, &org).await;
+
+    let failures = call_tool(
+        &app,
+        "acme",
+        "a",
+        2,
+        "list_runs",
+        json!({ "node_name": "web1", "status": "failure" }),
+    )
+    .await;
+
+    let run_ids: Vec<&str> = failures["runs"]
         .as_array()
         .unwrap()
         .iter()
@@ -861,6 +1163,45 @@ async fn list_converge_errors_returns_top_level_and_resource_errors() {
     assert_eq!(resource["resource_name"], "nginx");
     assert_eq!(resource["error_class"], "Chef::Exceptions::Service");
     assert_eq!(resource["error_message"], "service nginx failed");
+}
+
+#[tokio::test]
+async fn list_converge_errors_does_not_hide_errors_behind_clean_runs() {
+    let (state, org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+    seed_web1_runs(&state, &org).await;
+    // A clean run newer than the failed one. The limit must bound runs that
+    // have errors, not the newest runs overall.
+    insert_run(
+        &state,
+        &org,
+        "run-4",
+        "success",
+        "2026-10-27T13:00:00.000Z",
+        0,
+        &json!({
+            "message_type": "run_converge",
+            "node_name": "web1",
+            "run_id": "run-4",
+            "status": "success",
+            "start_time": "2026-10-27T13:00:00.000Z",
+            "resources": []
+        }),
+    )
+    .await;
+
+    let result = call_tool(
+        &app,
+        "acme",
+        "a",
+        2,
+        "list_converge_errors",
+        json!({ "node_name": "web1", "limit": 1 }),
+    )
+    .await;
+
+    let errors = result["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(errors.iter().all(|error| error["run_id"] == "run-3"));
 }
 
 #[tokio::test]
@@ -1202,6 +1543,55 @@ async fn create_update_and_delete_environment() {
 }
 
 #[tokio::test]
+async fn create_environment_accepts_only_typed_attributes() {
+    let (_state, _org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+
+    let created = call_tool(
+        &app,
+        "acme",
+        "a",
+        2,
+        "create_environment",
+        json!({
+            "name": "prod",
+            "attributes": {
+                "default": { "app": { "port": 80 } },
+                "override": { "x": true }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(created["name"], "prod");
+
+    let environment = call_tool(
+        &app,
+        "acme",
+        "a",
+        3,
+        "get_environment",
+        json!({ "name": "prod" }),
+    )
+    .await;
+    assert_eq!(environment["default_attributes"]["app"]["port"], 80);
+    assert_eq!(environment["override_attributes"]["x"], true);
+
+    let invalid = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        4,
+        "create_environment",
+        json!({
+            "name": "staging",
+            "attributes": { "defaults": {} }
+        }),
+    )
+    .await;
+    let rejected = invalid["error"].is_object() || invalid["result"]["isError"] == json!(true);
+    assert!(rejected, "{invalid}");
+}
+
+#[tokio::test]
 async fn write_acl_denial_is_reported() {
     let (_state, _org, app) = agent_fixture(mcp_config_with_principal("acme", "a", "agent")).await;
 
@@ -1376,6 +1766,104 @@ async fn upload_cookbook_version_with_inline_files() {
 }
 
 #[tokio::test]
+async fn upload_accepts_an_existing_checksum() {
+    let (state, org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+    let checksum = md5_hex(b"hello");
+    state
+        .store
+        .ensure_checksums(&org.id, std::slice::from_ref(&checksum))
+        .await
+        .unwrap();
+    state
+        .object_store
+        .put(&org.id, &checksum, b"hello")
+        .unwrap();
+
+    let uploaded = call_tool(
+        &app,
+        "acme",
+        "a",
+        2,
+        "upload_cookbook_version",
+        upload_args(
+            "nginx",
+            "1.0.0",
+            json!([{ "path": "recipes/default.rb", "checksum": checksum }]),
+        ),
+    )
+    .await;
+    assert_eq!(
+        uploaded,
+        json!({ "name": "nginx", "version": "1.0.0", "frozen": false })
+    );
+
+    let manifest = call_tool(
+        &app,
+        "acme",
+        "a",
+        3,
+        "get_cookbook_version",
+        json!({ "name": "nginx", "version": "1.0.0" }),
+    )
+    .await;
+    let paths: Vec<&str> = manifest["all_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|file| file["path"].as_str())
+        .collect();
+    assert_eq!(paths, ["recipes/default.rb"]);
+}
+
+#[tokio::test]
+async fn upload_rejects_invalid_and_unknown_checksums() {
+    let (_state, _org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+
+    let invalid = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        2,
+        "upload_cookbook_version",
+        upload_args(
+            "nginx",
+            "1.0.0",
+            json!([{ "path": "recipes/default.rb", "checksum": "NOTHEX" }]),
+        ),
+    )
+    .await;
+    assert_eq!(invalid["result"]["isError"], json!(true), "{invalid}");
+    let message = invalid["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_lowercase();
+    assert!(message.contains("checksum"), "{message}");
+
+    let missing = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        3,
+        "upload_cookbook_version",
+        upload_args(
+            "nginx",
+            "1.0.0",
+            json!([{
+                "path": "recipes/default.rb",
+                "checksum": "0123456789abcdef0123456789abcdef"
+            }]),
+        ),
+    )
+    .await;
+    assert_eq!(missing["result"]["isError"], json!(true), "{missing}");
+    let message = missing["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_lowercase();
+    assert!(message.contains("not been uploaded"), "{message}");
+}
+
+#[tokio::test]
 async fn upload_rejects_missing_base64_and_oversized_payloads() {
     let (_state, _org, app) = fixture(mcp_config(&[("acme", "a")])).await;
 
@@ -1524,6 +2012,43 @@ async fn delete_cookbook_version_reports_the_resolved_version() {
     assert_eq!(
         deleted,
         json!({ "name": "nginx", "version": "2.0.0", "deleted": true })
+    );
+}
+
+#[tokio::test]
+async fn delete_cookbook_version_falls_back_to_metadata_version() {
+    let (_state, _org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+    // A manifest without a top-level `version` is accepted by the HTTP API as
+    // long as `metadata.version` matches the URL.
+    let manifest = json!({
+        "name": "nginx-1.0.0",
+        "cookbook_name": "nginx",
+        "metadata": { "version": "1.0.0" },
+        "all_files": []
+    });
+    let response = api(
+        &app,
+        "PUT",
+        "/organizations/acme/cookbooks/nginx/1.0.0",
+        &manifest,
+        "pivotal",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let deleted = call_tool(
+        &app,
+        "acme",
+        "a",
+        2,
+        "delete_cookbook_version",
+        json!({ "name": "nginx", "version": "latest" }),
+    )
+    .await;
+
+    assert_eq!(
+        deleted,
+        json!({ "name": "nginx", "version": "1.0.0", "deleted": true })
     );
 }
 
