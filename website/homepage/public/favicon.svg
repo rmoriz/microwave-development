@@ -7,7 +7,7 @@
       <stop offset="1" stop-color="#3ddcff" />
     </linearGradient>
   </defs>
-  <rect width="64" height="64" rx="16" fill="#0a0a0b" />
+  <rect width="64" height="64" rx="16" fill="#2a4d6e" />
   <rect x="12" y="18" width="40" height="28" rx="7" fill="none" stroke="url(#g)" stroke-width="3" />
   <rect x="18" y="24" width="20" height="16" rx="3" fill="none" stroke="#f4f1e8" stroke-width="2" opacity="0.8" />
   <circle cx="45" cy="27" r="2.5" fill="#f4f1e8" opacity="0.8" />

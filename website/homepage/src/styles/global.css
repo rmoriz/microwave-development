@@ -72,7 +72,7 @@ pre {
 }
 
 ::selection {
-  background: var(--green);
+  background: var(--text);
   color: var(--ink);
 }
 

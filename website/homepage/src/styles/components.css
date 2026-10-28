@@ -166,7 +166,7 @@
 
 .button-ghost:hover {
   border-color: var(--text);
-  background: rgba(244, 241, 232, 0.05);
+  background: rgba(247, 245, 239, 0.05);
 }
 
 .button-small {
@@ -229,7 +229,7 @@
 .hero-sub {
   max-width: 58ch;
   margin-top: 28px;
-  color: #c9c6bd;
+  color: var(--text-soft);
   font-size: clamp(1.05rem, 1.5vw, 1.2rem);
   line-height: 1.6;
 }
@@ -263,7 +263,7 @@
         rgba(61, 220, 255, 0.55)
       )
       border-box;
-  color: #d6d3ca;
+  color: var(--text-soft);
   font-family: var(--font-mono);
   font-size: 0.72rem;
   letter-spacing: 0.04em;
@@ -343,7 +343,7 @@
 }
 
 .proof-stat:hover {
-  background: rgba(244, 241, 232, 0.03);
+  background: rgba(247, 245, 239, 0.03);
 }
 
 .proof-number {
@@ -393,7 +393,7 @@
 .cinc-copy > p {
   max-width: 55ch;
   margin-top: 22px;
-  color: #c9c6bd;
+  color: var(--text-soft);
 }
 
 .cinc-compat {
@@ -441,7 +441,7 @@
   gap: 20px;
   padding: 24px 0;
   border-bottom: 1px solid var(--line);
-  color: #d6d3ca;
+  color: var(--text-soft);
 }
 
 .cinc-index {
@@ -475,7 +475,7 @@
   border: 1px solid rgba(255, 138, 61, 0.45);
   border-radius: 999px;
   background: rgba(255, 138, 61, 0.08);
-  color: var(--orange);
+  color: var(--orange-ink);
   font-family: var(--font-mono);
   font-size: 0.72rem;
   letter-spacing: 0.08em;
@@ -485,7 +485,7 @@
 .agent-lead {
   max-width: 70ch;
   margin-top: 22px;
-  color: #c9c6bd;
+  color: var(--text-soft);
   font-size: clamp(1.05rem, 1.5vw, 1.2rem);
 }
 
@@ -557,7 +557,7 @@
   padding: 6px 9px;
   border: 1px solid var(--line);
   border-radius: 4px;
-  background: rgba(244, 241, 232, 0.04);
+  background: rgba(247, 245, 239, 0.04);
   color: var(--text);
   font-size: 0.82rem;
   overflow-wrap: anywhere;
@@ -590,7 +590,7 @@
 .section-head > p:last-child,
 .gaps-copy > p {
   margin-top: 18px;
-  color: #c9c6bd;
+  color: var(--text-soft);
 }
 
 .compat-grid {
@@ -716,7 +716,7 @@
 .under-body {
   max-width: 78ch;
   padding: 0 0 30px 64px;
-  color: #c9c6bd;
+  color: var(--text-soft);
   font-size: 0.96rem;
 }
 
@@ -757,7 +757,7 @@
   position: relative;
   padding: 18px 0 18px 30px;
   border-bottom: 1px solid var(--line);
-  color: #d6d3ca;
+  color: var(--text-soft);
   font-size: 0.95rem;
 }
 
@@ -766,7 +766,7 @@
   position: absolute;
   left: 0;
   top: 18px;
-  color: var(--orange);
+  color: var(--orange-ink);
   font-family: var(--font-mono);
   font-size: 0.8rem;
 }
@@ -799,7 +799,7 @@
 
 .path-card p {
   margin-top: 14px;
-  color: #c9c6bd;
+  color: var(--text-soft);
   font-size: 0.94rem;
 }
 
@@ -808,7 +808,7 @@
   padding: 2px 5px;
   border: 1px solid var(--line);
   border-radius: 4px;
-  background: rgba(244, 241, 232, 0.04);
+  background: rgba(247, 245, 239, 0.04);
   color: var(--text);
   font-size: 0.86em;
 }
@@ -856,7 +856,7 @@
 
 .support-head > p {
   margin-top: 18px;
-  color: #c9c6bd;
+  color: var(--text-soft);
 }
 
 .support-grid {
@@ -923,7 +923,7 @@
 
 .faq-copy > p {
   margin-top: 18px;
-  color: #c9c6bd;
+  color: var(--text-soft);
 }
 
 .faq-list {
@@ -983,7 +983,7 @@
 .faq-item p {
   max-width: 70ch;
   padding: 0 0 22px;
-  color: #c9c6bd;
+  color: var(--text-soft);
   font-size: 0.93rem;
 }
 
@@ -1023,7 +1023,7 @@
 .final-cta-inner > p:not(.eyebrow, .final-note) {
   max-width: 55ch;
   margin: 20px auto 0;
-  color: #c9c6bd;
+  color: var(--text-soft);
 }
 
 .final-actions {
@@ -1057,7 +1057,7 @@
 .site-footer {
   border-top: 1px solid var(--line);
   padding-block: 64px 28px;
-  background: #080809;
+  background: var(--footer);
 }
 
 .footer-grid {
@@ -1106,7 +1106,7 @@
 }
 
 .footer-nav a {
-  color: #d6d3ca;
+  color: var(--text-soft);
   font-size: 0.88rem;
   text-decoration: none;
 }
@@ -1152,7 +1152,7 @@
 .legal-inner p,
 .legal-inner address {
   margin-top: 22px;
-  color: #c9c6bd;
+  color: var(--text-soft);
   font-style: normal;
   line-height: 1.7;
 }
@@ -1166,7 +1166,7 @@
   border: 1px solid rgba(255, 138, 61, 0.4);
   border-radius: var(--radius-sm);
   background: rgba(255, 138, 61, 0.08);
-  color: var(--orange) !important;
+  color: var(--orange-ink) !important;
   font-family: var(--font-mono);
   font-size: 0.78rem;
 }

@@ -1,15 +1,18 @@
 :root {
   color-scheme: dark;
 
-  --ink: #0a0a0b;
-  --panel: #121214;
-  --panel-raised: #171719;
-  --text: #f4f1e8;
-  --muted: #a3a39b;
-  --line: rgba(244, 241, 232, 0.12);
+  --ink: #2a4d6e;
+  --panel: #2f5375;
+  --panel-raised: #345b80;
+  --footer: #24425f;
+  --text: #f7f5ef;
+  --muted: #c9d1dc;
+  --text-soft: #e8edf3;
+  --line: rgba(247, 245, 239, 0.16);
 
   --magenta: #ff3ea5;
   --orange: #ff8a3d;
+  --orange-ink: #ffb37d;
   --yellow: #ffe14d;
   --green: #4dff9e;
   --cyan: #3ddcff;

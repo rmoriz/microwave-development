@@ -18,6 +18,10 @@ test('SEO metadata and JSON-LD', () => {
   assert.equal(json.license, 'https://github.com/rmoriz/microwave-development/blob/main/LICENSE');
 });
 
+test('theme colour matches the steel-blue background', () => {
+  assert.equal($('meta[name="theme-color"]').attr('content'), '#2a4d6e');
+});
+
 test('sitemap and robots exist', () => {
   assert.equal(fs.existsSync(path.join(root, 'dist/sitemap-index.xml')), true);
   assert.match(

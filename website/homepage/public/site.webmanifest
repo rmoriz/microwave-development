@@ -4,8 +4,8 @@
   "description": "An independent, open-source Chef Infra Server API implementation in Rust.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0a0a0b",
-  "theme_color": "#0a0a0b",
+  "background_color": "#2a4d6e",
+  "theme_color": "#2a4d6e",
   "icons": [
     {
       "src": "/favicon.svg",
