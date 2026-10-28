@@ -8,7 +8,10 @@ use microwave_crypto::SignVersion;
 use microwave_objectstore::md5_hex;
 use microwave_store::{NewNodeRun, Org, Permission};
 use serde_json::{json, Value};
+use std::io::Write;
+use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
+use tracing_subscriber::fmt::MakeWriter;
 
 fn mcp_config(orgs: &[(&str, &str)]) -> Config {
     let mut config = Config::default();
@@ -2098,4 +2101,63 @@ async fn delete_cookbook_version_removes_the_version() {
     .await;
     assert_eq!(missing["result"]["isError"], json!(true), "{missing}");
     assert_eq!(missing["result"]["content"][0]["text"], "not found");
+}
+
+#[derive(Clone, Default)]
+struct LogCapture(Arc<Mutex<Vec<u8>>>);
+
+impl Write for LogCapture {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for LogCapture {
+    type Writer = LogCapture;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// The homepage promises one structured line per call, with the target on
+/// writes. Pin the fields so a rename or a dropped write target fails here.
+#[tokio::test]
+async fn tool_calls_emit_one_structured_log_line_with_the_target() {
+    let capture = LogCapture::default();
+    let writer = capture.clone();
+    tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .try_init()
+        .ok();
+
+    let (_state, _org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+
+    call_tool(&app, "acme", "a", 2, "list_nodes", json!({})).await;
+    call_tool(&app, "acme", "a", 3, "create_node", json!({ "name": "web1" })).await;
+
+    let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+
+    let read = logs
+        .lines()
+        .find(|line| line.contains("mcp tool call") && line.contains("tool=\"list_nodes\""))
+        .unwrap_or_else(|| panic!("read log line missing from {logs:?}"));
+    assert!(read.contains("organization=acme"), "log line: {read}");
+    assert!(read.contains("principal=pivotal"), "log line: {read}");
+    assert!(read.contains("duration_ms="), "log line: {read}");
+    assert!(read.contains("result_count="), "log line: {read}");
+    assert!(read.contains("outcome=\"ok\""), "log line: {read}");
+    assert!(!read.contains("target="), "log line: {read}");
+
+    let write = logs
+        .lines()
+        .find(|line| line.contains("mcp tool call") && line.contains("tool=\"create_node\""))
+        .unwrap_or_else(|| panic!("write log line missing from {logs:?}"));
+    assert!(write.contains("target=\"web1\""), "log line: {write}");
 }

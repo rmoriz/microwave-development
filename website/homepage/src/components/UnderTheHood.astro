@@ -152,16 +152,18 @@ const docs = {
             versions.
           </p>
           <p>
-            Writes are opt-in per organization and reuse the HTTP API's ACL,
+            Writes are on by default per organization and switch off with
+            <code>writes = false</code>. They reuse the HTTP API's ACL,
             normalization, and validation paths. The default principal is the
             superuser and bypasses ACLs, so a scoped user is the production
             setting.
           </p>
           <p>
-            Tool calls emit one structured log line with organization,
+            Tool calls emit one structured log line per call, with organization,
             principal, tool, duration, and result count; writes also log the
-            target. There is no durable audit table. The surface is otherwise
-            experimental: no token expiry, per-tool scope, or UI.
+            target, and server failures add a separate error line. There is no
+            durable audit table. The surface is otherwise experimental: no
+            token expiry, per-tool scope, or UI.
           </p>
           <p>
             <a class="text-link" href={docs.mcp}>MCP guide <span aria-hidden="true">↗</span></a>

@@ -14,7 +14,7 @@
 
 - English copy. The body must not contain `AI-powered`, `built-in AI`, `autonomous`, `self-healing`, or “assistant” as a product term.
 - MCP is called `Experimental` in the section and every navigation-level mention.
-- Read before write; writes are described as off until enabled.
+- Read before write; writes are on by default and described with the `writes = false` switch.
 - No new runtime request, dependency, client-side framework, or build step.
 - All claims trace to `docs/mcp.md` or the implementation. Endpoint shape: `POST /organizations/<org>/mcp`. Limits: `allowed_hosts`, reverse-proxy review, no durable audit table (structured tool-call logs only), scoped principals required for ACLs, no token expiry, no per-tool scopes, no UI.
 - Existing H1 stays exactly `Get cooking without becoming a chef.`
@@ -26,7 +26,7 @@
 - JavaScript disabled — the section, cards, and details content stay visible.
 - Screen-reader structure — one `h2`, three `h3` workflow cards in a real list.
 - The guide link — `docs/mcp.md` must exist on `main` before launch and use the GitHub `blob/main` URL.
-- Copy drift — writes must not read as default or automatic, the section must not imply a built-in model, and ACL wording must mention the superuser default.
+- Copy drift — writes must read as on by default and switchable off, the section must not imply a built-in model, and ACL wording must mention the superuser default.
 
 ---
 
@@ -162,7 +162,8 @@ test('agent MCP sales section', () => {
   assert.match(text, /What is drifting\?/);
   assert.match(text, /Prepare the change\./);
   assert.match(text, /Use a scoped user: the superuser default skips ACLs/);
-  assert.match(text, /Writes are off until you turn them on/);
+  assert.match(text, /Writes are on by default/);
+  assert.match(text, /writes = false/);
   assert.match(text, /warns if a write-enabled organization still uses the superuser default/);
   assert.equal($(`#agents a[href="${guide}"]`).length, 1);
   assert.equal($('#agents h2').length, 1);
@@ -244,8 +245,9 @@ const workflows = [
         scoped user: the superuser default skips ACLs.
       </p>
       <p class="agent-optin">
-        Read first. Writes are off until you turn them on. The server warns if
-        a write-enabled organization still uses the superuser default.
+        Read first. Writes are on by default; set <code>writes = false</code>
+        until you trust the client. The server warns if a write-enabled
+        organization still uses the superuser default.
       </p>
     </div>
 
@@ -569,15 +571,17 @@ Insert after panel 06 and before `</div>` of `.under-list`:
             versions.
           </p>
           <p>
-            Writes are opt-in per organization and reuse the HTTP API's ACL,
+            Writes are on by default per organization and switch off with
+            <code>writes = false</code>. They reuse the HTTP API's ACL,
             normalization, and validation paths. The default principal is the
             superuser and bypasses ACLs, so a scoped user is the production
             setting.
           </p>
           <p>
-            Tool calls emit one structured log line with organization,
-            principal, tool, duration, and result count; writes also log the
-            target. There is no durable audit table. The surface is otherwise
+            Tool calls emit one structured log line per call, with
+            organization, principal, tool, duration, and result count; writes
+            also log the target, and server failures add a separate error
+            line. There is no durable audit table. The surface is otherwise
             experimental: no token expiry, per-tool scope, or UI.
           </p>
           <p>
@@ -617,9 +621,10 @@ git commit -m "feat(website): surface agent MCP across the page"
 After the line “Keep factual claims traceable to the repository.” add:
 
 ```markdown
-- MCP is always described as experimental. Reads come before writes; writes are
-  opt-in. Keep the wording traceable to `docs/mcp.md` and do not use
-  “AI-powered” or “built-in AI”. The content test enforces this.
+- MCP is always described as experimental. Reads come before writes; writes
+  are on by default and switched off with `writes = false`. Keep the wording
+  traceable to `docs/mcp.md` and do not use “AI-powered” or “built-in AI”. The
+  content test enforces this.
 ```
 
 - [ ] **Step 2: Run the complete suite**

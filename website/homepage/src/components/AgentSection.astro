@@ -49,8 +49,9 @@ const workflows = [
         scoped user: the superuser default skips ACLs.
       </p>
       <p class="agent-optin">
-        Read first. Writes are off until you turn them on. The server warns if
-        a write-enabled organization still uses the superuser default.
+        Read first. Writes are on by default; set <code>writes = false</code>
+        until you trust the client. The server warns if a write-enabled
+        organization still uses the superuser default.
       </p>
     </div>
 

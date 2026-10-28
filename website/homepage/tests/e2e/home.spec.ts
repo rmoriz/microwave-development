@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-const widths = [320, 375, 768, 1440];
+const widths = [320, 375, 768, 900, 1440];
 
 test('no horizontal overflow at narrow and wide viewports', async ({ page }) => {
   for (const width of widths) {
@@ -10,6 +10,19 @@ test('no horizontal overflow at narrow and wide viewports', async ({ page }) => 
       () => document.documentElement.scrollWidth - window.innerWidth,
     );
     expect(overflow).toBeLessThanOrEqual(1);
+  }
+});
+
+test('desktop navigation stays on one line where it is shown', async ({ page }) => {
+  for (const width of [900, 1100, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/');
+    if (await page.locator('.nav-desktop').isVisible()) {
+      const height = await page.locator('.nav-desktop .nav-links').evaluate((element) => {
+        return element.getBoundingClientRect().height;
+      });
+      expect(height, `at ${width}px`).toBeLessThan(40);
+    }
   }
 });
 

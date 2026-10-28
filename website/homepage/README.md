@@ -90,8 +90,9 @@ apex domain in the host and redirect `www` to the apex if both are enabled.
   the most important ones, including the Cinc wording and the absence of
   forbidden competitor language.
 - MCP is always described as experimental. Reads come before writes; writes are
-  opt-in. Keep the wording traceable to `docs/mcp.md` and do not use
-  “AI-powered” or “built-in AI”. The content test enforces this.
+  on by default and switched off with `writes = false`. Keep the wording
+  traceable to `docs/mcp.md` and do not use “AI-powered” or “built-in AI”. The
+  content test enforces this.
 
 ## Structure
 

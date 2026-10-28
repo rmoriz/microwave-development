@@ -224,7 +224,8 @@ Substitute the organization name and token:
 
 ### Claude Desktop
 
-Add the same entry to `claude_desktop_config.json` (macOS:
+`claude_desktop_config.json` starts stdio servers only, so this endpoint needs
+the `mcp-remote` bridge. Add the entry to the file (macOS:
 `~/Library/Application Support/Claude/claude_desktop_config.json`) and restart
 Claude Desktop:
 
@@ -232,13 +233,24 @@ Claude Desktop:
 {
   "mcpServers": {
     "microwave-acme": {
-      "type": "http",
-      "url": "https://chef.example.com/organizations/acme/mcp",
-      "headers": { "Authorization": "Bearer <token>" }
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://chef.example.com/organizations/acme/mcp",
+        "--header",
+        "Authorization:${MICROWAVE_MCP_TOKEN}"
+      ],
+      "env": { "MICROWAVE_MCP_TOKEN": "Bearer <token>" }
     }
   }
 }
 ```
+
+The spaces around the colon in `--header` are omitted on purpose; several
+clients mangle arguments that contain spaces. If your Claude Desktop version
+supports remote connectors, you can add the URL there instead and let it hold
+the header.
 
 ### Cursor
 
@@ -457,16 +469,21 @@ behavior and is a v1 limitation.
    only nodes its ACLs allow.
 4. If the run tools return nothing, check that `data_collector.store` is
    `"local"` or `"both"` and that reports have been received since enablement.
-5. Tail the server log and confirm one structured line per tool call, including
-   the organization, principal, tool, duration, and result count.
+   Reports are pruned to `data_collector.keep_runs` per organization and node
+   (default 50); `0` keeps everything at the cost of database growth. Run tools
+   never see reports older than the retained window.
+5. Tail the server log and confirm one structured log line per call, including the
+   organization, principal, tool, duration, result count, and outcome; write
+   calls also log the target. Server failures add a separate error line.
 
 ## Limitations
 
 - **Experimental.** The tool names, arguments, and behavior may change.
-- **No durable audit table.** Tool calls are logged as structured lines
-  with the organization, principal, tool, duration, and result count; writes
-  also log the target. Logs go to the server log (journald or the container
-  log), are not stored in the database, and are not a queryable audit record.
+- **No durable audit table.** Tool calls log one structured log line per call with
+  the organization, principal, tool, duration, result count, and outcome;
+  writes also log the target, and server failures log a separate error line.
+  Logs go to the server log (journald or the container log), are not stored in
+  the database, and are not a queryable audit record.
 - **No token expiry, scopes, or per-tool permissions.** Authorization is the
   organization-level `writes` switch plus the principal's ACLs.
 - **No stdio transport.** Only Streamable HTTP is implemented.
@@ -475,7 +492,8 @@ behavior and is a v1 limitation.
 - **Run reports are local-only.** `node_runs` is excluded from snapshots and
   from `microwave-migrate`. The run tools only see reports stored by this
   server, which requires `data_collector.store = "local"` or `"both"`. With
-  the default `forward` mode the run tools return no data.
+  the default `forward` mode the run tools return no data. Retained reports are
+  pruned to `keep_runs` per organization and node (default 50).
 - **Orphaned blobs.** A failed or denied upload can leave blobs that no
   cookbook version references (see above); there is no garbage collector.
 - **No signature fallback.** `/organizations/<org>/mcp` bypasses the Chef

@@ -573,8 +573,94 @@ async fn reload_tls(
 
 #[cfg(test)]
 mod tests {
-    use super::{local_object_store_base_url, redact_config_for_output, redact_database_url};
-    use microwave_config::Config;
+    use super::{
+        local_object_store_base_url, redact_config_for_output, redact_database_url,
+        warn_implicit_mcp_superuser,
+    };
+    use microwave_config::{Config, McpOrgConfig};
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[derive(Clone, Default)]
+    struct LogCapture(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for LogCapture {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for LogCapture {
+        type Writer = LogCapture;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// The startup warning is the only signal that a write-enabled organization
+    /// still runs as the ACL-bypassing superuser. Pin its trigger conditions.
+    #[test]
+    fn warns_only_for_write_enabled_implicit_superuser_organizations() {
+        let capture = LogCapture::default();
+        let writer = capture.clone();
+        tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .try_init()
+            .ok();
+
+        let mut config = Config::default();
+        config.mcp.enabled = true;
+        let superuser = config.auth.superuser_name.clone();
+        config
+            .mcp
+            .organizations
+            .insert("implicit".into(), McpOrgConfig::default());
+        config.mcp.organizations.insert(
+            superuser.clone(),
+            McpOrgConfig {
+                principal: Some(superuser),
+                ..Default::default()
+            },
+        );
+        config.mcp.organizations.insert(
+            "explicit".into(),
+            McpOrgConfig {
+                principal: Some("agent".into()),
+                ..Default::default()
+            },
+        );
+        config.mcp.organizations.insert(
+            "read-only".into(),
+            McpOrgConfig {
+                writes: false,
+                ..Default::default()
+            },
+        );
+
+        warn_implicit_mcp_superuser(&config);
+        let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("organization=implicit"), "logs: {logs}");
+        assert!(logs.contains("organization=pivotal"), "logs: {logs}");
+        assert!(!logs.contains("organization=explicit"), "logs: {logs}");
+        assert!(!logs.contains("organization=read-only"), "logs: {logs}");
+
+        let mut disabled = Config::default();
+        disabled.mcp.organizations.insert(
+            "disabled".into(),
+            McpOrgConfig::default(),
+        );
+        capture.0.lock().unwrap().clear();
+        warn_implicit_mcp_superuser(&disabled);
+        assert!(capture.0.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn local_object_store_uses_https_only_when_tls_is_enabled() {

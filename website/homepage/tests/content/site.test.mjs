@@ -25,7 +25,7 @@ test('hero and navigation', () => {
   assert.match($('body').text(), /Chef Infra Client 18\/19/);
   assert.match($('body').text(), /AGPL-3\.0/);
   assert.match($('body').text(), /Agent-ready/);
-  assert.match($('body').text(), /MCP for AI agents/);
+  assert.match($('body').text(), /Experimental MCP for AI agents/);
   assert.equal($('.nav-desktop a[href="/#agents"]').length, 1);
   assert.equal($('.nav-mobile a[href="/#agents"]').length, 1);
   assert.match($('picture img').attr('alt'), /rainbow neon microwave/i);
@@ -54,11 +54,12 @@ test('compatibility, under the hood, and known gaps', () => {
   assert.match(text, /knife/);
   assert.match(text, /chef-server-ctl/);
   assert.equal($('#under-the-hood details').length, 7);
-  assert.match(text, /Per-organization MCP endpoint/);
+  assert.match(text, /Experimental MCP endpoint/);
   assert.match(text, /MCP-capable AI agents/);
   assert.match(text, /Agents in the kitchen\./);
   assert.match(text, /MCP is experimental: no durable audit table/);
   assert.match(text, /Tool calls are only structured log lines/);
+  assert.match(text, /one structured log line per call/);
   for (const phrase of [
     'No automatic `chef-server.rb` importer',
     'password reset',
@@ -105,8 +106,13 @@ test('agent MCP sales section', () => {
   assert.match(text, /What is drifting\?/);
   assert.match(text, /Prepare the change\./);
   assert.match(text, /Use a scoped user: the superuser default skips ACLs/);
-  assert.match(text, /Writes are off until you turn them on/);
+  assert.match(text, /Writes are on by default/);
+  assert.match(text, /writes = false/);
   assert.match(text, /warns if a write-enabled organization still uses the superuser default/);
+  assert.equal(
+    $('#agents .agent-note').text().trim(),
+    'Bring your own agent. Microwave provides the endpoint and the permissions; the model stays on your side.',
+  );
   assert.equal($(`#agents a[href="${guide}"]`).length, 1);
   assert.equal($('#agents h2').length, 1);
   assert.equal($('#agents h3').length, 3);
@@ -117,6 +123,11 @@ test('agent MCP sales section', () => {
     true,
     'docs/mcp.md exists in the repository',
   );
+
+  const guideText = fs.readFileSync(path.join(root, '../../docs/mcp.md'), 'utf8');
+  assert.match(guideText, /mcp-remote/, 'Claude Desktop uses the stdio bridge');
+  assert.match(guideText, /keep_runs/, 'the guide documents report pruning');
+  assert.match(guideText, /one structured log line per call/);
 });
 
 test('final CTA, footer, and legal pages', () => {

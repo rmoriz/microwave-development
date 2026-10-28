@@ -23,7 +23,8 @@ page.
 - Explain in one scan what an agent can do with Microwave and why that is
   useful to an operator.
 - Show three concrete workflows instead of a bare feature list.
-- Keep the claim honest: experimental, opt-in, no built-in model, no UI.
+- Keep the claim honest: experimental, writes on by default but switchable
+  off, no built-in model, no UI.
 - Give evaluators a path to the setup and tool reference in `docs/mcp.md`.
 - Add the angle to discovery surfaces (hero, navigation, compatibility, known
   gaps, FAQ) without turning the page into an AI landing page.
@@ -39,8 +40,7 @@ page.
 ## Anti-goals
 
 - “AI-powered” as a claim about the server itself.
-- Implying that writes are on by default or that the endpoint is production
-  ready.
+- Implying that writes are opt-in or that the endpoint is production ready.
 - Hiding the experimental status in small print.
 - A second visual language: no chat bubbles, neon gradients beyond the existing
   accent, or fake terminal windows.
@@ -52,8 +52,8 @@ page.
   gradient accent, native `<details>`.
 - Every factual claim is traceable to the implementation or `docs/mcp.md`:
   endpoint shape, token scope, scoped-principal ACLs, the superuser default,
-  read/write split, opt-in write switch, startup warning for the superuser
-  default, `allowed_hosts`, reverse-proxy advice, structured tool-call logs
+  read/write split, the `writes = false` switch, startup warning for the
+  superuser default, `allowed_hosts`, reverse-proxy advice, structured tool-call logs
   without a durable audit table, and no token expiry.
 - The section must be useful without JavaScript and pass the existing axe gate.
 - The site keeps its “no invented claims” rule.
@@ -106,8 +106,9 @@ Structure:
      path as the HTTP API.
 - Trust line, set apart: “Per-organization bearer tokens, mapped to a Chef
   principal. Use a scoped user: the superuser default skips ACLs.”
-- Opt-in line: “Read first. Writes are off until you turn them on. The server
-  warns if a write-enabled organization still uses the superuser default.”
+- Write line: “Read first. Writes are on by default; set `writes = false` until
+  you trust the client. The server warns if a write-enabled organization still
+  uses the superuser default.”
 - Endpoint example in inline code:
   `POST /organizations/<org>/mcp`.
 - Badge or label: `Experimental`.
@@ -135,7 +136,8 @@ Add a seventh panel: **“Agents in the kitchen.”**
   per-organization bearer token that maps to a Chef principal.
 - Read tools cover nodes, environments, cookbooks, runs, and converge errors;
   write tools cover nodes, environments, and cookbook versions.
-- Writes are opt-in per organization and reuse the HTTP API's ACL,
+- Writes are on by default per organization, switch off with `writes =
+  false`, and reuse the HTTP API's ACL,
   normalization, and validation paths. The default principal is the superuser
   and bypasses ACLs, so a scoped user is the production setting.
 - Tool calls emit one structured log line with organization, principal, tool,
@@ -224,7 +226,7 @@ the shipped code where it differs.
 ## Acceptance criteria
 
 - A visitor understands within the section that the agent is external, MCP is
-  experimental, reads are available, and writes are opt-in.
+  experimental, reads are available, and writes can be switched off.
 - Every claim in the section can be traced to `docs/mcp.md` or the code.
 - The page still builds statically and passes type, content, browser, and axe
   checks.
