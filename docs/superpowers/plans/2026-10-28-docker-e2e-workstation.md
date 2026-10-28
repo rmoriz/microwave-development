@@ -269,6 +269,9 @@ ENV MW_MCP_TOKEN=e2e-mcp-token
 # knife 19 finds ~/.chef/knife.rb only through KNIFE_HOME.
 ENV KNIFE_HOME=/root/.chef
 
+# OpenCode writes scratch state below TMPDIR; /tmp is a tmpfs in Compose.
+ENV TMPDIR=/tmp
+
 # Exec sessions start in /work so OpenCode picks up the project config.
 WORKDIR /work
 
@@ -304,6 +307,8 @@ and a final `opencode mcp list || true`. It exits 0 either way.
 `Restart=on-failure`, `RestartSec=5`, plus three
 environment lines: `Environment=HOME=/root` (systemd system units have no
 `HOME` and the knife plugin loader joins it), `Environment=KNIFE_HOME=/root/.chef`,
+and `Environment=TMPDIR=/tmp` (systemd services get a clean env and /tmp is a
+tmpfs),
 and `PassEnvironment=MW_MCP_TOKEN` (systemd services get a clean environment, and
 OpenCode's `{env:MW_MCP_TOKEN}` header is substituted in the background service,
 so it must be passed from the container environment).

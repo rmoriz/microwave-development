@@ -10,6 +10,8 @@ RemainAfterExit=yes
 # systemd system units have no HOME; knife loads plugins that join it.
 Environment=HOME=/root
 Environment=KNIFE_HOME=/root/.chef
+# /tmp is a tmpfs; be explicit because systemd services get a clean env.
+Environment=TMPDIR=/tmp
 # Pass the image/compose token into the unit environment. systemd services get
 # a clean environment, and OpenCode's `{env:MW_MCP_TOKEN}` header substitution
 # reads the background service's environment.

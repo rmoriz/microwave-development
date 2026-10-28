@@ -69,6 +69,10 @@ ENV MW_MCP_TOKEN=e2e-mcp-token
 # alone, and systemd units have no HOME at all.
 ENV KNIFE_HOME=/root/.chef
 
+# OpenCode writes scratch state below TMPDIR. /tmp is a tmpfs in Compose and
+# systemd does not set TMPDIR for services.
+ENV TMPDIR=/tmp
+
 # systemd-resolved is enabled by some distro presets and would take over
 # lookups from the glibc resolver. Mask it so Docker's embedded DNS is used.
 RUN systemctl mask systemd-resolved
