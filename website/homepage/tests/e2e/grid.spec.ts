@@ -8,9 +8,17 @@ test('grid sits behind content without taking clicks', async ({ page }) => {
   await expect(field).toHaveCSS('pointer-events', 'none');
   await expect(field).toHaveCSS('position', 'fixed');
   await page.locator('h1').click();
-  expect(
-    await page.evaluate(() => document.elementFromPoint(4, 4)?.className),
-  ).not.toContain('grid-field');
+  const samples = await page.evaluate(() =>
+    [
+      [4, 4],
+      [720, 300],
+      [720, 700],
+      [1200, 500],
+    ].map(([x, y]) => document.elementFromPoint(x, y)?.className ?? ''),
+  );
+  for (const className of samples) {
+    expect(className).not.toContain('grid-field');
+  }
 });
 
 test('grid holds still under reduced motion and on phones', async ({
@@ -18,18 +26,17 @@ test('grid holds still under reduced motion and on phones', async ({
 }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/');
-  await expect(page.locator('.grid-field__plane')).toHaveCSS(
-    'animation-name',
-    'none',
+  const plane = page.locator('.grid-field__plane');
+  await expect(plane).toHaveCSS('animation-name', 'none');
+  expect(await plane.evaluate((el) => getComputedStyle(el).transform)).toMatch(
+    /^matrix3d/,
   );
 
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.setViewportSize({ width: 375, height: 800 });
   await page.goto('/');
-  await expect(page.locator('.grid-field__plane')).toHaveCSS(
-    'animation-name',
-    'none',
-  );
+  await expect(plane).toHaveCSS('animation-name', 'none');
+  await expect(plane).toHaveCSS('opacity', '0.1');
 });
 
 test('grid runs on desktop with motion allowed', async ({ page }) => {
@@ -39,5 +46,5 @@ test('grid runs on desktop with motion allowed', async ({ page }) => {
     'animation-name',
     'grid-flow',
   );
-  await expect(page.locator('.grid-field__plane')).toHaveCSS('opacity', '0.18');
+  await expect(page.locator('.grid-field__plane')).toHaveCSS('opacity', '0.15');
 });

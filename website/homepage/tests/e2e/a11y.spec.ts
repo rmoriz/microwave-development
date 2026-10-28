@@ -14,6 +14,31 @@ for (const width of [375, 1440]) {
   });
 }
 
+test('selection stays visible on cream surfaces', async ({ page }) => {
+  await page.goto('/');
+  for (const selector of ['a.button-primary', 'a.skip-link']) {
+    const style = await page
+      .locator(selector)
+      .first()
+      .evaluate((el) => {
+        const pseudo = getComputedStyle(el, '::selection');
+        return [pseudo.backgroundColor, pseudo.color];
+      });
+    expect(style).toEqual(['rgb(61, 220, 255)', 'rgb(42, 77, 110)']);
+  }
+});
+
+test('focus ring stays visible on the blue surfaces', async ({ page }) => {
+  await page.goto('/');
+  const cta = page.locator('a.button-primary').first();
+  for (let i = 0; i < 30; i += 1) {
+    if (await cta.evaluate((el) => el === document.activeElement)) break;
+    await page.keyboard.press('Tab');
+  }
+  await expect(cta).toBeFocused();
+  await expect(cta).toHaveCSS('outline-color', 'rgb(61, 220, 255)');
+});
+
 test('skip link reaches the main landmark', async ({ page }) => {
   await page.goto('/');
   await page.keyboard.press('Tab');

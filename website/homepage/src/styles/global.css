@@ -76,6 +76,12 @@ pre {
   color: var(--ink);
 }
 
+.button-primary::selection,
+.skip-link::selection {
+  background: var(--cyan);
+  color: var(--ink);
+}
+
 :focus-visible {
   outline: 2px solid var(--cyan);
   outline-offset: 4px;
@@ -176,6 +182,7 @@ main[id] {
   }
 }
 
+/* Fixed layer behind everything: body must stay the only background carrier. */
 .grid-field {
   position: fixed;
   inset: 0;
@@ -187,12 +194,13 @@ main[id] {
 
 .grid-field__plane {
   position: absolute;
-  inset: -30% -25%;
+  inset: -60% -25% -30%;
   background-image:
     linear-gradient(rgba(61, 220, 255, 0.5) 1px, transparent 1px),
     linear-gradient(90deg, rgba(61, 220, 255, 0.35) 1px, transparent 1px);
   background-size: 36px 36px;
-  opacity: 0.18;
+  opacity: 0.15;
+  transform: perspective(800px) rotateX(55deg) translateY(18px);
   transform-origin: 50% 0;
   animation: grid-flow 24s linear infinite;
 }
@@ -209,7 +217,7 @@ main[id] {
 
 @media (max-width: 699px) {
   .grid-field__plane {
-    opacity: 0.12;
+    opacity: 0.1;
     animation: none;
   }
 }
