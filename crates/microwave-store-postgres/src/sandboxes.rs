@@ -175,6 +175,33 @@ impl SandboxRepository for PostgresStore {
         Ok(found)
     }
 
+    async fn ensure_checksums(
+        &self,
+        org_id: &str,
+        checksums: &[String],
+    ) -> Result<(), StoreError> {
+        if checksums.is_empty() {
+            return Ok(());
+        }
+        let timestamp = now();
+        let mut transaction = self.pool().begin().await.map_err(db)?;
+        for checksum in checksums {
+            sqlx::query(
+                "INSERT INTO checksums (org_id, checksum, created_at)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (org_id, checksum) DO NOTHING",
+            )
+            .bind(org_id)
+            .bind(checksum)
+            .bind(&timestamp)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db)?;
+        }
+        transaction.commit().await.map_err(db)?;
+        Ok(())
+    }
+
     async fn find_checksum(
         &self,
         org_id: &str,

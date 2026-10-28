@@ -539,6 +539,8 @@ pub trait SandboxRepository: Send + Sync {
         org_id: &str,
         checksums: &[String],
     ) -> Result<Vec<String>, StoreError>;
+    /// Insert checksum rows that do not exist yet. Repeating the call is a no-op.
+    async fn ensure_checksums(&self, org_id: &str, checksums: &[String]) -> Result<(), StoreError>;
     async fn find_checksum(
         &self,
         org_id: &str,

@@ -185,6 +185,28 @@ impl SqliteStore {
         Ok(found)
     }
 
+    pub fn ensure_checksums(
+        &self,
+        org_id: &str,
+        checksums: &[String],
+    ) -> Result<(), StoreError> {
+        if checksums.is_empty() {
+            return Ok(());
+        }
+        let timestamp = now();
+        let mut connection = self.connection();
+        let tx = connection.transaction()?;
+        for checksum in checksums {
+            tx.execute(
+                "INSERT OR IGNORE INTO checksums (org_id, checksum, created_at)
+                 VALUES (?1, ?2, ?3)",
+                params![org_id, checksum, timestamp],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn find_checksum(
         &self,
         org_id: &str,

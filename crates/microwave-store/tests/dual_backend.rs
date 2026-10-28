@@ -3022,6 +3022,43 @@ mod suite {
         cleanup_org(store.as_ref(), &other.id).await;
         Vec::new()
     }
+
+    pub async fn checksums(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let fixture = fixture(store.as_ref()).await;
+        let org = &fixture.org;
+        let checksums = vec![checksum(), checksum()];
+
+        store
+            .ensure_checksums(&org.id, &checksums)
+            .await
+            .expect("ensure checksums");
+        store
+            .ensure_checksums(&org.id, &checksums)
+            .await
+            .expect("ensure checksums is idempotent");
+
+        let mut expected = checksums.clone();
+        expected.sort();
+        let mut found = store
+            .existing_checksums(&org.id, &checksums)
+            .await
+            .expect("existing checksums");
+        found.sort();
+        assert_eq!(found, expected);
+
+        let other = store
+            .create_org(&unique("matrix-other-org"), "Other Organization")
+            .await
+            .expect("create other org");
+        assert!(!store
+            .checksum_exists(&other.id, &checksums[0])
+            .await
+            .expect("checksum isolation"));
+
+        cleanup_org(store.as_ref(), &org.id).await;
+        cleanup_org(store.as_ref(), &other.id).await;
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3063,6 +3100,7 @@ matrix!(
         kv_secrets,
         bulk_lookups,
         reports,
+        checksums,
     ]
 );
 
@@ -3082,5 +3120,6 @@ matrix!(
         kv_secrets,
         bulk_lookups,
         reports,
+        checksums,
     ]
 );
