@@ -13,6 +13,10 @@ FROM ${BASE_IMAGE}
 ARG CINC_WORKSTATION_VERSION=26.4.0
 ARG CINC_WORKSTATION_URL=https://downloads.cinc.sh/files/stable/cinc-workstation
 
+# Pinned: the installer layer is cached by command text, and the MCP warm-up in
+# workstation-prepare depends on 2.2.0's reload behaviour.
+ARG OPENCODE_VERSION=2.2.0
+
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN apt-get update \
@@ -38,8 +42,10 @@ RUN set -eux; \
     rm -f /tmp/cinc-workstation.deb; \
     knife --version
 
-RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path \
+RUN curl -fsSL https://opencode.ai/v2/install \
+        | bash -s -- --no-modify-path --version "$OPENCODE_VERSION" \
     && mv /root/.opencode/bin/opencode /usr/local/bin/opencode \
+    && opencode --version | grep -qx "opencode v${OPENCODE_VERSION}" \
     && opencode --version
 
 COPY workstation-prepare.sh /usr/local/bin/workstation-prepare

@@ -17,6 +17,10 @@ PassEnvironment=MW_MCP_TOKEN
 ExecStart=/usr/local/bin/workstation-prepare
 StandardOutput=journal+console
 StandardError=journal+console
+# The script is idempotent; retry transient failures (the API restarting, a
+# dropped DNS lookup) instead of leaving the box half-prepared.
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

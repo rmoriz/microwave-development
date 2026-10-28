@@ -5,4 +5,6 @@ description 'Installs the newest PostgreSQL through the resource-only postgresql
 version '0.1.0'
 chef_version '>= 18.0'
 
-depends 'postgresql', '13.0.5'
+# Unversioned on purpose: the seed pins the version in the Berksfile, and an
+# exact constraint here would break an override of POSTGRES_VERSION.
+depends 'postgresql'

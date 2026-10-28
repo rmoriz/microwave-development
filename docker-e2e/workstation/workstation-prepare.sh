@@ -33,7 +33,6 @@ sed -i "s|client_key \"$SHARED/pivotal.pem\"|client_key \"$CHEF_DIR/pivotal.pem\
     "$CHEF_DIR/knife.rb"
 
 echo "workstation: knife is configured for $(knife node list | wc -l) nodes"
-knife node list
 
 # OpenCode 2.2.0 only registers configured MCP servers on a configuration
 # reload; the first start of its background service reports an empty list.

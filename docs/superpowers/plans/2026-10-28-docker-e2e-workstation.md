@@ -139,7 +139,7 @@ description 'Installs the newest PostgreSQL through the resource-only postgresql
 version '0.1.0'
 chef_version '>= 18.0'
 
-depends 'postgresql', '13.0.5'
+depends 'postgresql'
 ```
 
 `recipes/default.rb`:
@@ -244,8 +244,12 @@ RUN apt-get update \
         ca-certificates curl git gnupg less procps systemd systemd-sysv vim-tiny \
     && apt-get clean
 
-RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path \
+ARG OPENCODE_VERSION=2.2.0
+
+RUN curl -fsSL https://opencode.ai/v2/install \
+        | bash -s -- --no-modify-path --version "$OPENCODE_VERSION" \
     && mv /root/.opencode/bin/opencode /usr/local/bin/opencode \
+    && opencode --version | grep -qx "opencode v${OPENCODE_VERSION}" \
     && opencode --version
 
 COPY workstation-prepare.sh /usr/local/bin/workstation-prepare
@@ -296,7 +300,8 @@ and a final `opencode mcp list || true`. It exits 0 either way.
 `workstation-prepare.service`: `Type=oneshot`, `RemainAfterExit=yes`,
 `Wants=network-online.target`, `After=network-online.target network.target`,
 `ExecStart=/usr/local/bin/workstation-prepare`,
-`StandardOutput=journal+console`, `StandardError=journal+console`, plus three
+`StandardOutput=journal+console`, `StandardError=journal+console`,
+`Restart=on-failure`, `RestartSec=5`, plus three
 environment lines: `Environment=HOME=/root` (systemd system units have no
 `HOME` and the knife plugin loader joins it), `Environment=KNIFE_HOME=/root/.chef`,
 and `PassEnvironment=MW_MCP_TOKEN` (systemd services get a clean environment, and
