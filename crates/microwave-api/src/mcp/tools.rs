@@ -3,7 +3,7 @@ use crate::mcp::context::McpContext;
 use crate::ApiError;
 use axum::http::StatusCode;
 use chrono::DateTime;
-use microwave_store::{NodeRunFilter, StoredCookbookVersion, StoredNodeRun};
+use microwave_store::{NodeRunFilter, StoredCookbookVersion, StoredNode, StoredNodeRun};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerConfig};
@@ -21,10 +21,11 @@ pub struct McpServer {
 
 impl McpServer {
     pub fn new(ctx: McpContext) -> Self {
-        Self {
-            ctx,
-            tool_router: Self::read_tool_router(),
+        let mut tool_router = Self::read_tool_router();
+        if ctx.writes {
+            tool_router += Self::write_tool_router();
         }
+        Self { ctx, tool_router }
     }
 }
 
@@ -92,6 +93,46 @@ struct ListConvergeErrorsArgs {
     node_name: Option<String>,
     since: Option<String>,
     limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct CreateNodeArgs {
+    name: String,
+    environment: Option<String>,
+    run_list: Option<Vec<String>>,
+    normal: Option<Value>,
+    policy_name: Option<String>,
+    policy_group: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct UpdateNodeArgs {
+    name: String,
+    node: Value,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DeleteNodeArgs {
+    name: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct CreateEnvironmentArgs {
+    name: String,
+    attributes: Option<Value>,
+    cookbook_versions: Option<Value>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct UpdateEnvironmentArgs {
+    name: String,
+    environment: Value,
+    new_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DeleteEnvironmentArgs {
+    name: String,
 }
 
 #[tool_router(router = read_tool_router, vis = "pub(crate)")]
@@ -195,6 +236,179 @@ impl McpServer {
         Parameters(args): Parameters<ListConvergeErrorsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         tool_result(self.list_converge_errors_inner(args).await)
+    }
+}
+
+#[tool_router(router = write_tool_router, vis = "pub(crate)")]
+impl McpServer {
+    /// Create a node document.
+    #[tool(
+        description = "Create a node from a compact document; runs the same validation and ACL checks as the HTTP API"
+    )]
+    async fn create_node(
+        &self,
+        Parameters(args): Parameters<CreateNodeArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tool_result(self.create_node_inner(args).await)
+    }
+
+    /// Replace a node with a full document.
+    #[tool(
+        description = "Replace a node with a full document (PUT semantics, not JSON patch); the same normalization as the HTTP API applies"
+    )]
+    async fn update_node(
+        &self,
+        Parameters(args): Parameters<UpdateNodeArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tool_result(self.update_node_inner(args).await)
+    }
+
+    /// Delete a node.
+    #[tool(description = "Delete a node by name")]
+    async fn delete_node(
+        &self,
+        Parameters(args): Parameters<DeleteNodeArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tool_result(self.delete_node_inner(args).await)
+    }
+
+    /// Create an environment document.
+    #[tool(description = "Create an environment from attributes and cookbook version constraints")]
+    async fn create_environment(
+        &self,
+        Parameters(args): Parameters<CreateEnvironmentArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tool_result(self.create_environment_inner(args).await)
+    }
+
+    /// Replace an environment with a full document.
+    #[tool(
+        description = "Replace an environment with a full document (PUT semantics, not JSON patch); set new_name to rename it"
+    )]
+    async fn update_environment(
+        &self,
+        Parameters(args): Parameters<UpdateEnvironmentArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tool_result(self.update_environment_inner(args).await)
+    }
+
+    /// Delete an environment.
+    #[tool(description = "Delete an environment by name; the _default environment is protected")]
+    async fn delete_environment(
+        &self,
+        Parameters(args): Parameters<DeleteEnvironmentArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tool_result(self.delete_environment_inner(args).await)
+    }
+}
+
+impl McpServer {
+    async fn create_node_inner(&self, args: CreateNodeArgs) -> Result<CallToolResult, ApiError> {
+        let ctx = &self.ctx;
+        let mut body = json!({ "name": args.name });
+        let object = body.as_object_mut().ok_or_else(ApiError::internal)?;
+        if let Some(environment) = args.environment {
+            object.insert("chef_environment".into(), json!(environment));
+        }
+        if let Some(run_list) = args.run_list {
+            object.insert("run_list".into(), json!(run_list));
+        }
+        if let Some(normal) = args.normal {
+            object.insert("normal".into(), normal);
+        }
+        if let Some(policy_name) = args.policy_name {
+            object.insert("policy_name".into(), json!(policy_name));
+        }
+        if let Some(policy_group) = args.policy_group {
+            object.insert("policy_group".into(), json!(policy_group));
+        }
+        let auth = ctx.auth_context();
+        let node = crate::nodes::create_node_object(&ctx.state, &auth, &ctx.org, &mut body).await?;
+        Ok(self.json_result(&node_summary(&node)))
+    }
+
+    async fn update_node_inner(&self, args: UpdateNodeArgs) -> Result<CallToolResult, ApiError> {
+        let ctx = &self.ctx;
+        let auth = ctx.auth_context();
+        let mut body = args.node;
+        let node =
+            crate::nodes::update_node_object(&ctx.state, &auth, &ctx.org, &args.name, &mut body)
+                .await?;
+        Ok(self.json_result(&node_summary(&node)))
+    }
+
+    async fn delete_node_inner(&self, args: DeleteNodeArgs) -> Result<CallToolResult, ApiError> {
+        let ctx = &self.ctx;
+        let auth = ctx.auth_context();
+        let node =
+            crate::nodes::delete_node_object(&ctx.state, &auth, &ctx.org, &args.name).await?;
+        Ok(self.json_result(&json!({ "name": node.name, "deleted": true })))
+    }
+
+    async fn create_environment_inner(
+        &self,
+        args: CreateEnvironmentArgs,
+    ) -> Result<CallToolResult, ApiError> {
+        let ctx = &self.ctx;
+        let mut body = json!({ "name": args.name });
+        let object = body.as_object_mut().ok_or_else(ApiError::internal)?;
+        if let Some(attributes) = args.attributes {
+            if let Some(default) = attributes.get("default").filter(|value| !value.is_null()) {
+                object.insert("default_attributes".into(), default.clone());
+            }
+            if let Some(override_) = attributes.get("override").filter(|value| !value.is_null()) {
+                object.insert("override_attributes".into(), override_.clone());
+            }
+        }
+        if let Some(cookbook_versions) = args.cookbook_versions {
+            object.insert("cookbook_versions".into(), cookbook_versions);
+        }
+        let auth = ctx.auth_context();
+        let environment =
+            crate::environments::create_environment_object(&ctx.state, &auth, &ctx.org, &mut body)
+                .await?;
+        Ok(self.json_result(&json!({
+            "name": environment.name,
+            "updated_at": environment.updated_at,
+        })))
+    }
+
+    async fn update_environment_inner(
+        &self,
+        args: UpdateEnvironmentArgs,
+    ) -> Result<CallToolResult, ApiError> {
+        let ctx = &self.ctx;
+        let mut body = args.environment;
+        if let Some(new_name) = args.new_name {
+            if new_name != args.name {
+                let object = body
+                    .as_object_mut()
+                    .ok_or_else(|| ApiError::bad_request("Incorrect JSON type for request body"))?;
+                object.insert("name".into(), json!(new_name));
+            }
+        }
+        let auth = ctx.auth_context();
+        let (environment, renamed) = crate::environments::update_environment_object(
+            &ctx.state, &auth, &ctx.org, &args.name, &mut body,
+        )
+        .await?;
+        Ok(self.json_result(&json!({
+            "name": environment.name,
+            "updated_at": environment.updated_at,
+            "renamed": renamed,
+        })))
+    }
+
+    async fn delete_environment_inner(
+        &self,
+        args: DeleteEnvironmentArgs,
+    ) -> Result<CallToolResult, ApiError> {
+        let ctx = &self.ctx;
+        let auth = ctx.auth_context();
+        let environment =
+            crate::environments::delete_environment_object(&ctx.state, &auth, &ctx.org, &args.name)
+                .await?;
+        Ok(self.json_result(&json!({ "name": environment.name, "deleted": true })))
     }
 }
 
@@ -535,6 +749,17 @@ impl McpServer {
             }
         }
     }
+}
+
+/// The compact summary returned by node writes: identity and routing fields
+/// only, never the full document.
+fn node_summary(node: &StoredNode) -> Value {
+    json!({
+        "name": node.name,
+        "environment": node.environment,
+        "policy_name": node.policy_name,
+        "policy_group": node.policy_group,
+    })
 }
 
 /// The list-view summary of one run. With `report`, the summary is extended

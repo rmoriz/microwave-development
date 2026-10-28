@@ -937,6 +937,317 @@ async fn reports_of_deleted_nodes_stay_visible_to_superusers() {
     assert_eq!(runs["runs"][0]["run_id"], "run-3");
 }
 
+const WRITE_TOOLS: [&str; 6] = [
+    "create_node",
+    "update_node",
+    "delete_node",
+    "create_environment",
+    "update_environment",
+    "delete_environment",
+];
+
+async fn search_nodes(app: &axum::Router, query: &str) -> Value {
+    let response = app
+        .clone()
+        .oneshot(support::signed_request(
+            "GET",
+            &format!("/organizations/acme/search/node?q={query}"),
+            b"",
+            SignVersion::V1_3,
+            "pivotal",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    support::response_json(response).await
+}
+
+#[tokio::test]
+async fn writes_false_hides_and_rejects_write_tools() {
+    let mut config = mcp_config(&[("acme", "a")]);
+    config.mcp.organizations.get_mut("acme").unwrap().writes = false;
+    let app = acme_app(config).await;
+
+    let listed = body_json(mcp(&app, "acme", "a", tools_list(2)).await).await;
+    let names: Vec<&str> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    for tool in WRITE_TOOLS {
+        assert!(!names.contains(&tool), "unexpected write tool {tool}");
+    }
+    assert!(names.contains(&"get_node"));
+
+    let result = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        3,
+        "create_node",
+        json!({ "name": "web1" }),
+    )
+    .await;
+    let unknown_tool = result["error"]["message"].as_str().is_some_and(|message| {
+        let message = message.to_lowercase();
+        message.contains("unknown") || message.contains("not found")
+    });
+    assert!(
+        unknown_tool || result["result"]["isError"] == json!(true),
+        "{result}"
+    );
+}
+
+#[tokio::test]
+async fn create_update_and_delete_node() {
+    let (_state, _org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+
+    let created = call_tool(
+        &app,
+        "acme",
+        "a",
+        2,
+        "create_node",
+        json!({
+            "name": "web1",
+            "environment": "prod",
+            "run_list": ["recipe[apache]"],
+            "normal": { "platform": "ubuntu" }
+        }),
+    )
+    .await;
+    assert_eq!(created["name"], "web1");
+    assert_eq!(created["environment"], "prod");
+    assert!(created["run_list"].is_null(), "summary leaked the document");
+    assert!(created["normal"].is_null(), "summary leaked the document");
+
+    let node = call_tool(&app, "acme", "a", 3, "get_node", json!({ "name": "web1" })).await;
+    assert_eq!(node["chef_environment"], "prod");
+    assert_eq!(node["run_list"], json!(["recipe[apache]"]));
+    assert_eq!(node["normal"]["platform"], "ubuntu");
+
+    let updated = call_tool(
+        &app,
+        "acme",
+        "a",
+        4,
+        "update_node",
+        json!({
+            "name": "web1",
+            "node": {
+                "name": "web1",
+                "chef_environment": "prod",
+                "run_list": ["role[base]"],
+                "normal": { "platform": "debian" }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(updated["name"], "web1");
+    assert_eq!(updated["environment"], "prod");
+
+    let node = call_tool(&app, "acme", "a", 5, "get_node", json!({ "name": "web1" })).await;
+    assert_eq!(node["run_list"], json!(["role[base]"]));
+    assert_eq!(node["normal"]["platform"], "debian");
+
+    let deleted = call_tool(
+        &app,
+        "acme",
+        "a",
+        6,
+        "delete_node",
+        json!({ "name": "web1" }),
+    )
+    .await;
+    assert_eq!(deleted, json!({ "name": "web1", "deleted": true }));
+
+    let missing = call_tool_raw(&app, "acme", "a", 7, "get_node", json!({ "name": "web1" })).await;
+    assert_eq!(missing["result"]["isError"], json!(true));
+    assert_eq!(missing["result"]["content"][0]["text"], "not found");
+}
+
+#[tokio::test]
+async fn create_update_and_delete_environment() {
+    let (_state, _org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+
+    let created = call_tool(
+        &app,
+        "acme",
+        "a",
+        2,
+        "create_environment",
+        json!({
+            "name": "prod",
+            "attributes": {
+                "default": { "app": { "port": 80 } },
+                "override": { "app": { "port": 8080 } }
+            },
+            "cookbook_versions": { "apache": "= 1.0.0" }
+        }),
+    )
+    .await;
+    assert_eq!(created["name"], "prod");
+    assert!(created["updated_at"].is_string());
+    assert!(
+        created["default_attributes"].is_null(),
+        "summary leaked the document"
+    );
+
+    let environment = call_tool(
+        &app,
+        "acme",
+        "a",
+        3,
+        "get_environment",
+        json!({ "name": "prod" }),
+    )
+    .await;
+    assert_eq!(environment["default_attributes"]["app"]["port"], 80);
+    assert_eq!(environment["override_attributes"]["app"]["port"], 8080);
+    assert_eq!(environment["cookbook_versions"]["apache"], "= 1.0.0");
+
+    let updated = call_tool(
+        &app,
+        "acme",
+        "a",
+        4,
+        "update_environment",
+        json!({
+            "name": "prod",
+            "environment": {
+                "name": "prod",
+                "description": "production",
+                "default_attributes": { "app": { "port": 81 } },
+                "override_attributes": {},
+                "cookbook_versions": {}
+            }
+        }),
+    )
+    .await;
+    assert_eq!(updated["name"], "prod");
+    assert_eq!(updated["renamed"], false);
+
+    let environment = call_tool(
+        &app,
+        "acme",
+        "a",
+        5,
+        "get_environment",
+        json!({ "name": "prod" }),
+    )
+    .await;
+    assert_eq!(environment["description"], "production");
+    assert_eq!(environment["default_attributes"]["app"]["port"], 81);
+
+    let renamed = call_tool(
+        &app,
+        "acme",
+        "a",
+        6,
+        "update_environment",
+        json!({
+            "name": "prod",
+            "new_name": "staging",
+            "environment": {
+                "name": "prod",
+                "description": "staging",
+                "default_attributes": {},
+                "override_attributes": {},
+                "cookbook_versions": {}
+            }
+        }),
+    )
+    .await;
+    assert_eq!(renamed["name"], "staging");
+    assert_eq!(renamed["renamed"], true);
+
+    let environment = call_tool(
+        &app,
+        "acme",
+        "a",
+        7,
+        "get_environment",
+        json!({ "name": "staging" }),
+    )
+    .await;
+    assert_eq!(environment["description"], "staging");
+
+    let deleted = call_tool(
+        &app,
+        "acme",
+        "a",
+        8,
+        "delete_environment",
+        json!({ "name": "staging" }),
+    )
+    .await;
+    assert_eq!(deleted, json!({ "name": "staging", "deleted": true }));
+
+    let default = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        9,
+        "delete_environment",
+        json!({ "name": "_default" }),
+    )
+    .await;
+    assert_eq!(default["result"]["isError"], json!(true));
+    let message = default["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(message.contains("_default"), "{message}");
+}
+
+#[tokio::test]
+async fn write_acl_denial_is_reported() {
+    let (_state, _org, app) = agent_fixture(mcp_config_with_principal("acme", "a", "agent")).await;
+
+    let result = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        2,
+        "create_node",
+        json!({ "name": "web1" }),
+    )
+    .await;
+
+    assert_eq!(result["result"]["isError"], json!(true), "{result}");
+    assert_eq!(result["result"]["content"][0]["text"], "forbidden");
+}
+
+#[tokio::test]
+async fn write_changes_update_the_search_index() {
+    let (_state, _org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+
+    call_tool(
+        &app,
+        "acme",
+        "a",
+        2,
+        "create_node",
+        json!({ "name": "web1", "environment": "prod" }),
+    )
+    .await;
+
+    let hits = search_nodes(&app, "name:web1").await;
+    assert_eq!(hits["total"], 1, "{hits}");
+    assert_eq!(hits["rows"][0]["name"], "web1");
+
+    call_tool(
+        &app,
+        "acme",
+        "a",
+        3,
+        "delete_node",
+        json!({ "name": "web1" }),
+    )
+    .await;
+
+    let hits = search_nodes(&app, "name:web1").await;
+    assert_eq!(hits["total"], 0, "{hits}");
+}
+
 #[tokio::test]
 async fn oversized_get_run_is_an_error_not_truncated() {
     let mut config = mcp_config(&[("acme", "a")]);
