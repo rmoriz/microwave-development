@@ -1,27 +1,31 @@
-# Seed image: knife + Berkshelf, used to download cookbooks from Supermarket,
-# upload them to microwave-server, and create the role.
-FROM ruby:3.4-bookworm
+# Seed image: knife + Berkshelf from the Cinc Workstation package, used to
+# download cookbooks from Supermarket, upload them to microwave-server, and
+# create the role.
+#
+# The omnibus package carries its own Ruby, knife, and Berkshelf, so the image
+# needs no distro Ruby and no gem installs.
+ARG BASE_IMAGE=debian:trixie
+FROM ${BASE_IMAGE}
 
-ARG KNIFE_VERSION=18.8.68
-ARG BERKSHELF_VERSION=8.0.9
+ARG CINC_WORKSTATION_VERSION=26.4.0
+ARG CINC_WORKSTATION_URL=https://downloads.cinc.sh/files/stable/cinc-workstation
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        build-essential \
         ca-certificates \
         curl \
         git \
     && rm -rf /var/lib/apt/lists/*
 
-# The `knife` gem is separate from the chef-client omnibus package and carries
-# the Supermarket/upload subcommands we need. Berkshelf 8 still requires the
-# pre-1.0 `archive/tar/minitar` namespace, so minitar is pinned to 0.9.
-RUN gem install --no-document \
-        "knife:${KNIFE_VERSION}" \
-        "berkshelf:${BERKSHELF_VERSION}" \
-        "minitar:0.9" \
-    && gem uninstall --ignore-dependencies --executables --all minitar --version 1.1.0 \
-    && gem list minitar
+# Pick the Debian architecture package (amd64 or arm64).
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    url="${CINC_WORKSTATION_URL}/${CINC_WORKSTATION_VERSION}/debian/13/cinc-workstation_${CINC_WORKSTATION_VERSION}-1_${arch}.deb"; \
+    curl -fsSL "$url" -o /tmp/cinc-workstation.deb; \
+    dpkg -i /tmp/cinc-workstation.deb; \
+    rm -f /tmp/cinc-workstation.deb; \
+    knife --version; \
+    berks --version
 
 WORKDIR /seed
 COPY seed.sh /seed/seed.sh
