@@ -653,10 +653,10 @@ mod tests {
         assert!(!logs.contains("organization=read-only"), "logs: {logs}");
 
         let mut disabled = Config::default();
-        disabled.mcp.organizations.insert(
-            "disabled".into(),
-            McpOrgConfig::default(),
-        );
+        disabled
+            .mcp
+            .organizations
+            .insert("disabled".into(), McpOrgConfig::default());
         capture.0.lock().unwrap().clear();
         warn_implicit_mcp_superuser(&disabled);
         assert!(capture.0.lock().unwrap().is_empty());
