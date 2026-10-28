@@ -1,0 +1,43 @@
+import { test, expect } from '@playwright/test';
+
+test('grid sits behind content without taking clicks', async ({ page }) => {
+  await page.goto('/');
+  const field = page.locator('.grid-field');
+  await expect(field).toHaveCount(1);
+  await expect(field).toHaveAttribute('aria-hidden', 'true');
+  await expect(field).toHaveCSS('pointer-events', 'none');
+  await expect(field).toHaveCSS('position', 'fixed');
+  await page.locator('h1').click();
+  expect(
+    await page.evaluate(() => document.elementFromPoint(4, 4)?.className),
+  ).not.toContain('grid-field');
+});
+
+test('grid holds still under reduced motion and on phones', async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/');
+  await expect(page.locator('.grid-field__plane')).toHaveCSS(
+    'animation-name',
+    'none',
+  );
+
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.setViewportSize({ width: 375, height: 800 });
+  await page.goto('/');
+  await expect(page.locator('.grid-field__plane')).toHaveCSS(
+    'animation-name',
+    'none',
+  );
+});
+
+test('grid runs on desktop with motion allowed', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/');
+  await expect(page.locator('.grid-field__plane')).toHaveCSS(
+    'animation-name',
+    'grid-flow',
+  );
+  await expect(page.locator('.grid-field__plane')).toHaveCSS('opacity', '0.18');
+});

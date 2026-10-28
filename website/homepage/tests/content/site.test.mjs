@@ -16,6 +16,16 @@ test('page shell: title, description, skip link, main landmark', () => {
   assert.equal($('main#main').length, 1);
 });
 
+test('every page carries exactly one decorative grid layer', () => {
+  assert.equal($('.grid-field').length, 1);
+  for (const name of ['privacy/index.html', 'imprint/index.html', '404.html']) {
+    const page = cheerio.load(
+      fs.readFileSync(path.join(root, 'dist', name), 'utf8'),
+    );
+    assert.equal(page('.grid-field[aria-hidden="true"]').length, 1, name);
+  }
+});
+
 test('hero and navigation', () => {
   assert.equal($('h1').text().trim(), 'Get cooking without becoming a chef.');
   assert.match($('main').text(), /independent, open-source Chef Infra Server API implementation written in Rust/i);

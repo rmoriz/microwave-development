@@ -6,6 +6,7 @@ import '../styles/tokens.css';
 import '../styles/global.css';
 import '../styles/components.css';
 import Footer from '../components/Footer.astro';
+import GridField from '../components/GridField.astro';
 import { site } from '../data/site';
 
 interface Props {
@@ -82,6 +83,7 @@ const schema = {
     <script type="application/ld+json" set:html={JSON.stringify(schema)} />
   </head>
   <body>
+    <GridField />
     <a class="skip-link" href="#main">Skip to content</a>
     <slot name="header" />
     <main id="main" tabindex="-1"><slot /></main>

@@ -175,3 +175,47 @@ main[id] {
     transition-duration: 0.01ms !important;
   }
 }
+
+.grid-field {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  mask-image: linear-gradient(to bottom, transparent, #000 15%, #000 85%, transparent);
+}
+
+.grid-field__plane {
+  position: absolute;
+  inset: -30% -25%;
+  background-image:
+    linear-gradient(rgba(61, 220, 255, 0.5) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(61, 220, 255, 0.35) 1px, transparent 1px);
+  background-size: 36px 36px;
+  opacity: 0.18;
+  transform-origin: 50% 0;
+  animation: grid-flow 24s linear infinite;
+}
+
+@keyframes grid-flow {
+  from {
+    transform: perspective(800px) rotateX(55deg) translateY(0);
+  }
+
+  to {
+    transform: perspective(800px) rotateX(55deg) translateY(36px);
+  }
+}
+
+@media (max-width: 699px) {
+  .grid-field__plane {
+    opacity: 0.12;
+    animation: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .grid-field__plane {
+    animation: none;
+  }
+}
