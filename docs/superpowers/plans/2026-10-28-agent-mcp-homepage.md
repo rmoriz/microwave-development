@@ -16,7 +16,7 @@
 - MCP is called `Experimental` in the section and every navigation-level mention.
 - Read before write; writes are described as off until enabled.
 - No new runtime request, dependency, client-side framework, or build step.
-- All claims trace to `docs/mcp.md` or the implementation. Endpoint shape: `POST /organizations/<org>/mcp`. Limits: `allowed_hosts`, reverse-proxy review, no audit table, no token expiry, no per-tool scopes, no UI.
+- All claims trace to `docs/mcp.md` or the implementation. Endpoint shape: `POST /organizations/<org>/mcp`. Limits: `allowed_hosts`, reverse-proxy review, no durable audit table (structured tool-call logs only), scoped principals required for ACLs, no token expiry, no per-tool scopes, no UI.
 - Existing H1 stays exactly `Get cooking without becoming a chef.`
 - Every task ends with a passing verification and a commit.
 
@@ -26,14 +26,14 @@
 - JavaScript disabled — the section, cards, and details content stay visible.
 - Screen-reader structure — one `h2`, three `h3` workflow cards in a real list.
 - The guide link — `docs/mcp.md` must exist on `main` before launch and use the GitHub `blob/main` URL.
-- Copy drift — writes must not read as default or automatic, and the section must not imply a built-in model.
+- Copy drift — writes must not read as default or automatic, the section must not imply a built-in model, and ACL wording must mention the superuser default.
 
 ---
 
 ### Task 1: Complete the MCP guide
 
 **Files:**
-- Modify: `docs/mcp.md` (already exists and has uncommitted edits; extend, do not replace)
+- Modify: `docs/mcp.md` (already exists; extend, do not replace)
 
 **Interfaces:**
 - Produces: the `docs/mcp.md` file and anchors used by the website link and content test.
@@ -52,7 +52,7 @@ Expected: every key, header, and tool name in the guide matches the source. Corr
 
 - [ ] **Step 2: Add client examples after the generic `mcpServers` block**
 
-Insert these two subsections immediately after the JSON block ending at line 212 and before “The bearer header must be sent…”:
+Insert these two subsections immediately after the generic JSON block in `## Client configuration` and before “The bearer header must be sent…”:
 
 ````markdown
 ### Claude Desktop
@@ -112,7 +112,7 @@ Add the entry to the project `.cursor/mcp.json` or the user-level
 Run:
 
 ```sh
-awk '/^```/{n++} END{print n%2==0 ? "fences ok" : "unbalanced fences"}' docs/mcp.md
+awk '/^```/{n++} END{print ((n%2)==0) ? "fences ok" : "unbalanced fences"}' docs/mcp.md
 rg -n "^## " docs/mcp.md
 ```
 
@@ -161,8 +161,9 @@ test('agent MCP sales section', () => {
   assert.match(text, /Why did web-01 fail\?/);
   assert.match(text, /What is drifting\?/);
   assert.match(text, /Prepare the change\./);
-  assert.match(text, /Your existing ACLs still decide/);
+  assert.match(text, /Use a scoped user: the superuser default skips ACLs/);
   assert.match(text, /Writes are off until you turn them on/);
+  assert.match(text, /warns if a write-enabled organization still uses the superuser default/);
   assert.equal($(`#agents a[href="${guide}"]`).length, 1);
   assert.equal($('#agents h2').length, 1);
   assert.equal($('#agents h3').length, 3);
@@ -221,10 +222,10 @@ const workflows = [
     </div>
 
     <p class="agent-lead">
-      Microwave does not ship a model. It ships the kitchen: an MCP endpoint
-      lets an MCP-capable agent read nodes, environments, cookbooks, and run
-      reports, and change nodes, environments, and cookbook versions when you
-      allow it.
+      Microwave does not ship a model. It ships the kitchen: an experimental
+      MCP endpoint lets an MCP-capable agent read nodes, environments,
+      cookbooks, and run reports, and change nodes, environments, and cookbook
+      versions when you allow it.
     </p>
 
     <ol class="agent-grid">
@@ -239,10 +240,13 @@ const workflows = [
 
     <div class="agent-foot">
       <p class="agent-trust">
-        Per-organization bearer tokens, mapped to a Chef principal. Your
-        existing ACLs still decide.
+        Per-organization bearer tokens, mapped to a Chef principal. Use a
+        scoped user: the superuser default skips ACLs.
       </p>
-      <p class="agent-optin">Read first. Writes are off until you turn them on.</p>
+      <p class="agent-optin">
+        Read first. Writes are off until you turn them on. The server warns if
+        a write-enabled organization still uses the superuser default.
+      </p>
     </div>
 
     <div class="agent-call">
@@ -461,7 +465,8 @@ In `compatibility, under the hood, and known gaps`, change `6` to `7`, then add:
   assert.match(text, /Per-organization MCP endpoint/);
   assert.match(text, /MCP-capable AI agents/);
   assert.match(text, /Agents in the kitchen\./);
-  assert.match(text, /MCP is experimental: no audit table/);
+  assert.match(text, /MCP is experimental: no durable audit table/);
+  assert.match(text, /Tool calls are only structured log lines/);
 ```
 
 In `migration, support, and FAQ`, change `8` to `9`, then add:
@@ -469,6 +474,8 @@ In `migration, support, and FAQ`, change `8` to `9`, then add:
 ```js
   assert.match(text, /Can an AI agent operate the server\?/);
   assert.match(text, /not a built-in assistant/);
+  assert.match(text, /superuser default skips them/);
+  assert.match(text, /only server log lines, not a durable audit table/);
 ```
 
 In `final CTA, footer, and legal pages`, add:
@@ -521,7 +528,7 @@ In `Nav.astro`, add `{ href: '/#agents', label: 'Agents' },` after the Product e
 `KnownGaps.astro`: append:
 
 ```js
-  'MCP is experimental: no audit table, no per-tool scopes or token expiry, and no UI. Remote agents need allowed_hosts and a reverse-proxy review.',
+  'MCP is experimental: no durable audit table, no per-tool scopes or token expiry, and no UI. Tool calls are only structured log lines. Remote agents need allowed_hosts and a reverse-proxy review.',
 ```
 
 `FAQ.astro`: append before the support question:
@@ -529,7 +536,7 @@ In `Nav.astro`, add `{ href: '/#agents', label: 'Agents' },` after the Product e
 ```js
   {
     q: 'Can an AI agent operate the server?',
-    a: 'Yes, through the experimental MCP endpoint. Bring an MCP-capable client, give it a per-organization token, and choose whether writes are enabled. The agent acts as a Chef principal, so existing ACLs still apply. It is not a built-in assistant and not yet covered by an audit table.',
+    a: 'Yes, through the experimental MCP endpoint. Bring an MCP-capable client, give it a per-organization token and a scoped principal, and choose whether writes are enabled. ACLs apply to scoped users; the superuser default skips them. It is not a built-in assistant, and tool calls are only server log lines, not a durable audit table.',
   },
 ```
 
@@ -563,8 +570,15 @@ Insert after panel 06 and before `</div>` of `.under-list`:
           </p>
           <p>
             Writes are opt-in per organization and reuse the HTTP API's ACL,
-            normalization, and validation paths. The surface is experimental:
-            there is no audit table, token expiry, per-tool scope, or UI.
+            normalization, and validation paths. The default principal is the
+            superuser and bypasses ACLs, so a scoped user is the production
+            setting.
+          </p>
+          <p>
+            Tool calls emit one structured log line with organization,
+            principal, tool, duration, and result count; writes also log the
+            target. There is no durable audit table. The surface is otherwise
+            experimental: no token expiry, per-tool scope, or UI.
           </p>
           <p>
             <a class="text-link" href={site.mcp}>MCP guide <span aria-hidden="true">↗</span></a>

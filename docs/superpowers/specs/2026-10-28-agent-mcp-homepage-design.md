@@ -1,8 +1,8 @@
 # Agent MCP homepage section — design
 
 - **Date:** 2026-10-28
-- **Status:** Draft for approval
-- **Location:** `website/homepage`, plus a new `docs/mcp.md`
+- **Status:** Approved (2026-10-28)
+- **Location:** `website/homepage`, plus extensions to the existing `docs/mcp.md`
 - **Scope:** Short change. The site structure, stack, and visual system stay as
   they are.
 
@@ -13,9 +13,10 @@ Microwave without implying that the server contains an AI model.
 
 The angle is “AI-enhanced cooking”: an agent can work in the kitchen, but the
 visitor brings the agent and the model. Microwave provides the safe surface —
-an MCP endpoint with organization-scoped tokens, the existing Chef ACLs, and
-write access only when enabled. Concrete agent workflows carry the sales
-argument; the technical and experimental limits stay visible on the page.
+an MCP endpoint with organization-scoped tokens, Chef ACLs for scoped
+principals, and write access only when enabled. Concrete agent workflows carry
+the sales argument; the technical and experimental limits stay visible on the
+page.
 
 ## Goals
 
@@ -50,8 +51,10 @@ argument; the technical and experimental limits stay visible on the page.
 - The existing visual system applies: dark stage, hairline rules, mono numerals,
   gradient accent, native `<details>`.
 - Every factual claim is traceable to the implementation or `docs/mcp.md`:
-  endpoint shape, token scope, ACLs, read/write split, opt-in write switch,
-  `allowed_hosts`, reverse-proxy advice, no audit table, no token expiry.
+  endpoint shape, token scope, scoped-principal ACLs, the superuser default,
+  read/write split, opt-in write switch, startup warning for the superuser
+  default, `allowed_hosts`, reverse-proxy advice, structured tool-call logs
+  without a durable audit table, and no token expiry.
 - The section must be useful without JavaScript and pass the existing axe gate.
 - The site keeps its “no invented claims” rule.
 
@@ -102,8 +105,9 @@ Structure:
      the node, environment, or cookbook version through the same validation
      path as the HTTP API.
 - Trust line, set apart: “Per-organization bearer tokens, mapped to a Chef
-  principal. Your existing ACLs still decide.”
-- Opt-in line: “Read first. Writes are off until you turn them on.”
+  principal. Use a scoped user: the superuser default skips ACLs.”
+- Opt-in line: “Read first. Writes are off until you turn them on. The server
+  warns if a write-enabled organization still uses the superuser default.”
 - Endpoint example in inline code:
   `POST /organizations/<org>/mcp`.
 - Badge or label: `Experimental`.
@@ -132,15 +136,19 @@ Add a seventh panel: **“Agents in the kitchen.”**
 - Read tools cover nodes, environments, cookbooks, runs, and converge errors;
   write tools cover nodes, environments, and cookbook versions.
 - Writes are opt-in per organization and reuse the HTTP API's ACL,
-  normalization, and validation paths.
+  normalization, and validation paths. The default principal is the superuser
+  and bypasses ACLs, so a scoped user is the production setting.
+- Tool calls emit one structured log line with organization, principal, tool,
+  duration, and result count; writes also log the target. There is no durable
+  audit table.
 - Link to `docs/mcp.md`.
-- Keep it to two short paragraphs.
+- Keep it to three short paragraphs.
 
 ### Known gaps
 
 Add one item:
 
-`MCP is experimental: no audit table, no per-tool scopes or token expiry, and no UI. Remote agents need allowed_hosts and a reverse-proxy review.`
+`MCP is experimental: no durable audit table, no per-tool scopes or token expiry, and no UI. Tool calls are only structured log lines. Remote agents need allowed_hosts and a reverse-proxy review.`
 
 ### FAQ
 
@@ -149,9 +157,10 @@ Add a ninth question:
 **Can an AI agent operate the server?**
 
 Answer: “Yes, through the experimental MCP endpoint. Bring an MCP-capable
-client, give it a per-organization token, and choose whether writes are
-enabled. The agent acts as a Chef principal, so existing ACLs still apply. It is
-not a built-in assistant and not yet covered by an audit table.”
+client, give it a per-organization token and a scoped principal, and choose
+whether writes are enabled. ACLs apply to scoped users; the superuser default
+skips them. It is not a built-in assistant, and tool calls are only server log
+lines, not a durable audit table.”
 
 ### Final CTA
 
@@ -168,7 +177,7 @@ Add one sentence below “Bring your own cookbooks.”:
 
 ## `docs/mcp.md`
 
-Create the guide the website links to. Sections:
+Extend the existing guide the website links to. Sections:
 
 1. What it is and experimental status.
 2. Enablement: `[mcp]` config, per-org entry, token via config or
@@ -182,9 +191,11 @@ Create the guide the website links to. Sections:
    `keep_runs`; reports are pruned.
 6. Tool reference: read tools and write tools, arguments, limits,
    `max_results`, `max_result_bytes`, `max_upload_bytes`, upload payload.
-7. Permissions: superuser default principal, ACL behavior, deleted-node reports.
-8. Limitations: no audit table, no expiry, no per-tool scopes, no UI, no
-   snapshot coverage of `node_runs`, orphaned blobs, experimental status.
+7. Permissions: superuser default and its startup warning, scoped principals,
+   ACL behavior, deleted-node reports.
+8. Limitations: no durable audit table (structured logs only), no expiry, no
+   per-tool scopes, no UI, no snapshot coverage of `node_runs`, orphaned blobs,
+   experimental status.
 9. A short “verify it works” checklist.
 
 The guide follows the approved design
