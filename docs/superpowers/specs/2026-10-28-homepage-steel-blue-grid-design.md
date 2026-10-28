@@ -66,6 +66,8 @@ overlaps focus outlines.
   the skip link: `aria-hidden`, `pointer-events: none`, `position: fixed`,
   `z-index: -1`, top/bottom mask, two `linear-gradient` layers on an over-tall
   plane with `perspective` and `rotateX`.
+- Tile is 20 px with `rotateX(42deg)`: tight, near-square cells. A 48 px tile at
+  steeper tilt read as single sparse slashes across a full viewport.
 - The plane animates `translateY` over 24 s, linear, infinite.
 - `@media (max-width: 699px)` and `prefers-reduced-motion: reduce` set
   `animation: none`; mobile additionally drops opacity to `0.12`.

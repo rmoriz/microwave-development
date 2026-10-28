@@ -198,20 +198,20 @@ main[id] {
   background-image:
     linear-gradient(rgba(61, 220, 255, 0.5) 1px, transparent 1px),
     linear-gradient(90deg, rgba(61, 220, 255, 0.35) 1px, transparent 1px);
-  background-size: 36px 36px;
+  background-size: 20px 20px;
   opacity: 0.15;
-  transform: perspective(800px) rotateX(55deg) translateY(18px);
+  transform: perspective(1000px) rotateX(42deg) translateY(10px);
   transform-origin: 50% 0;
   animation: grid-flow 24s linear infinite;
 }
 
 @keyframes grid-flow {
   from {
-    transform: perspective(800px) rotateX(55deg) translateY(0);
+    transform: perspective(1000px) rotateX(42deg) translateY(0);
   }
 
   to {
-    transform: perspective(800px) rotateX(55deg) translateY(36px);
+    transform: perspective(1000px) rotateX(42deg) translateY(20px);
   }
 }
 

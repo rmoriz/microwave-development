@@ -47,4 +47,8 @@ test('grid runs on desktop with motion allowed', async ({ page }) => {
     'grid-flow',
   );
   await expect(page.locator('.grid-field__plane')).toHaveCSS('opacity', '0.15');
+  await expect(page.locator('.grid-field__plane')).toHaveCSS(
+    'background-size',
+    '20px 20px, 20px 20px',
+  );
 });
