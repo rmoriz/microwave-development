@@ -6,6 +6,7 @@
 
 pub mod auth;
 pub mod context;
+pub mod cookbook_upload;
 pub mod tools;
 
 use crate::AppState;

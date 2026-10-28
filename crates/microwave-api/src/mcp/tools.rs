@@ -1,5 +1,6 @@
 use crate::cookbooks::{render_manifest, resolve_version, sort_versions_descending};
 use crate::mcp::context::McpContext;
+use crate::mcp::cookbook_upload::{build_manifest, UploadCookbookArgs};
 use crate::ApiError;
 use axum::http::StatusCode;
 use chrono::DateTime;
@@ -300,6 +301,26 @@ impl McpServer {
     ) -> Result<CallToolResult, ErrorData> {
         tool_result(self.delete_environment_inner(args).await)
     }
+
+    /// Upload one cookbook version from inline files or known checksums.
+    #[tool(
+        description = "Upload a cookbook version from inline base64 files or already-uploaded checksums; runs the same validation, ACL, and frozen checks as the HTTP API"
+    )]
+    async fn upload_cookbook_version(
+        &self,
+        Parameters(args): Parameters<UploadCookbookArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tool_result(self.upload_cookbook_version_inner(args).await)
+    }
+
+    /// Delete one cookbook version.
+    #[tool(description = "Delete a cookbook version by name and version")]
+    async fn delete_cookbook_version(
+        &self,
+        Parameters(args): Parameters<CookbookVersionArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        tool_result(self.delete_cookbook_version_inner(args).await)
+    }
 }
 
 impl McpServer {
@@ -409,6 +430,82 @@ impl McpServer {
             crate::environments::delete_environment_object(&ctx.state, &auth, &ctx.org, &args.name)
                 .await?;
         Ok(self.json_result(&json!({ "name": environment.name, "deleted": true })))
+    }
+
+    async fn upload_cookbook_version_inner(
+        &self,
+        args: UploadCookbookArgs,
+    ) -> Result<CallToolResult, ApiError> {
+        let ctx = &self.ctx;
+        let (manifest, blobs) = match build_manifest(ctx, &args).await {
+            Ok(built) => built,
+            Err(message) => return Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
+        };
+
+        let mut checksums: Vec<String> =
+            blobs.iter().map(|(checksum, _)| checksum.clone()).collect();
+        checksums.sort();
+        checksums.dedup();
+        if !checksums.is_empty() {
+            ctx.state
+                .store
+                .ensure_checksums(&ctx.org.id, &checksums)
+                .await
+                .map_err(ApiError::from)?;
+        }
+        for (checksum, bytes) in &blobs {
+            ctx.state
+                .object_store
+                .put(&ctx.org.id, checksum, bytes)
+                .map_err(|error| {
+                    tracing::error!(%error, "mcp cookbook upload blob write failed");
+                    ApiError::internal()
+                })?;
+        }
+
+        let auth = ctx.auth_context();
+        let (_, response) = crate::cookbooks::put_cookbook_version_object(
+            &ctx.state,
+            &auth,
+            &ctx.org,
+            &args.name,
+            &args.version,
+            &manifest,
+            2,
+            args.force,
+        )
+        .await?;
+        let frozen = response
+            .get("frozen?")
+            .and_then(Value::as_bool)
+            .unwrap_or(args.frozen);
+        Ok(self.json_result(&json!({
+            "name": args.name,
+            "version": args.version,
+            "frozen": frozen,
+        })))
+    }
+
+    async fn delete_cookbook_version_inner(
+        &self,
+        args: CookbookVersionArgs,
+    ) -> Result<CallToolResult, ApiError> {
+        let ctx = &self.ctx;
+        let auth = ctx.auth_context();
+        crate::cookbooks::delete_cookbook_version_object(
+            &ctx.state,
+            &auth,
+            &ctx.org,
+            &args.name,
+            &args.version,
+            2,
+        )
+        .await?;
+        Ok(self.json_result(&json!({
+            "name": args.name,
+            "version": args.version,
+            "deleted": true,
+        })))
     }
 }
 

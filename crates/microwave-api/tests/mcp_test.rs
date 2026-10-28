@@ -5,6 +5,7 @@ use axum::http::{Request, StatusCode};
 use microwave_api::AppState;
 use microwave_config::{Config, McpOrgConfig};
 use microwave_crypto::SignVersion;
+use microwave_objectstore::md5_hex;
 use microwave_store::{NewNodeRun, Org};
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -937,13 +938,15 @@ async fn reports_of_deleted_nodes_stay_visible_to_superusers() {
     assert_eq!(runs["runs"][0]["run_id"], "run-3");
 }
 
-const WRITE_TOOLS: [&str; 6] = [
+const WRITE_TOOLS: [&str; 8] = [
     "create_node",
     "update_node",
     "delete_node",
     "create_environment",
     "update_environment",
     "delete_environment",
+    "upload_cookbook_version",
+    "delete_cookbook_version",
 ];
 
 async fn search_nodes(app: &axum::Router, query: &str) -> Value {
@@ -1286,4 +1289,250 @@ async fn oversized_get_run_is_an_error_not_truncated() {
         result["result"]["content"][0]["text"],
         "result exceeds max_result_bytes"
     );
+}
+
+fn upload_args(name: &str, version: &str, files: Value) -> Value {
+    json!({
+        "name": name,
+        "version": version,
+        "metadata": {},
+        "files": files,
+    })
+}
+
+fn inline_file(path: &str, content_base64: &str) -> Value {
+    json!({ "path": path, "content_base64": content_base64 })
+}
+
+#[tokio::test]
+async fn upload_cookbook_version_with_inline_files() {
+    let (state, org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+    let recipe = "cookbook contents";
+    let template = "server {}";
+
+    let uploaded = call_tool(
+        &app,
+        "acme",
+        "a",
+        2,
+        "upload_cookbook_version",
+        upload_args(
+            "nginx",
+            "1.2.0",
+            json!([
+                inline_file("recipes/default.rb", "Y29va2Jvb2sgY29udGVudHM="),
+                {
+                    "path": "templates/default/nginx.conf.erb",
+                    "content_base64": "c2VydmVyIHt9",
+                    "specificity": "default"
+                }
+            ]),
+        ),
+    )
+    .await;
+    assert_eq!(
+        uploaded,
+        json!({ "name": "nginx", "version": "1.2.0", "frozen": false })
+    );
+
+    let manifest = call_tool(
+        &app,
+        "acme",
+        "a",
+        3,
+        "get_cookbook_version",
+        json!({ "name": "nginx", "version": "1.2.0" }),
+    )
+    .await;
+    assert_eq!(manifest["name"], "nginx-1.2.0");
+    assert_eq!(manifest["cookbook_name"], "nginx");
+    assert_eq!(manifest["version"], "1.2.0");
+    let paths: Vec<&str> = manifest["all_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|file| file["path"].as_str())
+        .collect();
+    assert!(paths.contains(&"recipes/default.rb"), "{paths:?}");
+    assert!(
+        paths.contains(&"templates/default/nginx.conf.erb"),
+        "{paths:?}"
+    );
+
+    assert_eq!(
+        state
+            .object_store
+            .get(&org.id, &md5_hex(recipe.as_bytes()))
+            .unwrap(),
+        recipe.as_bytes()
+    );
+    assert_eq!(
+        state
+            .object_store
+            .get(&org.id, &md5_hex(template.as_bytes()))
+            .unwrap(),
+        template.as_bytes()
+    );
+}
+
+#[tokio::test]
+async fn upload_rejects_missing_base64_and_oversized_payloads() {
+    let (_state, _org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+
+    let invalid = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        2,
+        "upload_cookbook_version",
+        upload_args(
+            "nginx",
+            "1.0.0",
+            json!([inline_file("recipes/default.rb", "!!!")]),
+        ),
+    )
+    .await;
+    assert_eq!(invalid["result"]["isError"], json!(true), "{invalid}");
+    let message = invalid["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_lowercase();
+    assert!(message.contains("base64"), "{message}");
+
+    let missing = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        3,
+        "upload_cookbook_version",
+        upload_args("nginx", "1.0.0", json!([{ "path": "recipes/default.rb" }])),
+    )
+    .await;
+    assert_eq!(missing["result"]["isError"], json!(true), "{missing}");
+    let message = missing["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_lowercase();
+    assert!(message.contains("content_base64"), "{message}");
+
+    let mut config = mcp_config(&[("acme", "a")]);
+    config.mcp.max_upload_bytes = 64;
+    let (_state, _org, app) = fixture(config).await;
+    let forty_bytes = "eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eA==";
+    let oversized = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        4,
+        "upload_cookbook_version",
+        upload_args(
+            "nginx",
+            "1.0.0",
+            json!([
+                inline_file("recipes/default.rb", forty_bytes),
+                inline_file("recipes/other.rb", forty_bytes)
+            ]),
+        ),
+    )
+    .await;
+    assert_eq!(oversized["result"]["isError"], json!(true), "{oversized}");
+    let message = oversized["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(message.contains("max_upload_bytes"), "{message}");
+
+    let too_many: Vec<Value> = (0..101)
+        .map(|index| inline_file(&format!("recipes/{index}.rb"), ""))
+        .collect();
+    let rejected = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        5,
+        "upload_cookbook_version",
+        upload_args("nginx", "1.0.0", Value::Array(too_many)),
+    )
+    .await;
+    assert_eq!(rejected["result"]["isError"], json!(true), "{rejected}");
+    let message = rejected["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(message.contains("100"), "{message}");
+}
+
+#[tokio::test]
+async fn upload_honors_frozen_and_force() {
+    let (_state, _org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+    let files = json!([inline_file(
+        "recipes/default.rb",
+        "Y29va2Jvb2sgY29udGVudHM="
+    )]);
+
+    let mut args = upload_args("nginx", "1.0.0", files.clone());
+    args["frozen"] = json!(true);
+    let created = call_tool(&app, "acme", "a", 2, "upload_cookbook_version", args).await;
+    assert_eq!(created["frozen"], true);
+
+    let denied = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        3,
+        "upload_cookbook_version",
+        upload_args("nginx", "1.0.0", files.clone()),
+    )
+    .await;
+    assert_eq!(denied["result"]["isError"], json!(true), "{denied}");
+    let message = denied["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(message.contains("frozen"), "{message}");
+    assert!(message.contains("force"), "{message}");
+
+    let mut forced_args = upload_args("nginx", "1.0.0", files);
+    forced_args["force"] = json!(true);
+    let forced = call_tool(&app, "acme", "a", 4, "upload_cookbook_version", forced_args).await;
+    assert_eq!(forced["frozen"], true);
+}
+
+#[tokio::test]
+async fn delete_cookbook_version_removes_the_version() {
+    let (_state, _org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+
+    call_tool(
+        &app,
+        "acme",
+        "a",
+        2,
+        "upload_cookbook_version",
+        upload_args(
+            "nginx",
+            "1.0.0",
+            json!([inline_file(
+                "recipes/default.rb",
+                "Y29va2Jvb2sgY29udGVudHM="
+            )]),
+        ),
+    )
+    .await;
+
+    let deleted = call_tool(
+        &app,
+        "acme",
+        "a",
+        3,
+        "delete_cookbook_version",
+        json!({ "name": "nginx", "version": "1.0.0" }),
+    )
+    .await;
+    assert_eq!(
+        deleted,
+        json!({ "name": "nginx", "version": "1.0.0", "deleted": true })
+    );
+
+    let missing = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        4,
+        "get_cookbook_version",
+        json!({ "name": "nginx", "version": "1.0.0" }),
+    )
+    .await;
+    assert_eq!(missing["result"]["isError"], json!(true), "{missing}");
+    assert_eq!(missing["result"]["content"][0]["text"], "not found");
 }
