@@ -119,11 +119,13 @@ fn validate_credential(group: &str, name: &str) -> Result<(), CtlError> {
     };
 
     if group == "mcp" {
-        return microwave_config::valid_org_name(name).then_some(()).ok_or_else(|| {
-            CtlError::message(format!(
-                "invalid organization name '{name}' for the mcp credential group"
-            ))
-        });
+        return microwave_config::valid_org_name(name)
+            .then_some(())
+            .ok_or_else(|| {
+                CtlError::message(format!(
+                    "invalid organization name '{name}' for the mcp credential group"
+                ))
+            });
     }
 
     if names.contains(&name) {

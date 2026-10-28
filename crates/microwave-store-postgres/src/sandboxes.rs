@@ -175,11 +175,7 @@ impl SandboxRepository for PostgresStore {
         Ok(found)
     }
 
-    async fn ensure_checksums(
-        &self,
-        org_id: &str,
-        checksums: &[String],
-    ) -> Result<(), StoreError> {
+    async fn ensure_checksums(&self, org_id: &str, checksums: &[String]) -> Result<(), StoreError> {
         if checksums.is_empty() {
             return Ok(());
         }

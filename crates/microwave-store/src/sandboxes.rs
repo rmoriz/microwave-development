@@ -185,11 +185,7 @@ impl SqliteStore {
         Ok(found)
     }
 
-    pub fn ensure_checksums(
-        &self,
-        org_id: &str,
-        checksums: &[String],
-    ) -> Result<(), StoreError> {
+    pub fn ensure_checksums(&self, org_id: &str, checksums: &[String]) -> Result<(), StoreError> {
         if checksums.is_empty() {
             return Ok(());
         }

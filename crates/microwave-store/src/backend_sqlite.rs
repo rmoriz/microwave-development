@@ -809,11 +809,7 @@ impl SandboxRepository for SqliteStore {
         self.existing_checksums(org_id, checksums)
     }
 
-    async fn ensure_checksums(
-        &self,
-        org_id: &str,
-        checksums: &[String],
-    ) -> Result<(), StoreError> {
+    async fn ensure_checksums(&self, org_id: &str, checksums: &[String]) -> Result<(), StoreError> {
         self.ensure_checksums(org_id, checksums)
     }
 
