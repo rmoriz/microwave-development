@@ -42,6 +42,7 @@ RUN apt-get update \
         "/home/$USER_NAME/.local/share/opencode" \
         "/home/$USER_NAME/.local/state/opencode" \
         "/home/$USER_NAME/.config/opencode" \
+        /var/tmp/opencode \
     && chown -R "$USER_NAME":"$USER_NAME" "/home/$USER_NAME"
 
 # Pick the Debian architecture package (amd64 or arm64).
@@ -95,9 +96,9 @@ ENV MW_MCP_TOKEN=e2e-mcp-token
 # alone, and systemd units have no HOME at all.
 ENV KNIFE_HOME=/home/dev/.chef
 
-# OpenCode writes scratch state below TMPDIR. /tmp is a tmpfs in Compose and
-# systemd does not set TMPDIR for services.
-ENV TMPDIR=/tmp
+# OpenCode writes scratch state below TMPDIR. /tmp is a noexec tmpfs in Compose
+# and OpenCode extracts helpers it runs from there, so use the image layer.
+ENV TMPDIR=/var/tmp/opencode
 
 # systemd-resolved is enabled by some distro presets and would take over
 # lookups from the glibc resolver. Mask it so Docker's embedded DNS is used.

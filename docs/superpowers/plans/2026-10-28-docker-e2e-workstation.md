@@ -251,6 +251,7 @@ RUN apt-get update \
         "/home/$USER_NAME/.local/share/opencode" \
         "/home/$USER_NAME/.local/state/opencode" \
         "/home/$USER_NAME/.config/opencode" \
+        /var/tmp/opencode \
     && chown -R "$USER_NAME":"$USER_NAME" "/home/$USER_NAME"
 
 ARG OPENCODE_VERSION=2.2.0
@@ -288,8 +289,8 @@ ENV MW_MCP_TOKEN=e2e-mcp-token
 # knife 19 finds ~/.chef/knife.rb only through KNIFE_HOME.
 ENV KNIFE_HOME=/home/dev/.chef
 
-# OpenCode writes scratch state below TMPDIR; /tmp is a tmpfs in Compose.
-ENV TMPDIR=/tmp
+# /tmp is a noexec tmpfs and OpenCode runs extracted helpers, so use the layer.
+ENV TMPDIR=/var/tmp/opencode
 
 # Exec sessions start in /work so OpenCode picks up the project config.
 WORKDIR /work
@@ -326,8 +327,8 @@ and a final `opencode mcp list || true`. It exits 0 either way.
 `Restart=on-failure`, `RestartSec=5`, plus three
 environment lines: `Environment=HOME=/home/dev` (systemd system units have no
 `HOME` and the knife plugin loader joins it), `Environment=KNIFE_HOME=/home/dev/.chef`,
-and `Environment=TMPDIR=/tmp` (systemd services get a clean env and /tmp is a
-tmpfs),
+and `Environment=TMPDIR=/var/tmp/opencode` (systemd services get a clean env and
+/tmp is noexec),
 and `PassEnvironment=MW_MCP_TOKEN` (systemd services get a clean environment, and
 OpenCode's `{env:MW_MCP_TOKEN}` header is substituted in the background service,
 so it must be passed from the container environment).

@@ -14,8 +14,8 @@ RemainAfterExit=yes
 # systemd system units have no HOME; knife loads plugins that join it.
 Environment=HOME=/home/dev
 Environment=KNIFE_HOME=/home/dev/.chef
-# /tmp is a tmpfs; be explicit because systemd services get a clean env.
-Environment=TMPDIR=/tmp
+# /tmp is a noexec tmpfs; OpenCode runs helpers it extracts, so use the layer.
+Environment=TMPDIR=/var/tmp/opencode
 # Pass the image/compose token into the unit environment. systemd services get
 # a clean environment, and OpenCode's `{env:MW_MCP_TOKEN}` header substitution
 # reads the background service's environment.
