@@ -64,4 +64,6 @@ tar = "0.4"
 assert_cmd = "2"
 ureq = "3.5"
 http = "1"
+schemars = "1"
+rmcp = { version = "3.8", features = ["transport-streamable-http-server"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }

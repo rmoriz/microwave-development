@@ -19,7 +19,10 @@ microwave-mail = { path = "../microwave-mail" }
 microwave-objectstore = { path = "../microwave-objectstore" }
 microwave-oauth = { path = "../microwave-oauth" }
 microwave-store = { path = "../microwave-store" }
+http.workspace = true
+rmcp.workspace = true
 reqwest.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 subtle.workspace = true

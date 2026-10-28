@@ -708,6 +708,15 @@ async fn authenticate_request(
         );
     }
 
+    if is_mcp_path(&path) {
+        let response = next.run(request).await;
+        return with_version_header(
+            response,
+            &requested_version.to_string(),
+            &requested_version.to_string(),
+        );
+    }
+
     if is_data_collector_path(&path) {
         let enabled = state.config.data_collector.is_enabled();
         // Upstream rejects non-POST before authentication. Do the same while
@@ -1122,6 +1131,15 @@ fn is_controls_path(path: &str) -> bool {
     parts.next() == Some("organizations")
         && parts.next().is_some_and(|part| !part.is_empty())
         && parts.next() == Some("controls")
+        && parts.next().is_none()
+}
+
+/// `/organizations/:org/mcp` (exact, no trailing slash).
+fn is_mcp_path(path: &str) -> bool {
+    let mut parts = path.trim_matches('/').split('/');
+    parts.next() == Some("organizations")
+        && parts.next().is_some_and(|part| !part.is_empty())
+        && parts.next() == Some("mcp")
         && parts.next().is_none()
 }
 

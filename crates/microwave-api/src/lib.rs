@@ -19,6 +19,7 @@ pub mod health;
 pub mod helpers;
 pub mod internal_api;
 pub mod keys;
+pub mod mcp;
 pub mod membership;
 pub mod metrics;
 pub mod middleware;
@@ -86,6 +87,9 @@ pub fn router(state: AppState) -> Router {
     }
     if state.config.required_recipe.enabled {
         inner = inner.merge(required_recipe::routes());
+    }
+    if state.config.mcp.enabled {
+        inner = inner.merge(mcp::routes());
     }
 
     let request_state = state.clone();
