@@ -50,8 +50,10 @@ Authorization: Bearer <token>
 Missing or incorrect credentials return `401` with
 `WWW-Authenticate: Bearer`. An unknown organization, or an organization
 without an MCP entry, returns `404`. A configured principal that does not
-exist or is not a member of the organization returns `500`; the server logs
-the reason, and the client only sees the generic error.
+exist returns `500`; a non-superuser principal that is not a member of the
+organization also returns `500`. The configured superuser skips the
+membership check. The server logs the reason, and the client only sees the
+generic error.
 
 A token is only valid for its organization's path. The token for organization
 A cannot read organization B.
@@ -99,7 +101,9 @@ For a scoped identity, set `principal` to a non-superuser user who is a member
 of the organization and grant that user only the project ACLs the agent needs.
 Non-superuser tool behavior:
 
-- `list_*` tools hide objects the principal cannot read.
+- `list_*` tools hide objects the principal cannot read. An explicit
+  `node_name` on `list_runs` or `list_converge_errors` that the principal
+  cannot read is a `forbidden` tool error, not an empty list.
 - `get_*` tools return a tool error (`isError: true`) with `forbidden` or
   `not found`.
 - Runs and converge errors inherit the ACL of their node. Runs of nodes that no
@@ -140,8 +144,10 @@ enabled = true
 allowed_hosts = ["chef.example.com", "chef.example.com:8443"]
 ```
 
-When `allowed_hosts` is empty, the server derives the host and, when the URL
-has an explicit port, the `host:port` variant from `server.public_url`.
+When `allowed_hosts` is empty, the server derives the host from
+`server.public_url`. It also derives the `host:port` variant only when the URL
+has a non-default explicit port (for example `https://host:8443`), because
+`url::Url::port()` is `None` for the scheme's default port (`:443`).
 Configure `allowed_hosts` directly when the agent reaches the server under a
 different name than `public_url`, or when `public_url` is unset. Without
 either setting the endpoint is reachable only with a loopback `Host`.
@@ -166,7 +172,7 @@ All keys are optional. Defaults are the built-in values.
 | TOML key | Environment | Default | Notes |
 |---|---|---|---|
 | `mcp.enabled` | `MW_MCP__ENABLED` | `false` | Mounts `POST /organizations/<org>/mcp`. |
-| `mcp.max_results` | `MW_MCP__MAX_RESULTS` | `100` | Clamped to `1`-`1000`. Caps every list tool's `limit`. |
+| `mcp.max_results` | `MW_MCP__MAX_RESULTS` | `100` | Clamped to `1`-`1000`. Caps the `limit` of every list tool that accepts one. |
 | `mcp.max_result_bytes` | `MW_MCP__MAX_RESULT_BYTES` | `1048576` (1 MiB) | Clamped to 1 KiB-16 MiB. A larger serialized result is an error, never truncated. |
 | `mcp.max_upload_bytes` | `MW_MCP__MAX_UPLOAD_BYTES` | `10485760` (10 MiB) | Clamped to 1 byte-250 MiB. Caps decoded cookbook upload bytes. |
 | `mcp.allowed_hosts` | `MW_MCP__ALLOWED_HOSTS` (comma-separated) | empty | Empty derives host variants from `server.public_url`. |
@@ -310,8 +316,9 @@ Fetch the full object with the corresponding read tool.
 
 ## Result limits and errors
 
-Every list tool clamps `limit` to `mcp.max_results` (default 100). A missing
-`limit` uses `max_results`; values below 1 are raised to 1.
+Every list tool that accepts `limit` clamps it to `mcp.max_results` (default
+100). A missing `limit` uses `max_results`; values below 1 are raised to 1.
+`list_cookbook_versions` has no `limit` and returns every readable version.
 
 Every tool serializes its result and checks `mcp.max_result_bytes`. An
 oversized result returns a tool error with `result exceeds
@@ -325,7 +332,7 @@ Error text is stable:
 | `400`, `409`, or `422` from the shared service | The HTTP message is kept. |
 | `403` | `forbidden` |
 | `404` | `not found` |
-| `5xx` | Logged with tool context; the caller sees `internal error`. |
+| `5xx` | The error is logged; the caller sees `internal error`. |
 | Invalid argument, including a non-RFC 3339 `since` | The validation message. |
 
 The transport handles protocol errors (malformed JSON-RPC, unsupported
@@ -379,9 +386,10 @@ behavior and is a v1 limitation.
 ## Limitations
 
 - **Experimental.** The tool names, arguments, and behavior may change.
-- **No audit table and no per-call audit log.** Authentication failures and
-  internal tool errors are logged, but there is no durable, queryable record
-  of successful calls, the tool that ran, or a write target.
+- **No durable audit table.** Successful calls are logged as structured lines
+  with the organization, principal, tool, duration, and result count; writes
+  also log the target. Logs go to the server log (journald or the container
+  log), are not stored in the database, and are not a queryable audit record.
 - **No token expiry, scopes, or per-tool permissions.** Authorization is the
   organization-level `writes` switch plus the principal's ACLs.
 - **No stdio transport.** Only Streamable HTTP is implemented.

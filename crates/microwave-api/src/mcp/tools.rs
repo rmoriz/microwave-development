@@ -12,6 +12,7 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 /// MCP server bound to one authenticated organization principal.
 #[derive(Clone)]
@@ -146,7 +147,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<ListNodesArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.list_nodes_inner(args).await)
+        logged_tool(&self.ctx, "list_nodes", None, self.list_nodes_inner(args)).await
     }
 
     /// Fetch one node document.
@@ -155,7 +156,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<GetNodeArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.get_node_inner(args).await)
+        logged_tool(&self.ctx, "get_node", None, self.get_node_inner(args)).await
     }
 
     /// List the environments this principal may read.
@@ -164,7 +165,13 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<ListEnvironmentsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.list_environments_inner(args).await)
+        logged_tool(
+            &self.ctx,
+            "list_environments",
+            None,
+            self.list_environments_inner(args),
+        )
+        .await
     }
 
     /// Fetch one environment document.
@@ -173,7 +180,13 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<GetEnvironmentArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.get_environment_inner(args).await)
+        logged_tool(
+            &self.ctx,
+            "get_environment",
+            None,
+            self.get_environment_inner(args),
+        )
+        .await
     }
 
     /// List cookbooks with the versions this principal may read.
@@ -182,7 +195,13 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<ListCookbooksArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.list_cookbooks_inner(args).await)
+        logged_tool(
+            &self.ctx,
+            "list_cookbooks",
+            None,
+            self.list_cookbooks_inner(args),
+        )
+        .await
     }
 
     /// List the versions of one cookbook.
@@ -191,7 +210,13 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<CookbookNameArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.list_cookbook_versions_inner(args).await)
+        logged_tool(
+            &self.ctx,
+            "list_cookbook_versions",
+            None,
+            self.list_cookbook_versions_inner(args),
+        )
+        .await
     }
 
     /// Fetch one rendered cookbook manifest.
@@ -200,7 +225,13 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<CookbookVersionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.get_cookbook_version_inner(args).await)
+        logged_tool(
+            &self.ctx,
+            "get_cookbook_version",
+            None,
+            self.get_cookbook_version_inner(args),
+        )
+        .await
     }
 
     /// List stored run reports, newest first.
@@ -209,7 +240,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<ListRunsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.list_runs_inner(args).await)
+        logged_tool(&self.ctx, "list_runs", None, self.list_runs_inner(args)).await
     }
 
     /// Fetch the newest run report summary for one node.
@@ -218,7 +249,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<LatestRunArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.latest_run_inner(args).await)
+        logged_tool(&self.ctx, "latest_run", None, self.latest_run_inner(args)).await
     }
 
     /// Fetch one full run report.
@@ -227,7 +258,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<GetRunArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.get_run_inner(args).await)
+        logged_tool(&self.ctx, "get_run", None, self.get_run_inner(args)).await
     }
 
     /// List converge errors across stored run reports.
@@ -236,7 +267,13 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<ListConvergeErrorsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.list_converge_errors_inner(args).await)
+        logged_tool(
+            &self.ctx,
+            "list_converge_errors",
+            None,
+            self.list_converge_errors_inner(args),
+        )
+        .await
     }
 }
 
@@ -250,7 +287,14 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<CreateNodeArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.create_node_inner(args).await)
+        let target = args.name.clone();
+        logged_tool(
+            &self.ctx,
+            "create_node",
+            Some(&target),
+            self.create_node_inner(args),
+        )
+        .await
     }
 
     /// Replace a node with a full document.
@@ -261,7 +305,14 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<UpdateNodeArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.update_node_inner(args).await)
+        let target = args.name.clone();
+        logged_tool(
+            &self.ctx,
+            "update_node",
+            Some(&target),
+            self.update_node_inner(args),
+        )
+        .await
     }
 
     /// Delete a node.
@@ -270,7 +321,14 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<DeleteNodeArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.delete_node_inner(args).await)
+        let target = args.name.clone();
+        logged_tool(
+            &self.ctx,
+            "delete_node",
+            Some(&target),
+            self.delete_node_inner(args),
+        )
+        .await
     }
 
     /// Create an environment document.
@@ -279,7 +337,14 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<CreateEnvironmentArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.create_environment_inner(args).await)
+        let target = args.name.clone();
+        logged_tool(
+            &self.ctx,
+            "create_environment",
+            Some(&target),
+            self.create_environment_inner(args),
+        )
+        .await
     }
 
     /// Replace an environment with a full document.
@@ -290,7 +355,14 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<UpdateEnvironmentArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.update_environment_inner(args).await)
+        let target = args.name.clone();
+        logged_tool(
+            &self.ctx,
+            "update_environment",
+            Some(&target),
+            self.update_environment_inner(args),
+        )
+        .await
     }
 
     /// Delete an environment.
@@ -299,7 +371,14 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<DeleteEnvironmentArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.delete_environment_inner(args).await)
+        let target = args.name.clone();
+        logged_tool(
+            &self.ctx,
+            "delete_environment",
+            Some(&target),
+            self.delete_environment_inner(args),
+        )
+        .await
     }
 
     /// Upload one cookbook version from inline files or known checksums.
@@ -310,7 +389,14 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<UploadCookbookArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.upload_cookbook_version_inner(args).await)
+        let target = format!("{}/{}", args.name, args.version);
+        logged_tool(
+            &self.ctx,
+            "upload_cookbook_version",
+            Some(&target),
+            self.upload_cookbook_version_inner(args),
+        )
+        .await
     }
 
     /// Delete one cookbook version.
@@ -319,7 +405,14 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<CookbookVersionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        tool_result(self.delete_cookbook_version_inner(args).await)
+        let target = format!("{}/{}", args.name, args.version);
+        logged_tool(
+            &self.ctx,
+            "delete_cookbook_version",
+            Some(&target),
+            self.delete_cookbook_version_inner(args),
+        )
+        .await
     }
 }
 
@@ -977,6 +1070,58 @@ fn converge_errors(run: &StoredNodeRun) -> Vec<Value> {
     errors
 }
 
+/// Time one tool call and emit the single structured log line required by the
+/// MCP design: organization, principal, tool, duration, and result size. Write
+/// callers pass the target; arguments and result bodies are never logged.
+async fn logged_tool<F>(
+    ctx: &McpContext,
+    tool: &'static str,
+    target: Option<&str>,
+    future: F,
+) -> Result<CallToolResult, ErrorData>
+where
+    F: std::future::Future<Output = Result<CallToolResult, ApiError>>,
+{
+    let started = Instant::now();
+    let result = tool_result(future.await)?;
+    let elapsed = started.elapsed();
+    let error = result.is_error == Some(true);
+    tracing::info!(
+        organization = %ctx.org.name,
+        principal = %ctx.principal.name,
+        tool = tool,
+        target = target.unwrap_or(""),
+        duration_ms = elapsed.as_millis() as u64,
+        result_count = result_count(&result),
+        outcome = if error { "error" } else { "ok" },
+        "mcp tool call"
+    );
+    Ok(result)
+}
+
+/// The number of rows a tool result represents: 0 for errors and non-JSON
+/// content, the length of a top-level array or of the sole array in a result
+/// envelope (`{"nodes": [...]}`), and 1 for any other JSON value.
+fn result_count(result: &CallToolResult) -> usize {
+    if result.is_error == Some(true) {
+        return 0;
+    }
+    let Some(ContentBlock::Text(text)) = result.content.first() else {
+        return 0;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text.text) else {
+        return 0;
+    };
+    match &value {
+        Value::Array(rows) => rows.len(),
+        Value::Object(object) if object.len() == 1 => match object.values().next() {
+            Some(Value::Array(rows)) => rows.len(),
+            _ => 1,
+        },
+        _ => 1,
+    }
+}
+
 fn tool_result(result: Result<CallToolResult, ApiError>) -> Result<CallToolResult, ErrorData> {
     Ok(match result {
         Ok(result) => result,
@@ -1005,5 +1150,60 @@ impl ServerHandler for McpServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions("Microwave Server organization tools")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text_result(text: String) -> CallToolResult {
+        CallToolResult::success(vec![ContentBlock::text(text)])
+    }
+
+    #[test]
+    fn result_count_counts_envelope_array() {
+        let result = text_result(json!({ "nodes": ["a", "b"] }).to_string());
+        assert_eq!(result_count(&result), 2);
+    }
+
+    #[test]
+    fn result_count_counts_bare_array() {
+        let result = text_result(json!([{ "name": "a" }, { "name": "b" }]).to_string());
+        assert_eq!(result_count(&result), 2);
+    }
+
+    #[test]
+    fn result_count_of_empty_array_is_zero() {
+        let result = text_result(json!([]).to_string());
+        assert_eq!(result_count(&result), 0);
+    }
+
+    #[test]
+    fn result_count_of_full_object_is_one() {
+        let result = text_result(
+            json!({
+                "name": "web-1",
+                "chef_environment": "_default",
+                "run_list": ["recipe[apt::default]"],
+                "normal": {},
+            })
+            .to_string(),
+        );
+        assert_eq!(result_count(&result), 1);
+    }
+
+    #[test]
+    fn result_count_of_error_is_zero() {
+        let result = CallToolResult::error(vec![ContentBlock::text(
+            json!({ "nodes": ["a", "b"] }).to_string(),
+        )]);
+        assert_eq!(result_count(&result), 0);
+    }
+
+    #[test]
+    fn result_count_of_non_json_is_zero() {
+        let result = text_result("forbidden".to_string());
+        assert_eq!(result_count(&result), 0);
     }
 }
