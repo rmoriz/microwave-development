@@ -159,24 +159,60 @@ async fn put_cookbook_version(
     ChefJson(manifest): ChefJson<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
-    validate_cookbook_name(&name)?;
-    validate_version(&version)?;
+    let force = query.get("force").is_some_and(|value| value != "false");
+    let (status, body) = put_cookbook_version_object(
+        &state,
+        &auth,
+        org,
+        &name,
+        &version,
+        &manifest,
+        api_version,
+        force,
+    )
+    .await?;
+    if status != StatusCode::CREATED {
+        return Ok((status, HeaderMap::new(), Json(body)));
+    }
+    let uri = format!(
+        "{}/organizations/{}/cookbooks/{name}/{version}",
+        base_url(&headers, &state),
+        org.name
+    );
+    Ok((status, location_headers(&uri)?, Json(body)))
+}
 
-    let normalized = normalize_cookbook_document(&manifest, &name, &version, api_version)?;
+/// Create or update a cookbook version through the shared mutation path used by
+/// HTTP and MCP. The returned status is `201` for creates and `200` for
+/// updates; the HTTP handler attaches `Location` on creates.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn put_cookbook_version_object(
+    state: &AppState,
+    auth: &AuthContext,
+    org: &Org,
+    name: &str,
+    version: &str,
+    manifest: &Value,
+    api_version: u8,
+    force: bool,
+) -> Result<(StatusCode, Value), ApiError> {
+    validate_cookbook_name(name)?;
+    validate_version(version)?;
+
+    let normalized = normalize_cookbook_document(manifest, name, version, api_version)?;
     let existing = state
         .store
-        .find_cookbook_version(&org.id, &name, &version)
+        .find_cookbook_version(&org.id, name, version)
         .await
         .map_err(ApiError::from)?;
 
     if let Some(existing) = existing {
-        require_permission(&state, &auth, &existing.authz_id, Permission::Update).await?;
-        let force = query.get("force").is_some_and(|value| value != "false");
+        require_permission(state, auth, &existing.authz_id, Permission::Update).await?;
         if existing.frozen && !force {
-            return Err(ApiError::conflict(frozen_message(&name, &version)));
+            return Err(ApiError::conflict(frozen_message(name, version)));
         }
         validate_checksums(
-            &state,
+            state,
             org,
             &normalized.checksums,
             ChecksumErrorStyle::Update,
@@ -193,8 +229,8 @@ async fn put_cookbook_version(
             .store
             .update_cookbook_version(
                 &org.id,
-                &name,
-                &version,
+                name,
+                version,
                 &serde_json::to_string(&stored).map_err(|_| ApiError::internal())?,
                 &normalized.checksums,
                 frozen,
@@ -202,13 +238,13 @@ async fn put_cookbook_version(
             )
             .await
             .map_err(ApiError::from)?;
-        delete_blobs(&state, &org.id, &removed);
-        Ok((StatusCode::OK, HeaderMap::new(), Json(response)))
+        delete_blobs(state, &org.id, &removed);
+        Ok((StatusCode::OK, response))
     } else {
-        let container = container_authz(&state, org, "cookbooks").await?;
-        require_permission(&state, &auth, &container, Permission::Create).await?;
+        let container = container_authz(state, org, "cookbooks").await?;
+        require_permission(state, auth, &container, Permission::Create).await?;
         validate_checksums(
-            &state,
+            state,
             org,
             &normalized.checksums,
             ChecksumErrorStyle::Create,
@@ -219,8 +255,8 @@ async fn put_cookbook_version(
             .store
             .create_cookbook_version(
                 &org.id,
-                &name,
-                &version,
+                name,
+                version,
                 &serde_json::to_string(&normalized.stored).map_err(|_| ApiError::internal())?,
                 &normalized.checksums,
                 normalized.frozen,
@@ -229,15 +265,7 @@ async fn put_cookbook_version(
             .await
             .map_err(ApiError::from)?;
 
-        Ok((
-            StatusCode::CREATED,
-            location_headers(&format!(
-                "{}/organizations/{}/cookbooks/{name}/{version}",
-                base_url(&headers, &state),
-                org.name
-            ))?,
-            Json(normalized.response),
-        ))
+        Ok((StatusCode::CREATED, normalized.response))
     }
 }
 
@@ -248,20 +276,34 @@ async fn delete_cookbook_version(
     Path((_organization, name, version)): Path<(String, String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let cookbook = resolve_version(&state, org, &name, &version)
+    let manifest =
+        delete_cookbook_version_object(&state, &auth, org, &name, &version, api_version).await?;
+    Ok(Json(manifest))
+}
+
+/// Delete a cookbook version through the shared mutation path used by HTTP and
+/// MCP, returning the rendered manifest.
+pub(crate) async fn delete_cookbook_version_object(
+    state: &AppState,
+    auth: &AuthContext,
+    org: &Org,
+    name: &str,
+    version: &str,
+    api_version: u8,
+) -> Result<Value, ApiError> {
+    let cookbook = resolve_version(state, org, name, version)
         .await?
-        .ok_or_else(|| cookbook_version_not_found(&name, &version))?;
-    require_permission(&state, &auth, &cookbook.authz_id, Permission::Delete).await?;
+        .ok_or_else(|| cookbook_version_not_found(name, version))?;
+    require_permission(state, auth, &cookbook.authz_id, Permission::Delete).await?;
 
     let (deleted, removed) = state
         .store
-        .delete_cookbook_version(&org.id, &name, &cookbook.version)
+        .delete_cookbook_version(&org.id, name, &cookbook.version)
         .await
         .map_err(ApiError::from)?;
-    delete_blobs(&state, &org.id, &removed);
+    delete_blobs(state, &org.id, &removed);
 
-    let manifest = render_manifest(&deleted.manifest, api_version, Some(&state), &org.id)?;
-    Ok(Json(manifest))
+    render_manifest(&deleted.manifest, api_version, Some(state), &org.id)
 }
 
 async fn universe(
@@ -318,14 +360,14 @@ async fn universe(
     Ok(Json(Value::Object(result)))
 }
 
-struct NormalizedCookbook {
-    response: Value,
-    stored: Value,
-    checksums: Vec<String>,
-    frozen: bool,
+pub(crate) struct NormalizedCookbook {
+    pub(crate) response: Value,
+    pub(crate) stored: Value,
+    pub(crate) checksums: Vec<String>,
+    pub(crate) frozen: bool,
 }
 
-fn normalize_cookbook_document(
+pub(crate) fn normalize_cookbook_document(
     manifest: &Value,
     url_name: &str,
     url_version: &str,
@@ -775,7 +817,7 @@ fn version_key(version: &str) -> (i64, i64, i64) {
     microwave_store::parse_version(version).unwrap_or((0, 0, 0))
 }
 
-fn validate_cookbook_name(name: &str) -> Result<(), ApiError> {
+pub(crate) fn validate_cookbook_name(name: &str) -> Result<(), ApiError> {
     if valid_object_name(name) {
         Ok(())
     } else {
@@ -785,7 +827,7 @@ fn validate_cookbook_name(name: &str) -> Result<(), ApiError> {
     }
 }
 
-fn validate_version(version: &str) -> Result<(), ApiError> {
+pub(crate) fn validate_version(version: &str) -> Result<(), ApiError> {
     parse_version_value(version)
         .map(|_| ())
         .map_err(|_| ApiError::bad_request(format!("Invalid cookbook version '{version}'.")))

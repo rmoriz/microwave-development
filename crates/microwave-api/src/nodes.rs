@@ -7,7 +7,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
-use microwave_store::{NewNode, Permission};
+use microwave_store::{NewNode, Org, Permission, StoredNode};
 use serde_json::{json, Map, Value};
 
 /// Top-level keys accepted on node payloads, mirroring `?VALID_KEYS` in
@@ -129,10 +129,28 @@ async fn create_node(
     ChefJson(mut body): ChefJson<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
-    let nodes_container = container_authz(&state, org, "nodes").await?;
-    require_permission(&state, &auth, &nodes_container, Permission::Create).await?;
+    let node = create_node_object(&state, &auth, org, &mut body).await?;
 
-    let normalized = normalize_node(&mut body, None)?;
+    let base = base_url(&headers, &state);
+    let uri = format!("{base}/organizations/{}/nodes/{}", org.name, node.name);
+    Ok((
+        StatusCode::CREATED,
+        location_headers(&uri)?,
+        Json(json!({ "uri": uri })),
+    ))
+}
+
+/// Create a node through the shared mutation path used by HTTP and MCP.
+pub(crate) async fn create_node_object(
+    state: &AppState,
+    auth: &AuthContext,
+    org: &Org,
+    body: &mut Value,
+) -> Result<StoredNode, ApiError> {
+    let nodes_container = container_authz(state, org, "nodes").await?;
+    require_permission(state, auth, &nodes_container, Permission::Create).await?;
+
+    let normalized = normalize_node(body, None)?;
     let node = state
         .store
         .create_node(
@@ -148,18 +166,8 @@ async fn create_node(
         )
         .await
         .map_err(ApiError::from)?;
-    crate::search::index::index_node(&state, org, &node).await;
-
-    let base = base_url(&headers, &state);
-    let uri = format!(
-        "{base}/organizations/{}/nodes/{}",
-        org.name, normalized.name
-    );
-    Ok((
-        StatusCode::CREATED,
-        location_headers(&uri)?,
-        Json(json!({ "uri": uri })),
-    ))
+    crate::search::index::index_node(state, org, &node).await;
+    Ok(node)
 }
 
 async fn get_node(
@@ -185,20 +193,32 @@ async fn update_node(
     ChefJson(mut body): ChefJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
-    let normalized = normalize_node(&mut body, Some(&name))?;
+    let node = update_node_object(&state, &auth, org, &name, &mut body).await?;
+    serialized_body(&node.serialized_object)
+}
+
+/// Update a node through the shared mutation path used by HTTP and MCP.
+pub(crate) async fn update_node_object(
+    state: &AppState,
+    auth: &AuthContext,
+    org: &Org,
+    name: &str,
+    body: &mut Value,
+) -> Result<StoredNode, ApiError> {
+    let normalized = normalize_node(body, Some(name))?;
     let existing = state
         .store
-        .find_node(&org.id, &name)
+        .find_node(&org.id, name)
         .await
         .map_err(ApiError::from)?
-        .ok_or_else(|| node_not_found(&name))?;
-    require_permission(&state, &auth, &existing.authz_id, Permission::Update).await?;
+        .ok_or_else(|| node_not_found(name))?;
+    require_permission(state, auth, &existing.authz_id, Permission::Update).await?;
 
     let node = state
         .store
         .update_node(
             &org.id,
-            &name,
+            name,
             &normalized.serialized,
             &normalized.environment,
             normalized.policy_name.as_deref(),
@@ -206,8 +226,8 @@ async fn update_node(
         )
         .await
         .map_err(ApiError::from)?;
-    crate::search::index::index_node(&state, org, &node).await;
-    serialized_body(&node.serialized_object)
+    crate::search::index::index_node(state, org, &node).await;
+    Ok(node)
 }
 
 async fn delete_node(
@@ -216,20 +236,31 @@ async fn delete_node(
     Path((_organization, name)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let org = organization(&auth)?;
+    let node = delete_node_object(&state, &auth, org, &name).await?;
+    serialized_body(&node.serialized_object)
+}
+
+/// Delete a node through the shared mutation path used by HTTP and MCP.
+pub(crate) async fn delete_node_object(
+    state: &AppState,
+    auth: &AuthContext,
+    org: &Org,
+    name: &str,
+) -> Result<StoredNode, ApiError> {
     let node = state
         .store
-        .find_node(&org.id, &name)
+        .find_node(&org.id, name)
         .await
         .map_err(ApiError::from)?
-        .ok_or_else(|| node_not_found(&name))?;
-    require_permission(&state, &auth, &node.authz_id, Permission::Delete).await?;
+        .ok_or_else(|| node_not_found(name))?;
+    require_permission(state, auth, &node.authz_id, Permission::Delete).await?;
     state
         .store
-        .delete_node(&org.id, &name)
+        .delete_node(&org.id, name)
         .await
         .map_err(ApiError::from)?;
-    crate::search::index::delete_document(&state, &org.id, &node.id).await;
-    serialized_body(&node.serialized_object)
+    crate::search::index::delete_document(state, &org.id, &node.id).await;
+    Ok(node)
 }
 
 fn node_not_found(name: &str) -> ApiError {
@@ -241,12 +272,12 @@ fn serialized_body(serialized: &str) -> Result<Json<Value>, ApiError> {
     Ok(Json(value))
 }
 
-struct NormalizedNode {
-    name: String,
-    environment: String,
-    policy_name: Option<String>,
-    policy_group: Option<String>,
-    serialized: String,
+pub(crate) struct NormalizedNode {
+    pub(crate) name: String,
+    pub(crate) environment: String,
+    pub(crate) policy_name: Option<String>,
+    pub(crate) policy_group: Option<String>,
+    pub(crate) serialized: String,
 }
 
 /// Validates and normalizes a node payload following the upstream
@@ -254,7 +285,10 @@ struct NormalizedNode {
 ///
 /// `path_name` is `Some` for PUT requests: the body name is optional, but when
 /// present it must match the URL. Create requests require an explicit name.
-fn normalize_node(body: &mut Value, path_name: Option<&str>) -> Result<NormalizedNode, ApiError> {
+pub(crate) fn normalize_node(
+    body: &mut Value,
+    path_name: Option<&str>,
+) -> Result<NormalizedNode, ApiError> {
     let Some(object) = body.as_object_mut() else {
         return Err(ApiError::bad_request(
             "Incorrect JSON type for request body",

@@ -89,16 +89,37 @@ async fn create_environment(
     NegotiatedChefJson(mut body): NegotiatedChefJson<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
-    let container = container_authz(&state, org, "environments").await?;
-    require_permission(&state, &auth, &container, Permission::Create).await?;
+    let environment = create_environment_object(&state, &auth, org, &mut body).await?;
 
-    let name = normalize_environment(&mut body)?;
+    let base = base_url(&headers, &state);
+    let uri = format!(
+        "{base}/organizations/{}/environments/{}",
+        org.name, environment.name
+    );
+    Ok((
+        StatusCode::CREATED,
+        location_headers(&uri)?,
+        Json(json!({ "uri": uri })),
+    ))
+}
+
+/// Create an environment through the shared mutation path used by HTTP and MCP.
+pub(crate) async fn create_environment_object(
+    state: &AppState,
+    auth: &AuthContext,
+    org: &Org,
+    body: &mut Value,
+) -> Result<StoredObject, ApiError> {
+    let container = container_authz(state, org, "environments").await?;
+    require_permission(state, auth, &container, Permission::Create).await?;
+
+    let name = normalize_environment(body)?;
     let environment = state
         .store
         .create_environment(
             &org.id,
             &name,
-            &serde_json::to_string(&body).map_err(|_| ApiError::internal())?,
+            &serde_json::to_string(body).map_err(|_| ApiError::internal())?,
             &auth.principal.authz_id,
         )
         .await
@@ -107,20 +128,13 @@ async fn create_environment(
             other => other.into(),
         })?;
     crate::search::index::index_object(
-        &state,
+        state,
         org,
         crate::search::IndexKind::Environment,
         &environment,
     )
     .await;
-
-    let base = base_url(&headers, &state);
-    let uri = format!("{base}/organizations/{}/environments/{name}", org.name);
-    Ok((
-        StatusCode::CREATED,
-        location_headers(&uri)?,
-        Json(json!({ "uri": uri })),
-    ))
+    Ok(environment)
 }
 
 async fn get_environment(
@@ -145,29 +159,59 @@ async fn update_environment(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((_organization, url_name)): Path<(String, String)>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     NegotiatedChefJson(mut body): NegotiatedChefJson<Value>,
 ) -> Result<Response, ApiError> {
-    if let Some(response) = default_environment_response(&url_name) {
-        return Ok(response);
-    }
     let org = organization(&auth)?;
+    let (updated, renamed) =
+        match update_environment_object(&state, &auth, org, &url_name, &mut body).await {
+            Ok(result) => result,
+            Err(error) => return Ok(default_environment_error_response(error)),
+        };
+    let document = serialized_body(&updated.serialized_object)?;
+    if !renamed {
+        return Ok(Json(document).into_response());
+    }
+    let base = base_url(&headers, &state);
+    let uri = format!(
+        "{base}/organizations/{}/environments/{}",
+        org.name, updated.name
+    );
+    let mut response = (StatusCode::CREATED, Json(document)).into_response();
+    response.headers_mut().extend(location_headers(&uri)?);
+    Ok(response)
+}
+
+/// Update an environment through the shared mutation path used by HTTP and MCP.
+///
+/// The returned flag reports whether the URL name changed (the row keeps its id
+/// and ACL), which the HTTP handler uses to choose between `200` and `201`.
+pub(crate) async fn update_environment_object(
+    state: &AppState,
+    auth: &AuthContext,
+    org: &Org,
+    url_name: &str,
+    body: &mut Value,
+) -> Result<(StoredObject, bool), ApiError> {
+    if url_name == "_default" {
+        return Err(default_environment_error());
+    }
     let environment = state
         .store
-        .find_environment(&org.id, &url_name)
+        .find_environment(&org.id, url_name)
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("Cannot load environment {url_name}")))?;
-    require_permission(&state, &auth, &environment.authz_id, Permission::Update).await?;
+    require_permission(state, auth, &environment.authz_id, Permission::Update).await?;
 
-    let name = normalize_environment(&mut body)?;
+    let name = normalize_environment(body)?;
     let renamed = name != url_name;
     let updated = state
         .store
         .update_environment(
             &org.id,
-            &url_name,
-            &serde_json::to_string(&body).map_err(|_| ApiError::internal())?,
+            url_name,
+            &serde_json::to_string(body).map_err(|_| ApiError::internal())?,
         )
         .await
         .map_err(|error| match error {
@@ -175,24 +219,11 @@ async fn update_environment(
             other => other.into(),
         })?;
     if renamed {
-        crate::search::index::delete_document(&state, &org.id, &environment.id).await;
+        crate::search::index::delete_document(state, &org.id, &environment.id).await;
     }
-    crate::search::index::index_object(
-        &state,
-        org,
-        crate::search::IndexKind::Environment,
-        &updated,
-    )
-    .await;
-    let document = serialized_body(&updated.serialized_object)?;
-    if !renamed {
-        return Ok(Json(document).into_response());
-    }
-    let base = base_url(&_headers, &state);
-    let uri = format!("{base}/organizations/{}/environments/{name}", org.name);
-    let mut response = (StatusCode::CREATED, Json(document)).into_response();
-    response.headers_mut().extend(location_headers(&uri)?);
-    Ok(response)
+    crate::search::index::index_object(state, org, crate::search::IndexKind::Environment, &updated)
+        .await;
+    Ok((updated, renamed))
 }
 
 async fn delete_environment(
@@ -200,25 +231,41 @@ async fn delete_environment(
     Extension(auth): Extension<AuthContext>,
     Path((_organization, name)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
-    if let Some(response) = default_environment_response(&name) {
-        return Ok(response);
-    }
     let org = organization(&auth)?;
+    let environment = match delete_environment_object(&state, &auth, org, &name).await {
+        Ok(environment) => environment,
+        Err(error) => return Ok(default_environment_error_response(error)),
+    };
+    Ok(Json(serialized_body(&environment.serialized_object)?).into_response())
+}
+
+/// Delete an environment through the shared mutation path used by HTTP and MCP.
+pub(crate) async fn delete_environment_object(
+    state: &AppState,
+    auth: &AuthContext,
+    org: &Org,
+    name: &str,
+) -> Result<StoredObject, ApiError> {
+    if name == "_default" {
+        return Err(default_environment_error());
+    }
     let environment = state
         .store
-        .find_environment(&org.id, &name)
+        .find_environment(&org.id, name)
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("Cannot load environment {name}")))?;
-    require_permission(&state, &auth, &environment.authz_id, Permission::Delete).await?;
-    let value = serialized_body(&environment.serialized_object)?;
+    require_permission(state, auth, &environment.authz_id, Permission::Delete).await?;
+    // Keep the original ordering: a corrupt stored document fails before the
+    // delete instead of after it.
+    serialized_body(&environment.serialized_object)?;
     state
         .store
-        .delete_environment(&org.id, &name)
+        .delete_environment(&org.id, name)
         .await
         .map_err(ApiError::from)?;
-    crate::search::index::delete_document(&state, &org.id, &environment.id).await;
-    Ok(Json(value).into_response())
+    crate::search::index::delete_document(state, &org.id, &environment.id).await;
+    Ok(environment)
 }
 
 async fn list_environment_cookbooks(
@@ -396,7 +443,7 @@ fn filter_versions(versions: &mut Vec<StoredCookbookVersion>, constraint: Option
     });
 }
 
-fn sort_versions_descending(versions: &mut [StoredCookbookVersion]) {
+pub(crate) fn sort_versions_descending(versions: &mut [StoredCookbookVersion]) {
     versions.sort_by_key(|version| std::cmp::Reverse(version_key(&version.version)));
 }
 
@@ -440,17 +487,25 @@ fn environment_cookbook_entry(
 
 /// Upstream advertises `GET` on the `_default` environment and rejects
 /// modification with a `405` that carries an `Allow` header.
-fn default_environment_response(name: &str) -> Option<Response> {
-    if name != "_default" {
-        return None;
+const DEFAULT_ENVIRONMENT_MESSAGE: &str = "The '_default' environment cannot be modified.";
+
+fn default_environment_error() -> ApiError {
+    ApiError::method_not_allowed(DEFAULT_ENVIRONMENT_MESSAGE)
+}
+
+/// The shared services reject `_default` with a plain `405`; the upstream HTTP
+/// surface additionally advertises `GET` in `Allow`. Translate only that
+/// specific error so unrelated failures keep their normal response.
+fn default_environment_error_response(error: ApiError) -> Response {
+    let is_default_rejection = error.status == StatusCode::METHOD_NOT_ALLOWED
+        && error.message == DEFAULT_ENVIRONMENT_MESSAGE;
+    let mut response = error.into_response();
+    if is_default_rejection {
+        response
+            .headers_mut()
+            .insert(header::ALLOW, HeaderValue::from_static("GET"));
     }
-    let mut response =
-        ApiError::method_not_allowed("The '_default' environment cannot be modified.")
-            .into_response();
     response
-        .headers_mut()
-        .insert(header::ALLOW, HeaderValue::from_static("GET"));
-    Some(response)
 }
 
 fn serialized_body(serialized: &str) -> Result<Value, ApiError> {
@@ -462,7 +517,7 @@ fn serialized_body(serialized: &str) -> Result<Value, ApiError> {
 ///
 /// The body must carry a name. On PUT a name that differs from the URL renames
 /// the environment (the row keeps its id and ACL).
-fn normalize_environment(body: &mut Value) -> Result<String, ApiError> {
+pub(crate) fn normalize_environment(body: &mut Value) -> Result<String, ApiError> {
     let Some(object) = body.as_object_mut() else {
         return Err(ApiError::bad_request(
             "Incorrect JSON type for request body",
