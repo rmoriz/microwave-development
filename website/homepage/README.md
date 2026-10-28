@@ -89,6 +89,9 @@ apex domain in the host and redirect `www` to the apex if both are enabled.
 - Keep factual claims traceable to the repository. The content tests enforce
   the most important ones, including the Cinc wording and the absence of
   forbidden competitor language.
+- MCP is always described as experimental. Reads come before writes; writes are
+  opt-in. Keep the wording traceable to `docs/mcp.md` and do not use
+  “AI-powered” or “built-in AI”. The content test enforces this.
 
 ## Structure
 
