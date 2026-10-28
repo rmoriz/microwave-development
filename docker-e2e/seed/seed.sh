@@ -17,10 +17,10 @@ ORG_FULL_NAME="${MW_ORG_FULL_NAME:-Microwave E2E}"
 ROLE_NAME="${ROLE_NAME:-e2e_role}"
 NGINX_COOKBOOK="${NGINX_COOKBOOK:-nginx}"
 NGINX_VERSION="${NGINX_VERSION:-12.3.4}"
-POSTGRES_COOKBOOK="${POSTGRES_COOKBOOK:-postgres}"
-POSTGRES_VERSION="${POSTGRES_VERSION:-2.17.3}"
+POSTGRES_COOKBOOK="${POSTGRES_COOKBOOK:-postgresql}"
+POSTGRES_VERSION="${POSTGRES_VERSION:-13.0.5}"
 NGINX_RECIPE="${NGINX_RECIPE:-e2e_nginx}"
-POSTGRES_RECIPE="${POSTGRES_RECIPE:-postgres}"
+POSTGRES_RECIPE="${POSTGRES_RECIPE:-e2e_postgresql}"
 # Client names the node containers register with. Included so the seed can
 # remove leftovers from a previous, partially failed run.
 NODE_NAMES="${NODE_NAMES:-node-debian node-ubuntu node-fedora}"
@@ -125,15 +125,6 @@ log "vendoring $NGINX_COOKBOOK $NGINX_VERSION and $POSTGRES_COOKBOOK $POSTGRES_V
 cd "$SHARED"
 rm -rf "$COOKBOOKS"
 berks vendor "$COOKBOOKS"
-
-# The 2013-era `paths` cookbook (a SmartOS dependency of postgres 2.17.3) uses
-# the bare `platform` helper in an attribute file. Modern Chef/Cinc evaluates
-# attribute files against Chef::Node::Attribute, where that helper no longer
-# exists, so the run aborts before any recipe is compiled. Rewrite that one
-# line; nothing else in the dependency set uses the legacy form.
-if [ -f "$COOKBOOKS/paths/attributes/default.rb" ]; then
-    sed -i "s/^case platform$/case node['platform']/" "$COOKBOOKS/paths/attributes/default.rb"
-fi
 
 # ---- 5. Upload cookbooks ---------------------------------------------------
 log "uploading cookbooks"

@@ -25,6 +25,8 @@ RUN if command -v apt-get >/dev/null 2>&1; then \
         && apt-get install -y --no-install-recommends \
             ca-certificates \
             curl \
+            gnupg \
+            lsb-release \
             procps \
             systemd \
             systemd-sysv \
@@ -55,11 +57,9 @@ RUN set -eux; \
     fi; \
     /opt/cinc/bin/cinc-client --version
 
-# The Supermarket `postgres` cookbook depends on `ipaddr_extensions`, whose
-# library is compiled into every run and requires the `scanf` gem on Ruby 3.4.
-# Install both into Cinc's embedded Ruby so the dependency does not abort the
-# run before the role is evaluated.
-RUN /opt/cinc/embedded/bin/gem install --no-document scanf ipaddr_extensions
+# The `postgresql` cookbook libraries require these gems on every run, even on
+# Fedora where the resource itself is skipped by the wrapper fallback.
+RUN /opt/cinc/embedded/bin/gem install --no-document deepsort:0.5.0 inifile:3.0.0
 
 COPY converge.sh /usr/local/bin/cinc-e2e-converge
 COPY cinc-e2e-converge.service /etc/systemd/system/cinc-e2e-converge.service

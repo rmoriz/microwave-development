@@ -7,9 +7,9 @@ node actually needs:
    `Dockerfile`, with SQLite, embedded search, and the local `/bookshelf`
    store.
 2. **seed** — knife + Berkshelf in a container. It creates the organization,
-   downloads the newest `nginx` and `postgres` cookbooks from Chef Supermarket,
-   uploads them plus a local wrapper cookbook to microwave-server, and creates
-   a role whose `run_list` points at nginx and postgres.
+   downloads the newest `nginx` and `postgresql` cookbooks from Chef Supermarket,
+   uploads them plus the local wrapper cookbooks to microwave-server, and creates
+   a role whose `run_list` points at nginx and PostgreSQL 18.
 3. **node-debian**, **node-ubuntu**, **node-fedora** — three distro containers
    with [Cinc Client](https://cinc.sh/) installed. Each one boots systemd as
    PID 1, registers with the validator, converges with `role[e2e_role]`, and
@@ -63,14 +63,13 @@ docker compose down -v
    again, and writes a new `run-id` generation marker;
 4. writes a `Berksfile` pinning the two Supermarket cookbooks and runs
    `berks vendor`;
-5. patches the legacy `paths` attribute file (see "Legacy cookbook shim"
-   below), uploads every resolved cookbook with `knife cookbook upload --all`,
-   and uploads the local `e2e_nginx` wrapper cookbook;
+5. uploads every resolved cookbook with `knife cookbook upload --all`, and
+   uploads the local `e2e_nginx` and `e2e_postgresql` wrapper cookbooks;
 6. writes `role.rb` and runs `knife role from file`:
 
    ```ruby
    name "e2e_role"
-   run_list "recipe[e2e_nginx]", "recipe[postgres]"
+   run_list "recipe[e2e_nginx]", "recipe[e2e_postgresql]"
    ```
 
 7. writes `/shared/client.rb` (`chef_server_url`, validator key) and
@@ -116,9 +115,9 @@ docker compose exec node-debian cinc-client
 | `MW_ORG` | `e2e` | Organization name |
 | `ROLE_NAME` | `e2e_role` | Role created by the seed |
 | `NGINX_COOKBOOK` / `NGINX_VERSION` | `nginx` / `12.3.4` | Supermarket cookbook |
-| `POSTGRES_COOKBOOK` / `POSTGRES_VERSION` | `postgres` / `2.17.3` | Supermarket cookbook |
+| `POSTGRES_COOKBOOK` / `POSTGRES_VERSION` | `postgresql` / `13.0.5` | Supermarket cookbook |
 | `NGINX_RECIPE` | `e2e_nginx` | nginx recipe in the role run_list |
-| `POSTGRES_RECIPE` | `postgres` | postgres recipe in the role run_list |
+| `POSTGRES_RECIPE` | `e2e_postgresql` | PostgreSQL recipe in the role run_list |
 | `NODE_NAMES` | `node-debian node-ubuntu node-fedora` | Client names the seed resets |
 | `DEBIAN_IMAGE` | `debian:bookworm` | Debian node base image |
 | `UBUNTU_IMAGE` | `ubuntu:24.04` | Ubuntu node base image |
@@ -142,10 +141,13 @@ docker compose exec node-debian cinc-client
   (`seed/site-cookbooks/e2e_nginx`), whose default recipe runs
   `nginx_install "nginx"` (distro package) and `nginx_service "nginx"`
   (`enable` + `start`); the role's run_list references that wrapper.
-  `postgres` 2.17.3 is the newest release of the `postgres` cookbook; its
-  `default` recipe is an upstream no-op (the meaningful recipes are
-  SmartOS-specific). The test proves cookbook resolution, upload, role
-  expansion, and node convergence, not a production PostgreSQL installation.
+  `postgresql` 13.0.5 is the newest maintained, resource-only release of the
+  `postgresql` cookbook. The local `e2e_postgresql` wrapper runs
+  `postgresql_install "postgresql"` with `version "18"` (the newest major in
+  the pgdg archive) and `postgresql_service` with `enable` + `start` on
+  Debian/Ubuntu; Fedora is not a supported platform of the cookbook, so the
+  wrapper installs the distro `postgresql-server` there. No PostgreSQL
+  configuration, users, or databases are managed.
 - **systemd in the nodes.** Each node container runs `/sbin/init` as PID 1.
   That keeps the container alive after the converge and lets the service
   resource manage nginx on all three distros. It needs `privileged: true`, a
@@ -160,17 +162,9 @@ docker compose exec node-debian cinc-client
   resolve Compose service names such as `microwave` through Docker's embedded
   DNS (glibc does). The node image masks `systemd-resolved` so
   `/etc/resolv.conf` is used directly.
-- **Legacy cookbook shim.** `postgres` 2.17.3 depends on the 2013-era
-  `paths` cookbook, whose attribute file calls the bare `platform` helper.
-  Chef/Cinc 18 and 19 evaluate attribute files against
-  `Chef::Node::Attribute`, where that helper no longer exists, so the run
-  would abort before compiling any recipe. The seed rewrites that single line
-  to `node['platform']`. Nothing else in the dependency set uses the legacy
-  form.
-- **Key handling.** `scanf` and `ipaddr_extensions` are pre-installed into
-  Cinc's embedded Ruby in the node image because the `postgres` dependency
-  chain loads `ipaddr_extensions` on every run and Ruby 3.4 no longer bundles
-  `scanf`.
+- **Cookbook gems.** `deepsort` and `inifile` are pre-installed into Cinc's
+  embedded Ruby because the `postgresql` cookbook libraries require them on
+  every run, including the Fedora fallback.
 - **Repeated runs.** A validator may create clients but not update them.
   `chef-client` turns the resulting `409 Client already exists` into a `PUT`,
   which the validator is not allowed to do, so a node whose previous converge
