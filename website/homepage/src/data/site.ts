@@ -8,6 +8,7 @@ export const site = {
   github: 'https://github.com/rmoriz/microwave-development',
   runFromSource: 'https://github.com/rmoriz/microwave-development#run-locally',
   docs: 'https://github.com/rmoriz/microwave-development/tree/main/docs',
+  mcp: 'https://github.com/rmoriz/microwave-development/blob/main/docs/mcp.md',
   license: 'https://github.com/rmoriz/microwave-development/blob/main/LICENSE',
   cinc: 'https://cinc.sh/',
   legal: {

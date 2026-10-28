@@ -451,6 +451,131 @@
   letter-spacing: 0.06em;
 }
 
+.agent-section {
+  position: relative;
+  border-top: 1px solid transparent;
+  border-image: var(--gradient) 1;
+}
+
+.agent-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: start;
+  justify-content: space-between;
+}
+
+.agent-head h2 {
+  margin-top: 16px;
+  font-size: clamp(2.2rem, 4vw, 3.6rem);
+}
+
+.agent-badge {
+  padding: 6px 11px;
+  border: 1px solid rgba(255, 138, 61, 0.45);
+  border-radius: 999px;
+  background: rgba(255, 138, 61, 0.08);
+  color: var(--orange);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-lead {
+  max-width: 70ch;
+  margin-top: 22px;
+  color: #c9c6bd;
+  font-size: clamp(1.05rem, 1.5vw, 1.2rem);
+}
+
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  padding: 0;
+  margin: 48px 0 0;
+  border-block: 1px solid var(--line);
+  list-style: none;
+}
+
+.agent-card {
+  padding: 28px 24px;
+  border-left: 1px solid var(--line);
+}
+
+.agent-card:first-child {
+  border-left: 0;
+  padding-left: 0;
+}
+
+.agent-index {
+  color: var(--green);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+}
+
+.agent-card h3 {
+  margin-top: 16px;
+  font-size: 1.3rem;
+}
+
+.agent-card p {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.agent-foot {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+  gap: 24px;
+  margin-top: 32px;
+}
+
+.agent-trust,
+.agent-optin {
+  padding-left: 16px;
+  border-left: 2px solid var(--green);
+  color: var(--text);
+  font-size: 0.96rem;
+}
+
+.agent-optin {
+  border-left-color: var(--orange);
+}
+
+.agent-call {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: center;
+  margin-top: 28px;
+}
+
+.agent-call code {
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: rgba(244, 241, 232, 0.04);
+  color: var(--text);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.agent-call .text-link {
+  margin-top: 0;
+}
+
+.agent-note {
+  max-width: 62ch;
+  margin-top: 22px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  line-height: 1.7;
+}
+
 .section-head {
   max-width: 760px;
   margin-bottom: 56px;
@@ -1053,10 +1178,25 @@
 @media (max-width: 900px) {
   .compat-grid,
   .cinc-grid,
+  .agent-grid,
   .gaps-grid,
   .migration-paths,
   .support-grid,
   .faq-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-card {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    padding-left: 0;
+  }
+
+  .agent-card:first-child {
+    border-top: 0;
+  }
+
+  .agent-foot {
     grid-template-columns: 1fr;
   }
 

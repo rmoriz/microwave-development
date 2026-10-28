@@ -1,0 +1,69 @@
+---
+import { site } from '../data/site';
+
+const workflows = [
+  {
+    title: 'Why did web-01 fail?',
+    body: 'The agent reads the latest run and the converge errors behind it, down to the failing resource and error class, without an SSH session.',
+  },
+  {
+    title: 'What is drifting?',
+    body: 'The agent filters failed runs, then compares environments and cookbook versions before you commit to a rollout.',
+  },
+  {
+    title: 'Prepare the change.',
+    body: 'With writes enabled, the agent creates or updates the node, environment, or cookbook version through the same validation and ACL path as the HTTP API.',
+  },
+];
+---
+<section id="agents" class="section agent-section reveal">
+  <div class="container">
+    <div class="agent-head">
+      <div>
+        <p class="eyebrow">AI-enhanced cooking</p>
+        <h2>Your sous-chef speaks MCP.</h2>
+      </div>
+      <p class="agent-badge">Experimental</p>
+    </div>
+
+    <p class="agent-lead">
+      Microwave does not ship a model. It ships the kitchen: an experimental
+      MCP endpoint lets an MCP-capable agent read nodes, environments,
+      cookbooks, and run reports, and change nodes, environments, and cookbook
+      versions when you allow it.
+    </p>
+
+    <ol class="agent-grid">
+      {workflows.map((workflow, index) => (
+        <li class="agent-card">
+          <span class="agent-index" aria-hidden="true">0{index + 1}</span>
+          <h3>{workflow.title}</h3>
+          <p>{workflow.body}</p>
+        </li>
+      ))}
+    </ol>
+
+    <div class="agent-foot">
+      <p class="agent-trust">
+        Per-organization bearer tokens, mapped to a Chef principal. Use a
+        scoped user: the superuser default skips ACLs.
+      </p>
+      <p class="agent-optin">
+        Read first. Writes are off until you turn them on. The server warns if
+        a write-enabled organization still uses the superuser default.
+      </p>
+    </div>
+
+    <div class="agent-call">
+      <code>POST /organizations/&lt;org&gt;/mcp</code>
+      <a class="text-link" href={site.mcp}>
+        MCP setup and tool reference <span aria-hidden="true">↗</span>
+      </a>
+    </div>
+
+    <p class="agent-note">
+      Bring your own agent. Microwave provides the endpoint and the
+      permissions; the model stays on your side.
+    </p>
+  </div>
+</section>

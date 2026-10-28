@@ -75,6 +75,37 @@ test('migration, support, and FAQ', () => {
   assert.equal($('a[href="mailto:hello@microwave.io?subject=Microwave%20support"]').length >= 2, true);
 });
 
+test('agent MCP sales section', () => {
+  const text = $('body').text();
+  const guide = 'https://github.com/rmoriz/microwave-development/blob/main/docs/mcp.md';
+
+  assert.equal($('#agents').length, 1);
+  assert.equal($('#product').nextAll('#agents').length, 1, '#agents follows #product');
+  assert.equal($('#agents').nextAll('#compatibility').length, 1, '#agents precedes #compatibility');
+  assert.match(text, /AI-enhanced cooking/);
+  assert.match(text, /Your sous-chef speaks MCP\./);
+  assert.match(text, /Microwave does not ship a model\. It ships the kitchen:/);
+  assert.match(text, /Bring your own agent/);
+  assert.match(text, /Experimental/);
+  assert.match(text, /POST \/organizations\/<org>\/mcp/);
+  assert.match(text, /Why did web-01 fail\?/);
+  assert.match(text, /What is drifting\?/);
+  assert.match(text, /Prepare the change\./);
+  assert.match(text, /Use a scoped user: the superuser default skips ACLs/);
+  assert.match(text, /Writes are off until you turn them on/);
+  assert.match(text, /warns if a write-enabled organization still uses the superuser default/);
+  assert.equal($(`#agents a[href="${guide}"]`).length, 1);
+  assert.equal($('#agents h2').length, 1);
+  assert.equal($('#agents h3').length, 3);
+  assert.equal($('#agents ol.agent-grid > li').length, 3);
+  assert.doesNotMatch(text, /AI-powered|built-in AI|autonomous|self-healing/);
+  assert.equal(
+    fs.existsSync(path.join(root, '../../docs/mcp.md')),
+    true,
+    'docs/mcp.md exists in the repository',
+  );
+});
+
 test('final CTA, footer, and legal pages', () => {
   const text = $('body').text();
   assert.match(text, /Bring your own cookbooks\./);
