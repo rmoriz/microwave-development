@@ -22,6 +22,17 @@ fn mcp_config(orgs: &[(&str, &str)]) -> Config {
     config
 }
 
+fn mcp_config_with_principal(org: &str, token: &str, principal: &str) -> Config {
+    let mut config = mcp_config(&[(org, token)]);
+    config
+        .mcp
+        .organizations
+        .get_mut(org)
+        .expect("test config contains the organization")
+        .principal = Some(principal.to_string());
+    config
+}
+
 async fn mcp(app: &axum::Router, org: &str, token: &str, body: Value) -> axum::response::Response {
     mcp_with(app, org, Some(token), "localhost", body).await
 }
@@ -104,6 +115,47 @@ async fn mcp_token_is_bound_to_its_org() {
     let response = mcp(&app, "beta", "a", initialize()).await;
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response
+            .headers()
+            .get("www-authenticate")
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer")
+    );
+}
+
+#[tokio::test]
+async fn configured_principal_in_org_is_accepted() {
+    let state = support::state_with_config(mcp_config_with_principal("acme", "a", "agent"));
+    let org = support::add_org(&state, "acme").await;
+    let user = support::add_user(&state, "agent", "agent@example.com", false);
+    support::associate(&state, &org, &user);
+    let app = support::app(state);
+
+    let response = mcp(&app, "acme", "a", initialize()).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn missing_configured_principal_is_500() {
+    let app = acme_app(mcp_config_with_principal("acme", "a", "ghost")).await;
+
+    let response = mcp(&app, "acme", "a", initialize()).await;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn configured_principal_outside_org_is_500() {
+    let state = support::state_with_config(mcp_config_with_principal("acme", "a", "agent"));
+    support::add_org(&state, "acme").await;
+    support::add_user(&state, "agent", "agent@example.com", false);
+    let app = support::app(state);
+
+    let response = mcp(&app, "acme", "a", initialize()).await;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[tokio::test]
