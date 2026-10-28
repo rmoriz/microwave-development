@@ -22,12 +22,14 @@ pub struct Config {
     pub compliance_proxy: ComplianceProxyConfig,
     pub required_recipe: RequiredRecipeConfig,
     pub telemetry: TelemetryConfig,
+    pub mcp: McpConfig,
 }
 
 impl Config {
     /// Parse configuration from a TOML string.
     pub fn from_toml_str(input: &str) -> Result<Self, ConfigError> {
-        let config: Self = toml::from_str(input).map_err(ConfigError::Parse)?;
+        let mut config: Self = toml::from_str(input).map_err(ConfigError::Parse)?;
+        config.mcp.clamp_bounds();
         config.validate()?;
         Ok(config)
     }
@@ -202,6 +204,9 @@ impl Config {
     ///   `MW_REQUIRED_RECIPE__PATH`
     /// - `MW_TELEMETRY__ENABLED`, `MW_TELEMETRY__REPORTING_URL`,
     ///   `MW_TELEMETRY__INTERVAL_SECONDS`
+    /// - `MW_MCP__ENABLED`, `MW_MCP__MAX_RESULTS`, `MW_MCP__MAX_RESULT_BYTES`,
+    ///   `MW_MCP__MAX_UPLOAD_BYTES`, `MW_MCP__ALLOWED_HOSTS`,
+    ///   `MW_MCP__ALLOWED_ORIGINS`
     pub fn apply_env(&mut self) -> Result<(), ConfigError> {
         if let Ok(value) = std::env::var("MW_SERVER__BIND") {
             self.server.bind = value;
@@ -489,6 +494,25 @@ impl Config {
         if let Ok(value) = std::env::var("MW_TELEMETRY__INTERVAL_SECONDS") {
             self.telemetry.interval_seconds = parse_value("MW_TELEMETRY__INTERVAL_SECONDS", value)?;
         }
+        if let Ok(value) = std::env::var("MW_MCP__ENABLED") {
+            self.mcp.enabled = parse_bool("MW_MCP__ENABLED", &value)?;
+        }
+        if let Ok(value) = std::env::var("MW_MCP__MAX_RESULTS") {
+            self.mcp.max_results = parse_value("MW_MCP__MAX_RESULTS", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_MCP__MAX_RESULT_BYTES") {
+            self.mcp.max_result_bytes = parse_value("MW_MCP__MAX_RESULT_BYTES", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_MCP__MAX_UPLOAD_BYTES") {
+            self.mcp.max_upload_bytes = parse_value("MW_MCP__MAX_UPLOAD_BYTES", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_MCP__ALLOWED_HOSTS") {
+            self.mcp.allowed_hosts = parse_string_list(value);
+        }
+        if let Ok(value) = std::env::var("MW_MCP__ALLOWED_ORIGINS") {
+            self.mcp.allowed_origins = parse_string_list(value);
+        }
+        self.mcp.clamp_bounds();
         self.validate()
     }
 
@@ -503,6 +527,15 @@ impl Config {
         let data_dir = self.paths.data_dir.trim_end_matches('/');
         format!("sqlite://{data_dir}/microwave.db")
     }
+}
+
+fn parse_string_list(value: String) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 fn parse_value<T>(key: &str, value: String) -> Result<T, ConfigError>
@@ -1136,6 +1169,95 @@ impl Default for LicenseConfig {
 pub struct StatsConfig {
     pub username: Option<String>,
     pub password: Option<String>,
+}
+
+/// Experimental per-organization MCP endpoint configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct McpConfig {
+    pub enabled: bool,
+    pub max_results: usize,
+    pub max_result_bytes: usize,
+    pub max_upload_bytes: usize,
+    pub allowed_hosts: Vec<String>,
+    pub allowed_origins: Vec<String>,
+    pub organizations: std::collections::HashMap<String, McpOrgConfig>,
+}
+
+impl McpConfig {
+    /// Clamp MCP resource limits to the supported operational bounds.
+    pub fn clamp_bounds(&mut self) {
+        self.max_results = self.max_results.clamp(1, 1000);
+        self.max_result_bytes = self.max_result_bytes.clamp(1024, 16 * 1024 * 1024);
+        self.max_upload_bytes = self.max_upload_bytes.clamp(1, 250 * 1024 * 1024);
+    }
+
+    /// Return configured allowed hosts, or derive host variants from the public
+    /// URL when no explicit allowlist is configured.
+    pub fn effective_allowed_hosts(&self, public_url: Option<&str>) -> Vec<String> {
+        if !self.allowed_hosts.is_empty() {
+            return self.allowed_hosts.clone();
+        }
+
+        let Some(url) = public_url.and_then(|value| url::Url::parse(value).ok()) else {
+            return Vec::new();
+        };
+        let Some(host) = url.host_str() else {
+            return Vec::new();
+        };
+        // The URL crate includes brackets for IPv6 host strings; normalize to
+        // the bracket-free form before building host variants.
+        let host = host.trim_start_matches('[').trim_end_matches(']');
+
+        let mut hosts = vec![host.to_string()];
+        if let Some(port) = url.port() {
+            let host_with_port = if host.contains(':') {
+                format!("[{host}]:{port}")
+            } else {
+                format!("{host}:{port}")
+            };
+            hosts.push(host_with_port);
+        }
+        hosts
+    }
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_results: 100,
+            max_result_bytes: 1_048_576,
+            max_upload_bytes: 10_485_760,
+            allowed_hosts: Vec::new(),
+            allowed_origins: Vec::new(),
+            organizations: std::collections::HashMap::new(),
+        }
+    }
+}
+
+/// Credentials and write permission for one organization on the MCP endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct McpOrgConfig {
+    pub token: Option<String>,
+    pub principal: Option<String>,
+    #[serde(default = "default_true")]
+    pub writes: bool,
+}
+
+impl Default for McpOrgConfig {
+    fn default() -> Self {
+        Self {
+            token: None,
+            principal: None,
+            writes: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl StatsConfig {

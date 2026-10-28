@@ -1,6 +1,6 @@
 use microwave_config::{
-    Config, DataCollectorStore, DatabaseDriver, MailAuth, MailConfig, MailSecurity,
-    ObjectStoreBackend, SearchBackend, StorageCompression,
+    Config, DataCollectorStore, DatabaseDriver, MailAuth, MailConfig, MailSecurity, McpConfig,
+    McpOrgConfig, ObjectStoreBackend, SearchBackend, StorageCompression,
 };
 use std::sync::Mutex;
 
@@ -1216,4 +1216,154 @@ fn data_collector_store_and_retention_can_come_from_env() {
 
     std::env::remove_var("MW_DATA_COLLECTOR__STORE");
     std::env::remove_var("MW_DATA_COLLECTOR__KEEP_RUNS");
+}
+
+#[test]
+fn mcp_defaults_are_disabled_with_bounded_limits() {
+    let c = Config::default();
+    assert_eq!(McpConfig::default(), c.mcp);
+    assert!(McpOrgConfig::default().writes);
+    assert!(!c.mcp.enabled);
+    assert_eq!(c.mcp.max_results, 100);
+    assert_eq!(c.mcp.max_result_bytes, 1_048_576);
+    assert_eq!(c.mcp.max_upload_bytes, 10_485_760);
+    assert!(c.mcp.allowed_hosts.is_empty());
+    assert!(c.mcp.allowed_origins.is_empty());
+    assert!(c.mcp.organizations.is_empty());
+}
+
+#[test]
+fn mcp_parses_per_org_tokens_principals_and_writes() {
+    let c = Config::from_toml_str(
+        r#"
+        [mcp]
+        enabled = true
+        [mcp.organizations.acme]
+        token = "a-token"
+        principal = "mcp-agent"
+        writes = false
+        [mcp.organizations.beta]
+    "#,
+    )
+    .unwrap();
+    assert!(c.mcp.enabled);
+    let acme = c.mcp.organizations.get("acme").unwrap();
+    assert_eq!(acme.token.as_deref(), Some("a-token"));
+    assert_eq!(acme.principal.as_deref(), Some("mcp-agent"));
+    assert!(!acme.writes);
+    assert!(c.mcp.organizations.get("beta").unwrap().writes);
+}
+
+#[test]
+fn mcp_clamps_limits() {
+    let c = Config::from_toml_str(
+        r#"
+        [mcp]
+        max_results = 5000
+        max_result_bytes = 1
+        max_upload_bytes = 999999999999
+    "#,
+    )
+    .unwrap();
+    assert_eq!(c.mcp.max_results, 1000);
+    assert_eq!(c.mcp.max_result_bytes, 1024);
+    assert_eq!(c.mcp.max_upload_bytes, 250 * 1024 * 1024);
+}
+
+#[test]
+fn mcp_allowed_hosts_fall_back_to_the_public_url() {
+    let c = Config::from_toml_str(
+        r#"
+        [server]
+        public_url = "https://chef.example.com"
+        [mcp]
+        enabled = true
+    "#,
+    )
+    .unwrap();
+    assert_eq!(
+        c.mcp
+            .effective_allowed_hosts(c.server.public_url.as_deref()),
+        vec!["chef.example.com".to_string()]
+    );
+
+    let c = Config::from_toml_str(
+        r#"
+        [server]
+        public_url = "https://chef.example.com:8443"
+    "#,
+    )
+    .unwrap();
+    assert_eq!(
+        c.mcp
+            .effective_allowed_hosts(c.server.public_url.as_deref()),
+        vec![
+            "chef.example.com".to_string(),
+            "chef.example.com:8443".to_string()
+        ]
+    );
+}
+
+#[test]
+fn mcp_scalar_settings_can_come_from_env() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("MW_MCP__ENABLED", "true");
+    std::env::set_var("MW_MCP__MAX_RESULTS", "7");
+    std::env::set_var("MW_MCP__MAX_RESULT_BYTES", "2048");
+    std::env::set_var("MW_MCP__MAX_UPLOAD_BYTES", "4096");
+    std::env::set_var("MW_MCP__ALLOWED_HOSTS", "chef.example.com, localhost");
+    std::env::set_var("MW_MCP__ALLOWED_ORIGINS", "https://app.example.com");
+    let mut c = Config::default();
+    c.apply_env().unwrap();
+    assert!(c.mcp.enabled);
+    assert_eq!(c.mcp.max_results, 7);
+    assert_eq!(c.mcp.max_result_bytes, 2048);
+    assert_eq!(c.mcp.max_upload_bytes, 4096);
+    assert_eq!(
+        c.mcp.allowed_hosts,
+        vec!["chef.example.com".to_string(), "localhost".to_string()]
+    );
+    assert_eq!(
+        c.mcp.allowed_origins,
+        vec!["https://app.example.com".to_string()]
+    );
+    for key in [
+        "MW_MCP__ENABLED",
+        "MW_MCP__MAX_RESULTS",
+        "MW_MCP__MAX_RESULT_BYTES",
+        "MW_MCP__MAX_UPLOAD_BYTES",
+        "MW_MCP__ALLOWED_HOSTS",
+        "MW_MCP__ALLOWED_ORIGINS",
+    ] {
+        std::env::remove_var(key);
+    }
+}
+
+#[test]
+fn mcp_environment_limits_are_clamped() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("MW_MCP__MAX_RESULTS", "5000");
+    std::env::set_var("MW_MCP__MAX_RESULT_BYTES", "1");
+    std::env::set_var("MW_MCP__MAX_UPLOAD_BYTES", "999999999999");
+    let mut c = Config::default();
+    c.apply_env().unwrap();
+    assert_eq!(c.mcp.max_results, 1000);
+    assert_eq!(c.mcp.max_result_bytes, 1024);
+    assert_eq!(c.mcp.max_upload_bytes, 250 * 1024 * 1024);
+    for key in [
+        "MW_MCP__MAX_RESULTS",
+        "MW_MCP__MAX_RESULT_BYTES",
+        "MW_MCP__MAX_UPLOAD_BYTES",
+    ] {
+        std::env::remove_var(key);
+    }
+}
+
+#[test]
+fn mcp_fallback_hosts_bracket_ipv6_ports() {
+    let mcp = McpConfig::default();
+    assert_eq!(
+        mcp.effective_allowed_hosts(Some("https://[2001:db8::1]:8443")),
+        vec!["2001:db8::1".to_string(), "[2001:db8::1]:8443".to_string()]
+    );
 }
