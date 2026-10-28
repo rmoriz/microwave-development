@@ -14,6 +14,8 @@ node actually needs:
    with [Cinc Client](https://cinc.sh/) installed. Each one boots systemd as
    PID 1, registers with the validator, converges with `role[e2e_role]`, and
    stays running so the result can be inspected with `docker exec`.
+4. **workstation** — Cinc Workstation and OpenCode, for driving the stack by
+   hand. Not published; reach it with `docker compose exec`.
 
 Nothing runs on the host except `docker compose`.
 
@@ -23,6 +25,9 @@ Nothing runs on the host except `docker compose`.
 cd docker-e2e
 docker compose up -d --build
 ```
+
+The workstation image is built locally, so a first start or a change to
+`workstation/**` needs `--build`.
 
 Follow the seed and the node output:
 
@@ -107,11 +112,54 @@ docker compose exec node-debian systemctl restart cinc-e2e-converge
 docker compose exec node-debian cinc-client
 ```
 
+## Workstation
+
+`workstation` is a Cinc Workstation plus OpenCode box for driving the stack by
+hand. It publishes no port; use `docker compose exec`:
+
+```sh
+docker compose exec workstation bash
+docker compose exec --workdir /work workstation opencode
+```
+
+`knife` is preconfigured for the `e2e` organization: `knife node list`,
+`knife cookbook list`, and the other commands work without a `-c` flag or a
+`--server-url`. OpenCode reads the MCP server from `/work/opencode.json`, so
+start it in `/work`. It needs a model provider once; the login is kept in the
+`workstation-opencode-config` volume:
+
+```sh
+docker compose exec --workdir /work workstation opencode auth login
+```
+
+The MCP endpoint is `http://microwave:8000/organizations/e2e/mcp`. The bearer
+token is already set as `MW_MCP_TOKEN` in the container, so a client needs no
+extra setup:
+
+```sh
+docker compose exec workstation bash -c '
+  curl -sS http://microwave:8000/organizations/e2e/mcp \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    -H "Authorization: Bearer $MW_MCP_TOKEN" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"'
+```
+
+Without the header (or with a wrong token) the endpoint answers `401`.
+
+MCP is experimental. The token and the `pivotal` superuser principal are e2e
+fixtures, not production credentials, and the MCP write tools (`delete_node`,
+`delete_environment`, `delete_cookbook_version`, …) take effect immediately. To
+use a different token, change it in `docker-compose.yml` (or the environment)
+and in `microwave/microwave.toml` under `[mcp.organizations.e2e]`.
+
 ## Configuration
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `MW_E2E_PORT` | `18080` | Host port for the microwave API |
+| `MW_MCP_TOKEN` | `e2e-mcp-token` | Bearer token for the MCP endpoint |
+| `MW_WORKSTATION_IMAGE` | `microwave-workstation:e2e` | Workstation image tag |
 | `MW_ORG` | `e2e` | Organization name |
 | `ROLE_NAME` | `e2e_role` | Role created by the seed |
 | `NGINX_COOKBOOK` / `NGINX_VERSION` | `nginx` / `12.3.4` | Supermarket cookbook |
@@ -148,7 +196,8 @@ docker compose exec node-debian cinc-client
   Debian/Ubuntu; Fedora is not a supported platform of the cookbook, so the
   wrapper installs the distro `postgresql-server` there. No PostgreSQL
   configuration, users, or databases are managed.
-- **systemd in the nodes.** Each node container runs `/sbin/init` as PID 1.
+- **systemd in the nodes and the workstation.** Those containers run
+  `/sbin/init` as PID 1.
   That keeps the container alive after the converge and lets the service
   resource manage nginx on all three distros. It needs `privileged: true`, a
   shared cgroup mount, `/run` and `/tmp` tmpfs, and `stop_signal:
@@ -165,6 +214,11 @@ docker compose exec node-debian cinc-client
 - **Cookbook gems.** `deepsort` and `inifile` are pre-installed into Cinc's
   embedded Ruby because the `postgresql` cookbook libraries require them on
   every run, including the Fedora fallback.
+- **MCP endpoint.** `microwave/microwave.toml` enables `[mcp]` with one org
+  entry, a fixed token, and `allowed_hosts = ["microwave:8000"]`; requests from
+  the Compose network carry that `Host` header. `data_collector.store = "local"`
+  keeps run reports so the MCP run tools return data. See "Workstation" for the
+  client side.
 - **Repeated runs.** A validator may create clients but not update them.
   `chef-client` turns the resulting `409 Client already exists` into a `PUT`,
   which the validator is not allowed to do, so a node whose previous converge
@@ -186,8 +240,10 @@ docker compose exec node-debian cinc-client
 # Status probe
 curl -fsS http://127.0.0.1:18080/_status | jq .
 
-# Validate the server configuration
-docker compose exec microwave microwave-ctl --config /etc/microwave/microwave.toml check-config
+# Validate the server configuration. `check-config` parses `server.bind` as a
+# literal address, so the Compose name in the file always fails it:
+docker compose exec microwave sh -c 'sed "s/^bind = .*/bind = \"127.0.0.1:8000\"/" \
+  /etc/microwave/microwave.toml > /tmp/c.toml && microwave-ctl --config /tmp/c.toml check-config'
 ```
 
 The seed summary is in the `chef-shared` volume:
