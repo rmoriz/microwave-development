@@ -225,6 +225,44 @@ actions_enabled = false
 # request X-Forwarded-Host (or Host) is used.
 # service_hostname = "chef.example.com"
 
+# Experimental MCP endpoint over Streamable HTTP. Disabled by default. When
+# enabled, POST /organizations/<org>/mcp accepts JSON-RPC from an MCP client
+# authenticated with a per-organization bearer token instead of Chef request
+# signing. See docs/mcp.md for the tool reference and deployment guidance.
+# [mcp]
+# enabled = true
+# Maximum rows returned by one list tool (1-1000).
+# max_results = 100
+# Maximum serialized tool result in bytes (1024-16 MiB). Larger results fail
+# instead of being truncated.
+# max_result_bytes = 1048576
+# Maximum decoded cookbook upload in bytes (1 B-250 MiB). The transport also
+# sizes its request body cap from this value.
+# max_upload_bytes = 10485760
+# Host headers accepted by the transport. Empty derives the host and
+# host:port variants from server.public_url; the rmcp default otherwise
+# accepts loopback hosts only. Remote agents need one of the two.
+# allowed_hosts = ["chef.example.com"]
+# Origins accepted from browser-based clients. Empty disables Origin checks,
+# which is intended for non-browser agents.
+# allowed_origins = ["https://app.example.com"]
+#
+# One entry per organization that may use the endpoint. `principal` defaults
+# to auth.superuser_name, which bypasses ACL checks; set a non-superuser
+# organization member for a scoped identity. `writes` defaults to true and
+# exposes the destructive delete tools when enabled.
+#
+# Read-only identity backed by the secret store. Rotate the token without a
+# restart after storing it with:
+#   microwave-ctl set-secret mcp team-1 <token>
+# [mcp.organizations.team-1]
+# principal = "mcp-agent"
+# writes = false
+#
+# Inline token, read at startup; changing it requires a restart:
+# [mcp.organizations.acme]
+# token = "replace-with-a-long-random-token"
+
 [compliance_proxy]
 # Enables the Automate compliance profile proxy:
 #   GET /organizations/:org/owners/:owner/compliance[/profile]

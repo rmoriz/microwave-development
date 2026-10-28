@@ -1367,3 +1367,21 @@ fn mcp_fallback_hosts_bracket_ipv6_ports() {
         vec!["2001:db8::1".to_string(), "[2001:db8::1]:8443".to_string()]
     );
 }
+
+#[test]
+fn shipped_example_config_parses_with_safe_defaults() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packaging/microwave.toml.example");
+    let input = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+    let c = Config::from_toml_str(&input)
+        .unwrap_or_else(|error| panic!("packaging example must parse: {error}"));
+
+    assert!(!c.mcp.enabled);
+    assert_eq!(c.mcp.max_results, 100);
+    assert_eq!(c.mcp.max_result_bytes, 1_048_576);
+    assert_eq!(c.mcp.max_upload_bytes, 10_485_760);
+    assert!(c.mcp.organizations.is_empty());
+    assert_eq!(c.data_collector.store, DataCollectorStore::Forward);
+    assert_eq!(c.data_collector.keep_runs, 50);
+}

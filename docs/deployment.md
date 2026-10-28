@@ -355,6 +355,28 @@ link and is unsafe for production.
 Email-change verification and organization invitation mail are not implemented
 in this slice.
 
+### MCP endpoint (experimental)
+
+The optional MCP endpoint exposes 11 read tools and 8 write tools per
+organization over Streamable HTTP at `/organizations/<org>/mcp`. It is
+disabled by default and authenticates with a per-organization bearer token
+instead of Chef request signing. Enable it with an `[mcp]` block plus at least
+one `[mcp.organizations.<org>]` entry; see [`docs/mcp.md`](mcp.md) for token
+setup (configuration file or `microwave-ctl set-secret mcp <org> <token>`),
+principal and ACL guidance, `allowed_hosts` for remote agents, the full tool
+reference, and limitations.
+
+Two operational points:
+
+- The run-report tools only see reports stored by this server. Local storage
+  is opt-in: set `data_collector.store` to `local` or `both`. The default
+  `forward` mode keeps no reports locally.
+- `writes` defaults to `true`. With it, the endpoint includes destructive
+  tools (`delete_node`, `delete_environment`, `delete_cookbook_version`) that
+  run with the configured principal's ACLs and have no dry-run or
+  confirmation step. Set `writes = false`, or use a dedicated non-superuser
+  principal, for a read-only experiment.
+
 ## 3. Single-node install
 
 ```sh
