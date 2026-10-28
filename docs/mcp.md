@@ -222,6 +222,40 @@ Substitute the organization name and token:
 }
 ```
 
+### Claude Desktop
+
+Add the same entry to `claude_desktop_config.json` (macOS:
+`~/Library/Application Support/Claude/claude_desktop_config.json`) and restart
+Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "microwave-acme": {
+      "type": "http",
+      "url": "https://chef.example.com/organizations/acme/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
+### Cursor
+
+Add the entry to the project `.cursor/mcp.json` or the user-level
+`~/.cursor/mcp.json`, then reload Cursor:
+
+```json
+{
+  "mcpServers": {
+    "microwave-acme": {
+      "url": "https://chef.example.com/organizations/acme/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
 The bearer header must be sent on **every** request; the endpoint keeps no
 server-side session that could remember it. A client that insists on the
 stdio transport cannot use this endpoint.
@@ -412,6 +446,19 @@ Blobs are written before the database row. A store or ACL failure can
 therefore leave content-addressed orphan blobs behind; a later upload of the
 same checksum reuses them. This matches the existing sandbox/bookshelf
 behavior and is a v1 limitation.
+
+## Verify it works
+
+1. Run `microwave-ctl --config /etc/microwave/microwave.toml check-config`.
+2. Restart the server, connect the client, and call `tools/list`. With
+   `writes = false`, only the 11 read tools appear; with `writes = true`, all 19
+   tools appear.
+3. Call `list_nodes` as the configured principal. A scoped non-superuser sees
+   only nodes its ACLs allow.
+4. If the run tools return nothing, check that `data_collector.store` is
+   `"local"` or `"both"` and that reports have been received since enablement.
+5. Tail the server log and confirm one structured line per tool call, including
+   the organization, principal, tool, duration, and result count.
 
 ## Limitations
 
