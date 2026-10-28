@@ -566,7 +566,7 @@ async fn validate_checksums(
     Ok(())
 }
 
-async fn resolve_version(
+pub(crate) async fn resolve_version(
     state: &AppState,
     org: &Org,
     name: &str,
@@ -767,7 +767,7 @@ fn invalid_num_versions() -> ApiError {
     ApiError::bad_request("You have requested an invalid number of versions (x >= 0 || 'all')")
 }
 
-fn sort_versions_descending(versions: &mut [StoredCookbookVersion]) {
+pub(crate) fn sort_versions_descending(versions: &mut [StoredCookbookVersion]) {
     versions.sort_by_key(|version| std::cmp::Reverse(version_key(&version.version)));
 }
 

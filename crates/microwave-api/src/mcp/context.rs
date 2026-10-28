@@ -1,5 +1,5 @@
-use crate::{AppState, AuthContext};
-use microwave_store::{Org, Principal};
+use crate::{ApiError, AppState, AuthContext};
+use microwave_store::{Org, Permission, Principal};
 
 /// Per-request authentication and configuration resolved for one MCP call.
 #[derive(Clone)]
@@ -29,5 +29,28 @@ impl McpContext {
             .map(|value| value as usize)
             .unwrap_or(self.max_results)
             .clamp(1, self.max_results)
+    }
+
+    /// Whether the authenticated principal may read the object behind
+    /// `authz_id`. Superusers bypass ACL checks like the HTTP API does.
+    pub async fn can_read(&self, authz_id: &str) -> Result<bool, ApiError> {
+        if self.is_superuser {
+            return Ok(true);
+        }
+        self.state
+            .store
+            .check_permission(&self.principal.authz_id, authz_id, Permission::Read)
+            .await
+            .map_err(ApiError::from)
+    }
+
+    /// Fail with the API's forbidden error unless the principal may read
+    /// `authz_id`.
+    pub async fn require_read(&self, authz_id: &str) -> Result<(), ApiError> {
+        if self.can_read(authz_id).await? {
+            Ok(())
+        } else {
+            Err(ApiError::forbidden_with("missing read permission"))
+        }
     }
 }
