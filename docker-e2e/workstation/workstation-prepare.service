@@ -1,0 +1,15 @@
+[Unit]
+Description=Stage the knife config from the seed hand-over
+Documentation=file:/shared/seed-summary.txt
+Wants=network-online.target
+After=network-online.target network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/workstation-prepare
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
