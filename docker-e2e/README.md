@@ -126,11 +126,15 @@ docker compose exec workstation opencode
 `knife cookbook list`, and the other commands work without a `-c` flag or a
 `--server-url`. Exec sessions start in `/work`, where OpenCode picks up
 `opencode.json`. It needs a model provider once; the login is kept in the
-`workstation-opencode-config` volume:
+`workstation-opencode` volume:
 
 ```sh
 docker compose exec workstation opencode auth login
 ```
+
+The container's PID 1 stays root because systemd needs it, but `opencode` drops
+to the unprivileged `dev` user (uid 1000), which owns `/home/dev` and the staged
+knife config. `knife` works from both a root session and `su dev`.
 
 Check the MCP connection with `docker compose exec workstation opencode mcp list`.
 
