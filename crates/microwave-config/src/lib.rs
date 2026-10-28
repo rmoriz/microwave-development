@@ -7,5 +7,5 @@ pub use config::{
     DataCollectorStore, DatabaseConfig, DatabaseDriver, KeygenConfig, LicenseConfig, MailAuth,
     MailConfig, MailSecurity, McpConfig, McpOrgConfig, ObjectStoreBackend, ObjectStoreConfig,
     PathsConfig, RequiredRecipeConfig, SearchBackend, SearchConfig, ServerConfig,
-    StorageCompression, StorageConfig, TelemetryConfig, TlsConfig,
+    StorageCompression, StorageConfig, TelemetryConfig, TlsConfig, valid_org_name,
 };

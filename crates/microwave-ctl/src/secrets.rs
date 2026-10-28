@@ -45,6 +45,7 @@ pub(crate) const KNOWN_CREDENTIALS: &[(&str, &[&str])] = &[
     ("opscode-reporting", &["sql_password", "sql_ro_password"]),
     ("drbd", &["shared_secret"]),
     ("keepalived", &["vrrp_instance_password"]),
+    ("mcp", &[]),
 ];
 
 /// Store a secret. The value is never echoed back to the terminal.
@@ -117,6 +118,14 @@ fn validate_credential(group: &str, name: &str) -> Result<(), CtlError> {
         )));
     };
 
+    if group == "mcp" {
+        return microwave_config::valid_org_name(name).then_some(()).ok_or_else(|| {
+            CtlError::message(format!(
+                "invalid organization name '{name}' for the mcp credential group"
+            ))
+        });
+    }
+
     if names.contains(&name) {
         Ok(())
     } else {
@@ -124,5 +133,19 @@ fn validate_credential(group: &str, name: &str) -> Result<(), CtlError> {
             "unknown credential '{name}' in group '{group}'; known names: {}",
             names.join(", ")
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_credential;
+
+    #[test]
+    fn mcp_group_accepts_org_names_and_rejects_bad_names() {
+        assert!(validate_credential("mcp", "acme").is_ok());
+        assert!(validate_credential("mcp", "team-1").is_ok());
+        assert!(validate_credential("mcp", "Acme").is_err());
+        assert!(validate_credential("mcp", "").is_err());
+        assert!(validate_credential("mcp", "with/slash").is_err());
     }
 }

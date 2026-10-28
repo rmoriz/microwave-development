@@ -560,7 +560,7 @@ fn has_non_empty(value: Option<&str>) -> bool {
 /// Chef organization names (and therefore `server.default_orgname`) must start
 /// with a lowercase ASCII letter or digit and contain only lowercase letters,
 /// digits, `_` and `-`, up to 255 bytes.
-fn valid_org_name(name: &str) -> bool {
+pub fn valid_org_name(name: &str) -> bool {
     let mut characters = name.chars();
     let Some(first) = characters.next() else {
         return false;
