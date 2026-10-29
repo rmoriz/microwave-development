@@ -100,7 +100,7 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
     cargo build --release --locked --bins
 fi
 
-BINARIES=(microwave-server microwave-ctl chef-server-ctl microwave-migrate)
+BINARIES=(microwave-server microwave-ctl microwave-migrate)
 for binary in "${BINARIES[@]}"; do
     if [ ! -x "$TARGET_DIR/release/$binary" ]; then
         echo "error: missing $TARGET_DIR/release/$binary (run without --skip-build)" >&2
