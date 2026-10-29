@@ -51,7 +51,7 @@ by the existing specs and `crates/` layout, one section further down.
 
 ## Constraints
 
-- `docs/claims.toml` pins 65 README sentences by `needle`. Every reworded
+- `docs/claims.toml` pins every README sentence by `needle`. Every reworded
   pinned sentence updates its needle; a pin whose sentence survives keeps its
   text unchanged. No verify gets weaker, and `manual` totals stay `manual`.
 - New load-bearing sentences get their own claims with real `file`/`grep`

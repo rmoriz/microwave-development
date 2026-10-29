@@ -328,6 +328,16 @@ surfaces = [
 verify = { kind = "grep", path = "docs/deployment.md", pattern = "Without the flag `from-api` remains metadata-only" }
 
 [[claim]]
+id = "readme-migrate-knife-gaps"
+summary = "README: the knife importer carries no cookbook artifacts, policies or policy groups, or OAuth applications."
+area = "migration"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "no cookbook artifacts, no policies or policy groups" },
+]
+verify = { kind = "grep", path = "docs/deployment.md", pattern = "cookbook artifacts/policies/policy groups, OAuth applications" }
+
+[[claim]]
 id = "readme-migrate-no-password-hashes"
 summary = "README: the legacy API cannot return password hashes or the admin flag."
 area = "migration"

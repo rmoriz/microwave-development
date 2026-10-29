@@ -29,7 +29,7 @@ A Rust reimplementation of the Chef Infra Server API, designed as a drop-in repl
 
 ## Try it in five minutes
 
-You need Rust, a `chef-client` 18+ binary (or `MW_E2E_CHEF_CLIENT` pointing at one), and Ruby with `mixlib-authentication` (or `MW_E2E_RUBY`). A missing piece exits `2` and names itself.
+You need Rust, curl, a `chef-client` 18+ binary (or `MW_E2E_CHEF_CLIENT` pointing at one), and Ruby with `mixlib-authentication` (or `MW_E2E_RUBY`). A missing piece exits `2` and names itself.
 
 ```sh
 scripts/run-chef-client-e2e.sh
