@@ -81,6 +81,15 @@ test('compatibility, under the hood, and known gaps', () => {
   }
 });
 
+test('known gaps link to catalogued claims', () => {
+  const claims = fs.readFileSync(path.resolve(root, '../../docs/claims.toml'), 'utf8');
+  const ids = $('.gaps-list a')
+    .map((_, a) => $(a).attr('href').split('#')[1])
+    .get();
+  assert.ok(ids.length >= 7, 'every known gap carries a claim link');
+  for (const id of ids) assert.match(claims, new RegExp(`id = "${id}"`));
+});
+
 test('migration, support, and FAQ', () => {
   const text = $('body').text();
   assert.match(text, /knife ec backup/i);

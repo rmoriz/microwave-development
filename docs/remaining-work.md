@@ -2,7 +2,7 @@
 
 # Remaining work
 
-Open gaps: 3 (deployment: 1, ha: 1, docs: 1)
+Open gaps: 10 (deployment: 1, migration: 2, mail: 1, search: 1, ha: 2, auth: 1, tooling: 1, docs: 1)
 
 <a id="area-deployment"></a>
 
@@ -14,9 +14,51 @@ Open gaps: 3 (deployment: 1, ha: 1, docs: 1)
 
 - `docker-compose.yml`
 
+<a id="area-migration"></a>
+
+## Migration
+
+<a id="gap-chef-server-rb-importer"></a>
+
+**gap-chef-server-rb-importer** — No automatic chef-server.rb importer exists.
+
+- `website/homepage/src/components/KnownGaps.astro`
+
+<a id="gap-from-api-credentials"></a>
+
+**gap-from-api-credentials** — The live legacy API crawler cannot copy password hashes or the admin flag.
+
+- `website/homepage/src/components/KnownGaps.astro`
+
+<a id="area-mail"></a>
+
+## Mail
+
+<a id="gap-mail-outbox"></a>
+
+**gap-mail-outbox** — Only password-reset email exists; there is no invitation mail or durable outbox.
+
+- `website/homepage/src/components/KnownGaps.astro`
+
+<a id="area-search"></a>
+
+## Search
+
+<a id="gap-embedded-search-index"></a>
+
+**gap-embedded-search-index** — Embedded search is a relational scan, not an inverted index.
+
+- `website/homepage/src/components/KnownGaps.astro`
+
 <a id="area-ha"></a>
 
 ## Ha
+
+<a id="gap-multi-replica-ha"></a>
+
+**gap-multi-replica-ha** — Multi-replica HA and automated failover are not validated.
+
+- `website/homepage/src/components/KnownGaps.astro`
 
 <a id="ha-compose-sqlite-metadata"></a>
 
@@ -24,6 +66,26 @@ Open gaps: 3 (deployment: 1, ha: 1, docs: 1)
 
 - `docker-compose.ha.yml`
 - `docker-compose.ha.yml`
+
+<a id="area-auth"></a>
+
+## Auth
+
+<a id="gap-ldap-fips"></a>
+
+**gap-ldap-fips** — No LDAP/AD bind and no FIPS-validated crypto mode.
+
+- `website/homepage/src/components/KnownGaps.astro`
+
+<a id="area-tooling"></a>
+
+## Tooling
+
+<a id="gap-mcp-audit"></a>
+
+**gap-mcp-audit** — MCP is experimental: no durable audit table, per-tool scopes, or token expiry.
+
+- `website/homepage/src/components/KnownGaps.astro`
 
 <a id="area-docs"></a>
 

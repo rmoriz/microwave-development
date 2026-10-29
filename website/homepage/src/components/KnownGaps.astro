@@ -2,13 +2,34 @@
 import { site } from '../data/site';
 
 const gaps = [
-  'No automatic chef-server.rb importer; configuration is translated with the deployment guide.',
-  'from-api migration cannot copy password hashes or the admin flag; those users need a password reset or an external identity.',
-  'No LDAP/Active Directory bind and no FIPS-validated crypto mode.',
-  'Embedded search is a relational scan, not an inverted index; larger installations should use OpenSearch or Elasticsearch.',
-  'Multi-replica HA and automated failover are not validated.',
-  'Only password-reset email is implemented; there is no invitation mail or durable outbox.',
-  'MCP is experimental: no durable audit table, no per-tool scopes or token expiry, and no UI. Tool calls are only structured log lines. Remote agents need allowed_hosts and a reverse-proxy review.',
+  {
+    text: 'No automatic chef-server.rb importer; configuration is translated with the deployment guide.',
+    claim: 'gap-chef-server-rb-importer',
+  },
+  {
+    text: 'from-api migration cannot copy password hashes or the admin flag; those users need a password reset or an external identity.',
+    claim: 'gap-from-api-credentials',
+  },
+  {
+    text: 'No LDAP/Active Directory bind and no FIPS-validated crypto mode.',
+    claim: 'gap-ldap-fips',
+  },
+  {
+    text: 'Embedded search is a relational scan, not an inverted index; larger installations should use OpenSearch or Elasticsearch.',
+    claim: 'gap-embedded-search-index',
+  },
+  {
+    text: 'Multi-replica HA and automated failover are not validated.',
+    claim: 'gap-multi-replica-ha',
+  },
+  {
+    text: 'Only password-reset email is implemented; there is no invitation mail or durable outbox.',
+    claim: 'gap-mail-outbox',
+  },
+  {
+    text: 'MCP is experimental: no durable audit table, no per-tool scopes or token expiry, and no UI. Tool calls are only structured log lines. Remote agents need allowed_hosts and a reverse-proxy review.',
+    claim: 'gap-mcp-audit',
+  },
 ];
 ---
 <section class="section gaps-section reveal">
@@ -26,7 +47,13 @@ const gaps = [
     </div>
 
     <ul class="gaps-list">
-      {gaps.map((gap) => <li>{gap}</li>)}
+      {gaps.map((gap) => (
+        <li>
+          <a href={`${site.github}/blob/main/docs/remaining-work.md#${gap.claim}`}>
+            {gap.text} <span aria-hidden="true">↗</span>
+          </a>
+        </li>
+      ))}
     </ul>
   </div>
 </section>
