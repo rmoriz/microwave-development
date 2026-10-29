@@ -13,3 +13,4 @@
 
 # Superpowers SDD workspaces (scratch)
 /.superpowers/
+__pycache__/

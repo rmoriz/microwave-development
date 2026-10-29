@@ -16,7 +16,7 @@ The repository contains a working vertical slice:
 - **HTTP API** — `/_status`, `/_stats`, `/server_api_version`, `/license`, users, organizations, clients, principals, key management, organization memberships/invitations, nodes, node `_identifiers`, environments, environment recipes, roles (including environment run lists), data bags, sandboxes, bookshelf uploads, cookbooks, cookbook resolution, policyfiles/policy groups, ACL endpoints, signed-request validation (`/validate/*`), search (node/role/environment/client/data-bag indexes with a query subset and partial search), data-collector forwarding and opt-in mutation action notifications, the compliance profile proxy, the removed analytics `controls` endpoint (`410 Gone`), and the optional server-enforced `required_recipe` endpoint. `/validate/*` and `_identifiers` are internal upstream APIs that Chef Server only routes on its internal listener; Microwave exposes them on the main listener to signed organization members, so restrict them at the reverse proxy if the upstream network split is required.
 - **Operations CLI** — `microwave-ctl` with a `chef-server-ctl` compatibility binary: user/org administration (`user-create`, `user-list`, `user-show`, `user-delete`, `user-edit`), server-admin grant/remove/list, org membership, password reset, key rotation (add/list/delete user and client keys), service credential rotation (`rotate-credentials`, `rotate-all-credentials`, `rotate-shared-secrets`), secrets management, OAuth application inspection (`oc-id-show-app`), filtered metadata dumps (`filtered-dump`), diagnostic log bundles (`gather-logs`), orphan authorization cleanup (`cleanup-bifrost`), maintenance state, `check-config`, `reconfigure`, `ha-status`, `psql`, status, directory or tar backup/restore, `reindex` (embedded count verification or a remote OpenSearch/Elasticsearch backfill), the `oc-chef-pedant` runner, systemd service management with a container-friendly `service start --foreground` mode, and `migrate-from-legacy` snapshot import. The same data commands work against either configured metadata backend.
 - **Migration** — `microwave-migrate` exports a versioned JSON snapshot from SQLite or PostgreSQL (users with password hashes, organizations, clients, keys, authz ACLs, nodes, roles, environments, data bags, checksums, cookbooks, policies, OAuth applications/grants/tokens, telemetry, explicit/empty sandboxes, and `kvpair`) and imports it into either backend with original ids, authz ids, timestamps, hashes, keys, and token state intact. Default exports redact secrets; `--include-secrets` includes `kvpair`, OAuth grants/tokens, and OAuth application secrets, while the independent `--include-private-keys` adds explicit on-disk key/certificate material (`pivotal.pem`, `pivotal.password`, `objectstore.secret`, private-chef secrets, WebUI/oc-id keys, and configured TLS files) under `secrets/` with a manifest. `--archive PATH.tar.gz` adds local `bookshelf/` blobs with tar allowlist, traversal, symlink, absolute-path, and special-file rejection; import is confirmation-gated, restores private files mode `0600`, refuses existing keys or an empty-over-populated bookshelf without `--force`, supports `--secrets-dir`, and pre-stages private files before database changes. Data-dir private manifest entries are limited to the fixed export filename allowlist, telemetry merges without deleting target-local events, and partial-secret imports warn. Use both secret flags for a truly complete self-migration. Snapshots always contain decoded plain JSON even when the database stores compressed values. PostgreSQL imports also advance the sequence-backed identifiers. The live legacy API crawler (`from-api`) is implemented and can copy cookbook file blobs into a local object-store tree with `--bookshelf-dir` (64 MiB per blob, 4 GiB per crawl, checksum-verified and idempotent); without the flag it remains metadata-only. `import-knife-backup` imports a `knife ec backup` directory directly — users, password/key dumps, organizations, memberships, clients, containers, groups, nodes, roles, environments, data bags, ACLs, and ChefFS cookbooks with MD5 addressed blobs — without an HTTP server. With an explicit `--secrets-dir` or `--secrets-archive` it also copies server-owned private material (`pivotal.pem`/`pivotal.password`, web UI keys, `objectstore.secret`, `private-chef-secrets.json`, TLS certificate/key including Chef `nginx/ca/<fqdn>.crt|.key`, and CA files) with overwrite protection, modes, archive validation, staged/rollback writes, and no content logging. Chef client/user private keys are never stored server-side and stay client-owned. `--merge-users` reuses an existing same-named target user (including a bootstrapped `pivotal`) while preserving target credentials/profile/default keys unless `--replace-user-credentials` is given; merged users are reconciled into `server-admins` according to their final admin flag, and replacement removes a target default key the backup does not supply. `--replace-acls` removes revoked grants and membership for groups actually present in the backup, restoring prior ACL state if the import fails. The command supports `--dry-run` and requires `--yes` for non-interactive writes.
-- **MCP endpoint (experimental)** — opt-in Streamable HTTP endpoint at `/organizations/<org>/mcp` with a per-organization bearer token (configuration file or the `mcp` secret group) and 11 read plus 8 write tools covering nodes, environments, cookbooks, and locally stored run reports. Disabled by default; see [`docs/mcp.md`](docs/mcp.md).
+- **MCP endpoint (experimental)** — opt-in Streamable HTTP endpoint at `/organizations/<org>/mcp`, disabled by default, with a per-organization bearer token (configuration file or the `mcp` secret group) and 11 read plus 8 write tools covering nodes, environments, cookbooks, and locally stored run reports. The eight write tools are registered unless the organization sets `writes = false`, which hides them and makes the endpoint read-only. See [`docs/mcp.md`](docs/mcp.md).
 - **Configuration migration** — There is no automatic `chef-server.rb` importer. Translate `/etc/opscode/chef-server.rb` to TOML/`MW_*` using `docs/deployment.md` section 10; data and key material can be migrated with the tools above.
 - **OAuth/identity** — `/id` sign-in/sessions, OAuth application management, authorization-code and refresh-token flows, `/id/v1/me`, `/id/v1/me/organizations`, `/id/v1/status`, profile/password/key regeneration, password-reset tokens, and password-reset email via SMTP.
 - **Mail** — optional outbound SMTP for password-reset email (`[mail]` / `MW_MAIL__*`), with STARTTLS or implicit TLS for remote relays, AUTH PLAIN/LOGIN/auto, and bounded asynchronous dispatch. Disabled by default; enabling it requires `server.public_url`. Email-change verification and invitation mail are not implemented.
@@ -24,7 +24,10 @@ The repository contains a working vertical slice:
 - **External backends** — S3/Garage object storage with SigV4 signing and presigned URLs, and OpenSearch/Elasticsearch search with bulk indexing and query translation. The local object store and embedded search remain the defaults.
 - **Server** — `microwave-server serve` selects the configured metadata backend, bootstraps a `pivotal` superuser and listens on the configured address. It serves plain HTTP by default and HTTPS directly when `server.tls.cert_path` and `server.tls.key_path` are configured. `serve --check` initializes/migrates the backend and prints its type without exposing credentials.
 
-Testing and formatting are green, and a strict stock `chef-client` converge passes without compatibility shims (`MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0`):
+Testing and formatting are green locally, and the required PR gate runs the same
+suites: `.github/workflows/ci.yml` (`fmt`, `clippy`, `test`, `claims`,
+`homepage`) and `.github/workflows/postgres.yml` (`postgres`). A strict stock
+`chef-client` converge passes without compatibility shims (`MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0`):
 
 ```sh
 cargo test --workspace
@@ -181,6 +184,10 @@ Packaging artifacts: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
 built with [`scripts/build-deb.sh`](scripts/build-deb.sh); see
 [`docs/debian-package.md`](docs/debian-package.md).
 
+Pushing a `v*` tag builds release binaries for linux/amd64, linux/arm64, and
+macOS/arm64 in `.github/workflows/release.yml` and attaches them, with SHA-256
+checksums, to the GitHub release.
+
 The image default command is the supported container entrypoint:
 
 ```sh
@@ -230,9 +237,9 @@ The first `oc-chef-pedant` run is recorded in [`docs/pedant-report.md`](docs/ped
 | nodes | 326 | 0 | 5 |
 | **Total** | **651** | **1** | **8** |
 
-The harness is `scripts/run-pedant.sh`. Users, organizations, clients, and nodes now pass with zero failures in this tag set. The only failure is the known plain-HTTP `headers` artifact; the 8 pending examples are pedant's own skips.
+The harness is `scripts/run-pedant.sh`. Users, organizations, clients, and nodes pass with zero failures in this tag set. The only core-set failure was the plain-HTTP `headers` artifact, which is fixed at the harness instead of an allowlist; see `docs/pedant-report.md`. The 8 pending examples are pedant's own skips.
 
-Extended suites (final, full `all` run): **3,284 passed / 0 failed / 7 pending**. All twelve extended tags are green; core plus extended reports only the known plain-HTTP `headers` artifact.
+Extended suites (final, full `all` run): **3,284 passed / 0 failed / 7 pending**. All twelve extended tags are green.
 
 See `docs/superpowers/specs/2026-10-24-microwave-server-design.md` and `TODO.md` for the full target and remaining work.
 
@@ -244,6 +251,7 @@ See `docs/superpowers/specs/2026-10-24-microwave-server-design.md` and `TODO.md`
 | `chef/` | Vendored upstream client `19.4.47` source snapshot (commit `46354347bc125edc98c5f080ca2592d55ec0e4bc`). |
 | `crates/` | Rust workspace crates. |
 | `bin/` | Server and compatibility binaries. |
+| `.github/workflows/` | Pull-request, PostgreSQL, and nightly pedant gates. |
 | `docs/superpowers/specs/` | Architecture and design specifications. |
 | `packaging/` | systemd unit, Debian package metadata, example configuration, Garage config/bootstrap for Compose. |
 | `TODO.md` | Master implementation checklist. |
