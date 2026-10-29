@@ -1,0 +1,52 @@
+name: postgres
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: postgres-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  postgres:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: microwave_test
+          POSTGRES_USER: microwave
+          POSTGRES_PASSWORD: microwave
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U microwave -d microwave_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # ubuntu-24.04 ships PostgreSQL 16; the client tools must match the 18
+      # server, so take them from the PGDG repository.
+      - name: Install matching PostgreSQL client tools
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client-18
+      - name: Run the PostgreSQL contract and parity suites
+        env:
+          MICROWAVE_REQUIRE_POSTGRES: "1"
+          MICROWAVE_TEST_POSTGRES_URL: postgres://microwave:microwave@localhost:5432/microwave_test
+        run: scripts/run-postgres-tests.sh
