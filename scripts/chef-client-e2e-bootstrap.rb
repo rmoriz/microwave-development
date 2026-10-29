@@ -28,7 +28,7 @@ NODE_NAME = ENV.fetch("MW_E2E_NODE_NAME", "mw-e2e-node")
 COOKBOOK = ENV.fetch("MW_E2E_COOKBOOK", "mw_e2e")
 COOKBOOK_VERSION = ENV.fetch("MW_E2E_COOKBOOK_VERSION", "0.1.0")
 MARKER = ENV.fetch("MW_E2E_MARKER")
-COMPAT = ENV.fetch("MW_E2E_COMPAT", "1") == "1"
+COMPAT = ENV.fetch("MW_E2E_COMPAT", "0") == "1"
 SYNTH_V2 = ENV.fetch("MW_E2E_SYNTH_V2", "1") == "1"
 
 SUPERUSER_KEY = OpenSSL::PKey::RSA.new(File.read(SUPERUSER_KEY_PATH))
@@ -198,7 +198,7 @@ if env_status == 403 && COMPAT
   )
   warn "bootstrap: server gap: default environment ACL did not allow clients; granted read to the clients group"
 elsif env_status == 403
-  warn "bootstrap: default environment read is 403 and MW_E2E_COMPAT=0; the chef-client run is expected to fail"
+  warn "bootstrap: default environment read is 403; the server does not grant clients read. Set MW_E2E_COMPAT=1 to provision the ACE, or the converge will fail"
 end
 
 # 4. Build the cookbook on disk.
@@ -401,7 +401,7 @@ if solve_status == 200 && !v2_ready?(solution) && COMPAT && SYNTH_V2
   )
   warn "bootstrap: server gap: API v2 cookbook_versions response had no all_files; uploaded a synthesized v2 manifest #{COOKBOOK}-#{v2_version}"
 elsif solve_status == 200 && !v2_ready?(solution) && COMPAT
-  warn "bootstrap: server gap: API v2 cookbook_versions response had no all_files; v2 synthesis is disabled (MW_E2E_SYNTH_V2=0)"
+  warn "bootstrap: server gap: API v2 cookbook_versions response had no all_files; set MW_E2E_COMPAT=1 MW_E2E_SYNTH_V2=1 to enable it"
 end
 
 if solve_status != 200

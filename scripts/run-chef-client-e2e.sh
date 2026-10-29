@@ -23,11 +23,11 @@
 #   MW_E2E_PREFER_VENDORED 1 to prefer the vendored chef checkout when a
 #                          bundle is already installed (default: 0)
 #   MW_E2E_BUNDLE_PATH     bundle path for the vendored chef checkout
-#   MW_E2E_COMPAT          1 (default) to provision around known server gaps,
-#                          0 for a strict stock-server run
+#   MW_E2E_COMPAT          1 to provision around known server gaps, 0 (default)
+#                          to use the server's own responses like a stock
+#                          chef-server
 #   MW_E2E_SYNTH_V2        1 (default) to synthesize an API v2 manifest when
-#                          the server returns only the v0 shape; 0 to reproduce
-#                          the stock chef-client v2 failure
+#                          compat is on and the server returns only the v0 shape
 #   MW_E2E_REGISTER        1 (default) to also run a validator-registration
 #                          converge; 0 to skip it
 #   MW_SKIP_BUILD          1 to reuse target/debug/microwave-server
@@ -55,7 +55,7 @@ NODE_NAME="${MW_E2E_NODE_NAME:-mw-e2e-node}"
 COOKBOOK="${MW_E2E_COOKBOOK:-mw_e2e}"
 COOKBOOK_VERSION="${MW_E2E_COOKBOOK_VERSION:-0.1.0}"
 MARKER="$ARTIFACTS/marker.txt"
-COMPAT="${MW_E2E_COMPAT:-1}"
+COMPAT="${MW_E2E_COMPAT:-0}"
 
 SERVER_PID=""
 cleanup() {
@@ -271,7 +271,11 @@ fi
   echo "node: $NODE_NAME"
   echo "marker: $MARKER"
   echo "compat: $COMPAT"
-  echo "v2 synthesis: ${MW_E2E_SYNTH_V2:-1}"
+  if [[ "$COMPAT" == "1" ]]; then
+    echo "v2 synthesis: ${MW_E2E_SYNTH_V2:-1}"
+  else
+    echo "v2 synthesis: off unless MW_E2E_COMPAT=1"
+  fi
   echo "validator registration: ${MW_E2E_REGISTER:-1}"
   echo "capabilities: $(tr -d '\n' < "$ARTIFACTS/capabilities.json")"
 } >"$ARTIFACTS/summary.txt"

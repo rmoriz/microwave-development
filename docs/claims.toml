@@ -1828,3 +1828,11 @@ area = "docs"
 status = "manual"
 surfaces = [ { path = "docs/pedant-extended-report.md", needle = "3,284 passed / 0 failed / 7 pending" } ]
 verify = { kind = "manual", ref = "docs/pedant-extended-report.md", checked = 2026-10-29 }
+
+[[claim]]
+id = "e2e-harness-stock-default"
+summary = "The chef-client e2e harness runs stock by default; MW_E2E_COMPAT=1 opts into its provisioning shims."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "scripts/run-chef-client-e2e.sh", needle = "MW_E2E_COMPAT          1 to provision" } ]
+verify = { kind = "grep", path = "scripts/run-chef-client-e2e.sh", pattern = "MW_E2E_COMPAT:-0" }

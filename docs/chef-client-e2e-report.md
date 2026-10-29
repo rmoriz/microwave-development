@@ -8,6 +8,11 @@ Bootstrap: `scripts/chef-client-e2e-bootstrap.rb`
 
 > **Post-merge status (2026-10-24):** the two gaps below are fixed. A strict run with `MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0` now **PASSES**: `environment_read_status=200`, `environment_acl_granted=false`, `v2_solve_status=200`, `v2_all_files=true`, `v2_synthesized=false`, and validator registration succeeds. The bootstrap now sends the upstream-required `name: <cookbook>-<version>`. The historical pre-fix report below is retained for context.
 
+> **Default flipped (2026-10-29):** the harness now runs stock by default
+> (`MW_E2E_COMPAT=0`, stock behaviour as shipped by chef-server) and
+> `MW_E2E_COMPAT=1` re-enables both provisioning steps. The table below records
+> the 2026-10-24 run under the then-default compatibility mode.
+
 ## Verdict
 
 A real `chef-client` converge succeeds end-to-end against `microwave-server`
