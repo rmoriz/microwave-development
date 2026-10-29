@@ -105,7 +105,7 @@ microwave-migrate import-knife-backup \
   --yes
 ```
 
-Neither path is lossless. A `from-api` crawl without `--bookshelf-dir` keeps metadata only, and the
+Neither path is lossless. A metadata-only `from-api` crawl does not copy cookbook blobs, and the
 legacy API cannot return password hashes or the `admin` flag: crawled users start without a password,
 with admin off, and need a password reset or an external identity provider. The knife importer carries
 no cookbook artifacts, no policies or policy groups, and no OAuth applications; no migration path
@@ -119,8 +119,6 @@ test organization and drain clients over gradually.
 runbook, the `chef-server.rb` translation table, and the knife importer's exact supported subset.
 
 ## Status
-
-The repository contains a working vertical slice:
 
 - **Configuration** — TOML plus `MW_*` environment overrides, including an optional TLS listener.
 - **Authentication** — `X-Ops-Sign` 1.0/1.1/1.3 canonicalization, RSA signing/verification, key reassembly, and legacy password hash compatibility.
@@ -141,7 +139,7 @@ The repository contains a working vertical slice:
 Testing and formatting are green locally, and the required PR gate runs the same
 suites: `.github/workflows/ci.yml` (`fmt`, `clippy`, `test`, `claims`,
 `homepage`) and `.github/workflows/postgres.yml` (`postgres`). A strict stock
-`chef-client` converge passes without compatibility shims (`MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0`):
+`chef-client` converge passes without compatibility shims:
 
 ```sh
 cargo test --workspace
@@ -179,8 +177,6 @@ listener; a failed reload keeps the previous certificate. Set
 `server.tls.reload_interval_seconds` to poll the files instead. A load balancer
 or reverse proxy terminating TLS in front of plain HTTP remains fully supported;
 see [`docs/deployment.md`](docs/deployment.md#tls-listener).
-
-The full workspace suite is green.
 
 ### Mail (SMTP)
 
@@ -334,9 +330,15 @@ supported as a `command:`/`docker run` override.
 
 ## Remaining Work
 
+The open inventory is generated under [Known gaps](#known-gaps); this section keeps the pedant record.
+
 ### Pedant Compatibility
 
-The first `oc-chef-pedant` run is recorded in [`docs/pedant-report.md`](docs/pedant-report.md). Baseline for the five tags run:
+The first `oc-chef-pedant` run is recorded in [`docs/pedant-report.md`](docs/pedant-report.md). The
+core set now stands at 652 passed / 0 failed / 8 pending of 660, after the plain-HTTP `headers`
+artifact was fixed at the harness; the same report records the extended suites.
+
+The table below is the dated 2026-10-24 baseline, taken before that harness fix:
 
 | Tag | Passed | Failed | Pending |
 | --- | ---: | ---: | ---: |
@@ -349,7 +351,7 @@ The first `oc-chef-pedant` run is recorded in [`docs/pedant-report.md`](docs/ped
 
 The harness is `scripts/run-pedant.sh`. Users, organizations, clients, and nodes pass with zero failures in this tag set. The only core-set failure was the plain-HTTP `headers` artifact, which is fixed at the harness instead of an allowlist; see `docs/pedant-report.md`. The 8 pending examples are pedant's own skips.
 
-Extended suites (final, full `all` run): **3,284 passed / 0 failed / 7 pending**. All twelve extended tags are green.
+Extended suites (final, full `all` run): **3,284 passed / 0 failed / 7 pending of 3,291**. All twelve extended tags are green.
 
 See `docs/superpowers/specs/2026-10-24-microwave-server-design.md` and `TODO.md` for the full target and remaining work.
 

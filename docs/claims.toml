@@ -37,7 +37,7 @@ verify = { kind = "grep", path = "packaging/microwave.toml.example", pattern = "
 
 [[claim]]
 id = "readme-remaining-work-generated"
-summary = "The README Remaining Work section is generated from docs/claims.toml."
+summary = "The README open-inventory block under Known gaps is generated from docs/claims.toml."
 area = "docs"
 status = "verified"
 surfaces = [ { path = "README.md", needle = "generated:remaining-work:start" } ]
@@ -114,7 +114,7 @@ verify = { kind = "grep", path = "scripts/run-chef-client-e2e.sh", pattern = "MA
 
 [[claim]]
 id = "readme-quickstart-compat-optin"
-summary = "README: MW_E2E_COMPAT=1 re-enables the provisioning steps."
+summary = "README: `MW_E2E_COMPAT=1` is the documented compat opt-in."
 area = "tooling"
 status = "verified"
 surfaces = [
@@ -779,7 +779,7 @@ verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-29 
 
 [[claim]]
 id = "readme-pedant-core-totals"
-summary = "The core tag baseline is 652 passed / 0 failed / 8 pending of 660."
+summary = "The current core figure is 652 passed / 0 failed / 8 pending of 660, after the plain-HTTP `headers` artifact was fixed at the harness; the 651 table is the dated 2026-10-24 pre-fix baseline."
 area = "docs"
 status = "manual"
 surfaces = [
@@ -793,7 +793,7 @@ summary = "The extended suites finished at 3,284 passed / 0 failed / 7 pending o
 area = "docs"
 status = "manual"
 surfaces = [
-  { path = "README.md", needle = "3,284 passed / 0 failed / 7 pending" },
+  { path = "README.md", needle = "3,284 passed / 0 failed / 7 pending of 3,291" },
 ]
 verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-29 }
 
