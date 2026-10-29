@@ -67,3 +67,11 @@ http = "1"
 schemars = "1"
 rmcp = { version = "3.8", features = ["transport-streamable-http-server"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }
+
+# Release binaries ship in tarballs, the Debian package and the container image,
+# where debug symbols are dead weight: stripping alone takes roughly a fifth off
+# each binary. Thin LTO recovers most of the cross-crate inlining a single
+# codegen unit would give, at a fraction of the build time.
+[profile.release]
+strip = "symbols"
+lto = "thin"
