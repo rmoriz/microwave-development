@@ -1,4 +1,5 @@
 import tempfile, unittest
+from datetime import date
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -50,3 +51,63 @@ class RenderTest(unittest.TestCase):
     def test_replace_block_requires_markers(self):
         with self.assertRaises(ValueError):
             claims_lib.replace_block("no markers\n", "NEW")
+
+
+class ValidateTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "docs").mkdir()
+        (self.root / "docs" / "a.md").write_text("PostgreSQL is available.\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def claim(self, **over):
+        base = dict(id="x", summary="s", area="docs", status="verified",
+                    surfaces=[claims_lib.Surface("docs/a.md", "PostgreSQL")],
+                    verify=claims_lib.Verify(kind="grep", path="docs/a.md", pattern="PostgreSQL"))
+        base.update(over)
+        return claims_lib.Claim(**base)
+
+    def test_valid_claim_passes(self):
+        self.assertEqual(claims_lib.validate([self.claim()], self.root, date(2026, 10, 28)), [])
+
+    def test_missing_needle_is_reported(self):
+        claim = self.claim(surfaces=[claims_lib.Surface("docs/a.md", "SQLite")])
+        self.assertIn("docs/a.md:x:", claims_lib.validate([claim], self.root, date(2026, 10, 28))[0])
+
+    def test_duplicate_id_is_reported(self):
+        errors = claims_lib.validate([self.claim(), self.claim()], self.root, date(2026, 10, 28))
+        self.assertTrue(any("duplicate" in e for e in errors))
+
+    def test_path_escape_is_reported(self):
+        claim = self.claim(verify=claims_lib.Verify(kind="file", path="../outside"))
+        self.assertTrue(any("outside" in e for e in claims_lib.validate([claim], self.root, date(2026, 10, 28))))
+
+    def test_manual_claim_expires_after_ninety_days(self):
+        claim = self.claim(status="manual",
+                           verify=claims_lib.Verify(kind="manual", checked=date(2026, 7, 29), ref="docs/a.md"))
+        errors = claims_lib.validate([claim], self.root, date(2026, 10, 28))
+        self.assertTrue(any("expired" in e for e in errors))
+
+    def test_fresh_manual_claim_passes(self):
+        claim = self.claim(status="manual",
+                           verify=claims_lib.Verify(kind="manual", checked=date(2026, 10, 28), ref="docs/a.md"))
+        self.assertEqual(claims_lib.validate([claim], self.root, date(2026, 10, 28)), [])
+
+    def test_missing_verify_target_is_reported(self):
+        claim = self.claim(verify=claims_lib.Verify(kind="file", path="docs/missing.md"))
+        self.assertTrue(any("missing.md" in e for e in claims_lib.validate([claim], self.root, date(2026, 10, 28))))
+
+    def test_uncovered_doc_is_reported(self):
+        (self.root / "docs" / "b.md").write_text("x\n")
+        self.assertIn("docs/b.md", claims_lib.coverage_gaps([self.claim()], self.root))
+
+    def test_link_to_unknown_id_is_reported(self):
+        (self.root / "README.md").write_text("see remaining-work.md#nope\n")
+        self.assertIn("nope", claims_lib.link_errors([self.claim()], self.root)[0])
+
+    def test_render_check_detects_hand_edit(self):
+        (self.root / "docs" / "remaining-work.md").write_text("stale\n")
+        self.assertTrue(claims_lib.render_errors([self.claim()], self.root))
