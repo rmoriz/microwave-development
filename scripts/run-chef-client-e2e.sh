@@ -79,7 +79,6 @@ require_tool() {
   fi
 }
 
-require_tool cargo "Install Rust with rustup, then run scripts/run-chef-client-e2e.sh again."
 require_tool curl "Install curl, then run scripts/run-chef-client-e2e.sh again."
 if [[ -z "${MW_E2E_RUBY:-}" ]]; then
   require_tool ruby "Install Ruby, or point MW_E2E_RUBY at a Ruby with mixlib-authentication."
@@ -138,6 +137,7 @@ echo "==> artifacts:   $ARTIFACTS"
 
 # ---- Build ------------------------------------------------------------------
 if [[ -z "${MW_SERVER_BIN:-}" && "${MW_SKIP_BUILD:-0}" != "1" ]]; then
+  require_tool cargo "Install Rust with rustup, or set MW_SERVER_BIN to a prebuilt microwave-server."
   echo "==> building microwave-server and microwave-ctl"
   (cd "$ROOT" && cargo build --locked --bin microwave-server --bin microwave-ctl)
 fi

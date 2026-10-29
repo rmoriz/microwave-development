@@ -11,7 +11,8 @@ Bootstrap: `scripts/chef-client-e2e-bootstrap.rb`
 > **Default flipped (2026-10-29):** the harness now runs stock by default
 > (`MW_E2E_COMPAT=0`, stock behaviour as shipped by chef-server) and
 > `MW_E2E_COMPAT=1` re-enables both provisioning steps. The table below records
-> the 2026-10-24 run under the then-default compatibility mode.
+> the 2026-10-29 runs: the stock default, the compatibility opt-in, and the
+> ACL-only variant.
 
 ## Verdict
 
