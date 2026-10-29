@@ -51,6 +51,66 @@ cargo run -p microwave-server -- serve
 The first run writes the superuser credentials to `./data/pivotal.pem`, `./data/pivotal.password`
 and `./data/objectstore.secret`.
 
+## What works
+
+Everything below points at the file in this repository that backs it; nothing here is a roadmap
+promise.
+
+| Surface | Proof |
+| --- | --- |
+| Signed HTTP API — `/_status`, `/_stats`, `/server_api_version`, `/license`, users, organizations, clients, keys, nodes, roles, environments, data bags, sandboxes, cookbooks, policies, ACLs, `/validate/*`, search, data collector, compliance proxy | [`crates/microwave-api/tests/http_parity_test.rs`](crates/microwave-api/tests/http_parity_test.rs) |
+| `X-Ops-Sign` signing — 1.0/1.1/1.3 canonicalization, RSA verification, key reassembly | [`docs/pedant-report.md`](docs/pedant-report.md) |
+| Both metadata backends — SQLite and PostgreSQL behind one store contract | [`crates/microwave-store/tests/dual_backend.rs`](crates/microwave-store/tests/dual_backend.rs) |
+| Operations CLI `microwave-ctl` — user/org administration, key rotation, backup/restore, reindex, diagnostics | [`TODO.md`](TODO.md) |
+| Migration — snapshot import and `knife ec backup` import | [`docs/deployment.md`](docs/deployment.md#10-migration-from-a-legacy-server) |
+| MCP endpoint — `experimental`, off by default, writes off with `writes = false` | [`docs/mcp.md`](docs/mcp.md) |
+
+A stock `chef-client` converge against the result is the end-to-end check: see
+[Try it in five minutes](#try-it-in-five-minutes).
+
+## Known gaps
+
+- No `chef-server.rb` importer. The legacy Ruby configuration is translated by hand; the mapping table is in [`docs/deployment.md`](docs/deployment.md#migrating-configuration-from-etcopscodechef-serverrb).
+- Multi-node HA and automatic failover are not validated. `microwave-ctl ha-status` reports a single node, and the HA Compose file is an evaluation topology rather than a replica set.
+- Embedded search is a relational scan, not an inverted index. It is correct for small and medium organizations and needs no extra service, but it scales linearly; move to OpenSearch or Elasticsearch before a large catalog makes queries hurt.
+
+Everything else that is still open, generated from `docs/claims.toml`:
+
+<!-- generated:remaining-work:start -->
+Open gaps: 18 (migration: 6, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3, docs: 1). By area: [migration](docs/remaining-work.md#area-migration), [mail](docs/remaining-work.md#area-mail), [search](docs/remaining-work.md#area-search), [ha](docs/remaining-work.md#area-ha), [auth](docs/remaining-work.md#area-auth), [tooling](docs/remaining-work.md#area-tooling), [docs](docs/remaining-work.md#area-docs).
+<!-- generated:remaining-work:end -->
+
+## Migrate from Chef Infra Server
+
+The supported route is a snapshot copy, and it runs today. Export a versioned JSON snapshot with
+`microwave-migrate from-api` against the old server (or `microwave-migrate export` from a staging
+installation), then import it into the configured SQLite or PostgreSQL database:
+
+```sh
+microwave-ctl --config /etc/microwave/microwave.toml \
+  migrate-from-legacy --input /var/backups/acme-snapshot.json --yes
+```
+
+If the old server was backed up with `knife ec backup`, `import-knife-backup` reads that directory
+directly, needs no running HTTP server, and writes cookbook blobs into the local object store:
+
+```sh
+microwave-migrate import-knife-backup \
+  --input /var/backups/chef-knife \
+  --data-dir /var/lib/microwave \
+  --yes
+```
+
+Neither path is lossless. The knife importer carries no cookbook artifacts, no policies or policy
+groups, and no OAuth applications; no migration path recovers client or user private keys, because
+the legacy server never stored them. A migration also does not reindex, so remote
+OpenSearch/Elasticsearch documents stay missing until `microwave-ctl reindex` runs afterwards.
+
+Stop the target, import, verify with a `knife` or `chef-client` read against a test organization, and
+only then start the server and drain clients over gradually.
+[`docs/deployment.md` section 10](docs/deployment.md#10-migration-from-a-legacy-server) has the full
+runbook, the `chef-server.rb` translation table, and the knife importer's exact supported subset.
+
 ## Status
 
 The repository contains a working vertical slice:
@@ -266,10 +326,6 @@ supported as a `command:`/`docker run` override.
 - **PostgreSQL operations.** `status`, user/org/key/secret/maintenance commands, `check-config`, `reconfigure`, `ha-status`, `psql`, `backup`, `restore`, `reindex`, and `migrate-from-legacy` all use the configured backend. PostgreSQL `backup` writes `microwave.dump` with `pg_dump --format=custom`; `restore` validates the archive with `pg_restore --list`, prints the target without credentials, compares the archive's source database, and then runs `pg_restore --clean --if-exists --single-transaction`. `restore` is destructive and requires confirmation or `--yes`. PostgreSQL passwords are removed from client-tool command lines; `password` is passed through `PGPASSWORD`, while `sslpassword` is placed in a temporary `0600` libpq service file referenced by `PGSERVICEFILE`/`PGSERVICE`. Environment variables and temporary files may still be observable to the same UID on some platforms. Install `pg_dump`/`pg_restore` on the host. `migrate-from-legacy`, `microwave-migrate import`, and `microwave-migrate import-knife-backup` also ask for confirmation unless `--yes` is given. The knife importer requires an explicit `--bookshelf-dir` with `--database-url` so cookbook blobs are written to a known local object-store root. Commands that need the store apply the embedded schema on connect; `status` and `check-config` use `connect_existing` so read-only probes do not create tables. SQLite backup/restore keeps the existing `VACUUM INTO` and staged-file path.
 
 ## Remaining Work
-
-<!-- generated:remaining-work:start -->
-Open gaps: 18 (migration: 6, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3, docs: 1). By area: [migration](docs/remaining-work.md#area-migration), [mail](docs/remaining-work.md#area-mail), [search](docs/remaining-work.md#area-search), [ha](docs/remaining-work.md#area-ha), [auth](docs/remaining-work.md#area-auth), [tooling](docs/remaining-work.md#area-tooling), [docs](docs/remaining-work.md#area-docs).
-<!-- generated:remaining-work:end -->
 
 ### Pedant Compatibility
 

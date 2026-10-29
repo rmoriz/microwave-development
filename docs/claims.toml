@@ -149,6 +149,7 @@ area = "auth"
 status = "verified"
 surfaces = [
   { path = "README.md", needle = "`X-Ops-Sign` 1.0/1.1/1.3 canonicalization" },
+  { path = "README.md", needle = "`X-Ops-Sign` signing" },
 ]
 verify = { kind = "grep", path = "crates/microwave-crypto/src/auth.rs", pattern = "version=1\\.3" }
 
@@ -169,6 +170,7 @@ area = "deployment"
 status = "verified"
 surfaces = [
   { path = "README.md", needle = "SQLite (default) and PostgreSQL" },
+  { path = "README.md", needle = "SQLite and PostgreSQL" },
 ]
 verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "postgres" }
 
@@ -199,6 +201,7 @@ area = "docs"
 status = "verified"
 surfaces = [
   { path = "README.md", needle = "`/_stats`" },
+  { path = "README.md", needle = "`/server_api_version`" },
 ]
 verify = { kind = "grep", path = "crates/microwave-api/src/lib.rs", pattern = "/_stats" }
 
@@ -249,6 +252,7 @@ area = "tooling"
 status = "verified"
 surfaces = [
   { path = "README.md", needle = "unless the organization sets `writes = false`" },
+  { path = "README.md", needle = "`writes = false`" },
 ]
 verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "writes: true" }
 
@@ -259,8 +263,59 @@ area = "migration"
 status = "verified"
 surfaces = [
   { path = "README.md", needle = "no automatic `chef-server.rb` importer" },
+  { path = "README.md", needle = "No `chef-server.rb` importer" },
 ]
 verify = { kind = "file", path = "docs/deployment.md" }
+
+[[claim]]
+id = "readme-gap-single-node-ha"
+summary = "README: multi-node HA and automatic failover are not validated."
+area = "ha"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "Multi-node HA and automatic failover are not validated" },
+]
+verify = { kind = "grep", path = "crates/microwave-ctl/src/diagnostics.rs", pattern = "Microwave is single-node" }
+
+[[claim]]
+id = "readme-gap-embedded-search-scan"
+summary = "README: embedded search is a relational scan, not an inverted index."
+area = "search"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "Embedded search is a relational scan, not an inverted index" },
+]
+verify = { kind = "grep", path = "docs/remaining-work.md", pattern = "relational scan" }
+
+[[claim]]
+id = "readme-migrate-snapshot"
+summary = "README: import a versioned JSON snapshot with `migrate-from-legacy --input`."
+area = "migration"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "migrate-from-legacy --input" },
+]
+verify = { kind = "grep", path = "docs/deployment.md", pattern = "migrate-from-legacy --input" }
+
+[[claim]]
+id = "readme-migrate-knife"
+summary = "README: import a `knife ec backup` tree with `import-knife-backup`."
+area = "migration"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "import-knife-backup" },
+]
+verify = { kind = "grep", path = "docs/deployment.md", pattern = "import-knife-backup" }
+
+[[claim]]
+id = "readme-migrate-reindex"
+summary = "README: a migration does not reindex, so `microwave-ctl reindex` follows it."
+area = "search"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "microwave-ctl reindex" },
+]
+verify = { kind = "grep", path = "docs/deployment.md", pattern = "microwave-ctl reindex" }
 
 [[claim]]
 id = "readme-oauth-id-routes"
