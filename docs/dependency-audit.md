@@ -51,7 +51,12 @@ Everything else in the direct set is current, including `axum`, `tokio`,
   call sites build SQL from internal table/column constants and use bind
   parameters for values, so `AssertSqlSafe` is appropriate.
 - Security tooling (`cargo-audit`, `cargo-deny`, `cargo-outdated`) is not
-  installed in this environment. Recommended CI addition:
+  installed in this environment. The workflows that exist
+  (`.github/workflows/ci.yml`, `postgres.yml`, `pedant.yml`, and `release.yml`)
+  run formatting, clippy, the workspace tests, the claim check, the homepage
+  suite, the PostgreSQL suite, the nightly pedant run, and tag releases; none of
+  them runs a vulnerability audit yet. Wire it in as a separate job, for
+  example:
 
   ```sh
   cargo install cargo-audit --locked

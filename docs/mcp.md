@@ -6,8 +6,9 @@ transport. It lets an MCP-capable agent list and, optionally, mutate Chef
 objects and read locally stored converge reports through tool calls instead of
 the signed Chef HTTP API.
 
-The surface is **experimental**. It has no persistent audit table, no token
-expiry, no token scopes, and no per-tool permissions. Read
+The surface is **experimental**. It has no persistent audit table
+([gap-mcp-audit](remaining-work.md#gap-mcp-audit)), no token expiry, no token
+scopes, and no per-tool permissions. Read
 [Limitations](#limitations) before enabling it on an internet-facing
 deployment.
 

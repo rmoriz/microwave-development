@@ -1045,3 +1045,767 @@ surfaces = [
   { path = "TODO.md", needle = "1,000-node concurrent converge" },
 ]
 verify = { kind = "file", path = "docs/chef-client-e2e-report.md" }
+
+[[claim]]
+id = "deploy-single-binary"
+summary = "Deployment guide: one server binary plus the CLI, migrate, and packaging artifacts."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "a single binary with embedded storage" } ]
+verify = { kind = "file", path = "bin/microwave-server/src/main.rs" }
+
+[[claim]]
+id = "deploy-sqlite-default"
+summary = "SQLite metadata is the default backend; PostgreSQL is selectable."
+area = "deployment"
+status = "verified"
+surfaces = [
+  { path = "docs/deployment.md", needle = "SQLite metadata is the default and the best-tested" },
+  { path = "docs/deployment.md", needle = "`database.driver`" },
+]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "driver: DatabaseDriver::Sqlite" }
+
+[[claim]]
+id = "deploy-pg-backup-tools"
+summary = "PostgreSQL backup and restore shell out to pg_dump and pg_restore."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "backup/restore uses `pg_dump`/`pg_restore`" } ]
+verify = { kind = "grep", path = "crates/microwave-ctl/src/backup.rs", pattern = "pg_dump" }
+
+[[claim]]
+id = "deploy-bind-default"
+summary = "The default listener is 0.0.0.0:8000 and plain HTTP without TLS configuration."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "`0.0.0.0:8000`" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = 'bind: "0.0.0.0:8000"' }
+
+[[claim]]
+id = "deploy-public-url-required-for-mail"
+summary = "server.public_url is required when mail is enabled and must be an absolute origin."
+area = "deployment"
+status = "verified"
+surfaces = [
+  { path = "docs/deployment.md", needle = "Required when mail is enabled" },
+  { path = "docs/deployment.md", needle = "accepted only for loopback development hosts" },
+]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "public_url.is_none\\(\\) && self.mail.enabled" }
+
+[[claim]]
+id = "deploy-tls-enable-semantics"
+summary = "server.tls.enabled true requires both paths, false forces plain HTTP, unset auto-enables on either path."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "`false` forces plain HTTP" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "TLS is enabled automatically" }
+
+[[claim]]
+id = "deploy-tls-reload-bounds"
+summary = "TLS reload polling defaults to off and is capped at seven days; SIGHUP still reloads."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "maximum `604800` (seven days)" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "MAX_RELOAD_INTERVAL_SECONDS: u64 = 604_800" }
+
+[[claim]]
+id = "deploy-data-dir-default"
+summary = "The default data directory is ./data."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "| `paths.data_dir` | `MW_PATHS__DATA_DIR` | `./data` |" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = 'data_dir: "./data"' }
+
+[[claim]]
+id = "deploy-db-url-default"
+summary = "The default database URL is sqlite://<data_dir>/microwave.db."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "sqlite://<data_dir>/microwave.db" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "sqlite://\\{data_dir\\}/microwave.db" }
+
+[[claim]]
+id = "deploy-compression-reads"
+summary = "Compression applies to new writes only; reads accept both stored formats."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "Reads accept both formats either way" } ]
+verify = { kind = "grep", path = "crates/microwave-store/src/compression.rs", pattern = "Reads always decode the `mwz1:` prefix" }
+
+[[claim]]
+id = "deploy-search-backends"
+summary = "Search backends are embedded, OpenSearch, and Elasticsearch."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "`embedded`, `opensearch`, `elasticsearch`" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "enum SearchBackend" }
+
+[[claim]]
+id = "deploy-depsolver-overload"
+summary = "Excess concurrent dependency solves get 503 Dependency solver overloaded."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "`503 Dependency solver overloaded`" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/depsolver.rs", pattern = "Dependency solver overloaded" }
+
+[[claim]]
+id = "deploy-strict-result-acls"
+summary = "Search hides unreadable rows by default while the reported total stays pre-filter."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "Hide search rows the caller cannot READ" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "strict_result_acls" }
+
+[[claim]]
+id = "deploy-object-store-backends"
+summary = "Object-store backends are local, s3, and garage."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "`local`, `s3`, `garage`" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "enum ObjectStoreBackend" }
+
+[[claim]]
+id = "deploy-auth-skew-default"
+summary = "The default X-Ops-Timestamp tolerance is 900 seconds."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "`X-Ops-Timestamp` tolerance" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "skew_seconds: 900" }
+
+[[claim]]
+id = "deploy-superuser-not-demoted"
+summary = "The configured superuser cannot be demoted."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "Account that cannot be demoted" } ]
+verify = { kind = "grep", path = "crates/microwave-ctl/src/admin.rs", pattern = "cannot remove the base superuser" }
+
+[[claim]]
+id = "deploy-default-org-signature"
+summary = "Default-org rewriting keeps the client's original path for signature verification."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "Signature verification still uses the client's original path" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/middleware.rs", pattern = "routing_path\\(&signed_path" }
+
+[[claim]]
+id = "deploy-trusted-proxies"
+summary = "server.trusted_proxies is a comma-separated IP/CIDR/socket allowlist for forwarded headers."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "Comma-separated IPs/CIDRs/socket addresses allowed to set" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "trusted_proxies" }
+
+[[claim]]
+id = "deploy-stats-basic-auth"
+summary = "Optional Basic auth guards /_stats while /_status stays public."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "Optional Basic auth for `/_stats`" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/lib.rs", pattern = "fn stats_authorized" }
+
+[[claim]]
+id = "deploy-reset-token-in-response"
+summary = "Returning the password-reset URL in the response is development-only."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "Development-only: return the `/id/password-reset` URL" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "password_reset_token_in_response" }
+
+[[claim]]
+id = "deploy-mail-disabled-default"
+summary = "Outbound mail is disabled by default."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "Outbound mail is disabled by default" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "mail.enabled" }
+
+[[claim]]
+id = "deploy-mail-port-derivation"
+summary = "The SMTP port is derived from the security mode."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "Defaults to `587` for `starttls`, `465` for `tls`" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "465" }
+
+[[claim]]
+id = "deploy-keygen-defaults"
+summary = "Keygen keeps three 2048-bit keypairs with one worker by default."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "Maximum number of pre-generated 2048-bit RSA keypairs" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "size: 3" }
+
+[[claim]]
+id = "deploy-telemetry-reserved"
+summary = "Telemetry is a reserved toggle with no outbound sender."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "No outbound sender is implemented" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "never phones home" }
+
+[[claim]]
+id = "deploy-compression-cap"
+summary = "Decompression is capped at 64 MiB."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "Decompression is capped at 64 MiB" } ]
+verify = { kind = "grep", path = "crates/microwave-store/src/compression.rs", pattern = "MAX_DECOMPRESSED_BYTES: usize = 64" }
+
+[[claim]]
+id = "deploy-check-config-scope"
+summary = "check-config validates paths, database, bind, search, object store, TLS, and superuser."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "`check-config` validates paths, the database URL/driver" } ]
+verify = { kind = "file", path = "crates/microwave-ctl/src/diagnostics.rs" }
+
+[[claim]]
+id = "deploy-reconfigure-no-restart"
+summary = "reconfigure initializes or migrates the schema but never restarts the server."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "**not** restart a running server" } ]
+verify = { kind = "grep", path = "crates/microwave-ctl/src/commands.rs", pattern = "never restarts a server" }
+
+[[claim]]
+id = "deploy-config-json-secret"
+summary = "microwave-server config prints the resolved configuration as JSON including credentials."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "resolved configuration as JSON" } ]
+verify = { kind = "grep", path = "bin/microwave-server/src/main.rs", pattern = "resolved configuration as JSON" }
+
+[[claim]]
+id = "deploy-tls-alpn"
+summary = "The TLS listener advertises h2 and http/1.1 via ALPN."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "advertises `h2` and `http/1.1` via ALPN" } ]
+verify = { kind = "grep", path = "crates/microwave-tls/src/lib.rs", pattern = "alpn_protocols" }
+
+[[claim]]
+id = "deploy-tls-rotation"
+summary = "TLS rotation uses SIGHUP and does not need a restart; failed reloads keep the old pair."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "**Rotation does not require a restart.**" } ]
+verify = { kind = "grep", path = "bin/microwave-server/src/main.rs", pattern = "SignalKind::hangup" }
+
+[[claim]]
+id = "deploy-mail-queue"
+summary = "Password-reset mail uses a bounded 64-message queue with one worker and no retries."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "bounded 64-message queue with one worker" } ]
+verify = { kind = "grep", path = "crates/microwave-mail/src/dispatcher.rs", pattern = "MAIL_QUEUE_CAPACITY: usize = 64" }
+
+[[claim]]
+id = "deploy-mcp-tool-counts"
+summary = "The MCP endpoint exposes 11 read and 8 write tools per organization."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "11 read tools and 8 write tools" } ]
+verify = { kind = "file", path = "crates/microwave-api/src/mcp/tools.rs" }
+
+[[claim]]
+id = "deploy-container-uid"
+summary = "The container runs as UID/GID 10001 and never as root."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "runs as UID/GID `10001:10001`" } ]
+verify = { kind = "grep", path = "Dockerfile", pattern = "ARG UID=10001" }
+
+[[claim]]
+id = "deploy-image-trixie"
+summary = "The Dockerfile builds on trixie and the runtime image is debian:trixie-slim."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "`rust:<version>-trixie`" } ]
+verify = { kind = "grep", path = "Dockerfile", pattern = "debian:trixie-slim" }
+
+[[claim]]
+id = "deploy-no-entrypoint"
+summary = "The image defines no ENTRYPOINT, so CLI commands can be passed directly."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "no `ENTRYPOINT`" } ]
+verify = { kind = "grep", path = "Dockerfile", pattern = "No ENTRYPOINT on purpose" }
+
+[[claim]]
+id = "deploy-compose-default"
+summary = "The default compose file is the embedded SQLite profile with local bookshelf."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "SQLite, in-process search, local `/bookshelf`" } ]
+verify = { kind = "grep", path = "docker-compose.yml", pattern = "in-process search" }
+
+[[claim]]
+id = "deploy-compose-ha-features"
+summary = "The HA compose override adds Garage and OpenSearch while keeping SQLite metadata."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "keeps SQLite metadata on the local volume" } ]
+verify = { kind = "grep", path = "docker-compose.ha.yml", pattern = "keeps the metadata store on the local SQLite volume" }
+
+[[claim]]
+id = "deploy-systemd-user"
+summary = "The systemd unit runs as the microwave user and group."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "runs as `microwave:microwave`" } ]
+verify = { kind = "grep", path = "packaging/systemd/microwave-server.service", pattern = "User=microwave" }
+
+[[claim]]
+id = "deploy-systemd-preflight"
+summary = "The systemd unit runs check-config as ExecStartPre."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "runs `microwave-ctl check-config` as `ExecStartPre`" } ]
+verify = { kind = "grep", path = "packaging/systemd/microwave-server.service", pattern = "ExecStartPre=.*check-config" }
+
+[[claim]]
+id = "deploy-ha-status-output"
+summary = "ha-status reports standalone mode, one node, and high availability not configured."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "`mode: standalone`, `nodes: 1`, `high_availability: not configured`" } ]
+verify = { kind = "grep", path = "crates/microwave-ctl/src/diagnostics.rs", pattern = "high_availability: not configured" }
+
+[[claim]]
+id = "deploy-pg-advisory-lock"
+summary = "PostgreSQL schema migration is serialized with an advisory transaction lock."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "serialized with an advisory lock" } ]
+verify = { kind = "grep", path = "crates/microwave-store-postgres/src/store.rs", pattern = "pg_advisory_xact_lock" }
+
+[[claim]]
+id = "deploy-backup-vacuum"
+summary = "SQLite backup uses VACUUM INTO."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "`VACUUM INTO`" } ]
+verify = { kind = "grep", path = "crates/microwave-store/src/sqlite.rs", pattern = "VACUUM INTO" }
+
+[[claim]]
+id = "deploy-backup-private-files"
+summary = "Private-key backups use a fixed allowlist that includes pivotal.pem and objectstore.secret."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "`pivotal.pem`, `pivotal.password`, `objectstore.secret`" } ]
+verify = { kind = "grep", path = "crates/microwave-ctl/src/backup.rs", pattern = "pivotal.pem" }
+
+[[claim]]
+id = "deploy-backup-tls-paths"
+summary = "Private-key backups include the configured TLS certificate and key paths."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "also includes the configured `server.tls.cert_path`" } ]
+verify = { kind = "grep", path = "crates/microwave-ctl/src/backup.rs", pattern = "cert_path" }
+
+[[claim]]
+id = "deploy-snapshot-collections"
+summary = "Snapshots carry artifacts, policies, policy groups, and OAuth applications."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "cookbook artifacts, policies, policy groups" } ]
+verify = { kind = "grep", path = "crates/microwave-store/src/migration.rs", pattern = "cookbook_artifacts" }
+
+[[claim]]
+id = "deploy-snapshot-secret-default"
+summary = "Safe exports omit kvpair, OAuth grants/tokens, and OAuth application secrets."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "the export omits `kvpair`" } ]
+verify = { kind = "grep", path = "crates/microwave-migrate/src/lib.rs", pattern = "Default exports omit secret values" }
+
+[[claim]]
+id = "deploy-archive-caps"
+summary = "Archive import caps entries at one million and uncompressed size at 16 GiB."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "1,000,000 entries and 16 GiB" } ]
+verify = { kind = "grep", path = "crates/microwave-migrate/src/archive.rs", pattern = "MAX_ARCHIVE_ENTRIES: usize = 1_000_000" }
+
+[[claim]]
+id = "deploy-from-api-limits"
+summary = "The live crawler cannot read password hashes and writes placeholder bcrypt entries."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "notably password hashes, which" } ]
+verify = { kind = "grep", path = "crates/microwave-migrate/src/from_api.rs", pattern = 'hash_type: "bcrypt"' }
+
+[[claim]]
+id = "deploy-status-payload"
+summary = "The status payload reports keygen health and the indexing mode."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "\"worker_healthy\":true" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/lib.rs", pattern = "worker_healthy" }
+
+[[claim]]
+id = "deploy-license-payload"
+summary = "The license payload carries limit, count, exceeded flag, and upgrade URL."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "Node license counters" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/lib.rs", pattern = "limit_exceeded" }
+
+[[claim]]
+id = "deploy-maintenance-exempt"
+summary = "Maintenance mode exempts /_status and /_stats and rejects other traffic before auth."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "`/_status` and `/_stats` remain reachable" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/middleware.rs", pattern = "fn is_maintenance_exempt" }
+
+[[claim]]
+id = "deploy-reindex-purge"
+summary = "reindex leaves stale documents unless --purge is passed."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "Pass `--purge` to delete each visited organization" } ]
+verify = { kind = "grep", path = "crates/microwave-ctl/src/commands.rs", pattern = "pub fn reindex" }
+
+[[claim]]
+id = "deploy-shutdown-grace"
+summary = "The TLS listener caps the shutdown drain at five seconds."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "caps the drain at 5 seconds" } ]
+verify = { kind = "grep", path = "bin/microwave-server/src/main.rs", pattern = "SHUTDOWN_GRACE: Duration = Duration::from_secs\\(5\\)" }
+
+[[claim]]
+id = "deploy-forward-only-schema"
+summary = "Schema migrations run automatically when the database is opened and are forward-only."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "Migrations are forward-only" } ]
+verify = { kind = "grep", path = "crates/microwave-store/src/sqlite.rs", pattern = "fn migrate" }
+
+[[claim]]
+id = "deploy-sqlite-wal"
+summary = "SQLite runs in WAL mode with a five-second busy timeout."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "opened in WAL mode with a 5 s busy timeout" } ]
+verify = { kind = "grep", path = "crates/microwave-store/src/sqlite.rs", pattern = "busy_timeout" }
+
+[[claim]]
+id = "deploy-local-url-bind"
+summary = "Local object-store URLs fall back to server.bind instead of request headers."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "derived from `server.bind` and the listener" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/helpers.rs", pattern = "config.server.bind" }
+
+[[claim]]
+id = "mcp-guide-disabled-default"
+summary = "The MCP endpoint is disabled until mcp.enabled is true and 404s otherwise."
+area = "tooling"
+status = "verified"
+surfaces = [
+  { path = "docs/mcp.md", needle = "The endpoint is disabled by default." },
+  { path = "docs/mcp.md", needle = "the path returns" },
+]
+verify = { kind = "grep", path = "crates/microwave-api/src/lib.rs", pattern = "if state.config.mcp.enabled" }
+
+[[claim]]
+id = "mcp-guide-stateless"
+summary = "MCP requests are stateless JSON responses with no session id."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/mcp.md", needle = "with_legacy_session_mode(false)" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/mcp/mod.rs", pattern = "with_legacy_session_mode\\(false\\)" }
+
+[[claim]]
+id = "mcp-guide-signature-bypass"
+summary = "The MCP path bypasses signed-request middleware and accepts only a bearer token."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/mcp.md", needle = "bypasses the Chef signed-request middleware" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/middleware.rs", pattern = "are bypassed" }
+
+[[claim]]
+id = "mcp-guide-token-precedence"
+summary = "An inline configuration token wins over the mcp secret group."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/mcp.md", needle = "Inline bearer token; wins over the secret." } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/mcp/auth.rs", pattern = "entry.token" }
+
+[[claim]]
+id = "mcp-guide-401-challenge"
+summary = "Missing or wrong MCP credentials return 401 with a Bearer challenge."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/mcp.md", needle = "`WWW-Authenticate: Bearer`" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/mcp/auth.rs", pattern = "WWW_AUTHENTICATE" }
+
+[[claim]]
+id = "mcp-guide-principal-errors"
+summary = "A missing principal or a non-member principal returns 500 with a generic error."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/mcp.md", needle = "exist returns `500`" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/mcp/auth.rs", pattern = "mcp principal does not exist" }
+
+[[claim]]
+id = "mcp-guide-file-cap"
+summary = "A cookbook upload call accepts at most 100 files."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/mcp.md", needle = "At most 100 files per call." } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/mcp/cookbook_upload.rs", pattern = "MAX_FILES: usize = 100" }
+
+[[claim]]
+id = "mcp-guide-result-cap"
+summary = "Oversized MCP results fail with result exceeds max_result_bytes."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/mcp.md", needle = "result exceeds\nmax_result_bytes`" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/mcp/tools.rs", pattern = "result exceeds max_result_bytes" }
+
+[[claim]]
+id = "mcp-guide-body-cap"
+summary = "The HTTP body cap is derived from max_upload_bytes."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/mcp.md", needle = "max_upload_bytes * 4 / 3 + 1 MiB" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/mcp/mod.rs", pattern = "max_upload_bytes.saturating_mul\\(4\\) / 3" }
+
+[[claim]]
+id = "mcp-guide-no-stdio"
+summary = "Only Streamable HTTP is implemented; there is no stdio transport."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/mcp.md", needle = "No stdio transport." } ]
+verify = { kind = "file", path = "crates/microwave-api/src/mcp/mod.rs" }
+
+[[claim]]
+id = "mcp-guide-secret-group"
+summary = "MCP tokens can be stored per organization in the mcp secret group."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/mcp.md", needle = "set-secret mcp acme" } ]
+verify = { kind = "grep", path = "crates/microwave-ctl/src/secrets.rs", pattern = '"mcp"' }
+
+[[claim]]
+id = "mcp-guide-writes-hidden"
+summary = "writes = false removes the write tools from tools/list."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/mcp.md", needle = "absent from `tools/list`" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/mcp/tools.rs", pattern = "if ctx.writes" }
+
+[[claim]]
+id = "deb-pkg-build-script"
+summary = "The .deb is built by scripts/build-deb.sh."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/debian-package.md", needle = "scripts/build-deb.sh" } ]
+verify = { kind = "file", path = "scripts/build-deb.sh" }
+
+[[claim]]
+id = "deb-pkg-arch-map"
+summary = "The build maps host architectures to amd64, arm64, and armhf."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/debian-package.md", needle = "(`amd64`, `arm64`, `armhf`)" } ]
+verify = { kind = "grep", path = "scripts/build-deb.sh", pattern = "aarch64\\|arm64\\) DEB_ARCH=arm64" }
+
+[[claim]]
+id = "deb-pkg-docker-reexec"
+summary = "Non-Linux hosts re-execute the build in Docker."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/debian-package.md", needle = "re-executes itself in Docker" } ]
+verify = { kind = "grep", path = "scripts/build-deb.sh", pattern = "host is" }
+
+[[claim]]
+id = "deb-pkg-libc-dep"
+summary = "The control file declares a libc6 dependency derived from the builder glibc."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/debian-package.md", needle = "`libc6 (>= <glibc of the builder>)`" } ]
+verify = { kind = "grep", path = "packaging/debian/control.in", pattern = "libc6@LIBC_DEP@" }
+
+[[claim]]
+id = "deb-pkg-postinst-user"
+summary = "The postinst creates the service user and directory and enables the unit."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/debian-package.md", needle = "creates the `microwave` system user" } ]
+verify = { kind = "grep", path = "packaging/debian/postinst", pattern = "adduser --system" }
+
+[[claim]]
+id = "deb-pkg-purge"
+summary = "A purge removes the data directory, configuration, and service user."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/debian-package.md", needle = "A purge removes `/var/lib/microwave`" } ]
+verify = { kind = "grep", path = "packaging/debian/postrm", pattern = "rm -rf /var/lib/microwave" }
+
+[[claim]]
+id = "deb-pkg-test-images"
+summary = "The package test runs on Debian 12 and Ubuntu 24.04."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/debian-package.md", needle = "`debian:12-slim` and" } ]
+verify = { kind = "grep", path = "scripts/test-deb.sh", pattern = "debian:12-slim ubuntu:24.04" }
+
+[[claim]]
+id = "deb-pkg-unit-copy"
+summary = "The package installs a separate unit copy that uses /usr/bin paths."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/debian-package.md", needle = "The unit is a separate copy" } ]
+verify = { kind = "grep", path = "packaging/debian/microwave-server.service", pattern = "ExecStart=/usr/bin/microwave-server" }
+
+[[claim]]
+id = "dep-audit-base64"
+summary = "Direct base64 requires 0.23 and the lock resolves 0.23.1."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/dependency-audit.md", needle = "| `base64` | 0.22.1 | 0.23.1 |" } ]
+verify = { kind = "grep", path = "Cargo.toml", pattern = 'base64 = "0.23"' }
+
+[[claim]]
+id = "dep-audit-sqlx-safe-sql"
+summary = "sqlx 0.9 dynamic SQL is wrapped in AssertSqlSafe."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/dependency-audit.md", needle = "`sqlx::AssertSqlSafe`" } ]
+verify = { kind = "grep", path = "crates/microwave-store-postgres/src/identity.rs", pattern = "AssertSqlSafe" }
+
+[[claim]]
+id = "dep-audit-rand-removed"
+summary = "There is no direct rand dependency; microwave-crypto uses rsa::rand_core."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/dependency-audit.md", needle = "`rand` remains only as an `rsa` transitive dependency" } ]
+verify = { kind = "grep", path = "crates/microwave-crypto/src/signature.rs", pattern = "rsa::rand_core" }
+
+[[claim]]
+id = "dep-audit-rusqlite-pin"
+summary = "rusqlite stays on 0.39 because sqlx-sqlite forbids newer libsqlite3-sys."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/dependency-audit.md", needle = "`sqlx-sqlite` (optional, but part of Cargo's resolution) requires `< 0.38`" } ]
+verify = { kind = "grep", path = "Cargo.lock", pattern = "libsqlite3-sys" }
+
+[[claim]]
+id = "dep-audit-images"
+summary = "The HA profile pins Garage v2.5.0 and OpenSearch 2.19.7."
+area = "tooling"
+status = "verified"
+surfaces = [
+  { path = "docs/dependency-audit.md", needle = "| `dxflrs/garage` | `v2.5.0` |" },
+  { path = "docs/dependency-audit.md", needle = "| `opensearchproject/opensearch` | `2.19.7` |" },
+]
+verify = { kind = "grep", path = "docker-compose.ha.yml", pattern = "opensearch:2.19.7" }
+
+[[claim]]
+id = "dep-audit-no-ci-audit"
+summary = "The existing workflows run builds and tests but no vulnerability audit."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/dependency-audit.md", needle = "them runs a vulnerability audit yet" } ]
+verify = { kind = "grep", path = ".github/workflows/ci.yml", pattern = "cargo test --workspace" }
+
+[[claim]]
+id = "dep-audit-lock-dupes"
+summary = "Cargo.lock can contain several versions of the same transitive crate."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/dependency-audit.md", needle = "may contain multiple versions of transitive crates" } ]
+verify = { kind = "grep", path = "Cargo.lock", pattern = 'name = "base64"' }
+
+[[claim]]
+id = "report-chef-client-e2e"
+summary = "There is a chef-client end-to-end converge harness whose strict run passes."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/chef-client-e2e-report.md", needle = "MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0" } ]
+verify = { kind = "file", path = "scripts/run-chef-client-e2e.sh" }
+
+[[claim]]
+id = "report-compression"
+summary = "serialized_object compression is transparent and prefixed so legacy rows keep working."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/compression-review-fix-report.md", needle = "Transparent `serialized_object` compression" } ]
+verify = { kind = "grep", path = "crates/microwave-store/src/compression.rs", pattern = "COMPRESSED_PREFIX" }
+
+[[claim]]
+id = "report-ctl-surface"
+summary = "The operational CLI surface report covers the completed chef-server-ctl-compatible commands."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/ctl-surface-review-fix-report.md", needle = "Operational CLI surface" } ]
+verify = { kind = "file", path = "crates/microwave-ctl/src/cli.rs" }
+
+[[claim]]
+id = "report-dc-mutations"
+summary = "Data Collector action notifications are opt-in and sent only when forwarding is enabled."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/dc-mutations-report.md", needle = "opt-in `oc_chef_action` mutation notifications" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "actions_enabled" }
+
+[[claim]]
+id = "report-keygen-cache"
+summary = "The keygen cache is bounded, thread-safe, and refilled by background workers."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/keygen-cache-report.md", needle = "bounded, thread-safe `KeygenCache`" } ]
+verify = { kind = "file", path = "crates/microwave-crypto/src/keygen.rs" }
+
+[[claim]]
+id = "report-missing-routes"
+summary = "The missing oc_erchef compatibility routes report tracks the added routes and validation."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/missing-routes-review-fix-report.md", needle = "add missing oc_erchef compatibility routes" } ]
+verify = { kind = "file", path = "crates/microwave-api/src/internal_api.rs" }
+
+[[claim]]
+id = "report-pedant-clients-followup"
+summary = "The clients pedant follow-up records the validator and API-version fixes."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/pedant-clients-followup.md", needle = "Pedant's clients suite" } ]
+verify = { kind = "file", path = "crates/microwave-api/tests/clients_test.rs" }
+
+[[claim]]
+id = "report-pedant-oauth-followup"
+summary = "The OAuth pedant follow-up records the oc_id suite fixes."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/pedant-oauth-followup.md", needle = "OAuth (oc_id) Pedant Completion" } ]
+verify = { kind = "file", path = "crates/microwave-api/tests/oauth_routes_test.rs" }
+
+[[claim]]
+id = "report-pedant-org-client-followup"
+summary = "The organization/client pedant follow-up records organization endpoint fixes."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/pedant-org-client-followup.md", needle = "Organization / Client Pedant Follow-up" } ]
+verify = { kind = "file", path = "crates/microwave-api/tests/organizations_test.rs" }
+
+[[claim]]
+id = "report-tls-listener"
+summary = "The TLS listener report documents the rustls listener and its pair validation."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/tls-listener-report.md", needle = "PEM loading, readability and pair" } ]
+verify = { kind = "file", path = "crates/microwave-tls/src/lib.rs" }
+
+[[claim]]
+id = "report-tls-reload"
+summary = "The TLS reload report documents SIGHUP rotation and the plain-HTTP no-op."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/tls-reload-report.md", needle = "SIGHUP on a plain listener is a logged no-op" } ]
+verify = { kind = "grep", path = "bin/microwave-server/src/main.rs", pattern = "TLS is disabled" }

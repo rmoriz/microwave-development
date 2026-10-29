@@ -27,7 +27,7 @@ The middle row is why the harness change below is part of the fix: the five
 assert v0 response shapes (top-level key material on create/update,
 `public_key` on client reads) and the 4 pedant `NameError` examples reappear.
 Those 31 are not server defects; they are the same file being run under API
-version 1 globally. See [API version baseline](#api-version-baseline).
+version 1 globally. See [the harness note below](#harness-scriptspedant-bootstraprb).
 
 ## What changed
 

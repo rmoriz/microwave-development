@@ -7,8 +7,8 @@ operational caveats that matter in practice.
 
 For the architecture and the compatibility target see
 [`docs/superpowers/specs/2026-10-24-microwave-server-design.md`](superpowers/specs/2026-10-24-microwave-server-design.md).
-For the current implementation gaps see "Not Yet Implemented" in
-[`README.md`](../README.md).
+For the current implementation gaps see
+[`docs/remaining-work.md`](remaining-work.md) and [`TODO.md`](../TODO.md).
 
 > **Reality check.** SQLite metadata is the default and the best-tested
 > deployment: **one server process per database**. PostgreSQL metadata is
@@ -342,9 +342,9 @@ mail is enabled and the account exists with a non-empty email address, enqueues
 one plain-text message containing
 `{server.public_url}/id/password-reset?token=...`. Delivery is asynchronous
 through a bounded 64-message queue with one worker; there are no retries and no
-durable outbox. A full queue, stopped worker, or SMTP failure is logged without
-changing the response. Unknown accounts and accounts without an email address
-send nothing.
+durable outbox ([gap-mail-outbox](remaining-work.md#gap-mail-outbox)). A full
+queue, stopped worker, or SMTP failure is logged without changing the response.
+Unknown accounts and accounts without an email address send nothing.
 
 The HTTP response is always the existing generic success message, regardless of
 whether a message was sent. `auth.password_reset_token_in_response = true` still
@@ -439,8 +439,8 @@ listener.
 ## 4. Docker
 
 The [`Dockerfile`](../Dockerfile) is multi-stage: it builds the workspace on
-`rust:<version>-bookworm`, then copies only the four binaries into
-`debian:bookworm-slim` with `ca-certificates`, `curl`, and `sqlite3`.
+`rust:<version>-trixie`, then copies only the four binaries into
+`debian:trixie-slim` with `ca-certificates`, `curl`, and `sqlite3`.
 
 Image properties:
 
@@ -807,7 +807,8 @@ This is a server limitation, not a configuration mistake.
   at one PostgreSQL database. OAuth tokens, sessions, keys, and ACLs are
   shared, and the schema migration is serialized with an advisory lock. Use
   S3/Garage for blobs and share nothing else; this topology has not been
-  load-validated. On every server start, `PostgresStore::connect` applies the
+  load-validated ([gap-multi-replica-ha](remaining-work.md#gap-multi-replica-ha)).
+  On every server start, `PostgresStore::connect` applies the
   embedded idempotent schema under that advisory lock before bootstrap runs,
   so replicas can start concurrently without manual migration steps.
 - **PostgreSQL operations from the CLI.** `microwave-ctl` runs user, org, key,
@@ -831,21 +832,26 @@ This is a server limitation, not a configuration mistake.
   says so explicitly.
 - **LDAP/Active Directory external authentication.** Chef's `external_authentication_uid`
   fields are stored and reported, but there is no LDAP/AD bind, no unlinked-account
-  handling, and no `local` bypass authentication. Users with external UIDs can only be
-  created and managed, not authenticated against a directory.
-- **FIPS mode.** The Rust crypto stack is not configured or validated as FIPS.
+  handling, and no `local` bypass authentication ([gap-ldap-fips](remaining-work.md#gap-ldap-fips)).
+  Users with external UIDs can only be created and managed, not authenticated against a
+  directory.
+- **FIPS mode.** The Rust crypto stack is not configured or validated as FIPS
+  ([gap-ldap-fips](remaining-work.md#gap-ldap-fips)).
 - **Legacy `/etc/opscode/chef-server.rb` import.** Microwave uses TOML and `MW_*`
   environment variables. Existing Ruby configuration must be translated; the server
-  does not execute or parse `chef-server.rb`, `CHEF_SECRETS_DATA`, or
-  `private-chef-secrets.json` at startup. Migration tools can carry explicit
-  key material, but configuration is not imported automatically.
+  does not execute or parse `chef-server.rb`
+  ([gap-chef-server-rb-importer](remaining-work.md#gap-chef-server-rb-importer)),
+  `CHEF_SECRETS_DATA` or `private-chef-secrets.json` at startup
+  ([gap-secrets-file](remaining-work.md#gap-secrets-file)). Migration tools can
+  carry explicit key material, but configuration is not imported automatically.
 - **Embedded search indexing.** The default backend is a relational full scan,
-  not Tantivy or another inverted index. It is correct for small and medium
-  organizations, but scales linearly. Larger installations should use
-  OpenSearch or Elasticsearch.
+  not Tantivy or another inverted index
+  ([gap-embedded-search-index](remaining-work.md#gap-embedded-search-index)). It
+  is correct for small and medium organizations, but scales linearly. Larger
+  installations should use OpenSearch or Elasticsearch.
 - **Additional mail flows.** Only password-reset email is implemented.
   Email-change verification, invitation mail, SMTP rate limiting, and a durable
-  outbox/retry are not available.
+  outbox/retry are not available ([gap-mail-outbox](remaining-work.md#gap-mail-outbox)).
 
 ### Target layout with PostgreSQL metadata
 
@@ -1345,7 +1351,10 @@ to 4 GiB. Without the flag `from-api` remains metadata-only.
 ### Migrating configuration from `/etc/opscode/chef-server.rb`
 
 Microwave does not parse or execute the legacy Ruby configuration. There is no
-`chef-server.rb` importer and no `CHEF_SECRETS_DATA` reader at server startup.
+`chef-server.rb` importer
+([gap-chef-server-rb-importer](remaining-work.md#gap-chef-server-rb-importer)) and no
+`CHEF_SECRETS_DATA` reader at server startup
+([gap-secrets-file](remaining-work.md#gap-secrets-file)).
 Treat the migration as a translation step: read the old file, keep only the
 settings that have a Microwave equivalent, and write them as TOML or
 `MW_*` overrides.
@@ -1576,7 +1585,7 @@ deployments, the same parallel-run approach applies.
 | `GET /_status` | none | `{"status":"pong","upstreams":{"chef_sql":"pong","chef_index":"pong","bookshelf":"pong"},"upstream_details":{...},"keygen":{"status":"ok","cached":3,"capacity":3,"workers":1,"worker_healthy":true,"worker_failures":0,"warm_up_failures":0,"generated_on_demand":0},"indexing":{"mode":"embedded"}}`. |
 | `GET /_stats` | none | Request counters, authentication failures, uptime, maintenance state, and node count. JSON by default, Prometheus text with `Accept: text/plain` or `?format=prometheus`. |
 | `GET /server_api_version` | none | `min_api_version` / `max_api_version` (`0`/`2`). |
-| `GET /license` | signed | Static license payload; telemetry is disabled. |
+| `GET /license` | signed | Node license counters: configured limit, current node count, `limit_exceeded`, and the upgrade URL. Telemetry is disabled by default. |
 | `POST /organizations/:org/data-collector` | signed or `x-data-collector-token` | Present when `data_collector.root_url` is configured or `data_collector.store` is `local`/`both`. When `store` is `forward`/`both` and `root_url` is configured, forwards the JSON body and preserves the collector's status and body. `local` returns `200 {}` without forwarding while still storing `run_converge` reports; `both` also stores them. Timeouts map to `504`, other upstream failures to `502`; a disabled endpoint returns `404`. |
 | `GET /organizations/:org/owners/:owner/compliance[/profile]` | signed | Present only when `compliance_proxy.url` is configured. Rewrites to `/compliance/profiles/:owner[/profile]` and preserves the upstream status and body. Timeouts map to `504`, other upstream failures to `502`. |
 | `GET /compliance/organizations/:org/owners/:owner/compliance[/profile]` | signed | Legacy chef-gate spelling of the same compliance proxy route. |
