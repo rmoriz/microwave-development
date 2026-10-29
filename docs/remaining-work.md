@@ -2,7 +2,7 @@
 
 # Remaining work
 
-Open gaps: 10 (deployment: 1, migration: 2, mail: 1, search: 1, ha: 2, auth: 1, tooling: 1, docs: 1)
+Open gaps: 13 (deployment: 1, migration: 3, mail: 1, search: 1, ha: 2, auth: 2, tooling: 2, docs: 1)
 
 <a id="area-deployment"></a>
 
@@ -29,6 +29,12 @@ Open gaps: 10 (deployment: 1, migration: 2, mail: 1, search: 1, ha: 2, auth: 1, 
 **gap-from-api-credentials** — The live legacy API crawler cannot copy password hashes or the admin flag.
 
 - `website/homepage/src/components/KnownGaps.astro`
+
+<a id="gap-secrets-file"></a>
+
+**gap-secrets-file** — There is no private-chef-secrets.json or CHEF_SECRETS_DATA reader at server startup; those files are only handled by the migration importer.
+
+- `TODO.md`
 
 <a id="area-mail"></a>
 
@@ -77,6 +83,12 @@ Open gaps: 10 (deployment: 1, migration: 2, mail: 1, search: 1, ha: 2, auth: 1, 
 
 - `website/homepage/src/components/KnownGaps.astro`
 
+<a id="gap-x-ops-api-info"></a>
+
+**gap-x-ops-api-info** — The optional include_x_ops_api_info X-Ops-API-Info response header is not implemented.
+
+- `TODO.md`
+
 <a id="area-tooling"></a>
 
 ## Tooling
@@ -86,6 +98,12 @@ Open gaps: 10 (deployment: 1, migration: 2, mail: 1, search: 1, ha: 2, auth: 1, 
 **gap-mcp-audit** — MCP is experimental: no durable audit table, per-tool scopes, or token expiry.
 
 - `website/homepage/src/components/KnownGaps.astro`
+
+<a id="gap-transitive-member"></a>
+
+**gap-transitive-member** — The /groups/:id/transitive_member endpoint is not implemented.
+
+- `TODO.md`
 
 <a id="area-docs"></a>
 

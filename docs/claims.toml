@@ -932,3 +932,33 @@ surfaces = [
 ]
 verify = { kind = "grep", path = "website/homepage/src/pages/404.astro", pattern = "Back to home" }
 
+
+[[claim]]
+id = "gap-secrets-file"
+summary = "There is no private-chef-secrets.json or CHEF_SECRETS_DATA reader at server startup; those files are only handled by the migration importer."
+area = "migration"
+status = "gap"
+surfaces = [
+  { path = "TODO.md", needle = "CHEF_SECRETS_DATA" },
+]
+verify = { kind = "grep", path = "docs/deployment.md", pattern = "CHEF_SECRETS_DATA" }
+
+[[claim]]
+id = "gap-transitive-member"
+summary = "The /groups/:id/transitive_member endpoint is not implemented."
+area = "tooling"
+status = "gap"
+surfaces = [
+  { path = "TODO.md", needle = "transitive_member" },
+]
+verify = { kind = "file", path = "crates/microwave-api/src/groups.rs" }
+
+[[claim]]
+id = "gap-x-ops-api-info"
+summary = "The optional include_x_ops_api_info X-Ops-API-Info response header is not implemented."
+area = "auth"
+status = "gap"
+surfaces = [
+  { path = "TODO.md", needle = "X-Ops-API-Info" },
+]
+verify = { kind = "file", path = "crates/microwave-api/src/middleware.rs" }
