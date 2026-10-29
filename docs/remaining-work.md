@@ -2,7 +2,7 @@
 
 # Remaining work
 
-Open gaps: 15 (deployment: 1, migration: 3, mail: 1, search: 3, ha: 2, auth: 2, tooling: 2, docs: 1)
+Open gaps: 21 (deployment: 1, migration: 6, mail: 1, search: 3, ha: 3, auth: 2, tooling: 3, docs: 2)
 
 <a id="area-deployment"></a>
 
@@ -29,6 +29,24 @@ Open gaps: 15 (deployment: 1, migration: 3, mail: 1, search: 3, ha: 2, auth: 2, 
 **gap-from-api-credentials** — The live legacy API crawler cannot copy password hashes or the admin flag.
 
 - `website/homepage/src/components/KnownGaps.astro`
+
+<a id="gap-knife-artifacts-policies"></a>
+
+**gap-knife-artifacts-policies** — knife backup import does not import cookbook artifacts, policies/policy groups, or OAuth applications; only snapshot import carries them.
+
+- `TODO.md`
+
+<a id="gap-metadata-rb-s3"></a>
+
+**gap-metadata-rb-s3** — metadata.rb is parsed as a DSL subset rather than evaluated as Ruby, and imported blobs always target the local object store, not S3/Garage.
+
+- `TODO.md`
+
+<a id="gap-post-migration-reindex"></a>
+
+**gap-post-migration-reindex** — A migration does not trigger a search reindex or verify object counts and checksum integrity afterwards.
+
+- `TODO.md`
 
 <a id="gap-secrets-file"></a>
 
@@ -75,6 +93,12 @@ Open gaps: 15 (deployment: 1, migration: 3, mail: 1, search: 3, ha: 2, auth: 2, 
 
 ## Ha
 
+<a id="gap-load-simulation"></a>
+
+**gap-load-simulation** — There is no 1,000-node concurrent converge load simulation for latency, memory, or SQLITE_BUSY checks.
+
+- `TODO.md`
+
 <a id="gap-multi-replica-ha"></a>
 
 **gap-multi-replica-ha** — Multi-replica HA and automated failover are not validated.
@@ -108,6 +132,12 @@ Open gaps: 15 (deployment: 1, migration: 3, mail: 1, search: 3, ha: 2, auth: 2, 
 
 ## Tooling
 
+<a id="gap-knife-e2e"></a>
+
+**gap-knife-e2e** — Only chef-client has an end-to-end converge harness; knife has none.
+
+- `TODO.md`
+
 <a id="gap-mcp-audit"></a>
 
 **gap-mcp-audit** — MCP is experimental: no durable audit table, per-tool scopes, or token expiry.
@@ -123,6 +153,12 @@ Open gaps: 15 (deployment: 1, migration: 3, mail: 1, search: 3, ha: 2, auth: 2, 
 <a id="area-docs"></a>
 
 ## Docs
+
+<a id="gap-full-pedant-embedded"></a>
+
+**gap-full-pedant-embedded** — No single full pedant run against the default embedded stack is 100% green; the embedded backend is a scan, not Tantivy.
+
+- `TODO.md`
 
 <a id="readme-remaining-work-generated"></a>
 

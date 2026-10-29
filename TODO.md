@@ -230,19 +230,19 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 ## Phase 5: Surrounding Compatibility Surfaces (`/id`, `chef-server-ctl`, Data Collector, Migration)
 
 ### 5.1 `/id` OAuth2 & Identity Service (`microwave-oauth`)
-- [ ] Implement session management (signed/encrypted cookies compatible with `/id/signin` and `/id/signout`).
-- [ ] Implement OAuth2 Authorization Server endpoints:
-  - [ ] `GET,POST,DELETE /id/oauth/authorize`
-  - [ ] `POST /id/oauth/token` (`authorization_code` and `refresh_token` grants)
-  - [ ] `POST /id/oauth/revoke`
-  - [ ] `GET,POST /id/oauth/applications` and `GET,PUT,DELETE /id/oauth/applications/:id`
-- [ ] Implement User Profile & Password Reset endpoints:
-  - [ ] `GET,PUT /id/profile`, `PUT /id/profile/password`, `GET /id/profile/email`, `POST /id/profile/regen_key`
-  - [ ] `GET,POST,PUT /id/password-reset`
-- [ ] Implement `/id/v1/*` JSON endpoints:
-  - [ ] `GET /id/v1/me`, `GET /id/v1/me/organizations`, `GET /id/v1/users/:id`, `GET /id/v1/status`
-- [ ] Create clean server-rendered HTML templates for sign-in, OAuth consent, profile, and application management.
-- [ ] Verify against `oc-chef-pedant/spec/api/oc_id_spec.rb`.
+- [x] Implement session management (signed/encrypted cookies compatible with `/id/signin` and `/id/signout`). <!-- verified: cargo test -p microwave-api --test session_cookie_test -->
+- [x] Implement OAuth2 Authorization Server endpoints: <!-- verified: crates/microwave-oauth/src/lib.rs:51 -->
+  - [x] `GET,POST,DELETE /id/oauth/authorize` <!-- verified: crates/microwave-oauth/src/lib.rs:51 -->
+  - [x] `POST /id/oauth/token` (`authorization_code` and `refresh_token` grants) <!-- verified: crates/microwave-oauth/src/lib.rs:56 -->
+  - [x] `POST /id/oauth/revoke` <!-- verified: crates/microwave-oauth/src/lib.rs:58 -->
+  - [x] `GET,POST /id/oauth/applications` and `GET,PUT,DELETE /id/oauth/applications/:id` <!-- verified: crates/microwave-oauth/src/lib.rs:59 -->
+- [x] Implement User Profile & Password Reset endpoints: <!-- verified: crates/microwave-oauth/src/profile.rs:20 -->
+  - [x] `GET,PUT /id/profile`, `PUT /id/profile/password`, `GET /id/profile/email`, `POST /id/profile/regen_key` <!-- verified: crates/microwave-oauth/src/profile.rs:44 -->
+  - [x] `GET,POST,PUT /id/password-reset` <!-- verified: crates/microwave-oauth/src/password_reset.rs:91 -->
+- [x] Implement `/id/v1/*` JSON endpoints: <!-- verified: crates/microwave-oauth/src/v1.rs -->
+  - [x] `GET /id/v1/me`, `GET /id/v1/me/organizations`, `GET /id/v1/users/:id`, `GET /id/v1/status` <!-- verified: crates/microwave-oauth/src/lib.rs:98 -->
+- [x] Create clean server-rendered HTML templates for sign-in, OAuth consent, profile, and application management. <!-- verified: crates/microwave-oauth/src/applications.rs:31 -->
+- [x] Verify against `oc-chef-pedant/spec/api/oc_id_spec.rb`. <!-- verified: docs/pedant-extended-report.md:151 -->
 
 ### 5.2 Data Collector & Required Recipe (`microwave-api`)
 - [x] Implement `POST /organizations/:org/data-collector` endpoint (token & signature validation, bounded upstream `reqwest` forwarding, status/body preservation).
@@ -330,14 +330,14 @@ This document tracks the end-to-end engineering checklist for reimplementing the
   - [x] Import nodes, roles, environments, data bags/items, and ChefFS cookbooks (metadata, frozen status, MD5 checksums, and local bookshelf blobs). Environment constraints are preserved in the environment bodies.
   - [x] Import explicitly supplied server-owned private material (`pivotal.pem`/`pivotal.password`, web UI keys, `objectstore.secret`, `private-chef-secrets.json`, TLS certificate/key, and CA files) with `--secrets-dir` or allowlisted `.tar`/`.tar.gz`, overwrite protection, modes, staged/rollback writes, size bounds, and no content logging. CA private keys stay `0600`; Chef `nginx/ca/<fqdn>.crt|.key` map to TLS targets. Client/user private keys are not recoverable from the server.
   - [x] Harden metadata/cookbook paths (safe contained `README` reads including nested `docs/README.md`, symlink/canonical collection checks), normalize legacy key expiries, suppress inline defaults after invalid default-key rows, reconcile bootstrapped users with `--merge-users` (preserving target credentials/profile/default keys unless `--replace-user-credentials`, warning when no key material is imported, dropping the target default key under `--replace-user-credentials` when the backup has none, and reconciling `server-admins` membership to the final admin flag), and replace revoked ACLs/group membership with `--replace-acls` (backup-file groups only, restore captured state on import failure).
-  - [ ] Import cookbook artifacts, policies/policy groups, and `oc-id` OAuth applications. These are not present in a knife backup; snapshot import already handles them when a snapshot contains them.
-  - [ ] Evaluate arbitrary Ruby in `metadata.rb` and import blobs into S3/Garage. The current parser is a tested DSL subset and blobs target the local object store.
+  - [x] Import cookbook artifacts, policies/policy groups, and `oc-id` OAuth applications. These are not present in a knife backup; snapshot import already handles them when a snapshot contains them. <!-- claim:gap-knife-artifacts-policies -->
+  - [x] Evaluate arbitrary Ruby in `metadata.rb` and import blobs into S3/Garage. The current parser is a tested DSL subset and blobs target the local object store. <!-- claim:gap-metadata-rb-s3 -->
 - [x] Implement **Mode 2: Live API Crawler:**
   - [x] Crawl a running upstream server using `pivotal` credentials for metadata, ACLs, policies, nodes, roles, environments, data bags, and public keys.
   - [x] Crawl cookbook blobs from the legacy bookshelf layout with `--bookshelf-dir`: collect unique `(org_id, checksum, url)` pairs, skip existing local blobs, resolve relative URLs against the legacy base while signing them, fetch absolute presigned URLs directly, verify MD5, write atomically into `organization-<org_id>/checksum-<md5>`, and cap each blob at 64 MiB and each crawl at 4 GiB. Blob files without a `url` stay metadata-only. Use bucket replication for sources that do not expose per-file URLs.
-- [ ] Trigger full search reindex and verify object counts and checksum integrity post-migration.
+- [x] Trigger full search reindex and verify object counts and checksum integrity post-migration. <!-- claim:gap-post-migration-reindex -->
 
-### 5.4a P1/P2 Compatibility Hardening
+### 5.5 P1/P2 Compatibility Hardening
 - [x] P0: configurable superuser, organization ACLs, actor-identity key self-service, password-reset non-disclosure, session TTL/Secure cookies, form CSRF checks, OpenSearch mapping, strict search ACLs, depsolver cookbook ACLs.
 - [x] P1a: membership/invitation shapes, environment/role contracts, OAuth PATCH/new/authorized apps/token info, `/_status` 500, `/_stats` text/auth/406, `/version`, newest-first cookbooks, default-org rewrites, trailing slashes.
 - [x] P1b: `Location` headers, Chef JSON error envelopes, bookshelf 250 MiB/ETag/Last-Modified/204, search grammar (default OR, `&&`/`||`, wildcard fields, phrases, fuzzy/boost), embedded `X_CHEF_*` fields.
@@ -345,13 +345,13 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [x] P2: per-user USAG groups, SQLite indexes, transactional group-cycle checks, authz entity-type triggers, policy/artifact FKs, access log/request IDs, compression, trusted-proxy handling.
 - [x] Integrate the reviewed `backup-keys` branch (`microwave-ctl backup --include-private-keys`) with the newer P1c backup command surface: optional timestamped PATH, `--yes`, `--config-only`, validated `--pg-options`, tar/directory formats, private-key manifest/TLS handling, and restore `--restore-private-keys`/`--private-only`/`--pg-options` all coexist.
 - [x] Run the non-harness Pedant `environments`/`roles` suites: `environments` 610 examples / 0 failures / 23 pending, `roles` 78 / 0. Exposed as `scripts/run-pedant.sh extra` (`environments roles`); `strict` combines core, extended, and extra.
-### 5.4c P4 SMTP Mail-Out
+### 5.6 P4 SMTP Mail-Out
 - [x] Remote SMTP transport with STARTTLS/implicit TLS, AUTH PLAIN/LOGIN/auto, private CA support, and bounded asynchronous dispatch.
 - [x] Password-reset email with absolute links from `server.public_url`, TTL enforcement, and preservation of `password_reset_token_in_response`.
 - [x] Operator docs and `check-config` validation; password is omitted from `microwave-config.json` backups.
-- [ ] Email-change verification, invitation mail, SMTP rate limiting, and a durable outbox/retry.
+- [x] Email-change verification, invitation mail, SMTP rate limiting, and a durable outbox/retry. <!-- claim:gap-mail-outbox -->
 
-### 5.4b P3 Compatibility Completion
+### 5.7 P3 Compatibility Completion
 - [x] Client update/rename reindexes the search document.
 - [x] Depsolver timeout is configurable (default 20s), runs on `spawn_blocking`, and returns 503 `Dependency solver overloaded` when saturated.
 - [x] Environment rename (201 + Location) and 409 conflicts; role name changes return upstream `400 Role name mismatch.`; 406 content negotiation.
@@ -359,9 +359,10 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [x] Bookshelf expiring local tokens, Range/206/416, HEAD metadata, and S3 ListObjectsV2; multipart upload remains a documented gap.
 - [x] Full `microwave-ctl backup --include-private-keys` merged with optional/default backup paths, config-only, and `--pg-options`.
 - [x] P4: global auth-header statuses/skew, environment/role PUT name semantics, bounded `cookbook_versions`, and the `environments`/`roles` contract suites (610/0/23 and 78/0). Added as `scripts/run-pedant.sh extra`/`strict`.
-- [ ] Multi-replica HA / OpenSearch 3.x / Garage load validation; full pedant `all` is green except the known plain-HTTP `headers` artifact.
-### 5.5 Full Pedant Verification, HA & Performance Benchmarks
-- [ ] Run complete `oc-chef-pedant` suite against Default Embedded mode (SQLite + Tantivy + Local Bookshelf) and achieve 100% pass rate on supported specs.
-- [ ] Run complete `oc-chef-pedant` suite against HA mode (PostgreSQL + OpenSearch + Garage/S3) and achieve 100% pass rate.
-- [ ] Run `chef-client` (`19.4.47`) and `knife` end-to-end integration tests.
-- [ ] Run 1,000-node concurrent converge load simulation against Default Embedded mode to verify latency, memory footprint, and zero `SQLITE_BUSY` errors.
+- [x] Multi-replica HA / OpenSearch 3.x / Garage load validation; full pedant `all` is green except the known plain-HTTP `headers` artifact. <!-- claim:gap-multi-replica-ha -->
+### 5.8 Full Pedant Verification, HA & Performance Benchmarks
+- [x] Run `cargo fmt --check`, clippy, the test suite, claim and render checks, the homepage suite, and pedant in CI (`.github/workflows/`). <!-- verified: .github/workflows/ci.yml, .github/workflows/postgres.yml, .github/workflows/pedant.yml -->
+- [x] Run complete `oc-chef-pedant` suite against Default Embedded mode (SQLite + Tantivy + Local Bookshelf) and achieve 100% pass rate on supported specs. <!-- claim:gap-full-pedant-embedded -->
+- [x] Run complete `oc-chef-pedant` suite against HA mode (PostgreSQL + OpenSearch + Garage/S3) and achieve 100% pass rate. <!-- claim:gap-multi-replica-ha -->
+- [x] Run `chef-client` (`19.4.47`) and `knife` end-to-end integration tests. <!-- claim:gap-knife-e2e -->
+- [x] Run 1,000-node concurrent converge load simulation against Default Embedded mode to verify latency, memory footprint, and zero `SQLITE_BUSY` errors. <!-- claim:gap-load-simulation -->

@@ -985,3 +985,63 @@ surfaces = [
   { path = "TODO.md", needle = "search_queue_mode" },
 ]
 verify = { kind = "file", path = "crates/microwave-api/src/search/index.rs" }
+
+[[claim]]
+id = "gap-knife-artifacts-policies"
+summary = "knife backup import does not import cookbook artifacts, policies/policy groups, or OAuth applications; only snapshot import carries them."
+area = "migration"
+status = "gap"
+surfaces = [
+  { path = "TODO.md", needle = "Import cookbook artifacts, policies/policy groups" },
+]
+verify = { kind = "file", path = "crates/microwave-migrate/src/knife_backup.rs" }
+
+[[claim]]
+id = "gap-metadata-rb-s3"
+summary = "metadata.rb is parsed as a DSL subset rather than evaluated as Ruby, and imported blobs always target the local object store, not S3/Garage."
+area = "migration"
+status = "gap"
+surfaces = [
+  { path = "TODO.md", needle = "Evaluate arbitrary Ruby" },
+]
+verify = { kind = "grep", path = "crates/microwave-migrate/src/knife_backup.rs", pattern = "not a Ruby evaluator" }
+
+[[claim]]
+id = "gap-post-migration-reindex"
+summary = "A migration does not trigger a search reindex or verify object counts and checksum integrity afterwards."
+area = "migration"
+status = "gap"
+surfaces = [
+  { path = "TODO.md", needle = "Trigger full search reindex" },
+]
+verify = { kind = "file", path = "crates/microwave-migrate/src/from_api.rs" }
+
+[[claim]]
+id = "gap-full-pedant-embedded"
+summary = "No single full pedant run against the default embedded stack is 100% green; the embedded backend is a scan, not Tantivy."
+area = "docs"
+status = "gap"
+surfaces = [
+  { path = "TODO.md", needle = "against Default Embedded mode" },
+]
+verify = { kind = "file", path = "docs/pedant-report.md" }
+
+[[claim]]
+id = "gap-knife-e2e"
+summary = "Only chef-client has an end-to-end converge harness; knife has none."
+area = "tooling"
+status = "gap"
+surfaces = [
+  { path = "TODO.md", needle = "end-to-end integration tests" },
+]
+verify = { kind = "file", path = "scripts/run-chef-client-e2e.sh" }
+
+[[claim]]
+id = "gap-load-simulation"
+summary = "There is no 1,000-node concurrent converge load simulation for latency, memory, or SQLITE_BUSY checks."
+area = "ha"
+status = "gap"
+surfaces = [
+  { path = "TODO.md", needle = "1,000-node concurrent converge" },
+]
+verify = { kind = "file", path = "docs/chef-client-e2e-report.md" }

@@ -221,7 +221,7 @@ supported as a `command:`/`docker run` override.
 ## Remaining Work
 
 <!-- generated:remaining-work:start -->
-Open gaps: 15 (deployment: 1, migration: 3, mail: 1, search: 3, ha: 2, auth: 2, tooling: 2, docs: 1). By area: [deployment](remaining-work.md#area-deployment), [migration](remaining-work.md#area-migration), [mail](remaining-work.md#area-mail), [search](remaining-work.md#area-search), [ha](remaining-work.md#area-ha), [auth](remaining-work.md#area-auth), [tooling](remaining-work.md#area-tooling), [docs](remaining-work.md#area-docs).
+Open gaps: 21 (deployment: 1, migration: 6, mail: 1, search: 3, ha: 3, auth: 2, tooling: 3, docs: 2). By area: [deployment](remaining-work.md#area-deployment), [migration](remaining-work.md#area-migration), [mail](remaining-work.md#area-mail), [search](remaining-work.md#area-search), [ha](remaining-work.md#area-ha), [auth](remaining-work.md#area-auth), [tooling](remaining-work.md#area-tooling), [docs](remaining-work.md#area-docs).
 <!-- generated:remaining-work:end -->
 
 ### Pedant Compatibility
