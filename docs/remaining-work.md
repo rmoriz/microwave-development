@@ -2,7 +2,7 @@
 
 # Remaining work
 
-Open gaps: 13 (deployment: 1, migration: 3, mail: 1, search: 1, ha: 2, auth: 2, tooling: 2, docs: 1)
+Open gaps: 15 (deployment: 1, migration: 3, mail: 1, search: 3, ha: 2, auth: 2, tooling: 2, docs: 1)
 
 <a id="area-deployment"></a>
 
@@ -55,6 +55,21 @@ Open gaps: 13 (deployment: 1, migration: 3, mail: 1, search: 1, ha: 2, auth: 2, 
 **gap-embedded-search-index** — Embedded search is a relational scan, not an inverted index.
 
 - `website/homepage/src/components/KnownGaps.astro`
+
+<a id="gap-search-queue-mode"></a>
+
+**gap-search-queue-mode** — The inline and batch search queue modes (search_queue_mode) are not implemented.
+
+- `TODO.md`
+
+<a id="gap-tantivy-backend"></a>
+
+**gap-tantivy-backend** — There is no Tantivy backend: the embedded backend scans relational rows instead of an inverted index.
+
+- `TODO.md`
+- `TODO.md`
+- `TODO.md`
+- `TODO.md`
 
 <a id="area-ha"></a>
 

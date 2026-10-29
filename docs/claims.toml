@@ -962,3 +962,26 @@ surfaces = [
   { path = "TODO.md", needle = "X-Ops-API-Info" },
 ]
 verify = { kind = "file", path = "crates/microwave-api/src/middleware.rs" }
+
+[[claim]]
+id = "gap-tantivy-backend"
+summary = "There is no Tantivy backend: the embedded backend scans relational rows instead of an inverted index."
+area = "search"
+status = "gap"
+surfaces = [
+  { path = "TODO.md", needle = "Tantivy Embedded Backend" },
+  { path = "TODO.md", needle = "Custom tokenizer" },
+  { path = "TODO.md", needle = "Query AST to Tantivy" },
+  { path = "TODO.md", needle = "Deterministic sorting" },
+]
+verify = { kind = "file", path = "crates/microwave-api/src/search/backend.rs" }
+
+[[claim]]
+id = "gap-search-queue-mode"
+summary = "The inline and batch search queue modes (search_queue_mode) are not implemented."
+area = "search"
+status = "gap"
+surfaces = [
+  { path = "TODO.md", needle = "search_queue_mode" },
+]
+verify = { kind = "file", path = "crates/microwave-api/src/search/index.rs" }

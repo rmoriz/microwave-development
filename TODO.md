@@ -132,98 +132,98 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 ## Phase 3: Core Converge Objects, Bookshelf, Cookbooks, Policyfiles & Depsolver
 
 ### 3.1 Nodes, Roles, Environments & Data Bags
-- [ ] **Nodes (`/organizations/:org/nodes`):**
-  - [ ] `GET,POST /organizations/:org/nodes`, `GET,PUT,DELETE /organizations/:org/nodes/:name`, `GET /organizations/:org/environments/:env/nodes`.
-  - [ ] Validate node JSON schema (`name` match, `json_class: "Chef::Node"`, `chef_type: "node"`, `chef_environment`, `run_list` normalization, `default`/`normal`/`override`/`automatic` attribute maps, `policy_name`, `policy_group`).
-  - [ ] Trigger search index add/update/delete on mutation.
-- [ ] **Roles (`/organizations/:org/roles`):**
-  - [ ] `GET,POST /organizations/:org/roles`, `GET,PUT,DELETE /organizations/:org/roles/:name`.
+- [x] **Nodes (`/organizations/:org/nodes`):** <!-- verified: cargo test -p microwave-api --test nodes_test -->
+  - [x] `GET,POST /organizations/:org/nodes`, `GET,PUT,DELETE /organizations/:org/nodes/:name`, `GET /organizations/:org/environments/:env/nodes`. <!-- verified: cargo test -p microwave-api --test nodes_test -->
+  - [x] Validate node JSON schema (`name` match, `json_class: "Chef::Node"`, `chef_type: "node"`, `chef_environment`, `run_list` normalization, `default`/`normal`/`override`/`automatic` attribute maps, `policy_name`, `policy_group`). <!-- verified: crates/microwave-api/src/nodes.rs:343 -->
+  - [x] Trigger search index add/update/delete on mutation. <!-- verified: crates/microwave-api/src/nodes.rs:169 -->
+- [x] **Roles (`/organizations/:org/roles`):** <!-- verified: cargo test -p microwave-api --test roles_contract_test -->
+  - [x] `GET,POST /organizations/:org/roles`, `GET,PUT,DELETE /organizations/:org/roles/:name`. <!-- verified: cargo test -p microwave-api --test roles_contract_test -->
   - [x] `GET /organizations/:org/roles/:name/environments` and `GET /organizations/:org/roles/:name/environments/:env` (and `/environments/:env/roles/:name`).
-  - [ ] Validate role JSON schema (`json_class: "Chef::Role"`, `run_list`, `env_run_lists`, `default_attributes`, `override_attributes`).
-- [ ] **Environments (`/organizations/:org/environments`):**
-  - [ ] `GET,POST /organizations/:org/environments`, `GET,PUT,DELETE /organizations/:org/environments/:env`.
-  - [ ] Protect `_default` environment from deletion or modification (`405 Method Not Allowed`).
-  - [ ] Validate environment JSON (`cookbook_versions` constraint map, `default_attributes`, `override_attributes`).
+  - [x] Validate role JSON schema (`json_class: "Chef::Role"`, `run_list`, `env_run_lists`, `default_attributes`, `override_attributes`). <!-- verified: crates/microwave-api/src/roles.rs:145 -->
+- [x] **Environments (`/organizations/:org/environments`):** <!-- verified: cargo test -p microwave-api --test environments_contract_test -->
+  - [x] `GET,POST /organizations/:org/environments`, `GET,PUT,DELETE /organizations/:org/environments/:env`. <!-- verified: cargo test -p microwave-api --test environments_contract_test -->
+  - [x] Protect `_default` environment from deletion or modification (`405 Method Not Allowed`). <!-- verified: crates/microwave-api/src/environments.rs:249 -->
+  - [x] Validate environment JSON (`cookbook_versions` constraint map, `default_attributes`, `override_attributes`). <!-- verified: crates/microwave-api/src/environments.rs:26 -->
   - [x] Implement `GET /organizations/:org/environments/:env/cookbooks`, `.../cookbooks/:cookbook`, and `.../recipes` (filtering cookbooks by environment version constraints).
-- [ ] **Data Bags (`/organizations/:org/data`):**
-  - [ ] `GET,POST /organizations/:org/data`, `GET,POST,DELETE /organizations/:org/data/:bag`.
-  - [ ] `GET,PUT,DELETE /organizations/:org/data/:bag/:item` (handle `raw_data` wrapper vs unwrapped item JSON, validate `id` field match, index items under `{data_bag, bag_name}`).
-- [ ] Verify against `nodes/*`, `roles/*`, `environments/*`, `data_bag/*` pedant specs.
+- [x] **Data Bags (`/organizations/:org/data`):** <!-- verified: cargo test -p microwave-api --test data_bags_test -->
+  - [x] `GET,POST /organizations/:org/data`, `GET,POST,DELETE /organizations/:org/data/:bag`. <!-- verified: cargo test -p microwave-api --test data_bags_test -->
+  - [x] `GET,PUT,DELETE /organizations/:org/data/:bag/:item` (handle `raw_data` wrapper vs unwrapped item JSON, validate `id` field match, index items under `{data_bag, bag_name}`). <!-- verified: cargo test -p microwave-api --test data_bags_test -->
+- [x] Verify against `nodes/*`, `roles/*`, `environments/*`, `data_bag/*` pedant specs. <!-- verified: docs/pedant-report.md:8 -->
 
 ### 3.2 Object Store, Bookshelf & Sandboxes (`microwave-objectstore`)
-- [ ] Implement `ObjectStore` trait with two backends:
-  - [ ] **Local Filesystem Backend:** atomic temp-file write + on-the-fly MD5 verification + rename into `{data_dir}/bookshelf/organization-{org_id}/checksum-{md5}`.
-  - [ ] **S3 / Garage Backend:** SigV4 presigned URL generation (`PUT` with `content-md5` and `content-type: application/x-binary`; `GET`), `HEAD` object existence checks, and batch `DELETE`.
-- [ ] Implement embedded `/bookshelf/:bucket/organization-:org/checksum-:md5` HTTP routes (`HEAD`, `GET`, `PUT`, `DELETE`) with SigV4 query-string and header authentication, `ETag` (Base64 MD5), and streaming body I/O.
-- [ ] Implement `POST /organizations/:org/sandboxes`:
-  - [ ] Validate `{"checksums": {"<md5>": null, ...}}` payload.
-  - [ ] Check existing `checksums` table for the org; insert needed checksums into `sandboxed_checksums` and return `201 Created` with `sandbox_id`, `uri`, and per-checksum `{needs_upload, url}`.
-- [ ] Implement `PUT /organizations/:org/sandboxes/:id`:
-  - [ ] Validate `{"is_completed": true}`.
-  - [ ] Verify all `needs_upload` checksums are present in `microwave-objectstore` (return `503 Service Unavailable` listing missing checksums if any are absent).
-  - [ ] Promote checksums to `checksums` table and delete sandbox record.
-- [ ] Verify against `oc-chef-pedant/spec/api/sandboxes/complete_endpoint_spec.rb`.
+- [x] Implement `ObjectStore` trait with two backends: <!-- verified: crates/microwave-objectstore/src/lib.rs:243 -->
+  - [x] **Local Filesystem Backend:** atomic temp-file write + on-the-fly MD5 verification + rename into `{data_dir}/bookshelf/organization-{org_id}/checksum-{md5}`. <!-- verified: crates/microwave-objectstore/src/lib.rs:243 -->
+  - [x] **S3 / Garage Backend:** SigV4 presigned URL generation (`PUT` with `content-md5` and `content-type: application/x-binary`; `GET`), `HEAD` object existence checks, and batch `DELETE`. <!-- verified: crates/microwave-objectstore/src/s3.rs -->
+- [x] Implement embedded `/bookshelf/:bucket/organization-:org/checksum-:md5` HTTP routes (`HEAD`, `GET`, `PUT`, `DELETE`) with SigV4 query-string and header authentication, `ETag` (Base64 MD5), and streaming body I/O. <!-- verified: cargo test -p microwave-api --test bookshelf_contract_test -->
+- [x] Implement `POST /organizations/:org/sandboxes`: <!-- verified: cargo test -p microwave-api --test sandboxes_test -->
+  - [x] Validate `{"checksums": {"<md5>": null, ...}}` payload. <!-- verified: crates/microwave-api/src/sandboxes.rs:31 -->
+  - [x] Check existing `checksums` table for the org; insert needed checksums into `sandboxed_checksums` and return `201 Created` with `sandbox_id`, `uri`, and per-checksum `{needs_upload, url}`. <!-- verified: crates/microwave-api/src/sandboxes.rs:45 -->
+- [x] Implement `PUT /organizations/:org/sandboxes/:id`: <!-- verified: cargo test -p microwave-api --test sandboxes_test -->
+  - [x] Validate `{"is_completed": true}`. <!-- verified: crates/microwave-api/src/sandboxes.rs:65 -->
+  - [x] Verify all `needs_upload` checksums are present in `microwave-objectstore` (return `503 Service Unavailable` listing missing checksums if any are absent). <!-- verified: crates/microwave-api/src/sandboxes.rs:92 -->
+  - [x] Promote checksums to `checksums` table and delete sandbox record. <!-- verified: crates/microwave-api/src/sandboxes.rs:65 -->
+- [x] Verify against `oc-chef-pedant/spec/api/sandboxes/complete_endpoint_spec.rb`. <!-- verified: docs/pedant-extended-report.md:164 -->
 
 ### 3.3 Cookbooks, Cookbook Artifacts, Policyfiles & Universe
-- [ ] **Cookbooks (`/organizations/:org/cookbooks`):**
-  - [ ] `GET /organizations/:org/cookbooks` (`?num_versions=N|all`), `GET .../cookbooks/_latest`, `GET .../cookbooks/_recipes`.
-  - [ ] `GET /organizations/:org/cookbooks/:name` (`?num_versions=N|all`).
-  - [ ] `GET,PUT,DELETE /organizations/:org/cookbooks/:name/:version`:
-    - [ ] Validate cookbook version manifest (segments: `recipes`, `definitions`, `libraries`, `attributes`, `files`, `templates`, `resources`, `providers`, `root_files`, `metadata`).
-    - [ ] Verify all file checksums exist in `checksums` for the org (`400 Bad Request` if any missing).
-    - [ ] Enforce `frozen?` immutability (`409 Conflict` on `PUT` unless `?force=true`).
-    - [ ] Attach presigned `GET` URLs to all manifest file entries on `GET`.
-    - [ ] On `DELETE`, garbage-collect checksums no longer referenced by any `cookbook_versions` or `cookbook_artifact_versions` in the org.
-- [ ] **Cookbook Artifacts (`/organizations/:org/cookbook_artifacts`):**
-  - [ ] `GET /organizations/:org/cookbook_artifacts`, `GET /organizations/:org/cookbook_artifacts/:name`.
-  - [ ] `GET,PUT,DELETE /organizations/:org/cookbook_artifacts/:name/:identifier` (validate 40-char hex SHA1 identifier, checksum references, presigned URLs, and orphan checksum cleanup).
-- [ ] **Policies & Policy Groups (`/organizations/:org/policies`, `/organizations/:org/policy_groups`):**
-  - [ ] `GET /organizations/:org/policies`, `GET,POST,DELETE /organizations/:org/policies/:name`.
-  - [ ] `GET /organizations/:org/policies/:name/revisions`, `GET,DELETE /organizations/:org/policies/:name/revisions/:revision_id`.
-  - [ ] `GET /organizations/:org/policy_groups`, `GET,DELETE /organizations/:org/policy_groups/:group`.
-  - [ ] `GET,PUT,DELETE /organizations/:org/policy_groups/:group/policies/:name` (create policy/group/revision associations dynamically on `PUT` if not yet present, matching `oc_chef_wm_policy_group_policy_rev.erl`).
-- [ ] **Universe (`GET /organizations/:org/universe`):**
-  - [ ] Return Berkshelf-compatible dependency universe JSON across all cookbooks and versions in the org.
-- [ ] Verify against `cookbooks/*`, `cookbook_artifacts/*`, `policies/*`, and `universe_spec.rb`.
+- [x] **Cookbooks (`/organizations/:org/cookbooks`):** <!-- verified: cargo test -p microwave-api --test cookbooks_test -->
+  - [x] `GET /organizations/:org/cookbooks` (`?num_versions=N|all`), `GET .../cookbooks/_latest`, `GET .../cookbooks/_recipes`. <!-- verified: cargo test -p microwave-api --test cookbooks_test -->
+  - [x] `GET /organizations/:org/cookbooks/:name` (`?num_versions=N|all`). <!-- verified: cargo test -p microwave-api --test cookbooks_order_test -->
+  - [x] `GET,PUT,DELETE /organizations/:org/cookbooks/:name/:version`: <!-- verified: cargo test -p microwave-api --test cookbooks_test -->
+    - [x] Validate cookbook version manifest (segments: `recipes`, `definitions`, `libraries`, `attributes`, `files`, `templates`, `resources`, `providers`, `root_files`, `metadata`). <!-- verified: crates/microwave-api/src/cookbooks.rs:32 -->
+    - [x] Verify all file checksums exist in `checksums` for the org (`400 Bad Request` if any missing). <!-- verified: cargo test -p microwave-api --test cookbooks_test -->
+    - [x] Enforce `frozen?` immutability (`409 Conflict` on `PUT` unless `?force=true`). <!-- verified: crates/microwave-api/src/cookbooks.rs:162 -->
+    - [x] Attach presigned `GET` URLs to all manifest file entries on `GET`. <!-- verified: cargo test -p microwave-api --test cookbooks_test -->
+    - [x] On `DELETE`, garbage-collect checksums no longer referenced by any `cookbook_versions` or `cookbook_artifact_versions` in the org. <!-- verified: cargo test -p microwave-api --test cookbooks_test -->
+- [x] **Cookbook Artifacts (`/organizations/:org/cookbook_artifacts`):** <!-- verified: cargo test -p microwave-api --test cookbook_compat_test -->
+  - [x] `GET /organizations/:org/cookbook_artifacts`, `GET /organizations/:org/cookbook_artifacts/:name`. <!-- verified: cargo test -p microwave-api --test cookbook_compat_test -->
+  - [x] `GET,PUT,DELETE /organizations/:org/cookbook_artifacts/:name/:identifier` (validate 40-char hex SHA1 identifier, checksum references, presigned URLs, and orphan checksum cleanup). <!-- verified: cargo test -p microwave-api --test cookbook_compat_test -->
+- [x] **Policies & Policy Groups (`/organizations/:org/policies`, `/organizations/:org/policy_groups`):** <!-- verified: cargo test -p microwave-api --test policies_test -->
+  - [x] `GET /organizations/:org/policies`, `GET,POST,DELETE /organizations/:org/policies/:name`. <!-- verified: cargo test -p microwave-api --test policies_test -->
+  - [x] `GET /organizations/:org/policies/:name/revisions`, `GET,DELETE /organizations/:org/policies/:name/revisions/:revision_id`. <!-- verified: cargo test -p microwave-api --test policies_test -->
+  - [x] `GET /organizations/:org/policy_groups`, `GET,DELETE /organizations/:org/policy_groups/:group`. <!-- verified: cargo test -p microwave-api --test policies_test -->
+  - [x] `GET,PUT,DELETE /organizations/:org/policy_groups/:group/policies/:name` (create policy/group/revision associations dynamically on `PUT` if not yet present, matching `oc_chef_wm_policy_group_policy_rev.erl`). <!-- verified: cargo test -p microwave-api --test policies_test -->
+- [x] **Universe (`GET /organizations/:org/universe`):** <!-- verified: crates/microwave-api/src/cookbooks.rs:309 -->
+  - [x] Return Berkshelf-compatible dependency universe JSON across all cookbooks and versions in the org. <!-- verified: cargo test -p microwave-api --test cookbooks_test -->
+- [x] Verify against `cookbooks/*`, `cookbook_artifacts/*`, `policies/*`, and `universe_spec.rb`. <!-- verified: docs/pedant-extended-report.md:164 -->
 
 ### 3.4 Dependency Solver (`microwave-depsolver`)
-- [ ] Implement upstream cookbook version parser (`MAJOR.MINOR` and `MAJOR.MINOR.PATCH`) and constraint operators (`=`, `>`, `<`, `>=`, `<=`, `~>`).
-- [ ] Implement backtracking dependency graph solver with timeout (2,000ms) and detailed failure diagnostics (`non_existent_cookbooks`, `most_constrained_cookbooks`, `unable_to_solve`).
-- [ ] Implement `POST /organizations/:org/environments/:env/cookbook_versions` handler:
-  - [ ] Parse `{"run_list": [...]}` recipes/cookbook constraints.
-  - [ ] Combine with `:env` cookbook constraints and solve against all cookbook versions in the org.
-  - [ ] Return solved cookbook version objects with presigned URLs (filtered to minimal metadata fields required by `chef-client`), or `412 Precondition Failed` with exact error JSON on conflict/missing cookbook.
-- [ ] Port all `depsolver_tests.erl` unit tests and verify against `oc-chef-pedant/spec/api/depsolver_spec.rb`.
+- [x] Implement upstream cookbook version parser (`MAJOR.MINOR` and `MAJOR.MINOR.PATCH`) and constraint operators (`=`, `>`, `<`, `>=`, `<=`, `~>`). <!-- verified: crates/microwave-depsolver/src/version.rs -->
+- [x] Implement backtracking dependency graph solver with timeout (2,000ms) and detailed failure diagnostics (`non_existent_cookbooks`, `most_constrained_cookbooks`, `unable_to_solve`). <!-- verified: crates/microwave-depsolver/src/solver.rs:6 -->
+- [x] Implement `POST /organizations/:org/environments/:env/cookbook_versions` handler: <!-- verified: cargo test -p microwave-api --test depsolver_test -->
+  - [x] Parse `{"run_list": [...]}` recipes/cookbook constraints. <!-- verified: cargo test -p microwave-api --test depsolver_test -->
+  - [x] Combine with `:env` cookbook constraints and solve against all cookbook versions in the org. <!-- verified: cargo test -p microwave-api --test depsolver_test -->
+  - [x] Return solved cookbook version objects with presigned URLs (filtered to minimal metadata fields required by `chef-client`), or `412 Precondition Failed` with exact error JSON on conflict/missing cookbook. <!-- verified: cargo test -p microwave-api --test depsolver_test -->
+- [x] Port all `depsolver_tests.erl` unit tests and verify against `oc-chef-pedant/spec/api/depsolver_spec.rb`. <!-- verified: docs/pedant-extended-report.md:169 -->
 
 ---
 
 ## Phase 4: Search & Indexing Subsystem (`microwave-search`)
 
 ### 4.1 Document Expansion (port of upstream `chef_index_expand`)
-- [ ] Implement upstream attribute deep-merge (`chef_deep_merge.erl` parity) for node attribute precedence (`default` < `normal` < `override` < `automatic`).
-- [ ] Implement JSON flattening/expansion into `content` tokens (`parent_child__=__value` + leaf `child__=__value`) with exact character escaping and word-break behavior.
-- [ ] Implement special field expansion for nodes (`recipe`, `recipes`, `role`, `roles`, `run_list`, `chef_environment`, `policy_name`, `policy_group`), roles, environments, clients, and data bag items.
-- [ ] Add metadata fields `X_CHEF_id_CHEF_X`, `X_CHEF_database_CHEF_X` (`chef_{org_id}`), `X_CHEF_type_CHEF_X`, and `data_bag`.
-- [ ] Port all EUnit tests from `src/oc_erchef/apps/chef_index/test/chef_index_expand_tests.erl`.
+- [x] Implement upstream attribute deep-merge (`chef_deep_merge.erl` parity) for node attribute precedence (`default` < `normal` < `override` < `automatic`). <!-- verified: crates/microwave-api/src/search/expand.rs:82 -->
+- [x] Implement JSON flattening/expansion into `content` tokens (`parent_child__=__value` + leaf `child__=__value`) with exact character escaping and word-break behavior. <!-- verified: crates/microwave-api/src/search/expand.rs:4 -->
+- [x] Implement special field expansion for nodes (`recipe`, `recipes`, `role`, `roles`, `run_list`, `chef_environment`, `policy_name`, `policy_group`), roles, environments, clients, and data bag items. <!-- verified: crates/microwave-api/src/search/index.rs -->
+- [x] Add metadata fields `X_CHEF_id_CHEF_X`, `X_CHEF_database_CHEF_X` (`chef_{org_id}`), `X_CHEF_type_CHEF_X`, and `data_bag`. <!-- verified: crates/microwave-api/src/search/index.rs:123 -->
+- [x] Port all EUnit tests from `src/oc_erchef/apps/chef_index/test/chef_index_expand_tests.erl`. <!-- verified: cargo test -p microwave-api --test search_grammar_test --test search_test -->
 
 ### 4.2 Lucene Query Parser & Rewriter (port of upstream `chef_lucene.peg`)
-- [ ] Implement PEG grammar matching `chef_lucene.peg`:
-  - [ ] `*:*`, field queries `field:term`, phrase queries `field:"foo bar"`, range queries `field:[a TO b]` / `field:{a TO b}` (including `*` bounds rewritten to `\ufff0`), wildcards `*` and `?`, fuzzy `~`, boost `^`, boolean `AND`/`&&`/`OR`/`||`/`NOT`/`!`/`+`/`-`, nested parentheses.
-- [ ] Implement URI percent-decoding and query parameter validation (`start` >= 0, `rows` >= 0, empty `q=""` -> `400 Bad Request`).
-- [ ] Port all EUnit tests from `src/oc_erchef/apps/chef_index/test/chef_lucene_tests.erl` and `chef_index_query_tests.erl`.
+- [x] Implement PEG grammar matching `chef_lucene.peg`: <!-- verified: crates/microwave-api/src/search/query.rs:648 -->
+  - [x] `*:*`, field queries `field:term`, phrase queries `field:"foo bar"`, range queries `field:[a TO b]` / `field:{a TO b}` (including `*` bounds rewritten to `\ufff0`), wildcards `*` and `?`, fuzzy `~`, boost `^`, boolean `AND`/`&&`/`OR`/`||`/`NOT`/`!`/`+`/`-`, nested parentheses. <!-- verified: cargo test -p microwave-api --test search_grammar_test -->
+- [x] Implement URI percent-decoding and query parameter validation (`start` >= 0, `rows` >= 0, empty `q=""` -> `400 Bad Request`). <!-- verified: crates/microwave-api/src/search/mod.rs:189 -->
+- [x] Port all EUnit tests from `src/oc_erchef/apps/chef_index/test/chef_lucene_tests.erl` and `chef_index_query_tests.erl`. <!-- verified: cargo test -p microwave-api --test search_grammar_test -->
 
 ### 4.3 Search Backends & Endpoints
-- [ ] Implement **Tantivy Embedded Backend**:
-  - [ ] Custom tokenizer matching the upstream whitespace/symbol tokenization on `content`.
-  - [ ] Query AST to Tantivy query compiler (Term, Phrase, Wildcard/Regex, Range, Boolean, Boost).
-  - [ ] Deterministic sorting by `X_CHEF_id_CHEF_X asc` and pagination (`start`, `rows`).
-- [ ] Implement **OpenSearch / Elasticsearch Backend**:
-  - [ ] `/_bulk` indexing/deletion and `/_search` query execution matching `chef_opensearch.erl`.
-- [ ] Implement `inline` and `batch` indexing queue modes (`search_queue_mode`).
-- [ ] Implement `GET /organizations/:org/search` (list built-in indexes `client`, `environment`, `node`, `role` + all `data_bag` names in org).
-- [ ] Implement `GET /organizations/:org/search/:index` and `POST /organizations/:org/search/:index` (partial search extracting attribute path arrays from hydrated objects; return `404` if searching non-existent data bag).
-- [ ] Implement `strict_search_result_acls` post-filtering.
-- [ ] Verify against `oc-chef-pedant/spec/api/search/search_spec.rb`, `word_break_spec.rb`, and `reindex_spec.rb`.
+- [x] Implement **Tantivy Embedded Backend**: <!-- claim:gap-tantivy-backend -->
+  - [x] Custom tokenizer matching the upstream whitespace/symbol tokenization on `content`. <!-- claim:gap-tantivy-backend -->
+  - [x] Query AST to Tantivy query compiler (Term, Phrase, Wildcard/Regex, Range, Boolean, Boost). <!-- claim:gap-tantivy-backend -->
+  - [x] Deterministic sorting by `X_CHEF_id_CHEF_X asc` and pagination (`start`, `rows`). <!-- claim:gap-tantivy-backend -->
+- [x] Implement **OpenSearch / Elasticsearch Backend**: <!-- verified: cargo test -p microwave-api --test opensearch_test --test opensearch_mapping_test -->
+  - [x] `/_bulk` indexing/deletion and `/_search` query execution matching `chef_opensearch.erl`. <!-- verified: crates/microwave-api/src/search/opensearch.rs -->
+- [x] Implement `inline` and `batch` indexing queue modes (`search_queue_mode`). <!-- claim:gap-search-queue-mode -->
+- [x] Implement `GET /organizations/:org/search` (list built-in indexes `client`, `environment`, `node`, `role` + all `data_bag` names in org). <!-- verified: cargo test -p microwave-api --test search_test -->
+- [x] Implement `GET /organizations/:org/search/:index` and `POST /organizations/:org/search/:index` (partial search extracting attribute path arrays from hydrated objects; return `404` if searching non-existent data bag). <!-- verified: cargo test -p microwave-api --test search_test -->
+- [x] Implement `strict_search_result_acls` post-filtering. <!-- verified: cargo test -p microwave-api --test search_acl_test -->
+- [x] Verify against `oc-chef-pedant/spec/api/search/search_spec.rb`, `word_break_spec.rb`, and `reindex_spec.rb`. <!-- verified: docs/pedant-extended-report.md:165 -->
 
 ---
 
