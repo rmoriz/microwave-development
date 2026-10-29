@@ -71,10 +71,10 @@ A stock `chef-client` converge against the result is the end-to-end check: see
 ## Known gaps
 
 - No `chef-server.rb` importer. The legacy Ruby configuration is translated by hand; the mapping table is in [`docs/deployment.md`](docs/deployment.md#migrating-configuration-from-etcopscodechef-serverrb).
-- Multi-node HA and automatic failover are not validated. `microwave-ctl ha-status` reports a single node, and the HA Compose file is an evaluation topology rather than a replica set.
+- Multi-node HA and automatic failover are not validated. `microwave-ctl ha-status` reports a single node, and `docker-compose.ha.yml` is an evaluation topology rather than a replica set.
 - Embedded search is a relational scan, not an inverted index. It is correct for small and medium organizations and needs no extra service, but it scales linearly; move to OpenSearch or Elasticsearch before a large catalog makes queries hurt.
 
-Everything else that is still open, generated from `docs/claims.toml`:
+The rest of the open inventory, including the three above, generated from `docs/claims.toml`:
 
 <!-- generated:remaining-work:start -->
 Open gaps: 18 (migration: 6, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3, docs: 1). By area: [migration](docs/remaining-work.md#area-migration), [mail](docs/remaining-work.md#area-mail), [search](docs/remaining-work.md#area-search), [ha](docs/remaining-work.md#area-ha), [auth](docs/remaining-work.md#area-auth), [tooling](docs/remaining-work.md#area-tooling), [docs](docs/remaining-work.md#area-docs).
@@ -83,8 +83,10 @@ Open gaps: 18 (migration: 6, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3, doc
 ## Migrate from Chef Infra Server
 
 The supported route is a snapshot copy, and it runs today. Export a versioned JSON snapshot with
-`microwave-migrate from-api` against the old server (or `microwave-migrate export` from a staging
-installation), then import it into the configured SQLite or PostgreSQL database:
+`microwave-migrate from-api` against the old server, or with `microwave-migrate export` from a staging
+installation. Pass `--bookshelf-dir /var/lib/microwave/bookshelf` to `from-api` so it also copies
+cookbook file blobs into the local object store; without the flag the crawl is metadata-only. Then
+import the snapshot into the configured SQLite or PostgreSQL database:
 
 ```sh
 microwave-ctl --config /etc/microwave/microwave.toml \
@@ -92,7 +94,9 @@ microwave-ctl --config /etc/microwave/microwave.toml \
 ```
 
 If the old server was backed up with `knife ec backup`, `import-knife-backup` reads that directory
-directly, needs no running HTTP server, and writes cookbook blobs into the local object store:
+directly, needs no running HTTP server, and writes cookbook blobs into the local object store. The
+form below is the SQLite one: it defaults to `<data-dir>/bookshelf`. With `--database-url` the
+importer requires an explicit `--bookshelf-dir`:
 
 ```sh
 microwave-migrate import-knife-backup \
@@ -101,13 +105,16 @@ microwave-migrate import-knife-backup \
   --yes
 ```
 
-Neither path is lossless. The knife importer carries no cookbook artifacts, no policies or policy
-groups, and no OAuth applications; no migration path recovers client or user private keys, because
-the legacy server never stored them. A migration also does not reindex, so remote
-OpenSearch/Elasticsearch documents stay missing until `microwave-ctl reindex` runs afterwards.
+Neither path is lossless. A `from-api` crawl without `--bookshelf-dir` keeps metadata only, and the
+legacy API cannot return password hashes or the `admin` flag: crawled users start without a password,
+with admin off, and need a password reset or an external identity provider. The knife importer carries
+no cookbook artifacts, no policies or policy groups, and no OAuth applications; no migration path
+recovers client or user private keys, because the legacy server never stored them. A migration also
+does not reindex, so remote OpenSearch/Elasticsearch documents stay missing until
+`microwave-ctl reindex` runs afterwards.
 
-Stop the target, import, verify with a `knife` or `chef-client` read against a test organization, and
-only then start the server and drain clients over gradually.
+Stop the target, import, start the server, then verify with a `knife` or `chef-client` read against a
+test organization and drain clients over gradually.
 [`docs/deployment.md` section 10](docs/deployment.md#10-migration-from-a-legacy-server) has the full
 runbook, the `chef-server.rb` translation table, and the knife importer's exact supported subset.
 
