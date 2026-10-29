@@ -1809,3 +1809,22 @@ area = "deployment"
 status = "verified"
 surfaces = [ { path = "docs/tls-reload-report.md", needle = "SIGHUP on a plain listener is a logged no-op" } ]
 verify = { kind = "grep", path = "bin/microwave-server/src/main.rs", pattern = "TLS is disabled" }
+
+[[claim]]
+id = "pedant-report-core-totals"
+summary = "The five-tag core pedant set is 652 passed / 0 failed / 8 pending out of 660 after the header harness patch."
+area = "docs"
+status = "manual"
+surfaces = [
+  { path = "docs/pedant-report.md", needle = "652 passed / 0 failed / 8 pending" },
+  { path = "docs/pedant-report.md", needle = "7 examples, 0 failures" },
+]
+verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-29 }
+
+[[claim]]
+id = "pedant-extended-totals"
+summary = "All twelve extended pedant tags are green: 3,284 passed / 0 failed / 7 pending out of 3,291."
+area = "docs"
+status = "manual"
+surfaces = [ { path = "docs/pedant-extended-report.md", needle = "3,284 passed / 0 failed / 7 pending" } ]
+verify = { kind = "manual", ref = "docs/pedant-extended-report.md", checked = 2026-10-29 }

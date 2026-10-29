@@ -8,7 +8,7 @@
 `scripts/pedant-solr-stub.rb` (new)
 **Branch:** `subagent/pedant-more`
 
-> **Final run (2026-10-25, full `all` run after all feature merges):** **3,284 passed / 0 failed / 7 pending out of 3,291 extended examples. All twelve extended tags pass.** Core plus extended (`all`) reports only the known plain-HTTP `headers` artifact; every other tag is green. The counts below are the historical pre-fix baseline.
+> **Final run (2026-10-25, full `all` run after all feature merges):** **3,284 passed / 0 failed / 7 pending out of 3,291 extended examples. All twelve extended tags pass.** The counts below are the historical pre-fix baseline. The only core failure at the time, the plain-HTTP `headers` artifact, is fixed at the harness on 2026-10-29 (see [`docs/pedant-report.md`](pedant-report.md)); every extended tag is green, so `all` no longer reports a failure.
 >
 > | Tag | Examples | Passed | Failed | Pending |
 > | --- | ---: | ---: | ---: | ---: |
@@ -597,9 +597,12 @@ SQLite writes were added for the extended tags.
 7. **Exact `Allow` headers include `HEAD`.** Axum adds `HEAD` automatically,
    so `GET,HEAD,POST` differs from Pedant's expected `GET, POST`. This affects
    data bag method-not-allowed examples and is a framework-level shape gap.
-8. **Plain-HTTP core artifact.** The five-tag `headers` failure
-   (`request_url.sub!("https", "http")` returning `nil`) is unchanged and is
-   not part of this extended run.
+8. **Plain-HTTP core artifact (fixed 2026-10-29).** The five-tag `headers`
+   failure was `request_url.sub!("https", "http")` returning `nil`; the example
+   now passes `request_url` unchanged and the tag reports 7 examples, 0
+   failures. The edit is a vendored harness patch listed in
+   `scripts/run-pedant.sh`, so it must be re-applied when the snapshot is
+   re-vendored.
 9. **ACL runtime.** `acls` is 1,640 examples and takes ~16 minutes; it is the
    long pole. `keys` takes ~10 minutes because it creates a fresh org and
    many keys.

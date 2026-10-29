@@ -5,7 +5,7 @@
 **Pedant:** vendored `chef-server/oc-chef-pedant` (gemspec version `2.2.0`)
 **Harness:** `scripts/run-pedant.sh` + `scripts/pedant-bootstrap.rb`
 
-> **Current status (2026-10-26, full `strict` run after all feature merges):** core, extended, and extra suites are green except the known plain-HTTP `headers` artifact: `environments` 610 examples / 0 failures / 23 pending, `roles` 78 / 0. The only failure remains the known plain-HTTP `header_spec.rb` artifact (`https` -> `http` `sub!` returns `nil`); users, organizations, clients, and nodes pass with zero failures. The 254/398 baseline below is retained as the original pre-fix snapshot.
+> **Current status (2026-10-29):** the body of this report is the historical record of the pre-fix baseline and the fix rounds; the tables below are dated snapshots, not live counts. The one remaining core failure, the plain-HTTP `headers` artifact, is fixed at the harness (see [Harness notes](#harness-notes-and-known-limitations)); `scripts/run-pedant.sh headers` reports 7 examples, 0 failures. Users, organizations, clients, and nodes pass with zero failures, and the extra `environments` (610 examples / 0 failures / 23 pending) and `roles` (78 / 0) suites are green. With the patch, the five-tag core set is **652 passed / 0 failed / 8 pending out of 660 examples**; the 8 pending examples are pedant's own skips.
 
 ## Result in one sentence
 
@@ -426,9 +426,12 @@ Ordered by how much pedant surface they unlock:
 - Each tag runs against a separate server/data directory. Pedant deletes requestor clients during
   cleanup even when they were pre-existing, so a shared server makes every tag after the first
   fail with spurious 401s.
-- The `headers` nginx-default-error example is a plain-HTTP artifact (pedant's `sub!("https",
-  "http")` produces `nil`); it is not a server-behavior signal. The `headers` low-version failure
-  is a real missing check.
+- The `headers` nginx-default-error example used `request_url.sub!("https", "http")`, and `sub!`
+  returns `nil` when the URL is already plain HTTP, so the example signed and sent a nil URL. That is
+  a harness bug, not a server-behavior signal. `header_spec.rb` now passes `request_url` unchanged,
+  and the patch is listed under "Vendored harness-only patches" at the top of
+  [`scripts/run-pedant.sh`](../scripts/run-pedant.sh) so it is re-applied on every re-vendor. The
+  `headers` low-version failure is a real missing check.
 - Pending examples are pedant's, not harness failures. The `clients` tag has 3 pending and the
   `nodes` tag has 5.
 - The harness restores the vendored `Gemfile.lock` after each run. Bundler adds the local
@@ -456,7 +459,7 @@ scripts/run-pedant.sh headers users organizations clients nodes
 | nodes | 331 | 326 | 0 | 5 |
 | **Total** | **660** | **557** | **95** | **8** |
 
-The `headers` failure is the known plain-HTTP pedant artifact (`"https"` → `"http"` `sub!` returns nil). Four `clients` failures are pedant's own `NameError: undefined local variable 'chef_key'`; several of the remaining client failures are v1 canonical-behavior trade-offs documented in `docs/pedant-org-client-followup.md`.
+The `headers` failure in this table is the plain-HTTP pedant artifact (`"https"` → `"http"` `sub!` returns nil), fixed at the harness on 2026-10-29. Four `clients` failures are pedant's own `NameError: undefined local variable 'chef_key'`; several of the remaining client failures are v1 canonical-behavior trade-offs documented in `docs/pedant-org-client-followup.md`.
 
 ### Clients tag completion
 
@@ -493,7 +496,19 @@ scripts/run-pedant.sh headers users organizations clients nodes
 | nodes | 331 | 326 | 0 | 5 |
 | **Total** | **660** | **651** | **1** | **8** |
 
-The only failure is the known plain-HTTP pedant artifact in `header_spec.rb` (`"https"` → `"http"` `sub!` returns nil). The 8 pending examples are pedant's own skips.
+The single failure in this table is the plain-HTTP pedant artifact in `header_spec.rb` (`"https"` → `"http"` `sub!` returns nil), fixed at the harness on 2026-10-29. The 8 pending examples are pedant's own skips.
+
+### Harness patch rerun (2026-10-29)
+
+The `header_spec.rb` one-liner and the patch list in `scripts/run-pedant.sh` landed, and the tag was
+re-run:
+
+```sh
+scripts/run-pedant.sh headers
+```
+
+Result: **7 examples, 0 failures**. With that, the five-tag core set is 652 passed, 0 failed, and 8
+pending (pedant's own skips); the report no longer has a server-side core failure.
 
 Artifacts: `/private/var/folders/yv/wmw_npmn7y5c2lwxjywt_f800000gn/T/opencode/pedant-final`.
 
