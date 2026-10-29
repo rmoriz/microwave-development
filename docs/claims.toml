@@ -794,6 +794,7 @@ area = "docs"
 status = "manual"
 surfaces = [
   { path = "README.md", needle = "3,284 passed / 0 failed / 7 pending of 3,291" },
+  { path = "README.md", needle = "All twelve extended tags are green" },
 ]
 verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-29 }
 

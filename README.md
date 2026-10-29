@@ -335,10 +335,11 @@ The open inventory is generated under [Known gaps](#known-gaps); this section ke
 ### Pedant Compatibility
 
 The first `oc-chef-pedant` run is recorded in [`docs/pedant-report.md`](docs/pedant-report.md). The
-core set now stands at 652 passed / 0 failed / 8 pending of 660, after the plain-HTTP `headers`
-artifact was fixed at the harness; the same report records the extended suites.
+core set now stands at 652 passed / 0 failed / 8 pending of 660; the extended results are in
+[`docs/pedant-extended-report.md`](docs/pedant-extended-report.md).
 
-The table below is the dated 2026-10-24 baseline, taken before that harness fix:
+The table below is the dated 2026-10-24 baseline, taken before the `headers` artifact was fixed at
+the harness:
 
 | Tag | Passed | Failed | Pending |
 | --- | ---: | ---: | ---: |
