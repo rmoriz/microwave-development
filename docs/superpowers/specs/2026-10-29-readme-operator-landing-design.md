@@ -111,8 +111,9 @@ by the existing specs and `crates/` layout, one section further down.
 10. Stale `readme-pedant-core-totals` (651 / 1 / 8) is corrected to the current
     652 / 0 / 8 while the table keeps its recorded baseline.
 11. The harness sticks with stock Chef Infra Server behaviour instead of the
-    README carrying two flags: `MW_E2E_COMPAT` and `MW_E2E_SYNTH_V2` default to
-    `0`, and `MW_E2E_COMPAT=1` re-enables both provisioning steps. Upstream
+    README carrying two flags: `MW_E2E_COMPAT` defaults to `0`,
+    `MW_E2E_SYNTH_V2` keeps its `1` default and only applies when compat is on,
+    and `MW_E2E_COMPAT=1` re-enables the ACL grant. Upstream
     grants `clients` read on the environments container in
     `?DEFAULT_EC_EXPANDED_ORG` and returns `all_files` for API v2, so the
     unassisted run is the upstream-equivalent one. The harness comments and the

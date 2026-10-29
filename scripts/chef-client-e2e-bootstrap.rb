@@ -401,7 +401,7 @@ if solve_status == 200 && !v2_ready?(solution) && COMPAT && SYNTH_V2
   )
   warn "bootstrap: server gap: API v2 cookbook_versions response had no all_files; uploaded a synthesized v2 manifest #{COOKBOOK}-#{v2_version}"
 elsif solve_status == 200 && !v2_ready?(solution) && COMPAT
-  warn "bootstrap: server gap: API v2 cookbook_versions response had no all_files; set MW_E2E_COMPAT=1 MW_E2E_SYNTH_V2=1 to enable it"
+  warn "bootstrap: server gap: API v2 cookbook_versions response had no all_files; set MW_E2E_SYNTH_V2=1 to enable it (compat is already on via MW_E2E_COMPAT=1)"
 end
 
 if solve_status != 200
