@@ -45,6 +45,10 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update
           sudo apt-get install --yes postgresql-client-18
+      # The package installs into /usr/lib/postgresql/18/bin, while /usr/bin
+      # keeps the 16 wrapper and pg_dump refuses to dump a newer server.
+      - name: Put the PostgreSQL 18 client tools on PATH
+        run: echo "/usr/lib/postgresql/18/bin" >> "$GITHUB_PATH"
       - name: Run the PostgreSQL contract and parity suites
         env:
           MICROWAVE_REQUIRE_POSTGRES: "1"
