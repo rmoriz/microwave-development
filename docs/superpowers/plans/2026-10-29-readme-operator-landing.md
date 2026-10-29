@@ -148,7 +148,7 @@ Add the eight new claims below. `status = "verified"` throughout; `area` is `doc
 | `readme-quickstart-prerequisites` | tooling | `Ruby with \`mixlib-authentication\`` | grep `scripts/run-chef-client-e2e.sh` `mixlib-authentication` |
 | `readme-quickstart-success` | tooling | `marker.txt` | grep `scripts/run-chef-client-e2e.sh` `MARKER=.*marker.txt` |
 | `readme-quickstart-compat-optin` | tooling | `Set \`MW_E2E_COMPAT=1\`` | grep `scripts/chef-client-e2e-bootstrap.rb` `MW_E2E_COMPAT=1` |
-| `readme-quickstart-serve` | deployment | `serve --check` | grep `bin/microwave-server/src/main.rs` `serve --check` |
+| `readme-quickstart-serve` | deployment | `cargo run -p microwave-server -- serve --check` | grep `bin/microwave-server/src/main.rs` `serve --check` |
 
 Then point the three existing claims at the new sentences: `readme-intro-dropin` at the phrase `designed as a drop-in replacement`, `readme-pedant-core-totals` at `652 passed / 0 failed / 8 pending`, `readme-pedant-extended-totals` at `3,284 passed / 0 failed / 7 pending`. Update those two summaries to `652 passed / 0 failed / 8 pending of 660` and `3,284 passed / 0 failed of 3,291`, keep `status = "manual"`, keep `ref = "docs/pedant-report.md"`, and set `checked = 2026-10-29`.
 
@@ -204,7 +204,7 @@ New claims, all `status = "verified"`, with these needles and verifies:
 | `readme-migrate-knife` | migration | `import-knife-backup` | grep `docs/deployment.md` `import-knife-backup` |
 | `readme-migrate-reindex` | search | `microwave-ctl reindex` | grep `docs/deployment.md` `microwave-ctl reindex` |
 
-Add needles to existing claims for the Known gaps line and the What-works rows: `readme-gap-no-chef-server-rb-importer` → `No \`chef-server.rb\` importer`, `readme-signed-auth` → `\`X-Ops-Sign\` signing`, `readme-two-backends` → `SQLite and PostgreSQL`, `readme-http-status-route` → `\`/_stats\``, `readme-migration-snapshot` → `versioned JSON snapshot`, `readme-mcp-writes-default` → `\`writes = false\``.
+Add needles to existing claims for the Known gaps line and the What-works rows: `readme-gap-no-chef-server-rb-importer` → `No \`chef-server.rb\` importer`, `readme-signed-auth` → `\`X-Ops-Sign\` signing`, `readme-two-backends` → `SQLite and PostgreSQL`, `readme-http-status-route` → `\`/server_api_version\``, `readme-mcp-writes-default` → `\`writes = false\``. The migration row is covered by `readme-migrate-snapshot`, so `readme-migration-snapshot` gets no extra surface.
 
 - [ ] **Step 2: Run the checker and watch it fail**
 
@@ -213,7 +213,7 @@ Expected: FAIL for each new claim and each added needle.
 
 - [ ] **Step 3: Write the three sections**
 
-`## What works` — a table with rows for the signed HTTP API, `X-Ops-Sign` auth, both metadata backends, the operations CLI, migration, and MCP (`experimental`, off by default, writes off with `writes = false`). Each row names its proof: `crates/microwave-api/tests/http_parity_test.rs`, `docs/pedant-report.md`, `crates/microwave-store/tests/dual_backend.rs`, `TODO.md`, `docs/deployment.md`, `docs/mcp.md`.
+`## What works` — a table with rows for the signed HTTP API, `X-Ops-Sign` signing, both metadata backends, the operations CLI, migration, and MCP (`experimental`, off by default, writes off with `writes = false`). Each row names its proof: `crates/microwave-api/tests/http_parity_test.rs`, `docs/pedant-report.md`, `crates/microwave-store/tests/dual_backend.rs`, `TODO.md`, `docs/deployment.md`, `docs/mcp.md`. The HTTP row lists `/server_api_version` among its endpoints.
 
 `## Known gaps` — the three limitation lines (no `chef-server.rb` importer, no multi-node HA or verified failover, embedded search is a scan), then the `<!-- generated:remaining-work:start -->` / `end` block moved here unchanged.
 
