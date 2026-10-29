@@ -34,7 +34,7 @@
 #   MW_SERVER_BIN          explicit server binary (implies no build)
 #
 # Exit codes:
-#   2  missing Ruby/mixlib-authentication or chef-client
+#   2  missing cargo, curl, Ruby/mixlib-authentication, or chef-client
 #   3  server startup failure
 #   4  bootstrap/upload failure
 #   5  chef-client converge failure
@@ -67,6 +67,23 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT INT TERM
+
+# ---- Prerequisites ----------------------------------------------------------
+require_tool() {
+  local tool="$1"
+  local hint="$2"
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "error: $tool not found on PATH." >&2
+    echo "       $hint" >&2
+    exit 2
+  fi
+}
+
+require_tool cargo "Install Rust with rustup, then run scripts/run-chef-client-e2e.sh again."
+require_tool curl "Install curl, then run scripts/run-chef-client-e2e.sh again."
+if [[ -z "${MW_E2E_RUBY:-}" ]]; then
+  require_tool ruby "Install Ruby, or point MW_E2E_RUBY at a Ruby with mixlib-authentication."
+fi
 
 # ---- Ruby / chef-client -----------------------------------------------------
 if [[ -n "${MW_E2E_RUBY:-}" ]]; then

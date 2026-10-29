@@ -400,12 +400,16 @@ if solve_status == 200 && !v2_ready?(solution) && COMPAT && SYNTH_V2
     JSON.pretty_generate({ "status" => solve_status, "body" => solution }) + "\n"
   )
   warn "bootstrap: server gap: API v2 cookbook_versions response had no all_files; uploaded a synthesized v2 manifest #{COOKBOOK}-#{v2_version}"
-elsif solve_status == 200 && !v2_ready?(solution) && COMPAT
-  warn "bootstrap: server gap: API v2 cookbook_versions response had no all_files; set MW_E2E_SYNTH_V2=1 to enable it (compat is already on via MW_E2E_COMPAT=1)"
+elsif solve_status == 200 && !v2_ready?(solution)
+  if COMPAT
+    warn "bootstrap: server gap: API v2 cookbook_versions response had no all_files; set MW_E2E_SYNTH_V2=1 to enable synthesis (compat is already on via MW_E2E_COMPAT=1)"
+  else
+    warn "bootstrap: server gap: API v2 cookbook_versions response had no all_files. Set MW_E2E_COMPAT=1 and MW_E2E_SYNTH_V2=1 to synthesize it, or the converge will fail"
+  end
 end
 
 if solve_status != 200
-  warn "bootstrap: cookbook solve as client returned #{solve_status}; chef-client is expected to fail"
+  warn "bootstrap: cookbook solve as client returned #{solve_status}; set MW_E2E_COMPAT=1 to provision around server gaps; chef-client is expected to fail"
   warn solve_body
 end
 
