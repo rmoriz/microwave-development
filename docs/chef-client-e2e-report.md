@@ -16,20 +16,21 @@ Bootstrap: `scripts/chef-client-e2e-bootstrap.rb`
 ## Verdict
 
 A real `chef-client` converge succeeds end-to-end against `microwave-server`
-**only after two harness provisioning steps that compensate for missing server
-behavior**. No server code was changed, no client code was patched, and no
-response was stubbed.
+under stock Chef Infra Server behaviour. No server code is changed, no client
+code is patched, and no response is stubbed. `MW_E2E_COMPAT=1` re-enables two
+harness provisioning steps for a server that regresses.
 
 | Mode | Command | Result |
 | --- | --- | --- |
-| Default / compatibility | `scripts/run-chef-client-e2e.sh` | **PASS** — cookbook downloaded, recipe converged, marker written, node and client saved |
-| Stock server | `MW_E2E_COMPAT=0 scripts/run-chef-client-e2e.sh` | **FAIL** — `403 missing permission` reading the default environment |
-| ACL granted, stock v2 client | `MW_E2E_SYNTH_V2=0 scripts/run-chef-client-e2e.sh` | **FAIL** — `NoMethodError: undefined method 'inject' for nil` parsing the API v2 cookbook manifest |
+| Default / stock server | `scripts/run-chef-client-e2e.sh` | **PASS** — cookbook downloaded, recipe converged, marker written, node and client saved |
+| Compatibility opt-in | `MW_E2E_COMPAT=1 scripts/run-chef-client-e2e.sh` | **PASS** — grants the ACE and synthesizes the v2 manifest |
+| ACL granted, stock v2 client | `MW_E2E_COMPAT=1 MW_E2E_SYNTH_V2=0 scripts/run-chef-client-e2e.sh` | **FAIL** — `NoMethodError: undefined method 'inject' for nil` parsing the API v2 cookbook manifest |
 
-The default run grants the `clients` group read access to the default
+The compatibility opt-in grants the `clients` group read access to the default
 environment and synthesizes an API v2 `all_files` manifest from the server's
 own v0 response. Both actions are logged as server gaps and are described
-below. Everything else is the real client talking to the real server.
+below. The default run uses the server's own responses. Everything else is the
+real client talking to the real server.
 
 ## Environment
 

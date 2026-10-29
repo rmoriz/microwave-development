@@ -68,9 +68,9 @@ summary = "README: the table of contents links the quickstart."
 area = "docs"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "#try-it-in-five-minutes" },
+  { path = "README.md", needle = "- [Try it in five minutes](#try-it-in-five-minutes)" },
 ]
-verify = { kind = "grep", path = "README.md", pattern = "#try-it-in-five-minutes" }
+verify = { kind = "grep", path = "README.md", pattern = "- \\[Try it in five minutes\\]\\(#try-it-in-five-minutes\\)" }
 
 [[claim]]
 id = "readme-why-converge"
@@ -88,9 +88,9 @@ summary = "README: the quickstart command is the real converge harness."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "scripts/run-chef-client-e2e.sh" },
+  { path = "README.md", needle = "```sh\nscripts/run-chef-client-e2e.sh\n```" },
 ]
-verify = { kind = "file", path = "scripts/run-chef-client-e2e.sh" }
+verify = { kind = "grep", path = "scripts/run-chef-client-e2e.sh", pattern = "Runs a real chef-client" }
 
 [[claim]]
 id = "readme-quickstart-prerequisites"
@@ -130,7 +130,7 @@ status = "verified"
 surfaces = [
   { path = "README.md", needle = "cargo run -p microwave-server -- serve --check" },
 ]
-verify = { kind = "grep", path = "bin/microwave-server/src/main.rs", pattern = "serve --check" }
+verify = { kind = "grep", path = "bin/microwave-server/src/main.rs", pattern = "Load configuration and initialize storage" }
 
 [[claim]]
 id = "readme-config-env-overrides"
@@ -313,9 +313,49 @@ summary = "README: a migration does not reindex, so `microwave-ctl reindex` foll
 area = "search"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "microwave-ctl reindex" },
+  { path = "README.md", needle = "`microwave-ctl reindex` runs afterwards" },
 ]
-verify = { kind = "grep", path = "docs/deployment.md", pattern = "microwave-ctl reindex" }
+verify = { kind = "grep", path = "docs/deployment.md", pattern = "Backfilling after a switch" }
+
+[[claim]]
+id = "readme-migrate-lossy"
+summary = "README: neither migration path is lossless."
+area = "migration"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "Neither path is lossless" },
+]
+verify = { kind = "grep", path = "docs/deployment.md", pattern = "Without the flag `from-api` remains metadata-only" }
+
+[[claim]]
+id = "readme-migrate-no-password-hashes"
+summary = "README: the legacy API cannot return password hashes or the admin flag."
+area = "migration"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "legacy API cannot return password hashes or the `admin` flag" },
+]
+verify = { kind = "grep", path = "crates/microwave-migrate/src/from_api.rs", pattern = "password_hash: String::new\\(\\)" }
+
+[[claim]]
+id = "readme-migrate-passwordless-users"
+summary = "README: crawled users start without a password and with admin off."
+area = "migration"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "crawled users start without a password" },
+]
+verify = { kind = "grep", path = "crates/microwave-migrate/src/from_api.rs", pattern = 'admin: bool_field\(&value, "admin"\)\.unwrap_or\(false\)' }
+
+[[claim]]
+id = "readme-migrate-no-private-keys"
+summary = "README: no migration path recovers client or user private keys."
+area = "migration"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "recovers client or user private keys" },
+]
+verify = { kind = "grep", path = "crates/microwave-migrate/src/server_secrets.rs", pattern = "server only stores public keys" }
 
 [[claim]]
 id = "readme-oauth-id-routes"
@@ -796,7 +836,7 @@ surfaces = [
   { path = "README.md", needle = "3,284 passed / 0 failed / 7 pending of 3,291" },
   { path = "README.md", needle = "All twelve extended tags are green" },
 ]
-verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-29 }
+verify = { kind = "manual", ref = "docs/pedant-extended-report.md", checked = 2026-10-29 }
 
 [[claim]]
 id = "gap-chef-server-rb-importer"

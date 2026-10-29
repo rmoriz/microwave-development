@@ -2,7 +2,7 @@
 
 A glittering rainbow microwave under neon light
 
-A Rust reimplementation of the Chef Infra Server API, designed as a drop-in replacement for existing `chef-client` fleets and operations tooling. This is an independent project, not affiliated with or endorsed by Progress Software Corporation.
+A Rust reimplementation of the Chef Infra Server API, designed as a drop-in replacement for existing `chef-client` fleets and operations tooling.
 
 - [Why](#why)
 - [Try it in five minutes](#try-it-in-five-minutes)
@@ -19,17 +19,17 @@ A Rust reimplementation of the Chef Infra Server API, designed as a drop-in repl
 - **Proven with a real client** — a stock `chef-client` converges against it end to end: the
   harness starts a throwaway server, uploads a cookbook, runs the client, and checks the marker
   file the recipe wrote.
-- **Pedant-checked** — 652 passed / 0 failed / 8 pending out of 660 core examples, after the
-  plain-HTTP `headers` artifact was fixed at the harness. Extended suites:
-  3,284 passed / 0 failed / 7 pending of 3,291 examples, recorded in
-  [`docs/pedant-report.md`](docs/pedant-report.md).
+- **Pedant-checked** — 652 passed / 0 failed / 8 pending out of 660 core examples in
+  [`docs/pedant-report.md`](docs/pedant-report.md), after the plain-HTTP `headers` artifact was
+  fixed at the harness. Extended suites:
+  3,284 passed / 0 failed / 7 pending of 3,291 examples in
+  [`docs/pedant-extended-report.md`](docs/pedant-extended-report.md).
 - **Independent** — not affiliated with or endorsed by Progress, so compatibility follows the API
   rather than a vendor roadmap.
 
 ## Try it in five minutes
 
-You need Rust, Ruby with `mixlib-authentication`, and a `chef-client` 18+ binary (or
-`MW_E2E_CHEF_CLIENT` pointing at one). A missing piece exits `2` and names itself.
+You need Rust, a `chef-client` 18+ binary (or `MW_E2E_CHEF_CLIENT` pointing at one), and Ruby with `mixlib-authentication` (or `MW_E2E_RUBY`). A missing piece exits `2` and names itself.
 
 ```sh
 scripts/run-chef-client-e2e.sh
@@ -58,7 +58,7 @@ promise.
 
 | Surface | Proof |
 | --- | --- |
-| Signed HTTP API — `/_status`, `/_stats`, `/server_api_version`, `/license`, users, organizations, clients, keys, nodes, roles, environments, data bags, sandboxes, cookbooks, policies, ACLs, `/validate/*`, search, data collector, compliance proxy | [`crates/microwave-api/tests/http_parity_test.rs`](crates/microwave-api/tests/http_parity_test.rs) |
+| Signed HTTP API — `/_status`, `/_stats`, `/server_api_version`, `/license`, users, organizations, clients, keys, nodes, roles, environments, data bags, sandboxes, cookbooks, policies, ACLs, `/validate/*`, search, data collector, compliance proxy | [`http_parity_test.rs`](crates/microwave-api/tests/http_parity_test.rs), [`data_collector_test.rs`](crates/microwave-api/tests/data_collector_test.rs), [`compliance_proxy_test.rs`](crates/microwave-api/tests/compliance_proxy_test.rs) |
 | `X-Ops-Sign` signing — 1.0/1.1/1.3 canonicalization, RSA verification, key reassembly | [`docs/pedant-report.md`](docs/pedant-report.md) |
 | Both metadata backends — SQLite and PostgreSQL behind one store contract | [`crates/microwave-store/tests/dual_backend.rs`](crates/microwave-store/tests/dual_backend.rs) |
 | Operations CLI `microwave-ctl` — user/org administration, key rotation, backup/restore, reindex, diagnostics | [`TODO.md`](TODO.md) |
@@ -74,7 +74,7 @@ A stock `chef-client` converge against the result is the end-to-end check: see
 - Multi-node HA and automatic failover are not validated. `microwave-ctl ha-status` reports a single node, and `docker-compose.ha.yml` is an evaluation topology rather than a replica set.
 - Embedded search is a relational scan, not an inverted index. It is correct for small and medium organizations and needs no extra service, but it scales linearly; move to OpenSearch or Elasticsearch before a large catalog makes queries hurt.
 
-The rest of the open inventory, including the three above, generated from `docs/claims.toml`:
+The open inventory below is generated from `docs/claims.toml` and includes the three above:
 
 <!-- generated:remaining-work:start -->
 Open gaps: 18 (migration: 6, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3, docs: 1). By area: [migration](docs/remaining-work.md#area-migration), [mail](docs/remaining-work.md#area-mail), [search](docs/remaining-work.md#area-search), [ha](docs/remaining-work.md#area-ha), [auth](docs/remaining-work.md#area-auth), [tooling](docs/remaining-work.md#area-tooling), [docs](docs/remaining-work.md#area-docs).
@@ -150,12 +150,8 @@ scripts/run-postgres-tests.sh
 
 ## Run Locally
 
-```sh
-cargo run -p microwave-server -- serve --check
-cargo run -p microwave-server -- serve
-```
-
-The first run creates `./data/pivotal.pem` (superuser private key), `./data/pivotal.password`, and `./data/objectstore.secret`. Use `MW_PATHS__DATA_DIR` to choose another data directory.
+The quickstart above has the two commands and the credentials the first run writes; use
+`MW_PATHS__DATA_DIR` to choose another data directory.
 
 ### TLS
 
