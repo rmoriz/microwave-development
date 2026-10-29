@@ -1,6 +1,6 @@
 # README as an operator landing page
 
-Status: draft, awaiting approval
+Status: implemented
 Date: 2026-10-29
 Size: small change, short design, no builder check
 
@@ -35,6 +35,9 @@ by the existing specs and `crates/` layout, one section further down.
   text only; no service calls.
 - No website or Rust changes. README, `docs/claims.toml`, the two
   `chef-client` e2e harness files, and one dated note in the e2e report.
+  Packaging also moves because the README asserts the `chef-server-ctl`
+  symlink: `.github/workflows/release.yml` and `Dockerfile` list the shipped
+  binaries and `scripts/build-deb.sh` packages them.
 - No moving the CLI reference into a new document. That is the larger option
   and can follow later.
 - No changes to the hero image itself.
