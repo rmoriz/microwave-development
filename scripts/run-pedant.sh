@@ -26,6 +26,16 @@
 # are accepted for a few suites whose RSpec metadata differs:
 #   oauth -> oc_id, acls -> acl, versioned_behaviors -> api_v1
 #
+# Vendored harness-only patches
+# -----------------------------
+# These edits live in the vendored `chef-server/oc-chef-pedant` checkout, not in
+# the server, and must be re-applied whenever the snapshot is re-vendored:
+#
+#   1. spec/api/header_spec.rb: the `nginx_default_error` example called
+#      `request_url.sub!("https", "http")`, but `sub!` returns `nil` when the
+#      URL is already plain HTTP, so `get(nil, ...)` raised NoMethodError. It
+#      now passes `request_url` unchanged.
+#
 # Environment:
 #   PEDANT_TAGS          space- or comma-separated tags (overridden by argv)
 #   PEDANT_ARTIFACTS     directory for logs, generated keys, and config
