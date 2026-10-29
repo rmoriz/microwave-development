@@ -19,7 +19,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [x] Document and enforce the naming/trademark policy: no `chef-` prefix for project crates, binaries, modules, services, or public types; use upstream names only where required for compatibility. <!-- verified: docs/superpowers/specs/2026-10-24-microwave-server-design.md:12 -->
 - [x] Implement configuration schema (`Config`) supporting TOML config file, environment variable overrides, and basic `/etc/opscode/chef-server.rb` key-value extraction for drop-in compatibility. <!-- claim:gap-chef-server-rb-importer -->
 - [x] Implement secrets management (`private-chef-secrets.json` reader/writer + environment variable fallback `CHEF_SECRETS_DATA`) for `pivotal` superuser key, `webui_pub`/`webui_priv`, `bookshelf` access/secret keys, `oc_id` secret_key_base, and `data_collector` token. <!-- claim:gap-secrets-file -->
-- [x] Implement automatic bootstrap initialization on first start: generate `pivotal` RSA keypair, `webui` RSA keypair, bookshelf HMAC credentials, and seed the `pivotal` superuser in the database. <!-- verified: bin/microwave-server/src/bootstrap.rs ensure_superuser, ensure_object_store_secret -->
+- [x] Implement automatic bootstrap initialization on first start: generate a `pivotal` RSA keypair, bookshelf HMAC credentials, and seed the `pivotal` superuser in the database. (`webui` keys exist only where a snapshot or knife backup carried them; first start does not create them.) <!-- verified: bin/microwave-server/src/bootstrap.rs ensure_superuser, ensure_object_store_secret -->
 - [x] Add structured logging (`tracing` + `tracing-subscriber`) and Prometheus/JSON metrics registry.
 
 ### 1.2 Cryptography, Request Signing & Passwords (`microwave-crypto`)
@@ -359,7 +359,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [x] Bookshelf expiring local tokens, Range/206/416, HEAD metadata, and S3 ListObjectsV2; multipart upload remains a documented gap.
 - [x] Full `microwave-ctl backup --include-private-keys` merged with optional/default backup paths, config-only, and `--pg-options`.
 - [x] P4: global auth-header statuses/skew, environment/role PUT name semantics, bounded `cookbook_versions`, and the `environments`/`roles` contract suites (610/0/23 and 78/0). Added as `scripts/run-pedant.sh extra`/`strict`.
-- [x] Multi-replica HA / OpenSearch 3.x / Garage load validation; full pedant `all` is green except the known plain-HTTP `headers` artifact. <!-- claim:gap-multi-replica-ha -->
+- [x] Multi-replica HA / OpenSearch 3.x / Garage load validation; full pedant `all` is green — every core and extended tag reports 0 failures, and the old plain-HTTP `headers` artifact is fixed at the harness. <!-- claim:gap-multi-replica-ha -->
 ### 5.8 Full Pedant Verification, HA & Performance Benchmarks
 - [x] Run `cargo fmt --check`, clippy, the test suite, claim and render checks, the homepage suite, and pedant in CI (`.github/workflows/`). <!-- verified: .github/workflows/ci.yml, .github/workflows/postgres.yml, .github/workflows/pedant.yml -->
 - [x] Run complete `oc-chef-pedant` suite against Default Embedded mode (SQLite + Tantivy + Local Bookshelf) and achieve 100% pass rate on supported specs. <!-- claim:gap-full-pedant-embedded -->
