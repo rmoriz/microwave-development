@@ -56,3 +56,10 @@ committing Rust. The homepage has no linter beyond `astro check`.
 - One focused commit per change, imperative subject with a scope
   (`feat(website):`, `fix(mcp):`, `docs(mcp):`).
 - Commit only after the relevant suite is green.
+
+## Speed
+
+- Move fast and fix forward: merge once it compiles; wait only for checks
+  that gate the merge.
+- No fixed sleeps to wait on CI: use `gh run watch <id> --exit-status`.
+- Never end your turn while still waiting on something.
