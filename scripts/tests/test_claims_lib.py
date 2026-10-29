@@ -38,7 +38,7 @@ class RenderTest(unittest.TestCase):
         self.assertTrue(block.startswith(claims_lib.BLOCK_START))
         self.assertTrue(block.endswith(claims_lib.BLOCK_END))
         self.assertIn("Open gaps: 1", block)
-        self.assertIn("remaining-work.md#area-deployment", block)
+        self.assertIn("docs/remaining-work.md#area-deployment", block)
 
     def test_replace_block_keeps_surroundings(self):
         readme = "before\n" + claims_lib.BLOCK_START + "\nstale\n" + claims_lib.BLOCK_END + "\nafter\n"
@@ -83,7 +83,28 @@ class ValidateTest(unittest.TestCase):
 
     def test_path_escape_is_reported(self):
         claim = self.claim(verify=claims_lib.Verify(kind="file", path="../outside"))
-        self.assertTrue(any("outside" in e for e in claims_lib.validate([claim], self.root, date(2026, 10, 28))))
+        errors = claims_lib.validate([claim], self.root, date(2026, 10, 28))
+        self.assertTrue(any("escapes the repository root" in e for e in errors), errors)
+
+    def test_absent_verify_rejects_a_match(self):
+        claim = self.claim(verify=claims_lib.Verify(kind="absent", path="docs/a.md", pattern="PostgreSQL"))
+        errors = claims_lib.validate([claim], self.root, date(2026, 10, 28))
+        self.assertTrue(any("should not match" in e for e in errors), errors)
+
+    def test_absent_verify_passes_without_a_match(self):
+        claim = self.claim(verify=claims_lib.Verify(kind="absent", path="docs/a.md", pattern="cargo-audit"))
+        self.assertEqual(claims_lib.validate([claim], self.root, date(2026, 10, 28)), [])
+
+    def test_cargo_verify_needs_the_test_function(self):
+        (self.root / "docs" / "b.rs").write_text("fn sibling_name() {}\n")
+        claim = self.claim(verify=claims_lib.Verify(kind="cargo", path="docs/b.rs", test="m::name"))
+        errors = claims_lib.validate([claim], self.root, date(2026, 10, 28))
+        self.assertTrue(any("'name'" in e for e in errors), errors)
+
+    def test_cargo_verify_finds_the_test_function(self):
+        (self.root / "docs" / "b.rs").write_text("fn name() {}\n")
+        claim = self.claim(verify=claims_lib.Verify(kind="cargo", path="docs/b.rs", test="m::name"))
+        self.assertEqual(claims_lib.validate([claim], self.root, date(2026, 10, 28)), [])
 
     def test_manual_claim_expires_after_ninety_days(self):
         claim = self.claim(status="manual",
@@ -106,12 +127,58 @@ class ValidateTest(unittest.TestCase):
 
     def test_link_to_unknown_id_is_reported(self):
         (self.root / "README.md").write_text("see remaining-work.md#nope\n")
-        self.assertIn("nope", claims_lib.link_errors([self.claim()], self.root)[0])
+        errors = claims_lib.link_errors([self.claim()], self.root)
+        self.assertTrue(any("unknown claim id 'nope'" in e for e in errors), errors)
 
     def test_area_link_passes(self):
-        (self.root / "README.md").write_text("see remaining-work.md#area-docs\n")
+        (self.root / "README.md").write_text("see docs/remaining-work.md#area-docs\n")
+        self.assertEqual(claims_lib.link_errors([self.claim()], self.root), [])
+
+    def test_doc_link_to_a_claim_passes(self):
+        (self.root / "docs" / "b.md").write_text("see remaining-work.md#x\n")
+        self.assertEqual(claims_lib.link_errors([self.claim()], self.root), [])
+
+    def test_readme_link_must_name_the_docs_directory(self):
+        (self.root / "README.md").write_text("see remaining-work.md#x\n")
+        errors = claims_lib.link_errors([self.claim()], self.root)
+        self.assertTrue(any("docs/remaining-work.md" in e for e in errors), errors)
+
+    def test_website_gap_claim_id_is_checked(self):
+        (self.root / "website/homepage/src").mkdir(parents=True)
+        (self.root / "website/homepage/src/Gaps.astro").write_text("const gaps = [{ claim: 'nope' }];\n")
+        errors = claims_lib.link_errors([self.claim()], self.root)
+        self.assertTrue(any("nope" in e for e in errors), errors)
+
+    def test_website_gap_claim_id_passes(self):
+        (self.root / "website/homepage/src").mkdir(parents=True)
+        (self.root / "website/homepage/src/Gaps.astro").write_text("const gaps = [{ claim: 'x' }];\n")
         self.assertEqual(claims_lib.link_errors([self.claim()], self.root), [])
 
     def test_render_check_detects_hand_edit(self):
         (self.root / "docs" / "remaining-work.md").write_text("stale\n")
         self.assertTrue(claims_lib.render_errors([self.claim()], self.root))
+
+    def _readme(self, claims):
+        text = "# repo\n\n" + claims_lib.BLOCK_START + "\n" + claims_lib.BLOCK_END + "\n"
+        return claims_lib.replace_block(text, claims_lib.render_block(claims))
+
+    def test_render_check_accepts_generated_readme_block(self):
+        claims = [self.claim()]
+        (self.root / "docs" / "remaining-work.md").write_text(claims_lib.render_doc(claims))
+        (self.root / "README.md").write_text(self._readme(claims))
+        self.assertEqual(claims_lib.render_errors(claims, self.root), [])
+
+    def test_render_check_detects_hand_edited_readme_block(self):
+        claims = [self.claim()]
+        (self.root / "docs" / "remaining-work.md").write_text(claims_lib.render_doc(claims))
+        (self.root / "README.md").write_text(self._readme(claims).replace("Open gaps: 0", "Open gaps: 7"))
+        errors = claims_lib.render_errors(claims, self.root)
+        self.assertTrue(any(e.startswith("README.md:") and "stale" in e for e in errors), errors)
+
+    def test_render_check_reports_duplicate_markers(self):
+        claims = [self.claim()]
+        (self.root / "docs" / "remaining-work.md").write_text(claims_lib.render_doc(claims))
+        text = self._readme(claims)
+        (self.root / "README.md").write_text(text + claims_lib.BLOCK_START + "\n")
+        errors = claims_lib.render_errors(claims, self.root)
+        self.assertTrue(any("exactly once" in e for e in errors), errors)

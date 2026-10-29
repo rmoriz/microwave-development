@@ -2,17 +2,7 @@
 
 # Remaining work
 
-Open gaps: 21 (deployment: 1, migration: 6, mail: 1, search: 3, ha: 3, auth: 2, tooling: 3, docs: 2)
-
-<a id="area-deployment"></a>
-
-## Deployment
-
-<a id="compose-postgres-available"></a>
-
-**compose-postgres-available** — PostgreSQL is a selectable metadata backend.
-
-- `docker-compose.yml`
+Open gaps: 18 (migration: 6, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3, docs: 1)
 
 <a id="area-migration"></a>
 
@@ -105,13 +95,6 @@ Open gaps: 21 (deployment: 1, migration: 6, mail: 1, search: 3, ha: 3, auth: 2, 
 
 - `website/homepage/src/components/KnownGaps.astro`
 
-<a id="ha-compose-sqlite-metadata"></a>
-
-**ha-compose-sqlite-metadata** — The HA compose override keeps SQLite metadata and shares only search and blobs.
-
-- `docker-compose.ha.yml`
-- `docker-compose.ha.yml`
-
 <a id="area-auth"></a>
 
 ## Auth
@@ -159,11 +142,5 @@ Open gaps: 21 (deployment: 1, migration: 6, mail: 1, search: 3, ha: 3, auth: 2, 
 **gap-full-pedant-embedded** — No single full pedant run against the default embedded stack is 100% green; the embedded backend is a scan, not Tantivy.
 
 - `TODO.md`
-
-<a id="readme-remaining-work-generated"></a>
-
-**readme-remaining-work-generated** — The README Remaining Work section is generated from docs/claims.toml.
-
-- `README.md`
 
 <!-- end of generated remaining work -->

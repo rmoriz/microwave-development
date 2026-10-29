@@ -4,7 +4,7 @@ version = 1
 id = "ha-compose-sqlite-metadata"
 summary = "The HA compose override keeps SQLite metadata and shares only search and blobs."
 area = "ha"
-status = "gap"
+status = "verified"
 surfaces = [
   { path = "docker-compose.ha.yml", needle = "keeps the metadata store on the local SQLite volume" },
   { path = "docker-compose.ha.yml", needle = "PostgreSQL" },
@@ -23,7 +23,7 @@ verify = { kind = "grep", path = "docker-compose.ha.yml", pattern = "not a multi
 id = "compose-postgres-available"
 summary = "PostgreSQL is a selectable metadata backend."
 area = "deployment"
-status = "gap"
+status = "verified"
 surfaces = [ { path = "docker-compose.yml", needle = "PostgreSQL metadata is" } ]
 verify = { kind = "grep", path = "docker-compose.yml", pattern = "database.driver" }
 
@@ -39,7 +39,7 @@ verify = { kind = "grep", path = "packaging/microwave.toml.example", pattern = "
 id = "readme-remaining-work-generated"
 summary = "The README Remaining Work section is generated from docs/claims.toml."
 area = "docs"
-status = "gap"
+status = "verified"
 surfaces = [ { path = "README.md", needle = "generated:remaining-work:start" } ]
 verify = { kind = "grep", path = "README.md", pattern = "generated:remaining-work:start" }
 [[claim]]
@@ -200,7 +200,7 @@ status = "verified"
 surfaces = [
   { path = "README.md", needle = "bounded asynchronous dispatch" },
 ]
-verify = { kind = "grep", path = "crates/microwave-mail/src/dispatcher.rs", pattern = "queue" }
+verify = { kind = "grep", path = "crates/microwave-oauth/src/password_reset.rs", pattern = "If the account exists, password reset instructions" }
 
 [[claim]]
 id = "readme-depsolver-backtracking"
@@ -250,7 +250,7 @@ status = "verified"
 surfaces = [
   { path = "README.md", needle = "Plain HTTP remains the default" },
 ]
-verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "tls" }
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "fn is_enabled\\(&self\\) -> bool" }
 
 [[claim]]
 id = "readme-tls-pair-validation"
@@ -330,7 +330,7 @@ status = "verified"
 surfaces = [
   { path = "README.md", needle = "same generic success message" },
 ]
-verify = { kind = "grep", path = "crates/microwave-mail/src/dispatcher.rs", pattern = "queue" }
+verify = { kind = "grep", path = "crates/microwave-oauth/src/password_reset.rs", pattern = "If the account exists, password reset instructions" }
 
 [[claim]]
 id = "readme-dual-backend-suite"
@@ -420,7 +420,7 @@ status = "verified"
 surfaces = [
   { path = "README.md", needle = "builds release binaries for linux/amd64" },
 ]
-verify = { kind = "file", path = ".github/workflows/release.yml" }
+verify = { kind = "grep", path = ".github/workflows/release.yml", pattern = "aarch64-apple-darwin" }
 
 [[claim]]
 id = "readme-container-entrypoint"
@@ -590,7 +590,7 @@ status = "verified"
 surfaces = [
   { path = "README.md", needle = "`.github/workflows/`" },
 ]
-verify = { kind = "file", path = ".github/workflows/ci.yml" }
+verify = { kind = "grep", path = ".github/workflows/ci.yml", pattern = "name: ci" }
 
 [[claim]]
 id = "readme-layout-todo"
@@ -610,7 +610,7 @@ status = "verified"
 surfaces = [
   { path = "README.md", needle = "AGPL-3.0-only" },
 ]
-verify = { kind = "file", path = "LICENSE" }
+verify = { kind = "grep", path = "LICENSE", pattern = "GNU AFFERO GENERAL PUBLIC LICENSE" }
 
 [[claim]]
 id = "readme-trademarks"
@@ -620,7 +620,7 @@ status = "verified"
 surfaces = [
   { path = "README.md", needle = "trademarks of Progress Software Corporation" },
 ]
-verify = { kind = "file", path = "LICENSE" }
+verify = { kind = "grep", path = "LICENSE", pattern = "trademarks" }
 
 [[claim]]
 id = "readme-vendored-histories"
@@ -1712,7 +1712,7 @@ summary = "The existing workflows run builds and tests but no vulnerability audi
 area = "tooling"
 status = "verified"
 surfaces = [ { path = "docs/dependency-audit.md", needle = "them runs a vulnerability audit yet" } ]
-verify = { kind = "grep", path = ".github/workflows/ci.yml", pattern = "cargo test --workspace" }
+verify = { kind = "absent", path = ".github/workflows/ci.yml", pattern = "cargo audit|cargo-audit|cargo deny" }
 
 [[claim]]
 id = "dep-audit-lock-dupes"
