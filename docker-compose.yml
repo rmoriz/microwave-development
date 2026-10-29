@@ -10,7 +10,9 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d
 #
-# PostgreSQL metadata is *not* available yet; see docs/deployment.md.
+# PostgreSQL metadata is a supported alternative to SQLite: set
+# database.driver = "postgres" (MW_DATABASE__DRIVER) and database.url
+# (MW_DATABASE__URL). See docs/deployment.md.
 
 name: microwave
 

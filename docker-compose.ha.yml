@@ -2,18 +2,21 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --build
 #
-# This override keeps the metadata store on the local SQLite volume (the only
-# implemented metadata backend; PostgreSQL is not available yet) and moves the
-# other two backends out of the server process:
+# This override keeps the metadata store on the local SQLite volume and moves
+# the other two backends out of the server process:
 #
 #   * cookbook blobs -> Garage (S3-compatible)
 #   * search         -> OpenSearch
 #
-# It is an evaluation topology for a single server instance. It is *not* a
-# multi-replica HA deployment: SQLite still allows exactly one writer, so a
-# second replica must not mount the same database volume. See
-# docs/deployment.md for the supported topologies and the blockers for true
-# active/active.
+# PostgreSQL is a supported alternative metadata backend: set
+# database.driver = "postgres" (MW_DATABASE__DRIVER) and database.url
+# (MW_DATABASE__URL). It is not wired here, so this override needs no database
+# container; the commented service below shows the shape.
+#
+# It is an evaluation topology for one server instance, not a multi-replica HA deployment:
+# SQLite still allows exactly one writer, so a second replica must not mount the
+# same database volume. See docs/deployment.md for the supported topologies and
+# the blockers for true active/active.
 #
 # `object_store.endpoint` is used both for server-side S3 calls and for the
 # presigned URLs handed to chef-client, so it must resolve from both sides.
@@ -99,11 +102,10 @@ services:
       retries: 24
       start_period: 20s
 
-  # PostgreSQL metadata is a design target, not an implemented backend. The
-  # server only ships a SQLite metadata store, and `database.driver = "postgres"`
-  # is not usable today (see README.md, "Not Yet Implemented"). The service
-  # below is intentionally not wired to `microwave`; enable it only after the
-  # PostgreSQL store lands.
+  # PostgreSQL metadata is implemented: point the server at it with
+  # database.driver = "postgres" (MW_DATABASE__DRIVER) and database.url
+  # (MW_DATABASE__URL), then uncomment and wire the service below. This
+  # override keeps the local SQLite volume, so it stays commented out.
   #
   # postgres:
   #   image: postgres:18-alpine

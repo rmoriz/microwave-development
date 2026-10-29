@@ -108,6 +108,10 @@ class ValidateTest(unittest.TestCase):
         (self.root / "README.md").write_text("see remaining-work.md#nope\n")
         self.assertIn("nope", claims_lib.link_errors([self.claim()], self.root)[0])
 
+    def test_area_link_passes(self):
+        (self.root / "README.md").write_text("see remaining-work.md#area-docs\n")
+        self.assertEqual(claims_lib.link_errors([self.claim()], self.root), [])
+
     def test_render_check_detects_hand_edit(self):
         (self.root / "docs" / "remaining-work.md").write_text("stale\n")
         self.assertTrue(claims_lib.render_errors([self.claim()], self.root))

@@ -1,0 +1,44 @@
+version = 1
+
+[[claim]]
+id = "ha-compose-sqlite-metadata"
+summary = "The HA compose override keeps SQLite metadata and shares only search and blobs."
+area = "ha"
+status = "gap"
+surfaces = [
+  { path = "docker-compose.ha.yml", needle = "keeps the metadata store on the local SQLite volume" },
+  { path = "docker-compose.ha.yml", needle = "PostgreSQL" },
+]
+verify = { kind = "grep", path = "docker-compose.ha.yml", pattern = "keeps the metadata store on the local SQLite" }
+
+[[claim]]
+id = "ha-compose-single-replica"
+summary = "The HA compose file is a single-server evaluation topology, not multi-replica HA."
+area = "ha"
+status = "verified"
+surfaces = [ { path = "docker-compose.ha.yml", needle = "not a multi-replica HA deployment" } ]
+verify = { kind = "grep", path = "docker-compose.ha.yml", pattern = "not a multi-replica HA deployment" }
+
+[[claim]]
+id = "compose-postgres-available"
+summary = "PostgreSQL is a selectable metadata backend."
+area = "deployment"
+status = "gap"
+surfaces = [ { path = "docker-compose.yml", needle = "PostgreSQL metadata is" } ]
+verify = { kind = "grep", path = "docker-compose.yml", pattern = "database.driver" }
+
+[[claim]]
+id = "packaging-example-complete"
+summary = "The example configuration documents every supported block without stale disabled notes."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "packaging/microwave.toml.example", needle = "telemetry" } ]
+verify = { kind = "grep", path = "packaging/microwave.toml.example", pattern = "no outbound sender is implemented" }
+
+[[claim]]
+id = "readme-remaining-work-generated"
+summary = "The README Remaining Work section is generated from docs/claims.toml."
+area = "docs"
+status = "gap"
+surfaces = [ { path = "README.md", needle = "generated:remaining-work:start" } ]
+verify = { kind = "grep", path = "README.md", pattern = "generated:remaining-work:start" }
