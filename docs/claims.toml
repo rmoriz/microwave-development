@@ -53,6 +53,86 @@ surfaces = [
 verify = { kind = "grep", path = "Cargo.toml", pattern = "microwave-api" }
 
 [[claim]]
+id = "readme-intro-independent"
+summary = "README: an independent project, not affiliated with Progress."
+area = "docs"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "not affiliated with or endorsed by Progress" },
+]
+verify = { kind = "grep", path = "docs/superpowers/specs/2026-10-24-microwave-server-design.md", pattern = "independent project, not affiliated" }
+
+[[claim]]
+id = "readme-toc"
+summary = "README: the table of contents links the quickstart."
+area = "docs"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "#try-it-in-five-minutes" },
+]
+verify = { kind = "grep", path = "README.md", pattern = "#try-it-in-five-minutes" }
+
+[[claim]]
+id = "readme-why-converge"
+summary = "README: a stock chef-client converges against the server end to end."
+area = "docs"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "A stock `chef-client` converges against it end to end" },
+]
+verify = { kind = "grep", path = "scripts/run-chef-client-e2e.sh", pattern = "Runs a real chef-client" }
+
+[[claim]]
+id = "readme-quickstart-harness"
+summary = "README: the quickstart command is the real converge harness."
+area = "tooling"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "scripts/run-chef-client-e2e.sh" },
+]
+verify = { kind = "file", path = "scripts/run-chef-client-e2e.sh" }
+
+[[claim]]
+id = "readme-quickstart-prerequisites"
+summary = "README: the harness needs Ruby with mixlib-authentication."
+area = "tooling"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "Ruby with `mixlib-authentication`" },
+]
+verify = { kind = "grep", path = "scripts/run-chef-client-e2e.sh", pattern = "mixlib-authentication" }
+
+[[claim]]
+id = "readme-quickstart-success"
+summary = "README: a passing run leaves the marker file behind."
+area = "tooling"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "marker.txt" },
+]
+verify = { kind = "grep", path = "scripts/run-chef-client-e2e.sh", pattern = "MARKER=.*marker.txt" }
+
+[[claim]]
+id = "readme-quickstart-compat-optin"
+summary = "README: MW_E2E_COMPAT=1 re-enables the provisioning steps."
+area = "tooling"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "Set `MW_E2E_COMPAT=1`" },
+]
+verify = { kind = "grep", path = "scripts/chef-client-e2e-bootstrap.rb", pattern = "MW_E2E_COMPAT=1" }
+
+[[claim]]
+id = "readme-quickstart-serve"
+summary = "README: the quickstart checks and then starts the server."
+area = "deployment"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "cargo run -p microwave-server -- serve --check" },
+]
+verify = { kind = "grep", path = "bin/microwave-server/src/main.rs", pattern = "serve --check" }
+
+[[claim]]
 id = "readme-config-env-overrides"
 summary = "README: TOML plus `MW_*` environment overrides."
 area = "deployment"
@@ -644,21 +724,21 @@ verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-29 
 
 [[claim]]
 id = "readme-pedant-core-totals"
-summary = "The core tag baseline is 651 passed, 1 failed, 8 pending."
+summary = "The core tag baseline is 652 passed / 0 failed / 8 pending of 660."
 area = "docs"
 status = "manual"
 surfaces = [
-  { path = "README.md", needle = "| **Total** |" },
+  { path = "README.md", needle = "652 passed / 0 failed / 8 pending" },
 ]
 verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-29 }
 
 [[claim]]
 id = "readme-pedant-extended-totals"
-summary = "The extended suites finished at 3,284 passed, 0 failed, 7 pending."
+summary = "The extended suites finished at 3,284 passed / 0 failed of 3,291."
 area = "docs"
 status = "manual"
 surfaces = [
-  { path = "README.md", needle = "3,284 passed" },
+  { path = "README.md", needle = "3,284 passed / 0 failed / 7 pending" },
 ]
 verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-29 }
 

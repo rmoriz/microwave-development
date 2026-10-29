@@ -1,8 +1,54 @@
 # Microwave Server
 
-![Funkelnde Regenbogen-Mikrowelle im Neonlicht](docs/images/microwave-hero.png)
+A glittering rainbow microwave under neon light
 
-A Rust reimplementation of the Chef Infra Server API, designed as a drop-in replacement for existing clients and operations tooling. This is an independent project, not affiliated with or endorsed by Progress Software Corporation.
+A Rust reimplementation of the Chef Infra Server API, designed as a drop-in replacement for existing `chef-client` fleets and operations tooling. This is an independent project, not affiliated with or endorsed by Progress Software Corporation.
+
+- [Why](#why)
+- [Try it in five minutes](#try-it-in-five-minutes)
+- [What works](#what-works)
+- [Known gaps](#known-gaps)
+- [Migrate from Chef Infra Server](#migrate-from-chef-infra-server)
+
+![A glittering rainbow microwave under neon light](docs/images/microwave-hero.png)
+
+## Why
+
+- **Drop-in** — it implements the Chef Infra Server API, request signing, and authorization that
+  existing `chef-client` runs and operations tooling already speak.
+- **Proven with a real client** — A stock `chef-client` converges against it end to end: the
+  harness starts a throwaway server, uploads a cookbook, runs the client, and checks the marker
+  file the recipe wrote.
+- **Pedant-checked** — 652 passed / 0 failed / 8 pending of 660 core examples and 3,284 passed /
+  0 failed / 7 pending of 3,291 extended examples, recorded in
+  [`docs/pedant-report.md`](docs/pedant-report.md).
+- **Independent** — not affiliated with or endorsed by Progress, so compatibility follows the API
+  rather than a vendor roadmap.
+
+## Try it in five minutes
+
+You need Rust, Ruby with `mixlib-authentication`, and a `chef-client` 18+ binary (or
+`MW_E2E_CHEF_CLIENT` pointing at one). A missing piece exits `2` and names itself.
+
+```sh
+scripts/run-chef-client-e2e.sh
+```
+
+The harness builds a throwaway server on a free loopback port with a temporary data directory, so
+it leaves anything you already run untouched. Success is exit `0` with `chef-client e2e: PASS`,
+the converge recipe's `marker.txt` left in the artifact directory, and the saved node the harness
+verifies. Set `MW_E2E_COMPAT=1` if a server regressed and the two provisioning steps are needed
+again.
+
+To drive the server yourself instead:
+
+```sh
+cargo run -p microwave-server -- serve --check
+cargo run -p microwave-server -- serve
+```
+
+The first run writes the superuser credentials to `./data/pivotal.pem`, `./data/pivotal.password`
+and `./data/objectstore.secret`.
 
 ## Status
 
