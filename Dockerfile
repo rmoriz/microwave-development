@@ -41,7 +41,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         -p microwave-migrate-bin \
     && install -D -m 0755 target/release/microwave-server /out/microwave-server \
     && install -D -m 0755 target/release/microwave-ctl /out/microwave-ctl \
-    && install -D -m 0755 target/release/chef-server-ctl /out/chef-server-ctl \
     && install -D -m 0755 target/release/microwave-migrate /out/microwave-migrate
 
 FROM debian:trixie-slim AS runtime
@@ -69,7 +68,9 @@ RUN groupadd --system --gid "${GID}" microwave \
 
 COPY --from=builder /out/microwave-server /usr/local/bin/microwave-server
 COPY --from=builder /out/microwave-ctl /usr/local/bin/microwave-ctl
-COPY --from=builder /out/chef-server-ctl /usr/local/bin/chef-server-ctl
+# Same executable as microwave-ctl; the symlink keeps the alias for runbooks
+# without shipping the CLI twice.
+RUN ln -s microwave-ctl /usr/local/bin/chef-server-ctl
 COPY --from=builder /out/microwave-migrate /usr/local/bin/microwave-migrate
 
 # Baked-in example configuration. Mount a real file over this path in

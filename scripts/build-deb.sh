@@ -128,9 +128,12 @@ rm -rf "$STAGE"
 install -d "$STAGE/DEBIAN" "$STAGE/usr/bin" \
     "$STAGE/usr/lib/systemd/system" "$STAGE/etc/microwave" "$DOC_DIR"
 
-for binary in "${BINARIES[@]}"; do
+# chef-server-ctl is the same executable as microwave-ctl, so ship it as a
+# symlink: one copy of the CLI in the package, same argv[0] name for the alias.
+for binary in microwave-server microwave-ctl microwave-migrate; do
     install -m 0755 "$TARGET_DIR/release/$binary" "$STAGE/usr/bin/$binary"
 done
+ln -s microwave-ctl "$STAGE/usr/bin/chef-server-ctl"
 
 install -m 0644 packaging/debian/microwave-server.service \
     "$STAGE/usr/lib/systemd/system/microwave-server.service"

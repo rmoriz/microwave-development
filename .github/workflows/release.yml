@@ -44,8 +44,15 @@ jobs:
         run: |
           set -euo pipefail
           name="microwave-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          stage="$(mktemp -d)"
+          for binary in microwave-server microwave-ctl microwave-migrate; do
+            install -m 0755 "target/${{ matrix.triple }}/release/$binary" "$stage/$binary"
+          done
+          # The alias is the same executable under another name; a symlink
+          # keeps one copy of the CLI in the archive.
+          ln -s microwave-ctl "$stage/chef-server-ctl"
           mkdir -p dist
-          tar -czf "dist/${name}.tar.gz" -C "target/${{ matrix.triple }}/release" \
+          tar -czf "dist/${name}.tar.gz" -C "$stage" \
             microwave-server microwave-ctl chef-server-ctl microwave-migrate
           if command -v sha256sum >/dev/null 2>&1; then
             sha256sum "dist/${name}.tar.gz" > "dist/${name}.tar.gz.sha256"
