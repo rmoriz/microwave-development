@@ -414,13 +414,13 @@ verify = { kind = "file", path = "packaging/microwave.toml.example" }
 
 [[claim]]
 id = "readme-release-workflow"
-summary = "README: builds release binaries for linux/amd64."
+summary = "README: builds release binaries for linux/amd64 and linux/arm64."
 area = "deployment"
 status = "verified"
 surfaces = [
   { path = "README.md", needle = "builds release binaries for linux/amd64" },
 ]
-verify = { kind = "grep", path = ".github/workflows/release.yml", pattern = "aarch64-apple-darwin" }
+verify = { kind = "grep", path = ".github/workflows/release.yml", pattern = "aarch64-unknown-linux-gnu" }
 
 [[claim]]
 id = "readme-container-entrypoint"

@@ -184,9 +184,9 @@ Packaging artifacts: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
 built with [`scripts/build-deb.sh`](scripts/build-deb.sh); see
 [`docs/debian-package.md`](docs/debian-package.md).
 
-Pushing a `v*` tag builds release binaries for linux/amd64, linux/arm64, and
-macOS/arm64 in `.github/workflows/release.yml` and attaches them, with SHA-256
-checksums, to the GitHub release.
+Pushing a `v*` tag builds release binaries for linux/amd64 and linux/arm64 in
+`.github/workflows/release.yml` and attaches them, with SHA-256 checksums, to
+the GitHub release.
 
 The image default command is the supported container entrypoint:
 
