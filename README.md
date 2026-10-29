@@ -16,11 +16,12 @@ A Rust reimplementation of the Chef Infra Server API, designed as a drop-in repl
 
 - **Drop-in** — it implements the Chef Infra Server API, request signing, and authorization that
   existing `chef-client` runs and operations tooling already speak.
-- **Proven with a real client** — A stock `chef-client` converges against it end to end: the
+- **Proven with a real client** — a stock `chef-client` converges against it end to end: the
   harness starts a throwaway server, uploads a cookbook, runs the client, and checks the marker
   file the recipe wrote.
-- **Pedant-checked** — 652 passed / 0 failed / 8 pending of 660 core examples and 3,284 passed /
-  0 failed / 7 pending of 3,291 extended examples, recorded in
+- **Pedant-checked** — 652 passed / 0 failed / 8 pending out of 660 core examples, after the
+  plain-HTTP `headers` artifact was fixed at the harness. Extended suites:
+  3,284 passed / 0 failed / 7 pending of 3,291 examples, recorded in
   [`docs/pedant-report.md`](docs/pedant-report.md).
 - **Independent** — not affiliated with or endorsed by Progress, so compatibility follows the API
   rather than a vendor roadmap.
@@ -37,8 +38,8 @@ scripts/run-chef-client-e2e.sh
 The harness builds a throwaway server on a free loopback port with a temporary data directory, so
 it leaves anything you already run untouched. Success is exit `0` with `chef-client e2e: PASS`,
 the converge recipe's `marker.txt` left in the artifact directory, and the saved node the harness
-verifies. Set `MW_E2E_COMPAT=1` if a server regressed and the two provisioning steps are needed
-again.
+verifies. Set `MW_E2E_COMPAT=1` to grant the default environment's read ACE and synthesize the v2
+`all_files` manifest for a server that returns neither.
 
 To drive the server yourself instead:
 

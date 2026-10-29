@@ -78,7 +78,7 @@ summary = "README: a stock chef-client converges against the server end to end."
 area = "docs"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "A stock `chef-client` converges against it end to end" },
+  { path = "README.md", needle = "a stock `chef-client` converges against it end to end" },
 ]
 verify = { kind = "grep", path = "scripts/run-chef-client-e2e.sh", pattern = "Runs a real chef-client" }
 
@@ -734,7 +734,7 @@ verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-29 
 
 [[claim]]
 id = "readme-pedant-extended-totals"
-summary = "The extended suites finished at 3,284 passed / 0 failed of 3,291."
+summary = "The extended suites finished at 3,284 passed / 0 failed / 7 pending of 3,291."
 area = "docs"
 status = "manual"
 surfaces = [
