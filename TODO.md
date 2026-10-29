@@ -46,12 +46,12 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 ### 1.3 Unified Database Schema & Store Providers (`microwave-store`)
 - [x] Define `MetadataStore` and transactional unit-of-work traits covering all domain and authz operations. <!-- verified: crates/microwave-store/src/backend.rs:48 -->
 - [x] Author unified SQL schema migrations compatible with both SQLite 3.35+ and PostgreSQL 14+: <!-- verified: crates/microwave-store/migrations/0001_initial.sql -->
-  - [ ] `orgs`, `users`, `org_user_associations`, `org_user_invites`, `clients`, `actor_keys`.
-  - [ ] `authz_entities`, `authz_acl_actor`, `authz_acl_group`, `authz_group_actors`, `authz_group_groups`, `containers`, `groups`.
-  - [ ] `nodes`, `roles`, `environments`, `data_bags`, `data_bag_items`.
-  - [ ] `checksums`, `sandboxed_checksums`, `cookbooks`, `cookbook_versions`, `cookbook_version_checksums`, `cookbook_artifacts`, `cookbook_artifact_versions`, `cookbook_artifact_version_checksums`.
-  - [ ] `policies`, `policy_groups`, `policy_revisions`, `policy_group_revision_associations`.
-  - [ ] `oauth_applications`, `oauth_access_grants`, `oauth_access_tokens`, `kvpair`, `telemetry`.
+  - [x] `orgs`, `users`, `org_user_associations`, `org_user_invites`, `clients`, `actor_keys`.
+  - [x] `authz_entities`, `authz_acl_actor`, `authz_acl_group`, `authz_group_actors`, `authz_group_groups`, `containers`, `groups`.
+  - [x] `nodes`, `roles`, `environments`, `data_bags`, `data_bag_items`.
+  - [x] `checksums`, `sandboxed_checksums`, `cookbooks`, `cookbook_versions`, `cookbook_version_checksums`, `cookbook_artifacts`, `cookbook_artifact_versions`, `cookbook_artifact_version_checksums`.
+  - [x] `policies`, `policy_groups`, `policy_revisions`, `policy_group_revision_associations`.
+  - [x] `oauth_applications`, `oauth_access_grants`, `oauth_access_tokens`, `kvpair`, `telemetry`.
 - [x] Implement SQLite backend (`WAL` journal mode, `foreign_keys = ON`, `busy_timeout = 5000`, serialized write connection + read pool). <!-- verified: crates/microwave-store/src/sqlite.rs:87 -->
 - [x] Implement PostgreSQL backend (`sqlx::PgPool`, advisory lock helper for HA background tasks). <!-- verified: crates/microwave-store-postgres/src/lib.rs -->
 - [x] Implement transparent compression for `serialized_object` columns using the custom MWZ1 envelope (`mwz1:` + base64(zlib(JSON))). This is not byte-level upstream compatibility; legacy plain JSON remains readable. Configure with `storage.compression = "zlib" | "none"` / `MW_STORAGE__COMPRESSION`, default `zlib`.
@@ -120,7 +120,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
   - [x] `POST` create key (validate PEM public key or `create_key: true`, validate `expiration_date` ISO-8601 or `"infinity"`, return `201`). <!-- verified: cargo test -p microwave-api --test keys_test -->
   - [x] `GET,PUT,DELETE .../keys/:key_name` (support renaming `name`, updating `public_key` / `create_key` / `expiration_date`). <!-- verified: cargo test -p microwave-api --test keys_identity_test -->
 - [x] **Principals (`GET /organizations/:org/principals/:name`):** <!-- verified: cargo test -p microwave-api --test principals_test -->
-  - [ ] Implement `v0` single principal response vs `v1+` `{"principals": [...]}` array response (ordering client before user when both exist, setting `org_member` accurately).
+  - [x] Implement `v0` single principal response vs `v1+` `{"principals": [...]}` array response (ordering client before user when both exist, setting `org_member` accurately). <!-- verified: crates/microwave-api/tests/principals_test.rs -->
 - [x] **Containers, Groups & ACLs:** <!-- verified: cargo test -p microwave-api --test containers_test -->
   - [x] `GET,POST /organizations/:org/containers` and `GET,DELETE /organizations/:org/containers/:name`. <!-- verified: cargo test -p microwave-api --test containers_test -->
   - [x] `GET,POST /organizations/:org/groups` and `GET,PUT,DELETE /organizations/:org/groups/:name` (prevent deleting default org groups `admins`, `users`, `clients`, `billing-admins`). <!-- verified: cargo test -p microwave-api --test groups_test -->
