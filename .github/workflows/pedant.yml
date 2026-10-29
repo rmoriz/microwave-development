@@ -16,8 +16,6 @@ jobs:
   pedant:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    env:
-      PEDANT_ARTIFACTS: ${{ runner.temp }}/pedant-artifacts
     steps:
       - uses: actions/checkout@v4
       # Nightly and manual only: the PR gate must pass without Ruby.
@@ -28,11 +26,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p microwave-server
       - name: Run the strict pedant tags
+        env:
+          PEDANT_ARTIFACTS: ${{ runner.temp }}/pedant-artifacts
         run: scripts/run-pedant.sh strict
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: pedant-artifacts
-          path: ${{ env.PEDANT_ARTIFACTS }}
+          path: ${{ runner.temp }}/pedant-artifacts
           if-no-files-found: ignore
           retention-days: 14

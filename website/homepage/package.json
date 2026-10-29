@@ -7,7 +7,7 @@
     "build": "astro build",
     "preview": "astro preview",
     "check": "astro check",
-    "test:content": "npm run build && node --test tests/content/",
+    "test:content": "npm run build && node --test tests/content/*.test.mjs",
     "test:e2e": "playwright test",
     "test": "npm run check && npm run test:content && npm run test:e2e",
     "og": "node scripts/generate-og.mjs"

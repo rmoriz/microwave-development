@@ -51,11 +51,18 @@ jobs:
           python-version: "3.13"
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: website/homepage/package-lock.json
       - run: python3 -m unittest discover -s scripts/tests
       - run: python3 scripts/check-claims.py
+      # Ruby's YAML parser accepts files GitHub rejects (an unavailable
+      # expression context breaks the whole workflow at run time, with no job
+      # to look at), so lint the workflows with the same tool locally.
+      - name: Lint the workflows
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint
 
   homepage:
     runs-on: ubuntu-24.04
@@ -66,7 +73,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: website/homepage/package-lock.json
       - run: npm ci
