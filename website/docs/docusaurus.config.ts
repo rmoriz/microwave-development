@@ -13,6 +13,8 @@ const config: Config = {
   organizationName: 'rmoriz',
   projectName: 'microwave-development',
 
+  trailingSlash: true,
+
   onBrokenLinks: 'throw',
   // `docs/remaining-work.md` marks its gap anchors with raw `<a id="...">`
   // elements, which Docusaurus does not count as headings; the anchors work,
@@ -58,7 +60,7 @@ const config: Config = {
   ],
 
   themeConfig: {
-    image: 'img/favicon.svg',
+    image: 'img/og.png',
     colorMode: {
       defaultMode: 'dark',
       disableSwitch: false,

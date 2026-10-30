@@ -28,10 +28,19 @@ test('theme colour matches the steel-blue background', () => {
 
 test('sitemap and robots exist', () => {
   assert.equal(fs.existsSync(path.join(root, 'dist/sitemap-index.xml')), true);
-  assert.match(
-    fs.readFileSync(path.join(root, 'dist/robots.txt'), 'utf8'),
-    new RegExp(`Sitemap: ${SITE_URL}${BASE_PATH}/sitemap-index.xml`),
-  );
+  const robots = fs.readFileSync(path.join(root, 'dist/robots.txt'), 'utf8');
+  const origin = SITE_URL.replaceAll('.', '\\.');
+  assert.match(robots, new RegExp(`Sitemap: ${origin}${BASE_PATH}/sitemap-index.xml`));
+  assert.match(robots, new RegExp(`Sitemap: ${origin}${BASE_PATH}/docs/sitemap.xml`));
+});
+
+test('every sitemap URL sits under the base path', () => {
+  const sitemap = fs.readFileSync(path.join(root, 'dist/sitemap-0.xml'), 'utf8');
+  const locs = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => match[1]);
+  assert.ok(locs.length >= 3, 'the sitemap lists the pages');
+  for (const loc of locs) {
+    assert.ok(loc.startsWith(`${SITE_URL}${BASE_PATH}/`), loc);
+  }
 });
 
 test('404 page exists and is noindex', () => {

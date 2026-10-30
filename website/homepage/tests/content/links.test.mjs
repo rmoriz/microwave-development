@@ -40,6 +40,9 @@ test('withBase prefixes once and leaves a based path alone', () => {
   assert.equal(withBase('/og.png'), `${BASE_PATH}/og.png`);
   assert.equal(withBase(withBase('/og.png')), `${BASE_PATH}/og.png`);
   assert.equal(withBase('https://example.test/og.png'), 'https://example.test/og.png');
+  assert.equal(withBase('mailto:hello@example.test'), 'mailto:hello@example.test');
+  assert.equal(withBase('tel:+49123'), 'tel:+49123');
+  assert.equal(withBase('//cdn.example.test/og.png'), '//cdn.example.test/og.png');
 });
 
 test('all internal links and fragments resolve; external links are secure', () => {

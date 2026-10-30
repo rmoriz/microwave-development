@@ -111,7 +111,7 @@ test('migration, support, and FAQ', () => {
 
 test('agent MCP sales section', () => {
   const text = $('body').text();
-  const guide = 'https://github.com/rmoriz/microwave-development/blob/main/docs/mcp.md';
+  const guide = `${BASE_PATH}/docs/mcp/`;
 
   assert.equal($('#agents').length, 1);
   assert.equal($('#product').nextAll('#agents').length, 1, '#agents follows #product');

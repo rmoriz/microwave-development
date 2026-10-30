@@ -1,11 +1,12 @@
 ---
 import { site } from '../data/site';
+import { withBase } from '../lib/paths';
 
 const stats = [
   {
     value: '3,284',
     label: 'extended Pedant examples passing, 0 failures',
-    href: `${site.github}/blob/main/docs/pedant-extended-report.md`,
+    href: withBase('/docs/pedant-extended-report/'),
   },
   {
     value: '0',
