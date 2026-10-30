@@ -64,7 +64,7 @@ same Release.
 
 - **Log destination:** the unit appends to `/var/log/microwave/microwave.log`
   with `LogsDirectory=microwave`; the logrotate rule uses
-  `su microwave microwave` and `copytruncate`. journald keeps unit-level
+  `su root root` and `copytruncate`. journald keeps unit-level
   messages only, and `docs/deployment.md` says so.
 - **Version:** the tag is the source of truth, not `Cargo.toml`.
   `scripts/build-deb.sh` gains a `DEB_VERSION` override; the workflow strips a

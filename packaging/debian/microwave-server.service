@@ -14,9 +14,9 @@ Group=microwave
 # belong in a drop-in such as /etc/systemd/system/microwave-server.service.d/.
 ExecStartPre=/usr/bin/microwave-ctl --config /etc/microwave/microwave.toml check-config
 ExecStart=/usr/bin/microwave-server serve --config /etc/microwave/microwave.toml
-# The process logs to stderr. Send that to a file inside the log directory that
-# systemd creates and owns (LogsDirectory= below), rotated by logrotate with
-# copytruncate: the server has no log-reopen signal, SIGHUP reloads TLS only.
+# The process logs to stderr. Send that to the log file the package pre-creates
+# (below); logrotate rotates it with copytruncate: the server has no log-reopen
+# signal, SIGHUP reloads TLS only.
 StandardOutput=append:/var/log/microwave/microwave.log
 StandardError=inherit
 # SIGHUP reloads the TLS certificate/key pair when the TLS listener is enabled.

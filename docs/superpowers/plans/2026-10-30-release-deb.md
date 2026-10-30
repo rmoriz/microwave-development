@@ -16,7 +16,7 @@
 - The `.deb` is only built when `GITHUB_REF_TYPE == tag`. A branch dispatch still produces tarballs.
 - `logrotate` is a hard `Depends`.
 - The log file is `/var/log/microwave/microwave.log`; the unit uses `StandardOutput=append:` and `LogsDirectory=microwave`.
-- The rule uses `copytruncate`, `daily`, `rotate 14`, `compress`, `delaycompress`, `missingok`, `notifempty`, `su microwave microwave`.
+- The rule uses `copytruncate`, `daily`, `rotate 14`, `compress`, `delaycompress`, `missingok`, `notifempty`, `su root root`.
 - No apt repository, no registry, no changes to `Dockerfile` or `docker-e2e`.
 - Packaging stays a single script: CI runs `scripts/build-deb.sh`, never a second copy of the staging logic.
 
@@ -130,7 +130,7 @@ Add to `scripts/test-deb.sh` inside the quoted container script, after the exist
             stat -c "%a %U:%G" /etc/logrotate.d/microwave-server | grep -qx "644 root:root"
             grep -q "^    copytruncate$" /etc/logrotate.d/microwave-server
             grep -q "^    notifempty$" /etc/logrotate.d/microwave-server
-            grep -q "^    su microwave microwave$" /etc/logrotate.d/microwave-server
+            grep -q "^    su root root$" /etc/logrotate.d/microwave-server
             logrotate -d /etc/logrotate.d/microwave-server 2>&1 | grep -vq "error:"
             dpkg -s microwave-server | grep -q "^Depends:.*logrotate"
 ```
@@ -156,7 +156,7 @@ In the unit, after `ExecStart=`, add `StandardOutput=append:/var/log/microwave/m
     delaycompress
     missingok
     notifempty
-    su microwave microwave
+    su root root
     copytruncate
 }
 ```
