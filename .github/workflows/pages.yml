@@ -1,30 +1,31 @@
 name: pages
 
+# Every path that feeds the published site. The push trigger is path-filtered;
+# the pull-request trigger is not, because `build site` is a required check and
+# a PR that touches no website file still has to report it. The deploy guard
+# keeps pull requests to a build.
 on:
   push:
     branches: [main]
     paths:
-      - 'website/homepage/**'
-      - 'website/docs/**'
-      - 'docs/index.md'
-      - 'docs/deployment.md'
-      - 'docs/mcp.md'
-      - 'docs/debian-package.md'
-      - 'docs/remaining-work.md'
-      - 'docs/pedant-report.md'
-      - 'docs/pedant-extended-report.md'
+      - 'website/**'
+      - 'docs/**'
       - '.github/workflows/pages.yml'
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# A pull request only builds, so superseded runs are wasted work; deploys from
+# main stay serialized.
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: pages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
+    name: build site
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
