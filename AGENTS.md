@@ -19,6 +19,7 @@ Run the suite for the area you touched, not the whole workspace by default.
 | `website/**` and `docs/mcp.md` | the same; the content test asserts guide facts |
 | `docs/mcp.md` only | the same; it checks the guide file |
 | `crates/**`, `bin/**`, `Cargo.toml` | `cargo test --workspace` |
+| `packaging/**`, `scripts/*deb*` | `scripts/build-deb.sh && scripts/test-deb.sh` |
 | Rust + website together | both |
 
 `npm test` runs `astro check`, the built-HTML content tests, and Playwright
