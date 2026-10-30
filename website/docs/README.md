@@ -34,3 +34,10 @@ on GitHub and on the site. Links between published pages can use the plain
 `docs/remaining-work.md` marks each gap with a raw `<a id="gap-...">` anchor.
 Docusaurus does not treat those as headings, so `onBrokenAnchors` is `warn`;
 the anchors themselves work.
+
+## CI
+
+A change under `docs/` or `website/docs/` runs the `claims` and `docs` jobs
+only; fmt, clippy, the test suite, the Postgres suite and the homepage build
+are skipped by the filters in `.github/workflows/ci.yml`. Editing a workflow
+runs everything.
