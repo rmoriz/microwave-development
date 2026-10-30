@@ -32,6 +32,12 @@ chmod 0600 "$CHEF_DIR/knife.rb" "$CHEF_DIR/pivotal.pem"
 sed -i "s|client_key \"$SHARED/pivotal.pem\"|client_key \"$CHEF_DIR/pivotal.pem\"|" \
     "$CHEF_DIR/knife.rb"
 
+# knife infers a chef repo from the config directory and then rejects relative
+# paths when the working directory is outside it, so a bare `knife list` from
+# /root/work failed with "Attempt to use relative path ''". Pin the repo root
+# to the workspace, which is where the shell starts.
+printf '%s\n' 'chef_repo_path "/root/work"' >>"$CHEF_DIR/knife.rb"
+
 echo "workstation: knife is configured for $(knife node list | wc -l) nodes"
 
 # OpenCode 2.2.0 only registers configured MCP servers on a configuration

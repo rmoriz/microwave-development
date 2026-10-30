@@ -127,7 +127,9 @@ docker compose exec workstation opencode
 
 `knife` is preconfigured for the `e2e` organization: `knife node list`,
 `knife cookbook list`, and the other commands work without a `-c` flag or a
-`--server-url`. Exec sessions start in `/root/work`, where OpenCode picks up
+`--server-url`. A bare `knife list` works because `/root/work` is pinned as the
+`chef_repo_path`; from any other directory use `knife list /nodes` or
+`knife node list`. Exec sessions start in `/root/work`, where OpenCode picks up
 `opencode.json`. It needs a model provider once; the login is kept in the
 `workstation-opencode` volume:
 

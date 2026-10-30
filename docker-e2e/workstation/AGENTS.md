@@ -6,6 +6,9 @@ This container is part of the disposable `docker-e2e` stack.
   `http://microwave:8000`; plain `knife node list`, `knife cookbook list`, and
   the other commands work without flags. The config and the superuser key live
   in `/root/work/.chef` (`KNIFE_HOME`).
+- The workspace is the pinned `chef_repo_path`, so a bare `knife list` returns
+  the server root only when the shell is in `/root/work`; elsewhere use
+  `knife node list`, `knife cookbook list`, or an absolute `knife list /nodes`.
 - The `microwave-e2e` MCP server exposes node, environment, cookbook, and run
   tools over the same organization.
 - Write tools run as the `pivotal` superuser. Destructive calls (`delete_node`,
