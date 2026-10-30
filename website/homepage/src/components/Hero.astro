@@ -2,8 +2,6 @@
 import { Picture } from 'astro:assets';
 import { site } from '../data/site';
 import heroImage from '../assets/microwave-hero.png';
-
-const supportHref = `mailto:${site.email}?subject=Microwave%20support`;
 ---
 <section class="hero reveal">
   <div class="container hero-grid">
@@ -16,7 +14,7 @@ const supportHref = `mailto:${site.email}?subject=Microwave%20support`;
         Run a simpler server, with the backing services you already trust.
       </p>
       <div class="hero-actions">
-        <a class="button button-primary" href={supportHref}>Talk to us about support</a>
+        <a class="button button-primary" href={site.docs}>Read the docs</a>
         <a class="button button-ghost" href={site.runFromSource}>Run it from source</a>
       </div>
       <ul class="badge-row" aria-label="Compatibility and license">

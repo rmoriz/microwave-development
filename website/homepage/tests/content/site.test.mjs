@@ -30,7 +30,7 @@ test('every page carries exactly one decorative grid layer', () => {
 test('hero and navigation', () => {
   assert.equal($('h1').text().trim(), 'Get cooking without becoming a chef.');
   assert.match($('main').text(), /independent, open-source Chef Infra Server API implementation written in Rust/i);
-  assert.equal($('a[href="mailto:hello@microwave.io?subject=Microwave%20support"]').length >= 1, true);
+  assert.equal($(`.hero-actions a[href="${BASE_PATH}/docs/"]`).length, 1);
   assert.equal($('a[href="https://github.com/rmoriz/microwave-development#run-locally"]').length >= 1, true);
   assert.match($('body').text(), /Cinc Client 19/);
   assert.match($('body').text(), /Chef Infra Client 18\/19/);
@@ -106,7 +106,7 @@ test('migration, support, and FAQ', () => {
   assert.match(text, /not a built-in assistant/);
   assert.match(text, /superuser default skips them/);
   assert.match(text, /only server log lines, not a durable audit table/);
-  assert.equal($('a[href="mailto:hello@microwave.io?subject=Microwave%20support"]').length >= 2, true);
+  assert.equal($(`#support a[href="${BASE_PATH}/docs/"]`).length, 1);
 });
 
 test('agent MCP sales section', () => {
@@ -160,8 +160,11 @@ test('final CTA, footer, and legal pages', () => {
   assert.match(text, /No cookies, no analytics, no third-party requests/i);
   assert.equal($(`a[href="${BASE_PATH}/privacy/"]`).length, 1);
   assert.equal($(`a[href="${BASE_PATH}/imprint/"]`).length, 1);
-  // Footer nav; the Migration section links to the same docs page.
+  // Footer nav; the hero and closing CTAs lead to the guides.
   assert.equal($(`.footer-nav a[href="${BASE_PATH}/docs/"]`).length, 1);
+  assert.equal($(`.hero-actions a[href="${BASE_PATH}/docs/"]`).length, 1);
+  assert.equal($(`.final-actions a[href="${BASE_PATH}/docs/"]`).length, 1);
+  assert.doesNotMatch(text, /Talk to us/);
   assert.doesNotMatch(text, /cheaper than|drop the license|end of life|official partner|invented tiers/i);
   assert.equal($('link[rel="preload"][as="image"]').length, 1);
 

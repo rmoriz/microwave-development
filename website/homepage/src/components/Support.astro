@@ -1,8 +1,6 @@
 ---
 import { site } from '../data/site';
 
-const supportHref = `mailto:${site.email}?subject=Microwave%20support`;
-
 const options = [
   {
     title: 'Migration help',
@@ -41,7 +39,7 @@ const options = [
     </div>
 
     <div class="support-cta">
-      <a class="button button-primary" href={supportHref}>Talk to us about support</a>
+      <a class="button button-primary" href={site.docs}>Read the docs</a>
       <p>Scope and terms are agreed directly.</p>
     </div>
   </div>
