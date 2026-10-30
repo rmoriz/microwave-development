@@ -46,14 +46,23 @@ jobs:
             exit 0
           fi
           # The tag is the source of truth; the script shares the validation.
-          version="$(DEB_VERSION="$GITHUB_REF_NAME" scripts/build-deb.sh --print-version || true)"
+          raw="$GITHUB_REF_NAME"
+          if ! version="$(DEB_VERSION="$raw" scripts/build-deb.sh --print-version 2>"$RUNNER_TEMP/deb-version.err")"; then
+            echo "::warning::tag '$GITHUB_REF_NAME' is not a Debian version (no .deb); shipping tarballs only: $(tr '\n' ' ' < "$RUNNER_TEMP/deb-version.err")"
+            echo "enabled=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The script always prints a version on success; this covers a script
+          # that exits 0 without output.
           if [ -z "$version" ]; then
-            echo "::warning::$GITHUB_REF_NAME is not a Debian version; shipping tarballs only"
+            echo "::warning::tag '$GITHUB_REF_NAME' resolved to an empty version (no .deb); shipping tarballs only"
             echo "enabled=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           workspace_version="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -n1)"
-          if [ "$version" != "$workspace_version" ]; then
+          if [ -z "$workspace_version" ]; then
+            echo "::warning::could not read the [workspace.package] version; tag version $version is not compared"
+          elif [ "$version" != "$workspace_version" ]; then
             echo "::warning::tag version $version differs from the workspace version $workspace_version"
           fi
           echo "enabled=1" >> "$GITHUB_OUTPUT"
