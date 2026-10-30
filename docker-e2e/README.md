@@ -16,7 +16,7 @@ node actually needs:
    `role[e2e_role]`, and stays running so the result can be inspected with
    `docker exec`.
 4. **workstation** — Cinc Workstation and OpenCode, for driving the stack by
-   hand. Not published; reach it with `docker compose exec`.
+   hand. Not published; reach it with `docker compose exec` or `./shell`.
 
 Nothing runs on the host except `docker compose`.
 
@@ -116,9 +116,11 @@ docker compose exec node-debian cinc-client
 ## Workstation
 
 `workstation` is a Cinc Workstation plus OpenCode box for driving the stack by
-hand. It publishes no port; use `docker compose exec`:
+hand. It publishes no port; use `docker compose exec`, or `./shell` for the
+common case of an interactive shell:
 
 ```sh
+./shell
 docker compose exec workstation bash
 docker compose exec workstation opencode
 ```
