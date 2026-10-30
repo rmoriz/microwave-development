@@ -1,6 +1,6 @@
 # MCP endpoint (experimental)
 
-Microwave Server can expose a per-organization
+Microwave Server can expose an opt-in, per-organization
 [MCP](https://modelcontextprotocol.io/) endpoint over the Streamable HTTP
 transport. It lets an MCP-capable agent list and, optionally, mutate Chef
 objects and read locally stored converge reports through tool calls instead of
@@ -117,7 +117,9 @@ by editing the config and restarting.
 
 `writes` defaults to `true`, which registers the eight write tools. They call
 the same services as the signed HTTP API and still enforce the principal's
-ACLs; `writes` is a capability switch, not an extra authorization layer.
+ACLs; `writes` is a capability switch, not an extra authorization layer. The
+eight write tools are registered unless the organization sets `writes = false`,
+which hides them and makes the endpoint read-only.
 
 ```toml
 [mcp.organizations.acme]

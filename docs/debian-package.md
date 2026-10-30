@@ -5,6 +5,10 @@ single binary package, `microwave-server`, from the Cargo workspace. It is not
 a signed APT repository and it is not lintian-clean; it is meant for installing
 builds on your own Debian/Ubuntu hosts.
 
+Packaging artifacts: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
+`docker-compose.ha.yml`, and `packaging/`; the package metadata is under
+`packaging/debian/`.
+
 ## Build
 
 ```sh
@@ -46,9 +50,11 @@ package installs on Debian 12+ and Ubuntu 24.04+. For Ubuntu 22.04, build in a
 ### Release builds
 
 `.github/workflows/release.yml` runs on `v*` tag pushes and on manual
-`workflow_dispatch`. A tag push builds `microwave-server_<version>_<arch>.deb`
-and the checksum `microwave-server_<version>_<arch>.deb.sha256` for `amd64` and
-`arm64` and attaches both to that GitHub Release, next to the tarballs. A
+`workflow_dispatch`. A tag push builds release binaries for linux/amd64 and
+linux/arm64 and attaches them, with checksums, to that GitHub Release, next to
+the tarballs. A tag push also builds `microwave-server_<version>_<arch>.deb`
+and its `microwave-server_<version>_<arch>.deb.sha256` for `amd64` and `arm64`
+and attaches both, unless the version cannot be derived. A
 `workflow_dispatch` on a tag packages; on a branch it produces only the
 tarballs — no package. A `v*` tag whose remainder is not a Debian version (for
 example the moving `v-current` snapshot tag) is packaged as

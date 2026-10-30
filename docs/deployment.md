@@ -147,6 +147,8 @@ behaviour.
 The data directory and the metadata backend. Both backends are supported by
 the server, `microwave-ctl`, and `microwave-migrate`; see
 [Backup and restore](#9-backup-and-restore) for what the directory holds.
+SQLite remains the default and the only backend with an in-process database
+file.
 
 | Setting | Details |
 |---|---|
@@ -159,7 +161,9 @@ the server, `microwave-ctl`, and `microwave-migrate`; see
 
 Search backends are explained in [Search](#search). The solver bounds
 concurrent cookbook solves so overlapping requests queue instead of starving
-the server.
+the server. Constraints (`=`, `>`, `<`, `>=`, `<=`, `~>`) are resolved with
+deterministic backtracking, environment constraints and role expansion, and
+upstream-shaped `412` failures when no version satisfies the graph.
 
 | Setting | Details |
 |---|---|
@@ -191,7 +195,9 @@ Backends, credentials, and the reachability caveat are in
 
 Signature tolerance, the protected superuser account, password-reset
 behaviour, and optional auth on the metrics endpoint described under
-[Endpoints](#endpoints).
+[Endpoints](#endpoints). Signed requests arrive with `X-Ops-Sign` 1.0/1.1/1.3
+signatures; the server supports all three canonicalization versions and
+verifies them against the actor's keys.
 
 | Setting | Details |
 |---|---|
@@ -418,9 +424,8 @@ On a reset request, the server creates a token valid for
 `auth.password_reset_ttl_seconds` (default one hour, maximum seven days) and, if
 mail is enabled and the account exists with a non-empty email address, enqueues
 one plain-text message containing
-`{server.public_url}/id/password-reset?token=...`. Delivery is asynchronous
-through a bounded 64-message queue with one worker; there are no retries and no
-durable outbox ([gap-mail-outbox](remaining-work.md#gap-mail-outbox)). A full
+`{server.public_url}/id/password-reset?token=...`. Delivery is dispatched asynchronously through a bounded 64-message queue with one worker;
+there are no retries and no durable outbox ([gap-mail-outbox](remaining-work.md#gap-mail-outbox)). A full
 queue, stopped worker, or SMTP failure is logged without changing the response.
 Unknown accounts and accounts without an email address send nothing.
 
@@ -863,6 +868,8 @@ secret_key = "..."
   deployments.
 - Presigned URL lifetime and clock skew matter: keep the server and clients
   within the `auth.skew_seconds` window.
+- Requests to S3/Garage use SigV4 signing and presigned URLs; the local
+  backend signs `/bookshelf` URLs with the per-server HMAC secret instead.
 - Deleting a cookbook garbage-collects unreferenced checksums; with a shared
   bucket, ensure no other writer is using the same prefix.
 
@@ -1427,6 +1434,16 @@ the legacy API never returns). `microwave-ctl migrate-from-legacy --input
 <snapshot>` imports that snapshot into the configured SQLite or PostgreSQL
 database.
 
+**Neither path is lossless.** A metadata-only `from-api` crawl does not copy
+cookbook blobs, and the legacy API cannot return password hashes or the
+`admin` flag: crawled users start without a password, with admin off, and need
+a password reset or an external identity provider. The knife importer carries
+no cookbook artifacts, no policies or policy groups, and no OAuth
+applications. No migration path recovers client or user private keys, because
+the legacy server never stored them. A migration also does not reindex, so
+remote OpenSearch/Elasticsearch documents stay missing until
+`microwave-ctl reindex` runs afterwards.
+
 Pass `--bookshelf-dir DIR` to also copy cookbook file blobs into a local
 object-store tree at `DIR/organization-<org_id>/checksum-<md5>`. Existing
 checksums are skipped, relative file URLs are signed and resolved against
@@ -1821,6 +1838,12 @@ curl -fsS 'http://127.0.0.1:8000/_stats?format=prometheus'
 
 ### CLI
 
+`microwave-ctl` and the `chef-server-ctl` compatibility alias share one
+dispatch, so every command below is available through both names. Server
+administration uses `grant-server-admin-permissions`,
+`remove-server-admin-permissions`, and `list-server-admins`. The `service`
+commands are `service start|stop|restart|status|tail`.
+
 ```sh
 microwave-ctl --config /etc/microwave/microwave.toml status
 microwave-ctl --config /etc/microwave/microwave.toml check-config
@@ -1840,7 +1863,10 @@ microwave-ctl service status
 ```
 
 `status` reports the data directory, driver, database path, whether the
-database is readable, and whether the superuser exists. For PostgreSQL it
+database is readable, and whether the superuser exists. `check-config` loads the
+resolved configuration and validates the data directory, database URL/driver,
+bind address, search backend, object-store credentials, TLS certificate/key
+pair, and superuser name, without binding a listener. For PostgreSQL it
 connects without changing the schema and reports `database_readable: true`
 when the schema already exists and the superuser query succeeds; an empty or
 unreachable database reports `false` without failing the command. `reconfigure`

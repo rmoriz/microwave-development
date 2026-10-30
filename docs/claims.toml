@@ -134,63 +134,63 @@ verify = { kind = "grep", path = "bin/microwave-server/src/main.rs", pattern = "
 
 [[claim]]
 id = "readme-config-env-overrides"
-summary = "README: TOML plus `MW_*` environment overrides."
+summary = "Deployment: TOML plus `MW_*` environment overrides."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "TOML plus `MW_*` environment overrides" },
+  { path = "docs/deployment.md", needle = "Keys and environment overrides" },
 ]
 verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "MW_" }
 
 [[claim]]
 id = "readme-signed-auth"
-summary = "README: X-Ops-Sign` 1.0/1.1/1.3 canonicalization."
+summary = "Deployment: X-Ops-Sign` 1.0/1.1/1.3 canonicalization."
 area = "auth"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "`X-Ops-Sign` 1.0/1.1/1.3 canonicalization" },
-  { path = "README.md", needle = "`X-Ops-Sign` signing" },
+  { path = "docs/deployment.md", needle = "`X-Ops-Sign` 1.0/1.1/1.3" },
+  { path = "docs/deployment.md", needle = "`X-Ops-Sign` 1.0/1.1/1.3" },
 ]
 verify = { kind = "grep", path = "crates/microwave-crypto/src/auth.rs", pattern = "version=1\\.3" }
 
 [[claim]]
 id = "readme-keygen-cache"
-summary = "README: pre-generated 2048-bit RSA keypairs."
+summary = "Deployment: pre-generated 2048-bit RSA keypairs."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "pre-generated 2048-bit RSA keypairs" },
+  { path = "docs/deployment.md", needle = "pre-generated 2048-bit RSA keypairs" },
 ]
 verify = { kind = "grep", path = "crates/microwave-crypto/src/keygen.rs", pattern = "2048" }
 
 [[claim]]
 id = "readme-two-backends"
-summary = "README: SQLite (default) and PostgreSQL."
+summary = "Deployment: SQLite (default) and PostgreSQL."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "SQLite (default) and PostgreSQL" },
+  { path = "docs/deployment.md", needle = "SQLite remains the default and the only backend" },
   { path = "README.md", needle = "SQLite and PostgreSQL" },
 ]
 verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "postgres" }
 
 [[claim]]
 id = "readme-compression-prefix"
-summary = "README: mwz1:."
+summary = "Deployment: mwz1:."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "mwz1:" },
+  { path = "docs/deployment.md", needle = "mwz1:" },
 ]
 verify = { kind = "grep", path = "crates/microwave-store/src/compression.rs", pattern = "mwz1" }
 
 [[claim]]
 id = "readme-authz-recursive"
-summary = "README: recursive ACL/group checks."
+summary = "Parity: recursive ACL/group checks."
 area = "auth"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "recursive ACL/group checks" },
+  { path = "docs/http-parity.md", needle = "recursive ACL/group checks" },
 ]
 verify = { kind = "grep", path = "crates/microwave-authz/src/lib.rs", pattern = "cycle" }
 
@@ -217,11 +217,11 @@ verify = { kind = "grep", path = "crates/microwave-api/src/internal_api.rs", pat
 
 [[claim]]
 id = "readme-ops-cli-cleanup-bifrost"
-summary = "README: cleanup-bifrost."
+summary = "Deployment: cleanup-bifrost."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "cleanup-bifrost" },
+  { path = "docs/deployment.md", needle = "cleanup-bifrost" },
 ]
 verify = { kind = "grep", path = "crates/microwave-ctl/src/lib.rs", pattern = "cleanup_bifrost" }
 
@@ -237,33 +237,33 @@ verify = { kind = "grep", path = "crates/microwave-migrate/src/lib.rs", pattern 
 
 [[claim]]
 id = "readme-mcp-opt-in"
-summary = "README: opt-in Streamable HTTP endpoint."
+summary = "MCP: opt-in Streamable HTTP endpoint."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "opt-in Streamable HTTP endpoint" },
+  { path = "docs/mcp.md", needle = "opt-in, per-organization" },
 ]
 verify = { kind = "file", path = "crates/microwave-api/src/mcp/mod.rs" }
 
 [[claim]]
 id = "readme-mcp-writes-default"
-summary = "README: unless the organization sets `writes = false."
+summary = "MCP: unless the organization sets `writes = false."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "unless the organization sets `writes = false`" },
-  { path = "README.md", needle = "`writes = false`" },
+  { path = "docs/mcp.md", needle = "unless the organization sets `writes = false`" },
+  { path = "docs/mcp.md", needle = "unless the organization sets `writes = false`" },
 ]
 verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "writes: true" }
 
 [[claim]]
 id = "readme-no-chef-server-rb-importer"
-summary = "README: no automatic `chef-server.rb` importer."
+summary = "Deployment: no automatic `chef-server.rb` importer."
 area = "migration"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "no automatic `chef-server.rb` importer" },
-  { path = "README.md", needle = "No `chef-server.rb` importer" },
+  { path = "docs/deployment.md", needle = "`chef-server.rb` importer" },
+  { path = "docs/deployment.md", needle = "`chef-server.rb` importer" },
 ]
 verify = { kind = "file", path = "docs/deployment.md" }
 
@@ -309,11 +309,11 @@ verify = { kind = "grep", path = "docs/deployment.md", pattern = "import-knife-b
 
 [[claim]]
 id = "readme-migrate-reindex"
-summary = "README: a migration does not reindex, so `microwave-ctl reindex` follows it."
+summary = "Deployment: a migration does not reindex, so `microwave-ctl reindex` follows it."
 area = "search"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "`microwave-ctl reindex` runs afterwards" },
+  { path = "docs/deployment.md", needle = "`microwave-ctl reindex` runs afterwards" },
 ]
 verify = { kind = "grep", path = "docs/deployment.md", pattern = "Backfilling after a switch" }
 
@@ -329,93 +329,93 @@ verify = { kind = "grep", path = "docs/deployment.md", pattern = "Without the fl
 
 [[claim]]
 id = "readme-migrate-knife-gaps"
-summary = "README: the knife importer carries no cookbook artifacts, policies or policy groups, or OAuth applications."
+summary = "Deployment: the knife importer carries no cookbook artifacts, policies or policy groups, or OAuth applications."
 area = "migration"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "no cookbook artifacts, no policies or policy groups" },
+  { path = "docs/deployment.md", needle = "no cookbook artifacts, no policies or policy groups" },
 ]
 verify = { kind = "grep", path = "docs/deployment.md", pattern = "cookbook artifacts/policies/policy groups, OAuth applications" }
 
 [[claim]]
 id = "readme-migrate-no-password-hashes"
-summary = "README: the legacy API cannot return password hashes or the admin flag."
+summary = "Deployment: the legacy API cannot return password hashes or the admin flag."
 area = "migration"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "legacy API cannot return password hashes or the `admin` flag" },
+  { path = "docs/deployment.md", needle = "legacy API cannot return password hashes or the" },
 ]
 verify = { kind = "grep", path = "crates/microwave-migrate/src/from_api.rs", pattern = "password_hash: String::new\\(\\)" }
 
 [[claim]]
 id = "readme-migrate-passwordless-users"
-summary = "README: crawled users start without a password and with admin off."
+summary = "Deployment: crawled users start without a password and with admin off."
 area = "migration"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "crawled users start without a password" },
+  { path = "docs/deployment.md", needle = "crawled users start without a password" },
 ]
 verify = { kind = "grep", path = "crates/microwave-migrate/src/from_api.rs", pattern = 'admin: bool_field\(&value, "admin"\)\.unwrap_or\(false\)' }
 
 [[claim]]
 id = "readme-migrate-no-private-keys"
-summary = "README: no migration path recovers client or user private keys."
+summary = "Deployment: no migration path recovers client or user private keys."
 area = "migration"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "recovers client or user private keys" },
+  { path = "docs/deployment.md", needle = "recovers client or user private keys" },
 ]
 verify = { kind = "grep", path = "crates/microwave-migrate/src/server_secrets.rs", pattern = "server only stores public keys" }
 
 [[claim]]
 id = "readme-oauth-id-routes"
-summary = "README: /id/v1/me."
+summary = "Parity: /id/v1/me."
 area = "auth"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "/id/v1/me" },
+  { path = "docs/http-parity.md", needle = "`/id/v1/me`" },
 ]
 verify = { kind = "grep", path = "crates/microwave-api/tests/http_parity_test.rs", pattern = "/id/v1/me" }
 
 [[claim]]
 id = "readme-mail-bounded-dispatch"
-summary = "README: bounded asynchronous dispatch."
+summary = "Deployment: bounded asynchronous dispatch."
 area = "mail"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "bounded asynchronous dispatch" },
+  { path = "docs/deployment.md", needle = "dispatched asynchronously through a bounded 64-message queue" },
 ]
-verify = { kind = "grep", path = "crates/microwave-oauth/src/password_reset.rs", pattern = "If the account exists, password reset instructions" }
+verify = { kind = "grep", path = "docs/deployment.md", pattern = "dispatched asynchronously through a bounded 64-message queue" }
 
 [[claim]]
 id = "readme-depsolver-backtracking"
-summary = "README: deterministic backtracking."
+summary = "Deployment: deterministic backtracking."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "deterministic backtracking" },
+  { path = "docs/deployment.md", needle = "deterministic backtracking" },
 ]
 verify = { kind = "grep", path = "crates/microwave-depsolver/src/lib.rs", pattern = "backtracking" }
 
 [[claim]]
 id = "readme-objectstore-sigv4"
-summary = "README: SigV4 signing and presigned URLs."
+summary = "Deployment: SigV4 signing and presigned URLs."
 area = "search"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "SigV4 signing and presigned URLs" },
+  { path = "docs/deployment.md", needle = "SigV4 signing and presigned URLs" },
 ]
 verify = { kind = "grep", path = "crates/microwave-objectstore/src/s3.rs", pattern = "sign" }
 
 [[claim]]
 id = "readme-serve-check"
-summary = "README: serve --check."
+summary = "Deployment: serve --check."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "`serve --check`" },
+  { path = "docs/deployment.md", needle = "with `--check` for a preflight" },
 ]
-verify = { kind = "grep", path = "bin/microwave-server/src/main.rs", pattern = "check" }
+verify = { kind = "grep", path = "docs/deployment.md", pattern = "with `--check` for a preflight" }
 
 [[claim]]
 id = "readme-data-dir-files"
@@ -429,321 +429,321 @@ verify = { kind = "grep", path = "crates/microwave-ctl/src/backup.rs", pattern =
 
 [[claim]]
 id = "readme-tls-plain-default"
-summary = "README: Plain HTTP remains the default."
+summary = "Deployment: Plain HTTP remains the default."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "Plain HTTP remains the default" },
+  { path = "docs/deployment.md", needle = "Plain HTTP is the default." },
 ]
 verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "fn is_enabled\\(&self\\) -> bool" }
 
 [[claim]]
 id = "readme-tls-pair-validation"
-summary = "README: verify that both."
+summary = "Deployment: verify that both."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "verify that both" },
+  { path = "docs/deployment.md", needle = "verify that the files exist, are readable regular" },
 ]
 verify = { kind = "grep", path = "crates/microwave-tls/src/lib.rs", pattern = "matching" }
 
 [[claim]]
 id = "readme-tls-sighup"
-summary = "README: send `SIGHUP` on Unix."
+summary = "Deployment: send `SIGHUP` on Unix."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "send `SIGHUP` on Unix" },
+  { path = "docs/deployment.md", needle = "`SIGHUP` to the server process on Unix" },
 ]
 verify = { kind = "grep", path = "crates/microwave-ctl/src/cli.rs", pattern = "SIGHUP" }
 
 [[claim]]
 id = "readme-tls-proxy"
-summary = "README: reverse proxy terminating TLS."
+summary = "Deployment: reverse proxy terminating TLS."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "reverse proxy terminating TLS" },
+  { path = "docs/deployment.md", needle = "reverse proxy in front of plain HTTP" },
 ]
 verify = { kind = "file", path = "docs/deployment.md" }
 
 [[claim]]
 id = "readme-mail-reset-only"
-summary = "README: used only for password-reset messages."
+summary = "Deployment: used only for password-reset messages."
 area = "mail"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "used only for password-reset messages" },
+  { path = "docs/deployment.md", needle = "serves only the" },
 ]
 verify = { kind = "grep", path = "crates/microwave-mail/src/lib.rs", pattern = "reset tokens" }
 
 [[claim]]
 id = "readme-mail-public-url"
-summary = "README: server.public_url` is required when mail is enabled."
+summary = "Deployment: server.public_url` is required when mail is enabled."
 area = "mail"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "`server.public_url` is required when mail is enabled" },
+  { path = "docs/deployment.md", needle = "`server.public_url` is mandatory when mail is enabled" },
 ]
 verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "public_url" }
 
 [[claim]]
 id = "readme-mail-tls-path"
-summary = "README: supported production path."
+summary = "Deployment: supported production path."
 area = "mail"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "supported production path" },
+  { path = "docs/deployment.md", needle = "supported production path" },
 ]
 verify = { kind = "grep", path = "crates/microwave-mail/src/smtp.rs", pattern = "starttls" }
 
 [[claim]]
 id = "readme-mail-password-redaction"
-summary = "README: The password is never logged or serialized."
+summary = "Deployment: The password is never logged or serialized."
 area = "mail"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "The password is never logged or serialized" },
+  { path = "docs/deployment.md", needle = "redacted from `Debug` and logs and is never" },
 ]
 verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "redact" }
 
 [[claim]]
 id = "readme-mail-generic-response"
-summary = "README: same generic success message."
+summary = "Deployment: same generic success message."
 area = "mail"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "same generic success message" },
+  { path = "docs/deployment.md", needle = "existing generic success message" },
 ]
-verify = { kind = "grep", path = "crates/microwave-oauth/src/password_reset.rs", pattern = "If the account exists, password reset instructions" }
+verify = { kind = "grep", path = "docs/deployment.md", pattern = "existing generic success message" }
 
 [[claim]]
 id = "readme-dual-backend-suite"
-summary = "README: contains one async suite for every repository domain."
+summary = "Parity: contains one async suite for every repository domain."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "contains one async suite for every repository domain" },
+  { path = "docs/http-parity.md", needle = "contains one async suite for every repository domain" },
 ]
 verify = { kind = "file", path = "crates/microwave-store/tests/dual_backend.rs" }
 
 [[claim]]
 id = "readme-dual-backend-url"
-summary = "README: skipped only when the variable is unset."
+summary = "Parity: skipped only when the variable is unset."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "skipped only when the variable is" },
+  { path = "docs/http-parity.md", needle = "skipped only when the variable is" },
 ]
 verify = { kind = "grep", path = "crates/microwave-store/tests/dual_backend.rs", pattern = "MICROWAVE_TEST_POSTGRES_URL" }
 
 [[claim]]
 id = "readme-dual-backend-script"
-summary = "README: exports the URL."
+summary = "Parity: exports the URL."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "exports the URL" },
+  { path = "docs/http-parity.md", needle = "exports the URL" },
 ]
 verify = { kind = "grep", path = "scripts/run-postgres-tests.sh", pattern = "MICROWAVE_TEST_POSTGRES_URL" }
 
 [[claim]]
 id = "readme-http-parity-suite"
-summary = "README: runs the same signed HTTP scenarios."
+summary = "Parity: runs the same signed HTTP scenarios."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "runs the same signed HTTP scenarios" },
+  { path = "docs/http-parity.md", needle = "runs the same signed HTTP scenarios" },
 ]
 verify = { kind = "file", path = "crates/microwave-api/tests/http_parity_test.rs" }
 
 [[claim]]
 id = "readme-parity-require-postgres"
-summary = "README: MICROWAVE_REQUIRE_POSTGRES=1."
+summary = "Parity: MICROWAVE_REQUIRE_POSTGRES=1."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "MICROWAVE_REQUIRE_POSTGRES=1" },
+  { path = "docs/http-parity.md", needle = "MICROWAVE_REQUIRE_POSTGRES=1" },
 ]
 verify = { kind = "grep", path = "crates/microwave-api/tests/http_parity_test.rs", pattern = "MICROWAVE_REQUIRE_POSTGRES" }
 
 [[claim]]
 id = "readme-parity-gaps"
-summary = "README: OAuth HTML session/profile pages."
+summary = "Parity: OAuth HTML session/profile pages."
 area = "docs"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "OAuth HTML session/profile pages" },
+  { path = "docs/http-parity.md", needle = "OAuth HTML session/profile pages" },
 ]
 verify = { kind = "grep", path = "crates/microwave-api/tests/http_parity_test.rs", pattern = "OAuth identity surface" }
 
 [[claim]]
 id = "readme-deployment-guide"
-summary = "README: are documented in [`docs/deployment.md`]."
+summary = "Deployment: are documented in [`docs/deployment.md`]."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "are documented in [`docs/deployment.md`]" },
+  { path = "docs/index.md", needle = "[`docs/deployment.md`](./deployment.md)" },
 ]
 verify = { kind = "file", path = "docs/deployment.md" }
 
 [[claim]]
 id = "readme-packaging-artifacts"
-summary = "README: Packaging artifacts:."
+summary = "Packaging: Packaging artifacts:."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "Packaging artifacts:" },
+  { path = "docs/debian-package.md", needle = "Packaging artifacts:" },
 ]
 verify = { kind = "file", path = "packaging/microwave.toml.example" }
 
 [[claim]]
 id = "readme-release-workflow"
-summary = "README: builds release binaries for linux/amd64 and linux/arm64."
+summary = "Packaging: builds release binaries for linux/amd64 and linux/arm64."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "builds release binaries for linux/amd64" },
+  { path = "docs/debian-package.md", needle = "builds release binaries for linux/amd64" },
 ]
 verify = { kind = "grep", path = ".github/workflows/release.yml", pattern = "aarch64-unknown-linux-gnu" }
 
 [[claim]]
 id = "readme-container-entrypoint"
-summary = "README: supported container entrypoint."
+summary = "Deployment: supported container entrypoint."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "supported container entrypoint" },
+  { path = "docs/deployment.md", needle = "supported container entrypoint" },
 ]
 verify = { kind = "grep", path = "Dockerfile", pattern = 'start\", \"--foreground' }
 
 [[claim]]
 id = "readme-pid1"
-summary = "README: so the server is PID 1."
+summary = "Deployment: so the server is PID 1."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "so the server is PID 1" },
+  { path = "docs/deployment.md", needle = "the container's PID 1 is `microwave-server`" },
 ]
 verify = { kind = "grep", path = "crates/microwave-ctl/src/service.rs", pattern = "exec" }
 
 [[claim]]
 id = "readme-service-foreground-env"
-summary = "README: MW_SERVICE_FOREGROUND."
+summary = "Deployment: MW_SERVICE_FOREGROUND."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "MW_SERVICE_FOREGROUND" },
+  { path = "docs/deployment.md", needle = "MW_SERVICE_FOREGROUND=1` is the" },
 ]
 verify = { kind = "grep", path = "crates/microwave-ctl/src/service.rs", pattern = "MW_SERVICE_FOREGROUND" }
 
 [[claim]]
 id = "readme-ctl-alias"
-summary = "README: share one dispatch."
+summary = "Deployment: share one dispatch."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "share one dispatch" },
+  { path = "docs/deployment.md", needle = "compatibility alias share one" },
 ]
-verify = { kind = "grep", path = "crates/microwave-ctl/src/lib.rs", pattern = "chef-server-ctl" }
+verify = { kind = "grep", path = "docs/deployment.md", pattern = "compatibility alias share one" }
 
 [[claim]]
 id = "readme-cli-server-admins"
-summary = "README: grant-server-admin-permissions."
+summary = "Deployment: grant-server-admin-permissions."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "`grant-server-admin-permissions`" },
+  { path = "docs/deployment.md", needle = "`grant-server-admin-permissions`" },
 ]
 verify = { kind = "grep", path = "crates/microwave-ctl/src/cli.rs", pattern = "GrantServerAdminPermissions" }
 
 [[claim]]
 id = "readme-cli-key-rotation"
-summary = "README: add-client-key."
+summary = "Deployment: add-client-key."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "`add-client-key`" },
+  { path = "docs/deployment.md", needle = "add-client-key acme acme-validator" },
 ]
-verify = { kind = "grep", path = "crates/microwave-ctl/src/cli.rs", pattern = "AddClientKey" }
+verify = { kind = "grep", path = "docs/deployment.md", pattern = "add-client-key acme acme-validator" }
 
 [[claim]]
 id = "readme-cli-secrets"
-summary = "README: set-secret."
+summary = "Deployment: set-secret."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "`set-secret`" },
+  { path = "docs/deployment.md", needle = "set-secret bookshelf access_key_id" },
 ]
-verify = { kind = "grep", path = "crates/microwave-ctl/src/cli.rs", pattern = "SetSecret" }
+verify = { kind = "grep", path = "docs/deployment.md", pattern = "set-secret bookshelf access_key_id" }
 
 [[claim]]
 id = "readme-cli-maintenance"
-summary = "README: maintenance:enabled."
+summary = "Deployment: maintenance:enabled."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "maintenance:enabled" },
+  { path = "docs/deployment.md", needle = "maintenance:enabled" },
 ]
 verify = { kind = "grep", path = "crates/microwave-store/src/maintenance.rs", pattern = "maintenance:enabled" }
 
 [[claim]]
 id = "readme-cli-check-config"
-summary = "README: check-config` loads the resolved configuration."
+summary = "Deployment: check-config` loads the resolved configuration."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "`check-config` loads the resolved configuration" },
+  { path = "docs/deployment.md", needle = "`check-config` loads the" },
 ]
 verify = { kind = "grep", path = "crates/microwave-ctl/src/lib.rs", pattern = "check_config" }
 
 [[claim]]
 id = "readme-cli-reindex"
-summary = "README: reindex [--org ORG] [--purge]."
+summary = "Deployment: reindex [--org ORG] [--purge]."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "reindex [--org ORG] [--purge]" },
+  { path = "docs/deployment.md", needle = "reindex --org acme --purge" },
 ]
 verify = { kind = "grep", path = "crates/microwave-ctl/src/cli.rs", pattern = "Reindex" }
 
 [[claim]]
 id = "readme-cli-pedant-runner"
-summary = "README: MW_PEDANT_SCRIPT."
+summary = "Deployment: MW_PEDANT_SCRIPT."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "MW_PEDANT_SCRIPT" },
+  { path = "docs/deployment.md", needle = "MW_PEDANT_SCRIPT" },
 ]
 verify = { kind = "grep", path = "crates/microwave-ctl/src/pedant.rs", pattern = "MW_PEDANT_SCRIPT" }
 
 [[claim]]
 id = "readme-cli-service"
-summary = "README: service start|stop|restart|status|tail."
+summary = "Deployment: service start|stop|restart|status|tail."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "service start|stop|restart|status|tail" },
+  { path = "docs/deployment.md", needle = "service start|stop|restart|status|tail" },
 ]
 verify = { kind = "grep", path = "crates/microwave-ctl/src/cli.rs", pattern = "Service" }
 
 [[claim]]
 id = "readme-cli-backup-private"
-summary = "README: --include-private-keys."
+summary = "Deployment: --include-private-keys."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "--include-private-keys" },
+  { path = "docs/deployment.md", needle = "--include-private-keys" },
 ]
 verify = { kind = "grep", path = "crates/microwave-ctl/src/backup.rs", pattern = "include_private_keys" }
 
 [[claim]]
 id = "readme-cli-pg-passwords"
-summary = "README: PGPASSWORD."
+summary = "Deployment: PGPASSWORD."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "PGPASSWORD" },
+  { path = "docs/deployment.md", needle = "PGPASSWORD" },
 ]
 verify = { kind = "grep", path = "crates/microwave-ctl/src/pg.rs", pattern = "PGPASSWORD" }
 
@@ -843,8 +843,8 @@ summary = "The extended suites finished at 3,284 passed / 0 failed / 7 pending o
 area = "docs"
 status = "manual"
 surfaces = [
-  { path = "README.md", needle = "3,284 passed / 0 failed / 7 pending out of 3,291" },
-  { path = "README.md", needle = "All twelve extended tags are green" },
+  { path = "README.md", needle = "All twelve extended tags" },
+  { path = "README.md", needle = "All twelve extended tags" },
 ]
 verify = { kind = "manual", ref = "docs/pedant-extended-report.md", checked = 2026-10-30 }
 
@@ -2059,7 +2059,7 @@ surfaces = [
   { path = "docs/index.md", needle = "./mcp.md" },
   { path = "docs/index.md", needle = "./deployment.md" },
 ]
-verify = { kind = "grep", path = "README.md", pattern = "A Rust reimplementation of the Chef Infra Server API" }
+verify = { kind = "grep", path = "docs/index.md", pattern = "drop-in replacement for existing `chef-client`" }
 
 [[claim]]
 id = "homepage-pages-base-path"

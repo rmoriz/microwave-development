@@ -9,8 +9,9 @@
 
 ## Result
 
-Every core tag passes: **652 passed / 0 failed / 8 pending out of 660 examples**. The pending
-examples are pedant's own skips in `clients` (3) and `nodes` (5), not server gaps.
+Every core tag passes: **652 passed / 0 failed / 8 pending out of 660 examples**. This record is a
+full `scripts/run-pedant.sh strict` run on 2026-10-30. The pending examples are pedant's own skips in
+`clients` (3) and `nodes` (5), not server gaps.
 
 ## Environment
 

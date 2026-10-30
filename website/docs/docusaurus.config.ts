@@ -42,6 +42,7 @@ const config: Config = {
             'deployment.md',
             'mcp.md',
             'debian-package.md',
+            'http-parity.md',
             'remaining-work.md',
             'pedant-report.md',
             'pedant-extended-report.md',
