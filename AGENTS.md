@@ -51,6 +51,21 @@ committing Rust. The homepage has no linter beyond `astro check`.
 - MCP tool calls must keep the structured log line: organization, principal,
   tool, duration, result count, outcome, and the target on writes.
 
+## docker-e2e notes
+
+- `docker-e2e/docker-compose.yml` owns the node images
+  (`microwave-e2e-node-debian`, `-ubuntu`, `-fedora`, `-amazon`). Verify node
+  image changes with `docker compose build node-debian node-ubuntu
+  node-fedora node-amazon` from `docker-e2e/`, not with ad-hoc `docker build`.
+- Do not leave one-off images behind. Manual builds like the old
+  `mw-node-check` / `mw-workstation-check` tags from
+  `docs/superpowers/plans/` pile up, shadow the real stack names, and confuse
+  later checks. If a throwaway build is unavoidable, tag it obviously, then
+  `docker rmi` it and `docker rm -f` its containers in the same step.
+- `docker-e2e/client/Dockerfile` is shared by all nodes and branches on the
+  base image (`apt-get`, `ID=amzn`, `dnf`); a change there affects every node,
+  so build all four after touching it.
+
 ## Committing
 
 - Work directly on the current branch unless told otherwise.
