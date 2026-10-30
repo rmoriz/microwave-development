@@ -44,11 +44,11 @@ package installs on Debian 12+ and Ubuntu 24.04+. For Ubuntu 22.04, build in a
 
 `.github/workflows/release.yml` runs on `v*` tag pushes and on manual
 `workflow_dispatch`. A tag push builds `microwave-server_<version>_<arch>.deb`
-and a matching `.sha256` file for `amd64` and `arm64` and attaches both to that
-GitHub Release, next to the tarballs. A `workflow_dispatch` runs on a branch
-and produces only the tarballs — no package. The tag has to be a Debian
-version: the leading `v` is stripped and anything other than a digit at the
-start fails the job.
+and the checksum `microwave-server_<version>_<arch>.deb.sha256` for `amd64` and
+`arm64` and attaches both to that GitHub Release, next to the tarballs. A
+`workflow_dispatch` runs on a branch and produces only the tarballs — no
+package. The tag has to be a Debian version: the leading `v` is stripped and
+anything other than a digit at the start fails the job.
 
 ## Install
 
@@ -93,7 +93,7 @@ The unit's stdout and stderr go to `/var/log/microwave/microwave.log` via
 `microwave:microwave` and pre-creates the log file 0600 `microwave:microwave`,
 which the unit's `LogsDirectory=microwave` would otherwise create only too late;
 a fresh start would fail on the missing path. journald therefore only carries
-the unit's start and stop messages.
+the unit's own lifecycle messages (start, stop, reload, exit and failure).
 
 `/etc/logrotate.d/microwave-server` rotates the file daily, keeps 14
 compressed generations, and uses `copytruncate` because the server has no
@@ -123,9 +123,11 @@ sudo apt purge microwave-server                            # remove data and use
 ```
 
 `/etc/microwave/microwave.toml` is a conffile: local edits survive upgrades and
-dpkg asks before replacing them. A purge removes `/var/lib/microwave`,
-`/etc/logrotate.d/microwave-server`, `/var/log/microwave`, `/etc/microwave` and
-the `microwave` user/group. A plain remove keeps the log directory.
+dpkg asks before replacing them. The logrotate rule is a regular package file,
+so even a plain `apt remove` drops `/etc/logrotate.d/microwave-server`, while
+`/var/log/microwave` stays behind. A purge removes `/var/lib/microwave`,
+`/var/log/microwave` and with it the rotation state, `/etc/microwave` and the
+`microwave` user/group.
 
 ## Test
 
