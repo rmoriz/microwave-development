@@ -2022,3 +2022,15 @@ area = "tooling"
 status = "verified"
 surfaces = [ { path = "scripts/run-chef-client-e2e.sh", needle = "MW_E2E_COMPAT          1 to provision" } ]
 verify = { kind = "grep", path = "scripts/run-chef-client-e2e.sh", pattern = "MW_E2E_COMPAT:-0" }
+
+[[claim]]
+id = "docs-index-entry-point"
+summary = "docs/index.md opens the docs site with the same drop-in pitch the README uses and links every published guide."
+area = "docs"
+status = "verified"
+surfaces = [
+  { path = "docs/index.md", needle = "Microwave Server is a Rust reimplementation of the Chef Infra Server API" },
+  { path = "docs/index.md", needle = "./mcp.md" },
+  { path = "docs/index.md", needle = "./deployment.md" },
+]
+verify = { kind = "grep", path = "README.md", pattern = "A Rust reimplementation of the Chef Infra Server API" }

@@ -1,0 +1,40 @@
+/**
+ * The palette mirrors the Astro homepage (`website/homepage/src/styles/tokens.css`)
+ * so the guides and the landing page read as one product.
+ */
+:root {
+  --ifm-color-primary: #3ddcff;
+  --ifm-color-primary-dark: #1fd6ff;
+  --ifm-color-primary-darker: #10d3ff;
+  --ifm-color-primary-darkest: #00b6e0;
+  --ifm-color-primary-light: #5be2ff;
+  --ifm-color-primary-lighter: #6ae5ff;
+  --ifm-color-primary-lightest: #98edff;
+
+  --ifm-font-family-base: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --ifm-font-family-monospace: 'JetBrains Mono', ui-monospace, SFMono-Regular,
+    Menlo, monospace;
+  --ifm-heading-font-family: 'Space Grotesk', 'Inter', ui-sans-serif, system-ui,
+    sans-serif;
+  --ifm-code-font-size: 92%;
+  --docusaurus-highlighted-code-line-bg: rgba(247, 245, 239, 0.1);
+}
+
+[data-theme='dark'] {
+  --ifm-background-color: #223e59;
+  --ifm-background-surface-color: #2f5375;
+  --ifm-navbar-background-color: #2a4d6e;
+  --ifm-footer-background-color: #24425f;
+  --ifm-color-content: #f7f5ef;
+  --ifm-color-content-secondary: #c9d1dc;
+  --ifm-toc-border-color: rgba(247, 245, 239, 0.16);
+}
+
+[data-theme='dark'] .navbar .navbar__title {
+  font-family: var(--ifm-heading-font-family);
+  letter-spacing: 0.01em;
+}
+
+[data-theme='dark'] .menu__link--active {
+  color: var(--ifm-color-primary);
+}
