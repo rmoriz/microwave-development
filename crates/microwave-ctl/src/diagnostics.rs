@@ -26,18 +26,25 @@ pub fn check_config(context: &Context) -> Result<(), CtlError> {
         checks.push(format!("data_dir {}", context.data_dir.display()));
     }
 
+    if config.database.pool_size == 0 {
+        problems.push("database.pool_size must be greater than zero".to_string());
+    }
     match config.database.driver {
-        DatabaseDriver::Sqlite => match context.database_path.as_deref() {
-            Some(path) if !path.as_os_str().is_empty() => {
-                if path.exists() && !path.is_file() {
-                    problems.push(format!("database path {} is not a file", path.display()));
-                } else {
-                    checks.push(format!("database sqlite {}", path.display()));
+        DatabaseDriver::Sqlite => {
+            checks.push(format!("database.pool_size {}", config.database.pool_size));
+            match context.database_path.as_deref() {
+                Some(path) if !path.as_os_str().is_empty() => {
+                    if path.exists() && !path.is_file() {
+                        problems.push(format!("database path {} is not a file", path.display()));
+                    } else {
+                        checks.push(format!("database sqlite {}", path.display()));
+                    }
                 }
+                _ => problems.push("database.url must be sqlite://<path>".to_string()),
             }
-            _ => problems.push("database.url must be sqlite://<path>".to_string()),
-        },
+        }
         DatabaseDriver::Postgres => {
+            checks.push(format!("database.pool_size {}", config.database.pool_size));
             if context.database_url.starts_with("postgres://")
                 || context.database_url.starts_with("postgresql://")
             {

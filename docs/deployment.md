@@ -155,6 +155,7 @@ file.
 | `paths.data_dir`<br/>`MW_PATHS__DATA_DIR` | Default `./data`. All mutable state. |
 | `database.driver`<br/>`MW_DATABASE__DRIVER` | Default `sqlite`. `sqlite` or `postgres`. |
 | `database.url`<br/>`MW_DATABASE__URL` | Default `sqlite://<data_dir>/microwave.db`. `sqlite://<path>` or a `postgres://` URL. |
+| `database.pool_size`<br/>`MW_DATABASE__POOL_SIZE` | Default `10`. PostgreSQL connections opened by each server process; must be greater than zero. Every process multiplies against PostgreSQL's `max_connections`, so the sum over all processes must stay below it. Ignored by SQLite. |
 | `storage.compression`<br/>`MW_STORAGE__COMPRESSION` | Default `zlib`. `zlib` stores new `serialized_object` rows as `mwz1:` + base64(zlib(JSON)); `none` stores plain JSON. Reads accept both formats either way, so existing databases keep working. |
 
 #### Search and dependency solver
@@ -1519,7 +1520,7 @@ Common mappings:
 | Legacy `chef-server.rb` setting | Microwave equivalent. Notes |
 | --- | ---. --- |
 | `api_fqdn` | Default: `server.public_url` for links; reverse-proxy `Host`/`X-Forwarded-*` for request routing. Microwave builds API URLs from the request host and forwarded headers. Set `server.public_url` for password-reset links and any absolute URL that must not depend on the request. |
-| `postgresql['max_connections']`, pool tuning | Default `PostgreSQL server-side tuning plus `database.url``. Microwave does not expose a connection-pool size. Tune PostgreSQL itself. |
+| `postgresql['max_connections']`, pool tuning | Default `PostgreSQL server-side tuning, `database.pool_size`, and `database.url``. The pool size is per process, so the sum over all processes must stay below PostgreSQL's `max_connections`. |
 | `postgresql['work_mem']` | Default `PostgreSQL server setting`. Unchanged concept; configure in PostgreSQL. |
 | `nginx['ssl_protocols']`, TLS settings | Default: `server.tls.cert_path`, `server.tls.key_path`, and reverse-proxy TLS settings. Microwave terminates TLS directly or behind a proxy. |
 | `data_collector['root_url']`, `data_collector['token']` | `data_collector.root_url`, `data_collector.token`. Direct equivalent. |

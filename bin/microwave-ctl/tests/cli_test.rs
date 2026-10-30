@@ -1897,6 +1897,7 @@ fn check_config_reports_valid_configuration() {
     let text = stdout(&output);
     assert!(text.contains("ok: data_dir"));
     assert!(text.contains("ok: database"));
+    assert!(text.contains("ok: database.pool_size 10"));
     assert!(text.contains("ok: server.bind"));
     assert!(text.contains("ok: tls disabled"));
     assert!(text.contains("ok: auth.superuser_name"));
@@ -2089,7 +2090,7 @@ fn check_config_accepts_a_postgres_url_without_connecting() {
         .output()
         .unwrap();
     assert_success(&output);
-    assert!(stdout(&output).contains("ok: database"));
+    assert!(stdout(&output).contains("ok: database.pool_size 10"));
 }
 
 #[test]

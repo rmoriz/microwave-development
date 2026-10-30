@@ -103,6 +103,12 @@ impl Config {
                 value: "0".into(),
             });
         }
+        if self.database.pool_size == 0 {
+            return Err(ConfigError::InvalidValue {
+                key: "database.pool_size".into(),
+                value: "0".into(),
+            });
+        }
         self.compliance_proxy
             .validate()
             .map_err(|message| ConfigError::InvalidValue {
@@ -183,7 +189,7 @@ impl Config {
     ///   `MW_SERVER__DEFAULT_ORGNAME`, `MW_SERVER__TRUSTED_PROXIES`
     ///   (comma-separated IPs/CIDRs), `MW_SERVER__PUBLIC_URL`
     /// - `MW_PATHS__DATA_DIR`
-    /// - `MW_DATABASE__DRIVER`, `MW_DATABASE__URL`
+    /// - `MW_DATABASE__DRIVER`, `MW_DATABASE__URL`, `MW_DATABASE__POOL_SIZE`
     /// - `MW_STORAGE__COMPRESSION`
     /// - `MW_SEARCH__BACKEND`, `MW_SEARCH__URL`, `MW_SEARCH__TIMEOUT_MS`,
     ///   `MW_SEARCH__STRICT_RESULT_ACLS`
@@ -266,6 +272,9 @@ impl Config {
         }
         if let Ok(value) = std::env::var("MW_DATABASE__URL") {
             self.database.url = Some(value);
+        }
+        if let Ok(value) = std::env::var("MW_DATABASE__POOL_SIZE") {
+            self.database.pool_size = parse_value("MW_DATABASE__POOL_SIZE", value)?;
         }
         if let Ok(value) = std::env::var("MW_STORAGE__COMPRESSION") {
             self.storage.compression = match value.to_ascii_lowercase().as_str() {
@@ -748,6 +757,10 @@ impl Default for PathsConfig {
 pub struct DatabaseConfig {
     pub driver: DatabaseDriver,
     pub url: Option<String>,
+    /// PostgreSQL connection-pool size for this process. Each server process
+    /// opens this many connections, so the sum over all processes must stay
+    /// below PostgreSQL's `max_connections`.
+    pub pool_size: usize,
 }
 
 impl Default for DatabaseConfig {
@@ -755,6 +768,7 @@ impl Default for DatabaseConfig {
         Self {
             driver: DatabaseDriver::Sqlite,
             url: None,
+            pool_size: 10,
         }
     }
 }

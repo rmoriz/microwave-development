@@ -63,6 +63,10 @@ driver = "sqlite"
 # PostgreSQL example:
 # driver = "postgres"
 # url = "postgres://microwave:secret@db/microwave"
+# Connections the server opens per process (default 10). Each running process
+# adds this many connections, so keep the sum over all processes below
+# PostgreSQL's `max_connections`. Ignored by SQLite.
+# pool_size = 10
 
 [storage]
 # Compression for new `serialized_object` writes: "zlib" (default) stores

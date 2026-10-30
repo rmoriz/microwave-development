@@ -15,6 +15,7 @@ fn defaults_are_safe_and_local() {
     assert_eq!(c.server.bind, "0.0.0.0:8000");
     assert_eq!(c.paths.data_dir, "./data");
     assert_eq!(c.database.driver, DatabaseDriver::Sqlite);
+    assert_eq!(c.database.pool_size, 10);
     assert_eq!(c.storage.compression, StorageCompression::Zlib);
     assert_eq!(c.search.backend, SearchBackend::Embedded);
     assert_eq!(c.search.timeout_ms, 30_000);
@@ -353,6 +354,60 @@ fn sqlite_url_is_derived_from_data_dir() {
     let mut c = Config::default();
     c.paths.data_dir = "/tmp/mw".into();
     assert_eq!(c.resolved_database_url(), "sqlite:///tmp/mw/microwave.db");
+}
+
+#[test]
+fn database_pool_size_defaults_to_ten() {
+    assert_eq!(Config::default().database.pool_size, 10);
+}
+
+#[test]
+fn database_pool_size_can_be_set_from_toml_and_env() {
+    let c = Config::from_toml_str(
+        r#"
+        [database]
+        pool_size = 32
+    "#,
+    )
+    .unwrap();
+    assert_eq!(c.database.pool_size, 32);
+
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("MW_DATABASE__POOL_SIZE", "7");
+    let mut c = Config::from_toml_str(
+        r#"
+        [database]
+        pool_size = 32
+    "#,
+    )
+    .unwrap();
+    c.apply_env().unwrap();
+    assert_eq!(c.database.pool_size, 7);
+
+    std::env::set_var("MW_DATABASE__POOL_SIZE", "0");
+    let mut c = Config::default();
+    let result = c.apply_env();
+    std::env::remove_var("MW_DATABASE__POOL_SIZE");
+    assert!(result.is_err(), "MW_DATABASE__POOL_SIZE=0 must be rejected");
+}
+
+#[test]
+fn database_pool_size_must_be_greater_than_zero() {
+    assert!(Config::from_toml_str(
+        r#"
+        [database]
+        pool_size = 0
+    "#
+    )
+    .is_err());
+
+    let mut c = Config::default();
+    c.database.pool_size = 0;
+    let error = c.validate().unwrap_err();
+    assert!(
+        error.to_string().contains("database.pool_size"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
