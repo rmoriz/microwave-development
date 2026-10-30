@@ -67,6 +67,10 @@ committing Rust. The homepage has no linter beyond `astro check`.
 - `docker-e2e/client/Dockerfile` is shared by all nodes and branches on the
   base image (`apt-get`, `ID=amzn`, `dnf`); a change there affects every node,
   so build all four after touching it.
+- After a base image bump, remove what the bump superseded: the old
+  `<distro>:<tag>` tags (`fedora:41` …) and any pulled-but-unpinned images
+  such as `amazonlinux:2027`. Only the tags pinned in `docker-compose.yml`
+  should remain.
 
 ## Committing
 
