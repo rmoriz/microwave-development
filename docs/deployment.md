@@ -108,11 +108,11 @@ A complete annotated example is
 
 ### Keys and environment overrides
 
-Each setting appears twice below: the TOML key, and the environment variable
-that overrides it. The variable is the key with `MW_` in front, every level
+Each row shows the TOML key and, underneath, the environment variable that
+overrides it. The variable is the key with `MW_` in front, every level
 separated by `__`, and the segments upper-cased — `server.tls.cert_path`
-becomes `MW_SERVER__TLS__CERT_PATH`. `unset` means the default leaves the
-setting empty rather than giving it a value; `empty` means an empty list.
+becomes `MW_SERVER__TLS__CERT_PATH`. "Unset by default" means no value is set
+unless you provide one; "empty by default" means an empty list.
 
 The groups below link to the section that explains the behaviour. `check-config`
 validates the whole set before you start the server.
