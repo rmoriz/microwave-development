@@ -41,6 +41,9 @@ the anchors themselves work.
 
 ## CI
 
+The Pages workflow can also be dispatched by hand, but the manual run must be
+started from `main`: the deploy job is gated to `refs/heads/main`.
+
 A change under `docs/` or `website/docs/` runs the `claims` and `docs` jobs
 only; fmt, clippy, the test suite, the Postgres suite and the homepage build
 are skipped by the filters in `.github/workflows/ci.yml`.

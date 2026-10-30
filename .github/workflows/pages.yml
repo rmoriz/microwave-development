@@ -6,7 +6,13 @@ on:
     paths:
       - 'website/homepage/**'
       - 'website/docs/**'
-      - 'docs/**'
+      - 'docs/index.md'
+      - 'docs/deployment.md'
+      - 'docs/mcp.md'
+      - 'docs/debian-package.md'
+      - 'docs/remaining-work.md'
+      - 'docs/pedant-report.md'
+      - 'docs/pedant-extended-report.md'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -20,6 +26,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -56,7 +63,11 @@ jobs:
 
   deploy:
     needs: build
+    # A manual dispatch from a branch has no deployment record, so the
+    # github-pages environment only accepts refs/heads/main.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       pages: write
       id-token: write

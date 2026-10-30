@@ -50,7 +50,10 @@ root.
 
 `.github/workflows/pages.yml` builds the homepage and the docs into one artifact
 and deploys it to `https://rmoriz.github.io/microwave-development/` on every
-push to `main` that touches the sites or `docs/`, and on manual dispatch.
+push to `main` that touches the sites or a published guide, and on manual
+dispatch. A manual dispatch must be started on `main`: the `deploy` job is
+gated to `refs/heads/main`, because a branch run has no `github-pages`
+environment deployment.
 
 - Internal URLs must go through `withBase()` from `src/lib/paths.ts`.
 - `SITE_URL` and `BASE_PATH` live in `src/data/config.ts`; `robots.txt` and the
@@ -60,7 +63,10 @@ push to `main` that touches the sites or `docs/`, and on manual dispatch.
 
 ### Cache headers
 
-- `/_astro/*`: `public, max-age=31536000, immutable`
+Pages serves its own header defaults, so these values are aspirational until a
+header layer exists:
+
+- `${BASE_PATH}/_astro/*`: `public, max-age=31536000, immutable`
 - HTML: short-lived, revalidated on deploy
 
 ## Before launch
@@ -75,8 +81,8 @@ push to `main` that touches the sites or `docs/`, and on manual dispatch.
   Debian, Ubuntu, and Fedora.” That was verified by running
   `docker-e2e/docker-compose.yml` and checking all three nodes. Re-run that
   stack before changing the claim.
-- Check the privacy page once the hosting provider is final. It intentionally
-  does not name a provider or retention period yet.
+- Check the privacy page once hosting is final. It names GitHub Pages as the
+  host and links GitHub's privacy statement, but names no retention period.
 
 ## Content rules
 
