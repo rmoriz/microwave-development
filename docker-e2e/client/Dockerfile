@@ -6,13 +6,13 @@
 # after the Chef run, so the converged state can be inspected with
 # `docker exec`.
 #
-# Build with a base image arg, for example:
-#   docker build --build-arg BASE_IMAGE=debian:bookworm -t mw-node-debian ./client
+# Build through Compose so the tags stay consistent with the stack:
+#   docker compose build node-debian node-ubuntu node-fedora node-amazon
 #
-# Cinc publishes packages for Debian and Ubuntu through omnitruck.cinc.sh.
-# Fedora is not an official Cinc target, so Fedora uses the compatible el9
-# RPM (Cinc's omnibus package is self-contained).
-ARG BASE_IMAGE=debian:bookworm
+# Cinc publishes packages for Debian, Ubuntu, RHEL, and Amazon Linux through
+# omnitruck.cinc.sh. Fedora is not an official Cinc target, so Fedora uses the
+# compatible el9 RPM (Cinc's omnibus package is self-contained).
+ARG BASE_IMAGE=debian:trixie
 FROM ${BASE_IMAGE}
 
 ARG CINC_VERSION=19
@@ -31,6 +31,12 @@ RUN if command -v apt-get >/dev/null 2>&1; then \
             systemd \
             systemd-sysv \
         && apt-get clean; \
+    elif grep -q '^ID="amzn"' /etc/os-release; then \
+        # Amazon Linux 2023 already ships curl-minimal and ca-certificates;
+        # installing `curl` conflicts with it. It also has dnf4 with its Python
+        # bindings built in and no python3-libdnf5 package.
+        dnf install -y procps-ng systemd python3 \
+        && dnf clean all; \
     elif command -v dnf >/dev/null 2>&1; then \
         # Chef's dnf_package provider drives libdnf through a Python helper, so
         # the Python bindings have to be present on Fedora (which ships dnf5
@@ -44,11 +50,24 @@ RUN if command -v apt-get >/dev/null 2>&1; then \
     fi
 
 RUN set -eux; \
+    arch="$(uname -m)"; \
+    cinc_url() { \
+        curl -fsS "https://omnitruck.cinc.sh/stable/cinc/metadata?p=$1&pv=$2&m=${arch}&v=${CINC_VERSION}" \
+            | awk '$1 == "url" { print $2 }'; \
+    }; \
     if command -v apt-get >/dev/null 2>&1; then \
         curl -fsSL https://omnitruck.cinc.sh/install.sh | bash -s -- -v "${CINC_VERSION}"; \
+    elif grep -q '^ID="amzn"' /etc/os-release; then \
+        # Amazon Linux 2023; omnitruck has no newer amazon platform version
+        # and falls back to this RPM for later releases too.
+        url="$(cinc_url amazon 2023)"; \
+        test -n "$url"; \
+        curl -fsSL "$url" -o /tmp/cinc.rpm; \
+        dnf install -y /tmp/cinc.rpm; \
+        rm -f /tmp/cinc.rpm; \
+        dnf clean all; \
     else \
-        arch="$(uname -m)"; \
-        url="$(curl -fsS "https://omnitruck.cinc.sh/stable/cinc/metadata?p=el&pv=9&m=${arch}&v=${CINC_VERSION}" | awk '$1 == "url" { print $2 }')"; \
+        url="$(cinc_url el 9)"; \
         test -n "$url"; \
         curl -fsSL "$url" -o /tmp/cinc.rpm; \
         dnf install -y /tmp/cinc.rpm; \

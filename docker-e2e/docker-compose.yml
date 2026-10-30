@@ -10,6 +10,7 @@
 #   node-debian  - Debian node running Cinc Client against the role
 #   node-ubuntu  - Ubuntu node running Cinc Client against the role
 #   node-fedora  - Fedora node running Cinc Client against the role
+#   node-amazon  - Amazon Linux node running Cinc Client against the role
 #   workstation  - knife + OpenCode against the stack, for `docker exec`
 #
 # The microwave listener binds to its Compose DNS name instead of 0.0.0.0 so
@@ -79,7 +80,7 @@ services:
       POSTGRES_RECIPE: ${POSTGRES_RECIPE:-e2e_postgresql}
       # Client names used by the node services; leftovers are deleted before
       # the role is created so repeated runs can bootstrap again.
-      NODE_NAMES: ${NODE_NAMES:-node-debian node-ubuntu node-fedora}
+      NODE_NAMES: ${NODE_NAMES:-node-debian node-ubuntu node-fedora node-amazon}
     volumes:
       # Read the bootstrap superuser key the server writes on first start.
       - microwave-data:/mw-data:ro
@@ -126,7 +127,7 @@ services:
     build:
       context: ./client
       args:
-        BASE_IMAGE: ${DEBIAN_IMAGE:-debian:bookworm}
+        BASE_IMAGE: ${DEBIAN_IMAGE:-debian:trixie}
         CINC_VERSION: ${CINC_VERSION:-19}
     depends_on:
       seed:
@@ -156,7 +157,7 @@ services:
     build:
       context: ./client
       args:
-        BASE_IMAGE: ${UBUNTU_IMAGE:-ubuntu:24.04}
+        BASE_IMAGE: ${UBUNTU_IMAGE:-ubuntu:26.04}
         CINC_VERSION: ${CINC_VERSION:-19}
     depends_on:
       seed:
@@ -183,7 +184,7 @@ services:
     build:
       context: ./client
       args:
-        BASE_IMAGE: ${FEDORA_IMAGE:-fedora:41}
+        BASE_IMAGE: ${FEDORA_IMAGE:-fedora:45}
         CINC_VERSION: ${CINC_VERSION:-19}
     depends_on:
       seed:
@@ -195,6 +196,30 @@ services:
     # A TTY gives the container a /dev/console. systemd writes its console
     # output there, so `docker compose logs` shows the boot and converge
     # progress instead of staying empty.
+    tty: true
+    privileged: true
+    cgroup: host
+    stop_signal: SIGRTMIN+3
+    tmpfs:
+      - /run
+      - /tmp
+    volumes:
+      - chef-shared:/shared:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+  node-amazon:
+    build:
+      context: ./client
+      args:
+        BASE_IMAGE: ${AMAZON_IMAGE:-amazonlinux:2023}
+        CINC_VERSION: ${CINC_VERSION:-19}
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      NODE_NAME: node-amazon
+      # Plain-text unit output on the console instead of ANSI escapes.
+      SYSTEMD_COLORS: "0"
     tty: true
     privileged: true
     cgroup: host

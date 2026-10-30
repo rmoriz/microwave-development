@@ -10,10 +10,11 @@ node actually needs:
    downloads the newest `nginx` and `postgresql` cookbooks from Chef Supermarket,
    uploads them plus the local wrapper cookbooks to microwave-server, and creates
    a role whose `run_list` points at nginx and PostgreSQL 18.
-3. **node-debian**, **node-ubuntu**, **node-fedora** — three distro containers
-   with [Cinc Client](https://cinc.sh/) installed. Each one boots systemd as
-   PID 1, registers with the validator, converges with `role[e2e_role]`, and
-   stays running so the result can be inspected with `docker exec`.
+3. **node-debian**, **node-ubuntu**, **node-fedora**, **node-amazon** — four
+   distro containers with [Cinc Client](https://cinc.sh/) installed. Each one
+   boots systemd as PID 1, registers with the validator, converges with
+   `role[e2e_role]`, and stays running so the result can be inspected with
+   `docker exec`.
 4. **workstation** — Cinc Workstation and OpenCode, for driving the stack by
    hand. Not published; reach it with `docker compose exec`.
 
@@ -33,7 +34,7 @@ Follow the seed and the node output:
 
 ```sh
 docker compose logs -f seed
-docker compose logs -f node-debian node-ubuntu node-fedora
+docker compose logs -f node-debian node-ubuntu node-fedora node-amazon
 ```
 
 The node services get a TTY, so systemd's console output (including the Cinc
@@ -63,9 +64,9 @@ docker compose down -v
 2. creates the organization with `knife org create e2e` — or reuses it if it
    already exists — and keeps the generated `e2e-validator` key on the shared
    volume;
-3. deletes the `node-debian`, `node-ubuntu`, and `node-fedora` node and client
-   objects with the `pivotal` superuser key so repeated runs can register
-   again, and writes a new `run-id` generation marker;
+3. deletes the `node-debian`, `node-ubuntu`, `node-fedora`, and `node-amazon`
+   node and client objects with the `pivotal` superuser key so repeated runs
+   can register again, and writes a new `run-id` generation marker;
 4. writes a `Berksfile` pinning the two Supermarket cookbooks and runs
    `berks vendor`;
 5. uploads every resolved cookbook with `knife cookbook upload --all`, and
@@ -172,10 +173,11 @@ and in `microwave/microwave.toml` under `[mcp.organizations.e2e]`.
 | `POSTGRES_COOKBOOK` / `POSTGRES_VERSION` | `postgresql` / `13.0.5` | Supermarket cookbook |
 | `NGINX_RECIPE` | `e2e_nginx` | nginx recipe in the role run_list |
 | `POSTGRES_RECIPE` | `e2e_postgresql` | PostgreSQL recipe in the role run_list |
-| `NODE_NAMES` | `node-debian node-ubuntu node-fedora` | Client names the seed resets |
-| `DEBIAN_IMAGE` | `debian:bookworm` | Debian node base image |
-| `UBUNTU_IMAGE` | `ubuntu:24.04` | Ubuntu node base image |
-| `FEDORA_IMAGE` | `fedora:41` | Fedora node base image |
+| `NODE_NAMES` | `node-debian node-ubuntu node-fedora node-amazon` | Client names the seed resets |
+| `DEBIAN_IMAGE` | `debian:trixie` | Debian node base image |
+| `UBUNTU_IMAGE` | `ubuntu:26.04` | Ubuntu node base image |
+| `FEDORA_IMAGE` | `fedora:45` | Fedora node base image |
+| `AMAZON_IMAGE` | `amazonlinux:2023` | Amazon Linux node base image |
 | `CINC_VERSION` | `19` | Cinc Client major version |
 
 ## Notes and trade-offs
@@ -186,9 +188,10 @@ and in `microwave/microwave.toml` under `[mcp.organizations.e2e]`.
   binding to `0.0.0.0` would hand knife and the nodes URLs they cannot reach.
   The Compose healthcheck uses the same name.
 - **Cinc, not Chef Infra Client.** Debian and Ubuntu install through
-  `omnitruck.cinc.sh`. Cinc has no Fedora package, so the Fedora image
-  installs Cinc's compatible `el9` RPM (the omnibus package is
-  self-contained). Both paths are pinned by `CINC_VERSION`.
+  `omnitruck.cinc.sh`; Amazon Linux uses the `amazon/2023` RPM from the same
+  service. Cinc has no Fedora package, so the Fedora image installs Cinc's
+  compatible `el9` RPM (the omnibus package is self-contained). All paths are
+  pinned by `CINC_VERSION`.
 - **Newest cookbook versions.** `nginx` 12.3.4 is the newest `nginx` release,
   but it is resource-only: it ships no recipes. The seed therefore also
   uploads the local `e2e_nginx` wrapper cookbook
@@ -209,10 +212,14 @@ and in `microwave/microwave.toml` under `[mcp.organizations.e2e]`.
   shared cgroup mount, `/run` and `/tmp` tmpfs, and `stop_signal:
   SIGRTMIN+3`; all of that is set in `docker-compose.yml`. A TTY is attached
   so the container has a `/dev/console` and `docker compose logs` is useful.
-- **Fedora package provider.** Fedora 41 ships dnf5 without Python, but Chef's
-  `dnf_package` provider drives libdnf through a Python helper. The Fedora
-  image installs `python3`, `python3-libdnf5`, and `python3-rpm` so
-  `nginx_install` works.
+- **Fedora package provider.** Fedora ships dnf5 without Python in the base
+  image, but Chef's `dnf_package` provider drives libdnf through a Python
+  helper. The Fedora image installs `python3`, `python3-libdnf5`, and
+  `python3-rpm` so `nginx_install` works.
+- **Amazon Linux package provider.** Amazon Linux 2023 ships dnf4 with its
+  Python bindings built in, so its image only needs `python3`; there is no
+  `python3-libdnf5` package. It also only publishes versioned PostgreSQL
+  packages, which is why the wrapper installs `postgresql16-server` there.
 - **Fedora DNS.** Fedora's preset enables `systemd-resolved`, which does not
   resolve Compose service names such as `microwave` through Docker's embedded
   DNS (glibc does). The node image masks `systemd-resolved` so

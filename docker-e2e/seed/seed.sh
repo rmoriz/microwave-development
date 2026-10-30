@@ -23,7 +23,7 @@ NGINX_RECIPE="${NGINX_RECIPE:-e2e_nginx}"
 POSTGRES_RECIPE="${POSTGRES_RECIPE:-e2e_postgresql}"
 # Client names the node containers register with. Included so the seed can
 # remove leftovers from a previous, partially failed run.
-NODE_NAMES="${NODE_NAMES:-node-debian node-ubuntu node-fedora}"
+NODE_NAMES="${NODE_NAMES:-node-debian node-ubuntu node-fedora node-amazon}"
 
 SHARED=/shared
 DATA=/mw-data

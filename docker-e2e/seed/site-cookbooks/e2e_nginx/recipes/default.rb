@@ -2,7 +2,7 @@
 # Install nginx with the resource-only nginx cookbook and run it as a service.
 #
 # The node containers boot systemd as PID 1, so the service resource works on
-# Debian, Ubuntu, and Fedora alike.
+# Debian, Ubuntu, Fedora, and Amazon Linux alike.
 #
 nginx_install "nginx" do
   source "distro"
