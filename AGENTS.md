@@ -27,7 +27,8 @@ with axe. A website-only commit does not need `cargo test`.
 CI is path-filtered: documentation changes only run the `claims` and `docs`
 jobs, homepage changes only `claims` and `homepage`, and the Rust jobs
 (`fmt`, `clippy`, `test`, `postgres`) only run when code changes. Workflow
-edits run everything.
+edits run `claims`, which lints them; their effect shows on the next matching
+change.
 
 Run `cargo fmt --all` and `cargo clippy --workspace --all-targets` before
 committing Rust. The homepage has no linter beyond `astro check`.

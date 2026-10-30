@@ -33,7 +33,6 @@ jobs:
               - 'Cargo.lock'
               - 'rust-toolchain*'
               - 'scripts/run-postgres-tests.sh'
-              - '.github/workflows/**'
 
   postgres:
     needs: changes

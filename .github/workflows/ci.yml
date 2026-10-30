@@ -13,9 +13,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Documentation-only pull requests must not pay for a full Rust build.
-  # Every job that can be gated hangs off these filters; workflow edits run
-  # everything so a broken condition shows up in the same PR.
+  # Documentation-only changes must not pay for a full Rust build.
+  # Every job that can be gated hangs off these filters. Workflow edits are not
+  # in them on purpose: on a pull request the action sees the whole branch, so
+  # listing the workflows here would keep every job running for the rest of the
+  # branch's life. The claims job lints them instead.
   changes:
     runs-on: ubuntu-24.04
     permissions:
@@ -37,14 +39,11 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain*'
-              - '.github/workflows/**'
             homepage:
               - 'website/homepage/**'
-              - '.github/workflows/**'
             docs:
               - 'docs/**'
               - 'website/docs/**'
-              - '.github/workflows/**'
 
   fmt:
     needs: changes

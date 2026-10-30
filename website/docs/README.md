@@ -39,5 +39,4 @@ the anchors themselves work.
 
 A change under `docs/` or `website/docs/` runs the `claims` and `docs` jobs
 only; fmt, clippy, the test suite, the Postgres suite and the homepage build
-are skipped by the filters in `.github/workflows/ci.yml`. Editing a workflow
-runs everything.
+are skipped by the filters in `.github/workflows/ci.yml`.
