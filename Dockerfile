@@ -5,8 +5,10 @@
 # Builds the three deployable binaries from the Cargo workspace:
 #   * microwave-server    — the HTTP daemon
 #   * microwave-ctl       — the operational CLI
-#   * chef-server-ctl     — compatibility alias symlinked to microwave-ctl
 #   * microwave-migrate   — snapshot export/import
+#
+# chef-server-ctl is not built separately; the runtime stage symlinks it to
+# microwave-ctl.
 #
 # Build:
 #   docker build -t microwave-server:local .

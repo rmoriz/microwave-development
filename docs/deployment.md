@@ -38,27 +38,29 @@ For the current implementation gaps see
 
 ## 1. Artifacts and layout
 
-The workspace builds four binaries:
+The workspace builds three binaries:
 
 | Binary | Purpose |
 |---|---|
 | `microwave-server` | HTTP daemon. `serve` (with `--check` for a preflight) and `config` (print resolved config). |
 | `microwave-ctl` | Operational CLI. |
-| `chef-server-ctl` | Compatibility alias built from the same CLI crate; identical command surface. |
 | `microwave-migrate` | Versioned JSON snapshot export/import, live crawler, and offline `knife ec backup` directory import. |
+
+`chef-server-ctl` is not a separate binary: it is a symlink to `microwave-ctl`,
+so existing runbooks keep working against the same dispatch.
 
 Build them from source:
 
 ```sh
 cargo build --release --locked -p microwave-server -p microwave-ctl-bin -p microwave-migrate-bin
-# target/release/{microwave-server,microwave-ctl,chef-server-ctl,microwave-migrate}
+# target/release/{microwave-server,microwave-ctl,microwave-migrate}
 ```
 
 Recommended installation paths:
 
 | Path | Contents |
 |---|---|
-| `/usr/local/bin/` | The four binaries above. |
+| `/usr/local/bin/` | The three binaries above, plus the `chef-server-ctl` symlink. |
 | `/etc/microwave/microwave.toml` | Configuration (mode `0640 root:microwave`). |
 | `/etc/microwave/tls/` | Optional TLS certificate chain and private key; provisioned by the operator. |
 | `/var/lib/microwave/` | Data directory (mode `0750`, owner `microwave`). |
@@ -439,7 +441,7 @@ listener.
 ## 4. Docker
 
 The [`Dockerfile`](../Dockerfile) is multi-stage: it builds the workspace on
-`rust:<version>-trixie`, then copies only the four binaries into
+`rust:<version>-trixie`, then copies only the three binaries into
 `debian:trixie-slim` with `ca-certificates`, `curl`, and `sqlite3`.
 
 Image properties:
