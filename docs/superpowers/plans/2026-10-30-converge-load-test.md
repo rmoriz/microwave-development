@@ -86,56 +86,16 @@ size; existing callers keep `10`.
 **Files**
 
 - `crates/microwave-store-postgres/src/store.rs`
+- `crates/microwave-store/src/backend.rs`
+- `crates/microwave-store/src/lib.rs`
+- `crates/microwave-store-postgres/src/health.rs`
 - `crates/microwave-store-postgres/tests/postgres_integration.rs`
 - `bin/microwave-server/src/main.rs`
 - `crates/microwave-ctl/src/context.rs`
 
 **Steps**
 
-1. Add `pub async fn connect_with_compression_and_pool(database_url: &str,
-   compression: Compression, pool_size: usize)` to `PostgresStore`; move the
-   body of `connect_with_compression` there with
-   `.max_connections(pool_size)`. Make `connect_with_compression` forward
-   `DEFAULT_POOL_SIZE` where `const DEFAULT_POOL_SIZE: usize = 10;`. Do the
-   same split for `connect_existing_with_compression`
-   (`connect_existing_with_compression_and_pool`) so the server-start variants
-   and the ctl "no migrate" variant both honour the setting.
-2. `bin/microwave-server/src/main.rs:124`: call
-   `connect_with_compression_and_pool(&database_url, compression,
-   config.database.pool_size)`.
-3. `crates/microwave-ctl/src/context.rs:98` and `:101`: pass
-   `self.config.database.pool_size`.
-4. Leave `crates/microwave-migrate` on the default and note in the module doc
-   of `crates/microwave-migrate/src/lib.rs` that the migrator keeps the
-   default pool size.
-
-**Tests** (`postgres_integration.rs`, skip-when-unset like its neighbours)
-
-- `pool_stats_reports_the_configured_maximum`: connect with pool size `3`,
-  assert `pool_stats().unwrap().max == 3`;
-- `connect_with_compression_still_uses_ten`: assert `max == 10` from the
-  compatibility wrapper.
-
-**Verify:** `cargo test -p microwave-store-postgres` (with
-`MICROWAVE_TEST_POSTGRES_URL`) and `cargo test --workspace` for the wiring.
-
-**Commit:** `feat(store): open the PostgreSQL pool with the configured size`
-
-## Task 3 — pool gauges on `/_stats`
-
-**Goal:** a pool-bound run is distinguishable from a slow store.
-
-**Files**
-
-- `crates/microwave-store/src/backend.rs`
-- `crates/microwave-store/src/lib.rs`
-- `crates/microwave-store-postgres/src/health.rs`
-- `crates/microwave-api/src/lib.rs`
-- `crates/microwave-api/tests/ops_test.rs`
-
-**Steps**
-
-1. In `backend.rs` add above `HealthRepository`:
+1. In `crates/microwave-store/src/backend.rs` add above `HealthRepository`:
 
    ```rust
    /// Live connection-pool counters, when the backend has a pool.
@@ -159,11 +119,51 @@ size; existing callers keep `10`.
 2. Re-export `PoolStats` from `crates/microwave-store/src/lib.rs`.
 3. `crates/microwave-store-postgres/src/health.rs`: implement `pool_stats`
    from `self.pool()` — `options().get_max_connections()`, `num_idle()`,
-   `size()`, with `in_use = size.saturating_sub(idle)` and `u32::try_from(..)
-   .unwrap_or(u32::MAX)`.
-4. `crates/microwave-api/src/lib.rs`: after `let snapshot = state.metrics
-   .snapshot();` add `let pool = state.store.pool_stats().await;`. In the text
-   branch, when `Some`, emit
+   `size()`, with `in_use = size.saturating_sub(idle)` and
+   `u32::try_from(..).unwrap_or(u32::MAX)`.
+4. Add `pub async fn connect_with_compression_and_pool(database_url: &str,
+   compression: Compression, pool_size: usize)` to `PostgresStore`; move the
+   body of `connect_with_compression` there with
+   `.max_connections(pool_size)`. Make `connect_with_compression` forward
+   `DEFAULT_POOL_SIZE` where `const DEFAULT_POOL_SIZE: usize = 10;`. Do the
+   same split for `connect_existing_with_compression`
+   (`connect_existing_with_compression_and_pool`) so the server-start variants
+   and the ctl "no migrate" variant both honour the setting.
+5. `bin/microwave-server/src/main.rs:124`: call
+   `connect_with_compression_and_pool(&database_url, compression,
+   config.database.pool_size)`.
+6. `crates/microwave-ctl/src/context.rs:98` and `:101`: pass
+   `self.config.database.pool_size`.
+7. Leave `crates/microwave-migrate` on the default and note in the module doc
+   of `crates/microwave-migrate/src/lib.rs` that the migrator keeps the
+   default pool size.
+
+**Tests** (`postgres_integration.rs`, skip-when-unset like its neighbours)
+
+- `pool_stats_reports_the_configured_maximum`: connect with pool size `3`,
+  assert `pool_stats().unwrap().max == 3`;
+- `connect_with_compression_still_uses_ten`: assert `max == 10` from the
+  compatibility wrapper.
+
+**Verify:** `cargo test -p microwave-store-postgres` (with
+`MICROWAVE_TEST_POSTGRES_URL`) and `cargo test --workspace` for the wiring.
+
+**Commit:** `feat(store): open the PostgreSQL pool with the configured size`
+
+## Task 3 — pool gauges on `/_stats`
+
+**Goal:** a pool-bound run is distinguishable from a slow store.
+
+**Files**
+
+- `crates/microwave-api/src/lib.rs`
+- `crates/microwave-api/tests/ops_test.rs`
+
+**Steps**
+
+1. In `crates/microwave-api/src/lib.rs`, after `let snapshot =
+   state.metrics.snapshot();` add `let pool = state.store.pool_stats().await;`.
+   In the text branch, when `Some`, emit
 
    ```
    # HELP microwave_server_db_pool_connections Database pool connections by state.
@@ -177,6 +177,8 @@ size; existing callers keep `10`.
 
    In the JSON branch add `"db_pool": {"idle": .., "in_use": .., "max": ..}`
    only when `Some`.
+2. Keep the existing metric order; append the pool block after
+   `microwave_server_nodes`.
 
 **Tests**
 
@@ -283,12 +285,13 @@ status_contract_test`
    `list_named_objects`, `find_named_objects_by_ids`. Read index 6 in
    `stored_object_from_row` / the Postgres equivalents.
 4. `create_environment` and `update_environment` (both backends) call
-   `self.set_environment_constraints(&object.id, environment_constraints(body)?)`
+   `self.set_environment_constraints(&object.id, environment_constraints(body))`
    after the named-object call, where the helper is
    `fn set_environment_constraints(&self, id: &str, constraints: Option<String>)`
    running `UPDATE environments SET cookbook_constraints = ? WHERE id = ?`.
    `environment_constraints(body)` is the new lenient helper in
-   `derivations.rs` reading `cookbook_versions`.
+   `derivations.rs` reading `cookbook_versions`; it returns `Option<String>`
+   and both callers here handle that directly (no `?`).
 5. `depsolver.rs::environment_constraints` takes the stored form first and
    falls back to parsing `serialized_object` when it is `None`, `""` or
    `"{}"`.
@@ -324,8 +327,7 @@ the column `NULL` and the reader parses. Do not thread it through
 **Goal:** operators learn that the solve path no longer parses, and which
 fallback still does.
 
-**Files:** `docs/deployment.md` (solver section), `docs/under-the-hood`-style
-paragraph inside the new `docs/load-test.md` (created in Task 12).
+**Files:** `docs/deployment.md` (solver section)
 
 **Steps**
 
@@ -336,6 +338,9 @@ paragraph inside the new `docs/load-test.md` (created in Task 12).
 2. Claim in `docs/claims.toml`: `solver-inputs-stored-on-write`, area
    `depsolver`, `verify = { kind = "grep", path = "docs/deployment.md",
    pattern = "stored at write time" }`, surface the same needle.
+
+The load-test guide (Task 13) repeats the point for its own audience; do not
+touch `docs/load-test.md` here, it does not exist yet.
 
 **Verify:** `python3 scripts/check-claims.py`
 
@@ -361,17 +366,22 @@ deterministic fixture, no network yet.
 
    ```
    seed   --server-url --keys --data-dir [--nodes 20000] [--roles 1000]
-          [--versions 600] [--targets 5000] [--shared-key] [--postgres-url]
+          [--versions 600] [--targets 5000] [--canary 20] [--shared-key]
+          [--postgres-url]
    run    --server-url --keys --out . [--concurrency 5000] [--ramp 0]
           [--canary 20] [--chef-client chef-client] [--upload]
-          [--stats-user --stats-pass] [--superuser]
+          [--stats-user --stats-pass] [--superuser] [--postgres-url]
+          [--fingerprint PATH] [--commit SHA]
    ```
 
    `seed` opens the store directly — PostgreSQL when `--postgres-url` is set,
    otherwise the SQLite file in `--data-dir` — and applies the snapshot through
    `import_snapshot`; `run` only speaks HTTP.
-   `run` also takes `--stats-user/--stats-pass` (the `/_stats` credentials the
-   harness writes) and `--commit` (the server commit, printed into the report).
+   `seed --canary N` creates the `canary-<n>` nodes and clients that Task 11
+   runs; `run --canary N` must not exceed what the fixture holds.
+   `run` takes `--stats-user/--stats-pass` (the `/_stats` credentials the
+   harness writes), `--commit` (printed into the report) and `--fingerprint`
+   (Task 10).
    `--superuser` makes every driver request sign as the manifest's `superuser`
    entry instead of the node's own client; ACLs are then only exercised by the
    canary, so the report notes the mode.
@@ -391,15 +401,18 @@ deterministic fixture, no network yet.
      `load-constrained-b` (`load-cb-0002 ~> 1.0`);
    - one `load-clients` group with Read on every cookbook and the sandbox
      container, every target client in it, plus Read+Update on the client's own
-     node and Read on the sandbox container.
+     node and Read on the sandbox container;
+   - `--canary N` extra `canary-<n>` clients and nodes, each node carrying a
+     static run list over `load-cb-0001`..`0005` and the same ACLs, so the
+     canary never writes fixture rows itself.
 4. `keys.rs` generates one RSA-2048 keypair per target client via
    `microwave_crypto::generate_rsa_keypair`, bounded by
    `std::thread::available_parallelism`, and writes `actor_keys` rows. With
    `--shared-key` one keypair is reused for every client.
 5. `seed` writes the manifest to `--keys` with `0600` (mode via
    `PermissionsExt`), one line per entry:
-   `<kind> <name> <private-key-path>`, `kind` ∈ `superuser|client`; private
-   keys live in `<keys>.d/<name>.pem`.
+   `<kind> <name> <private-key-path>`, `kind` ∈ `superuser|client|canary`;
+   private keys live in `<keys>.d/<name>.pem`.
 6. `seed` writes one blob per cookbook version into
    `<data-dir>/bookshelf` via `microwave_objectstore::LocalObjectStore::new(
    root, "load", "")`, with the MD5 of the bytes as the checksum.
@@ -438,8 +451,9 @@ deterministic fixture, no network yet.
    (`X-Ops-Sign: algorithm=sha256;version=1.3;`, `X-Ops-Userid`, timestamp,
    content hash, `X-Ops-Server-API-Version: 2`, `X-Ops-Authorization-N` in
    60-byte chunks).
-2. One `reqwest::Client` per worker with `pool_max_idle_per_host` set to the
-   concurrency so keep-alive holds. When the caller passes `--superuser`, the
+2. One `reqwest::Client` for the whole run, built once with
+   `pool_max_idle_per_host` equal to `--concurrency` so keep-alive holds;
+   `NodeClient` holds a clone. When the caller passes `--superuser`, the
    key and user come from the manifest's `superuser` entry for every request.
 3. Presigned `/bookshelf` URLs are fetched **unsigned** — they carry their own
    token, and their query string is not part of any canonical path.
