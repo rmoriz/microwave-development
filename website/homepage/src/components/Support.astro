@@ -1,4 +1,5 @@
 ---
+import { site } from '../data/site';
 import { withBase } from '../lib/paths';
 
 const options = [
@@ -39,8 +40,13 @@ const options = [
     </div>
 
     <div class="support-cta">
-      <a class="button button-primary" href={withBase('/imprint/')}>Imprint</a>
-      <p>Scope and terms are agreed directly.</p>
+      <a class="button button-primary" href={`mailto:${site.email}?subject=Support%20plans`}>
+        Let's discuss support plans
+      </a>
+      <p>
+        Scope and terms are agreed directly.{' '}
+        <a href={withBase('/imprint/')}>Imprint</a>
+      </p>
     </div>
   </div>
 </section>

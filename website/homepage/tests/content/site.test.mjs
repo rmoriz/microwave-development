@@ -112,8 +112,10 @@ test('migration, support, and FAQ', () => {
   assert.match(text, /not a built-in assistant/);
   assert.match(text, /superuser default skips them/);
   assert.match(text, /only server log lines, not a durable audit table/);
+  assert.equal($('#support .support-cta a[href^="mailto:info+microwave@moriz.de"]').length, 1);
   assert.equal($(`#support a[href="${BASE_PATH}/imprint/"]`).length, 1);
-  assert.equal($('#support .support-cta a').text().trim(), 'Imprint');
+  assert.equal($('#support .support-cta a.button').text().trim(), "Let's discuss support plans");
+  assert.match(text, /Scope and terms are agreed directly\. Imprint/);
 });
 
 test('agent MCP sales section', () => {
