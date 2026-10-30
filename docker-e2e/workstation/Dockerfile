@@ -1,18 +1,18 @@
 # Workstation image: an interactive box for driving the e2e stack by hand.
 #
-# systemd runs as PID 1 (see the compose service flags) and starts the
-# workstation-prepare.service oneshot, which stages the knife config the seed
-# wrote. The container stays up so commands can be run with `docker exec`.
+# There is no init system here. The entrypoint runs the prepare script, which
+# stages the knife config the seed wrote and warms the MCP client, then keeps
+# the container alive for `docker compose exec` and `./shell`.
 #
 # knife and Berkshelf come from the Cinc Workstation package; OpenCode is
 # installed from the official installer and configured against the stack's MCP
-# endpoint in /work.
+# endpoint in /root/work.
 #
-# Interactive use runs as the unprivileged `dev` user, not root.
+# Everything runs as root: the box is disposable and only talks to the local
+# e2e stack.
 ARG BASE_IMAGE=debian:trixie
 FROM ${BASE_IMAGE}
 
-ARG USER_NAME=dev
 ARG CINC_WORKSTATION_VERSION=26.4.0
 ARG CINC_WORKSTATION_URL=https://downloads.cinc.sh/files/stable/cinc-workstation
 
@@ -30,20 +30,16 @@ RUN apt-get update \
         gnupg \
         less \
         procps \
-        systemd \
-        systemd-sysv \
         vim-tiny \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --uid 1000 --shell /bin/bash "$USER_NAME" \
-    && install -d -o "$USER_NAME" -g "$USER_NAME" \
-        /work \
-        "/home/$USER_NAME/.chef" \
-        "/home/$USER_NAME/.local/share/opencode" \
-        "/home/$USER_NAME/.local/state/opencode" \
-        "/home/$USER_NAME/.config/opencode" \
-        /var/tmp/opencode \
-    && chown -R "$USER_NAME":"$USER_NAME" "/home/$USER_NAME"
+    && install -d \
+        /root/work \
+        /root/work/.chef \
+        /root/.local/share/opencode \
+        /root/.local/state/opencode \
+        /root/.config/opencode \
+        /var/tmp/opencode
 
 # Pick the Debian architecture package (amd64 or arm64).
 RUN set -eux; \
@@ -60,57 +56,32 @@ RUN curl -fsSL https://opencode.ai/v2/install \
     && /usr/local/libexec/opencode --version | grep -qx "opencode v${OPENCODE_VERSION}" \
     && /usr/local/libexec/opencode --version
 
-# systemd cannot run as a non-root PID 1 here, so the container starts as root.
-# `opencode` drops to the unprivileged user instead, so editors and MCP tools
-# never run as root.
-RUN printf '%s\n' \
-        '#!/bin/sh' \
-        '# systemd needs PID 1 to stay root; run the client unprivileged.' \
-        'if [ "$(id -u)" = 0 ]; then' \
-        '    exec runuser -u dev -- /usr/local/libexec/opencode "$@"' \
-        'fi' \
-        'exec /usr/local/libexec/opencode "$@"' \
-        > /usr/local/bin/opencode \
-    && chmod 0755 /usr/local/bin/opencode
+# The installer drops the binary under /root; expose it on PATH for exec sessions.
+RUN ln -sf /usr/local/libexec/opencode /usr/local/bin/opencode
 
 COPY workstation-prepare.sh /usr/local/bin/workstation-prepare
-COPY workstation-prepare.service /etc/systemd/system/workstation-prepare.service
+COPY entrypoint.sh /usr/local/bin/workstation-entrypoint
 RUN chmod 0755 /usr/local/bin/workstation-prepare \
-    && mkdir -p /etc/systemd/system/multi-user.target.wants \
-    && ln -sf /etc/systemd/system/workstation-prepare.service \
-              /etc/systemd/system/multi-user.target.wants/workstation-prepare.service
+              /usr/local/bin/workstation-entrypoint
 
-COPY opencode.json /work/opencode.json
-COPY AGENTS.md /work/AGENTS.md
-RUN chown -R "$USER_NAME":"$USER_NAME" /work
+COPY opencode.json /root/work/opencode.json
+COPY AGENTS.md /root/work/AGENTS.md
 
-# Every exec session starts here so OpenCode picks up the project config. The
-# USER below makes exec sessions run unprivileged.
-WORKDIR /work
+# Every exec session starts here so OpenCode picks up the project config.
+WORKDIR /root/work
 
 # The e2e token is baked in so an exec session needs no prefix. Compose can
 # still override it with MW_MCP_TOKEN.
 ENV MW_MCP_TOKEN=e2e-mcp-token
 
-# knife 19 only reads ~/.chef/knife.rb through KNIFE_HOME, not through HOME
-# alone, and systemd units have no HOME at all.
-ENV KNIFE_HOME=/home/dev/.chef
+# knife 19 only reads knife.rb through KNIFE_HOME, not through HOME alone. The
+# config lives in /root/work so it sits next to the project files and is
+# visible in the interactive shell.
+ENV KNIFE_HOME=/root/work/.chef
 
-# OpenCode writes scratch state below TMPDIR. /tmp is a noexec tmpfs in Compose
-# and OpenCode extracts helpers it runs from there, so use the image layer.
+# OpenCode writes scratch state below TMPDIR; keep it on the image layer instead
+# of the container's /tmp.
 ENV TMPDIR=/var/tmp/opencode
 
-# systemd-resolved is enabled by some distro presets and would take over
-# lookups from the glibc resolver. Mask it so Docker's embedded DNS is used.
-RUN systemctl mask systemd-resolved
-
-# Container images have no virtual terminals, so getty@tty1..6 fail and make
-# systemd report "degraded". Mask them; console-getty on /dev/console still
-# offers a login prompt when the container is attached to a TTY.
-RUN systemctl mask getty@tty1.service getty@tty2.service getty@tty3.service \
-                    getty@tty4.service getty@tty5.service getty@tty6.service \
-                    getty-static.service
-
-# systemd as PID 1: send the container stop signal systemd understands.
-STOPSIGNAL SIGRTMIN+3
-CMD ["/sbin/init"]
+# Prepare once, then sleep so exec sessions have a container to attach to.
+ENTRYPOINT ["/usr/local/bin/workstation-entrypoint"]

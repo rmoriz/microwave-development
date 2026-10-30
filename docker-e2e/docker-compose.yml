@@ -97,27 +97,19 @@ services:
     environment:
       # Optional override; the image already bakes the e2e token in.
       MW_MCP_TOKEN: ${MW_MCP_TOKEN:-e2e-mcp-token}
-      SYSTEMD_COLORS: "0"
-    # Runs systemd and stays up after the prepare unit, so the box is used with
-    # `docker compose exec workstation …`. Nothing is published.
-    tty: true
-    privileged: true
-    cgroup: host
-    stop_signal: SIGRTMIN+3
-    tmpfs:
-      - /run
-      - /tmp
+    # The entrypoint prepares the box and then sleeps, so the service is used
+    # with `docker compose exec workstation …` or `./shell`. Nothing is
+    # published.
     volumes:
       # Read-only hand-over of the knife config the seed wrote.
       - chef-shared:/shared:ro
       # Keep the OpenCode login and session state across `up` runs.
       - workstation-opencode:/root/.local/share/opencode
       - workstation-opencode-config:/root/.config/opencode
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw
-    # A workstation whose prepare unit never succeeded has no knife config and
+    # A workstation whose prepare script never succeeded has no knife config and
     # no MCP connection; surface that instead of only showing "running".
     healthcheck:
-      test: ["CMD-SHELL", "test -r /home/dev/.chef/knife.rb"]
+      test: ["CMD-SHELL", "test -r /root/work/.chef/knife.rb"]
       interval: 10s
       timeout: 3s
       retries: 12

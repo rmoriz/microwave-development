@@ -7,7 +7,7 @@
 #
 #   ./shell
 #
-# It starts bash in /work with the knife config and the MCP settings the
+# It starts bash in /root/work with the knife config and the MCP settings the
 # prepare unit staged, so `knife` and `opencode` work without prefixes.
 set -euo pipefail
 

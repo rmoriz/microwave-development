@@ -127,7 +127,7 @@ docker compose exec workstation opencode
 
 `knife` is preconfigured for the `e2e` organization: `knife node list`,
 `knife cookbook list`, and the other commands work without a `-c` flag or a
-`--server-url`. Exec sessions start in `/work`, where OpenCode picks up
+`--server-url`. Exec sessions start in `/root/work`, where OpenCode picks up
 `opencode.json`. It needs a model provider once; the login is kept in the
 `workstation-opencode` volume:
 
@@ -135,9 +135,10 @@ docker compose exec workstation opencode
 docker compose exec workstation opencode auth login
 ```
 
-The container's PID 1 stays root because systemd needs it, but `opencode` drops
-to the unprivileged `dev` user (uid 1000), which owns `/home/dev` and the staged
-knife config. `knife` works from both a root session and `su dev`.
+The container runs everything as root, including OpenCode; there is no
+unprivileged user and no init system in the image. The staged knife config is
+`/root/work/.chef` (`KNIFE_HOME`), so `knife` works from any shell in the
+container.
 
 Check the MCP connection with `docker compose exec workstation opencode mcp list`.
 
@@ -207,13 +208,13 @@ and in `microwave/microwave.toml` under `[mcp.organizations.e2e]`.
   Debian/Ubuntu; Fedora is not a supported platform of the cookbook, so the
   wrapper installs the distro `postgresql-server` there. No PostgreSQL
   configuration, users, or databases are managed.
-- **systemd in the nodes and the workstation.** Those containers run
-  `/sbin/init` as PID 1.
+- **systemd in the nodes only.** The node containers run `/sbin/init` as PID 1.
   That keeps the container alive after the converge and lets the service
-  resource manage nginx on all three distros. It needs `privileged: true`, a
-  shared cgroup mount, `/run` and `/tmp` tmpfs, and `stop_signal:
-  SIGRTMIN+3`; all of that is set in `docker-compose.yml`. A TTY is attached
-  so the container has a `/dev/console` and `docker compose logs` is useful.
+  resource manage nginx on all distros. It needs `privileged: true`, a shared
+  cgroup mount, `/run` and `/tmp` tmpfs, and `stop_signal: SIGRTMIN+3`; all of
+  that is set in `docker-compose.yml`. A TTY is attached so the container has a
+  `/dev/console` and `docker compose logs` is useful. The workstation needs
+  none of it: its entrypoint runs the prepare script once and then sleeps.
 - **Fedora package provider.** Fedora ships dnf5 without Python in the base
   image, but Chef's `dnf_package` provider drives libdnf through a Python
   helper. The Fedora image installs `python3`, `python3-libdnf5`, and
