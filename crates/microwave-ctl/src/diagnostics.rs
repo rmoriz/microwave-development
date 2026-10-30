@@ -494,11 +494,37 @@ pub(crate) fn object_store_backend_name(backend: ObjectStoreBackend) -> &'static
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_psql_args, PsqlInvocation};
+    use super::{check_config, parse_psql_args, Context, PsqlInvocation};
+    use std::path::PathBuf;
 
     fn parse(arguments: &[&str]) -> PsqlInvocation {
         let raw: Vec<String> = arguments.iter().map(|value| value.to_string()).collect();
         parse_psql_args(&raw).unwrap()
+    }
+
+    /// A `Context` built by hand, which (unlike `Context::load`) does not run
+    /// `Config::validate`, so the defensive pool-size guard can be reached.
+    fn context_with_pool_size(pool_size: usize) -> Context {
+        let mut config = microwave_config::Config::default();
+        config.database.pool_size = pool_size;
+        Context {
+            database_url: config.resolved_database_url(),
+            database_path: Some(PathBuf::from("/nonexistent/microwave.db")),
+            data_dir: PathBuf::from("/nonexistent/microwave-data"),
+            config,
+        }
+    }
+
+    #[test]
+    fn check_config_reports_a_zero_pool_size() {
+        let error = check_config(&context_with_pool_size(0)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("database.pool_size must be greater than zero"),
+            "unexpected error: {error}"
+        );
+        assert!(check_config(&context_with_pool_size(10)).is_ok());
     }
 
     #[test]
