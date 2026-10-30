@@ -19,11 +19,11 @@ A Rust reimplementation of the Chef Infra Server API, designed as a drop-in repl
 - **Proven with a real client** — a stock `chef-client` converges against it end to end: the
   harness starts a throwaway server, uploads a cookbook, runs the client, and checks the marker
   file the recipe wrote.
-- **Pedant-checked** — 652 passed / 0 failed / 8 pending out of 660 core examples in
-  [`docs/pedant-report.md`](docs/pedant-report.md), after the plain-HTTP `headers` artifact was
-  fixed at the harness. Extended suites:
-  3,284 passed / 0 failed / 7 pending of 3,291 examples in
-  [`docs/pedant-extended-report.md`](docs/pedant-extended-report.md).
+- **Pedant-checked** — the full `scripts/run-pedant.sh strict` set passes: 652 passed / 0 failed /
+  8 pending out of 660 core examples in [`docs/pedant-report.md`](docs/pedant-report.md) and
+  3,284 passed / 0 failed / 7 pending out of 3,291 extended examples in
+  [`docs/pedant-extended-report.md`](docs/pedant-extended-report.md). The pending examples are
+  pedant's own skips.
 - **Independent** — not affiliated with or endorsed by Progress, so compatibility follows the API
   rather than a vendor roadmap.
 
@@ -77,7 +77,7 @@ A stock `chef-client` converge against the result is the end-to-end check: see
 The open inventory below is generated from `docs/claims.toml` and includes the three above:
 
 <!-- generated:remaining-work:start -->
-Open gaps: 18 (migration: 6, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3, docs: 1). By area: [migration](docs/remaining-work.md#area-migration), [mail](docs/remaining-work.md#area-mail), [search](docs/remaining-work.md#area-search), [ha](docs/remaining-work.md#area-ha), [auth](docs/remaining-work.md#area-auth), [tooling](docs/remaining-work.md#area-tooling), [docs](docs/remaining-work.md#area-docs).
+Open gaps: 17 (migration: 6, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3). By area: [migration](docs/remaining-work.md#area-migration), [mail](docs/remaining-work.md#area-mail), [search](docs/remaining-work.md#area-search), [ha](docs/remaining-work.md#area-ha), [auth](docs/remaining-work.md#area-auth), [tooling](docs/remaining-work.md#area-tooling).
 <!-- generated:remaining-work:end -->
 
 ## Migrate from Chef Infra Server
@@ -331,25 +331,24 @@ The open inventory is generated under [Known gaps](#known-gaps); this section ke
 
 ### Pedant Compatibility
 
-The first `oc-chef-pedant` run is recorded in [`docs/pedant-report.md`](docs/pedant-report.md). The
-core set now stands at 652 passed / 0 failed / 8 pending of 660; the extended results are in
-[`docs/pedant-extended-report.md`](docs/pedant-extended-report.md).
-
-The table below is the dated 2026-10-24 baseline, taken before the `headers` artifact was fixed at
-the harness:
+A full `scripts/run-pedant.sh strict` run on 2026-10-30 is recorded in
+[`docs/pedant-report.md`](docs/pedant-report.md) and
+[`docs/pedant-extended-report.md`](docs/pedant-extended-report.md). The core set passes with
+**652 passed / 0 failed / 8 pending of 660**; the 8 pending examples are pedant's own skips.
 
 | Tag | Passed | Failed | Pending |
 | --- | ---: | ---: | ---: |
-| headers | 6 | 1 | 0 |
+| headers | 7 | 0 | 0 |
 | users | 165 | 0 | 0 |
 | organizations | 15 | 0 | 0 |
 | clients | 139 | 0 | 3 |
 | nodes | 326 | 0 | 5 |
-| **Total** | **651** | **1** | **8** |
+| **Total** | **652** | **0** | **8** |
 
-The harness is `scripts/run-pedant.sh`. Users, organizations, clients, and nodes pass with zero failures in this tag set. The only core-set failure was the plain-HTTP `headers` artifact, which is fixed at the harness instead of an allowlist; see `docs/pedant-report.md`. The 8 pending examples are pedant's own skips.
+Every core tag passes. The one historical core failure, the plain-HTTP `headers` artifact, is fixed
+at the harness rather than an allowlist; see `docs/pedant-report.md`.
 
-Extended suites (final, full `all` run): **3,284 passed / 0 failed / 7 pending of 3,291**. All twelve extended tags are green.
+Extended suites: **3,284 passed / 0 failed / 7 pending of 3,291**. All twelve extended tags are green, as are the `environments` (610 examples, 23 pending) and `roles` (78 examples) contract suites.
 
 See `docs/superpowers/specs/2026-10-24-microwave-server-design.md` and `TODO.md` for the full target and remaining work.
 

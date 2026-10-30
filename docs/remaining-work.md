@@ -2,7 +2,7 @@
 
 # Remaining work
 
-Open gaps: 18 (migration: 6, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3, docs: 1)
+Open gaps: 17 (migration: 6, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3)
 
 <a id="area-migration"></a>
 
@@ -130,16 +130,6 @@ Open gaps: 18 (migration: 6, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3, doc
 <a id="gap-transitive-member"></a>
 
 **gap-transitive-member** — The /groups/:id/transitive_member endpoint is not implemented.
-
-- `TODO.md`
-
-<a id="area-docs"></a>
-
-## Docs
-
-<a id="gap-full-pedant-embedded"></a>
-
-**gap-full-pedant-embedded** — No single full pedant run against the default embedded stack is 100% green; the embedded backend is a scan, not Tantivy.
 
 - `TODO.md`
 

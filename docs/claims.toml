@@ -819,34 +819,34 @@ verify = { kind = "file", path = "README.md" }
 
 [[claim]]
 id = "readme-pedant-baseline"
-summary = "The first pedant tag run is recorded in docs/pedant-report.md."
+summary = "The current pedant run is recorded in docs/pedant-report.md."
 area = "docs"
 status = "manual"
 surfaces = [
-  { path = "README.md", needle = "The first `oc-chef-pedant` run" },
+  { path = "README.md", needle = "full `scripts/run-pedant.sh strict` run on 2026-10-30" },
 ]
-verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-29 }
+verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-30 }
 
 [[claim]]
 id = "readme-pedant-core-totals"
-summary = "The current core figure is 652 passed / 0 failed / 8 pending of 660, after the plain-HTTP `headers` artifact was fixed at the harness; the 651 table is the dated 2026-10-24 pre-fix baseline."
+summary = "The core figure is 652 passed / 0 failed / 8 pending of 660; every core tag passes and the 8 pending examples are pedant's own skips."
 area = "docs"
 status = "manual"
 surfaces = [
   { path = "README.md", needle = "652 passed / 0 failed / 8 pending" },
 ]
-verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-29 }
+verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-30 }
 
 [[claim]]
 id = "readme-pedant-extended-totals"
-summary = "The extended suites finished at 3,284 passed / 0 failed / 7 pending of 3,291."
+summary = "The extended suites finished at 3,284 passed / 0 failed / 7 pending out of 3,291; the 7 pending examples are pedant's own skips."
 area = "docs"
 status = "manual"
 surfaces = [
-  { path = "README.md", needle = "3,284 passed / 0 failed / 7 pending of 3,291" },
+  { path = "README.md", needle = "3,284 passed / 0 failed / 7 pending out of 3,291" },
   { path = "README.md", needle = "All twelve extended tags are green" },
 ]
-verify = { kind = "manual", ref = "docs/pedant-extended-report.md", checked = 2026-10-29 }
+verify = { kind = "manual", ref = "docs/pedant-extended-report.md", checked = 2026-10-30 }
 
 [[claim]]
 id = "gap-chef-server-rb-importer"
@@ -924,7 +924,7 @@ summary = "Site name, canonical URL, and license links live in one data module."
 area = "website"
 status = "verified"
 surfaces = [
-  { path = "website/homepage/src/data/site.ts", needle = "microwave.io" },
+  { path = "website/homepage/src/data/site.ts", needle = "info+microwave@moriz.de" },
 ]
 verify = { kind = "grep", path = "website/homepage/src/data/site.ts", pattern = "AGPL-3.0" }
 
@@ -1204,9 +1204,9 @@ verify = { kind = "file", path = "crates/microwave-migrate/src/from_api.rs" }
 
 [[claim]]
 id = "gap-full-pedant-embedded"
-summary = "No single full pedant run against the default embedded stack is 100% green; the embedded backend is a scan, not Tantivy."
+summary = "A full pedant `strict` run against the default embedded stack is green, 0 failures across the core, extended, and contract tags; the embedded search index is still a scan, not Tantivy."
 area = "docs"
-status = "gap"
+status = "verified"
 surfaces = [
   { path = "TODO.md", needle = "against Default Embedded mode" },
 ]
@@ -2014,22 +2014,22 @@ verify = { kind = "grep", path = "bin/microwave-server/src/main.rs", pattern = "
 
 [[claim]]
 id = "pedant-report-core-totals"
-summary = "The five-tag core pedant set is 652 passed / 0 failed / 8 pending out of 660 after the header harness patch."
+summary = "The five-tag core pedant set is 652 passed / 0 failed / 8 pending out of 660; the pending examples are pedant's own skips."
 area = "docs"
 status = "manual"
 surfaces = [
   { path = "docs/pedant-report.md", needle = "652 passed / 0 failed / 8 pending" },
   { path = "docs/pedant-report.md", needle = "7 examples, 0 failures" },
 ]
-verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-29 }
+verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-30 }
 
 [[claim]]
 id = "pedant-extended-totals"
 summary = "All twelve extended pedant tags are green: 3,284 passed / 0 failed / 7 pending out of 3,291."
 area = "docs"
 status = "manual"
-surfaces = [ { path = "docs/pedant-extended-report.md", needle = "3,284 passed / 0 failed / 7 pending" } ]
-verify = { kind = "manual", ref = "docs/pedant-extended-report.md", checked = 2026-10-29 }
+surfaces = [ { path = "docs/pedant-extended-report.md", needle = "3,284 passed, 0 failed, 7 pending out of 3,291" } ]
+verify = { kind = "manual", ref = "docs/pedant-extended-report.md", checked = 2026-10-30 }
 
 [[claim]]
 id = "e2e-harness-stock-default"

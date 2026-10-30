@@ -2,11 +2,11 @@
 
 This document tracks the end-to-end engineering checklist for reimplementing the upstream Chef Infra Server API (`15.10.127`) and its surrounding compatibility surfaces in Rust, as specified in [`docs/superpowers/specs/2026-10-24-microwave-server-design.md`](docs/superpowers/specs/2026-10-24-microwave-server-design.md).
 
-> **Status snapshot (2026-10-29):** The original phase checklist is kept as a design trace. Phases 1–2 are ticked, and every tick carries the command or file that proves it. Treat the test, pedant, and e2e reports as authoritative.
+> **Status snapshot (2026-10-30):** The original phase checklist is kept as a design trace. Phases 1–2 are ticked, and every tick carries the command or file that proves it. Treat the test, pedant, and e2e reports as authoritative.
 >
 > **Implemented:** the Rust workspace, TOML and `MW_*` configuration, X-Ops signing 1.0/1.1/1.3, both metadata backends behind one repository contract, the authz/ACL engine with the default-organization policy, the HTTP edge middleware, the identity, organization, client, key, principal, container, group, and ACL APIs, and first-start bootstrap of the superuser key/password and the object-store secret. The phases below Phase 3 keep their own boxes.
 >
-> **Verified:** `cargo test --workspace`, `cargo clippy --workspace --all-targets`, and `cargo fmt --check` are green; the item-level evidence is the `<!-- verified: ... -->` comment on each box. Core pedant is 651 passed / 1 failed / 8 pending and the extended suites are 3,284 passed / 0 failed / 7 pending; the single core failure is the plain-HTTP `header_spec.rb` harness artifact that `scripts/run-pedant.sh` patches.
+> **Verified:** `cargo test --workspace`, `cargo clippy --workspace --all-targets`, and `cargo fmt --check` are green; the item-level evidence is the `<!-- verified: ... -->` comment on each box. Core pedant is 652 passed / 0 failed / 8 pending and the extended suites are 3,284 passed / 0 failed / 7 pending of 3,291; the 8 pending core examples are pedant's own skips.
 >
 > **Open:** `gap-chef-server-rb-importer`, `gap-secrets-file`, `gap-transitive-member`, and `gap-x-ops-api-info`.
 
