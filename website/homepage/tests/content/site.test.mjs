@@ -68,6 +68,12 @@ test('compatibility, under the hood, and known gaps', () => {
   assert.match(text, /Experimental MCP endpoint/);
   assert.match(text, /MCP-capable AI agents/);
   assert.match(text, /Agents in the kitchen\./);
+  assert.match(
+    text,
+    /The README's HTTP route parity section and the Pedant reports are the source of truth\./,
+  );
+  assert.match(text, /switch off with writes = false/);
+  assert.match(text, /written by knife ec backup/);
   assert.match(text, /MCP is experimental: no durable audit table/);
   assert.match(text, /Tool calls are only structured log lines/);
   assert.match(text, /one structured log line per call/);
@@ -106,7 +112,8 @@ test('migration, support, and FAQ', () => {
   assert.match(text, /not a built-in assistant/);
   assert.match(text, /superuser default skips them/);
   assert.match(text, /only server log lines, not a durable audit table/);
-  assert.equal($(`#support a[href="${BASE_PATH}/docs/"]`).length, 1);
+  assert.equal($(`#support a[href="${BASE_PATH}/imprint/"]`).length, 1);
+  assert.equal($('#support .support-cta a').text().trim(), 'Imprint');
 });
 
 test('agent MCP sales section', () => {
@@ -128,6 +135,7 @@ test('agent MCP sales section', () => {
   assert.match(text, /Use a scoped user: the superuser default skips ACLs/);
   assert.match(text, /Writes are on by default/);
   assert.match(text, /writes = false/);
+  assert.match(text, /set writes = false until you trust the client/);
   assert.match(text, /warns if a write-enabled organization still uses the superuser default/);
   assert.equal(
     $('#agents .agent-note').text().trim(),
@@ -159,7 +167,8 @@ test('final CTA, footer, and legal pages', () => {
   assert.match(text, /AGPL-3\.0-only/);
   assert.match(text, /No cookies, no analytics\. One YouTube video, if you find it\./);
   assert.equal($(`a[href="${BASE_PATH}/privacy/"]`).length, 1);
-  assert.equal($(`a[href="${BASE_PATH}/imprint/"]`).length, 1);
+  // Footer plus the support CTA.
+  assert.equal($(`a[href="${BASE_PATH}/imprint/"]`).length, 2);
   // Footer nav; the hero and closing CTAs lead to the guides.
   assert.equal($(`.footer-nav a[href="${BASE_PATH}/docs/"]`).length, 1);
   assert.equal($(`.hero-actions a[href="${BASE_PATH}/docs/"]`).length, 1);
@@ -182,6 +191,7 @@ test('final CTA, footer, and legal pages', () => {
 
   const privacy = fs.readFileSync(path.join(root, 'dist/privacy/index.html'), 'utf8');
   assert.match(privacy, /youtube-nocookie\.com/);
+  assert.match(privacy, /privacy statement<\/a> describes that processing/);
 
   const imprint = fs.readFileSync(path.join(root, 'dist/imprint/index.html'), 'utf8');
   assert.match(imprint, /Roland Moriz/);

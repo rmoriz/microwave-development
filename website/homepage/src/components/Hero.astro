@@ -77,6 +77,7 @@ import heroImage from '../assets/microwave-hero.png';
     let reset = 0;
     let hide = 0;
     let api: Promise<void> | null = null;
+    let view: IntersectionObserver | null = null;
 
     const loadApi = () => {
       api ??= new Promise<void>((resolve, reject) => {
@@ -97,6 +98,8 @@ import heroImage from '../assets/microwave-hero.png';
 
     const revert = () => {
       window.clearTimeout(hide);
+      view?.disconnect();
+      view = null;
       video.replaceChildren();
       video.hidden = true;
       egg.hidden = false;
@@ -107,12 +110,23 @@ import heroImage from '../assets/microwave-hero.png';
       }
     };
 
+    /** Stop the sound and restore the image as soon as the player leaves the viewport. */
+    const watchViewport = () => {
+      if (!('IntersectionObserver' in window)) return;
+      view?.disconnect();
+      view = new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.intersectionRatio === 0)) revert();
+      });
+      view.observe(video);
+    };
+
     /** Fifth touch: the player is created and started inside this gesture. */
     const play = async () => {
       video.hidden = false;
       egg.hidden = true;
       caption.textContent = 'Now playing — Kernkraft 400.';
       hide = window.setTimeout(revert, safety);
+      watchViewport();
 
       try {
         await loadApi();

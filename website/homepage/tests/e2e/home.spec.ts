@@ -127,6 +127,18 @@ test('five taps on the hero image play the video, then restore the image', async
   await expect(page.locator('[data-hero-caption]')).toHaveText(/single binary/);
 });
 
+test('scrolling the video out of view restores the image', async ({ page }) => {
+  await page.goto(url());
+  const egg = page.locator('[data-hero-egg]');
+  for (let tap = 0; tap < 5; tap += 1) {
+    await egg.click();
+  }
+  await expect(page.locator('.hero-video iframe')).toBeVisible();
+  await page.locator('#faq').scrollIntoViewIfNeeded();
+  await expect(page.locator('.hero-video iframe')).toHaveCount(0);
+  await expect(egg).toBeVisible();
+});
+
 test('page emits no console errors', async ({ page }) => {
   const errors: string[] = [];
   page.on('console', (msg) => {
