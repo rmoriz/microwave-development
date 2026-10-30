@@ -34,7 +34,7 @@ const {
 } = Astro.props;
 const origin = Astro.site ?? new URL(SITE_URL);
 const canonical = new URL(Astro.url.pathname, origin);
-const socialImage = new URL(image, origin);
+const socialImage = new URL(withBase(image), origin);
 const schema = {
   '@context': 'https://schema.org',
   '@type': 'SoftwareApplication',

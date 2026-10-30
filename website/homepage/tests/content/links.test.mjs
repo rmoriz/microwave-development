@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as cheerio from 'cheerio';
 import { BASE_PATH } from '../../src/data/config.ts';
+import { withBase } from '../../src/lib/paths.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const dist = path.join(root, 'dist');
@@ -34,6 +35,12 @@ const pageMap = new Map(pages.map((file) => [routeFor(file), file]));
 function fileForRoute(route) {
   return pageMap.get(route) ?? pageMap.get(`${route}/`) ?? pageMap.get(`${route}.html`);
 }
+
+test('withBase prefixes once and leaves a based path alone', () => {
+  assert.equal(withBase('/og.png'), `${BASE_PATH}/og.png`);
+  assert.equal(withBase(withBase('/og.png')), `${BASE_PATH}/og.png`);
+  assert.equal(withBase('https://example.test/og.png'), 'https://example.test/og.png');
+});
 
 test('all internal links and fragments resolve; external links are secure', () => {
   assert.ok(pages.length >= 3, 'expected the homepage and legal pages');
