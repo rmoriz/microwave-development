@@ -99,6 +99,9 @@ Inside the `$('a[href]').each` callback, after the protocol checks:
         `internal href outside ${BASE_PATH} at ${where}`,
       );
 
+      // The docs are a separate build, copied in by the Pages workflow.
+      if (href.startsWith(`${BASE_PATH}/docs/`)) return;
+
       const [rawPath, hash] = withoutBase(href).split('#');
 ```
 
@@ -224,6 +227,7 @@ In `tests/content/site.test.mjs`, import `{ BASE_PATH }` and change:
   // ...
   assert.equal($(`a[href="${BASE_PATH}/privacy/"]`).length, 1);
   assert.equal($(`a[href="${BASE_PATH}/imprint/"]`).length, 1);
+  assert.equal($(`a[href="${BASE_PATH}/docs/"]`).length, 1);
 ```
 
 - [ ] **Step 9: Run the full homepage suite**
@@ -390,7 +394,8 @@ push to `main` that touches the sites or `docs/`, and on manual dispatch.
 - Pages has no cache-header configuration; it sets its own.
 ```
 
-Leave the other host notes only if they stay true; otherwise delete them.
+Leave the cache-header section and add the Pages caveat below it. Delete the
+Cloudflare Pages and Netlify sections so there is one documented path.
 
 - [ ] **Step 3: Add the website rule to AGENTS.md**
 
