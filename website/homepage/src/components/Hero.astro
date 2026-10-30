@@ -50,28 +50,111 @@ import heroImage from '../assets/microwave-hero.png';
 </section>
 
 <script>
+  declare global {
+    interface Window {
+      YT?: {
+        Player: new (element: HTMLElement, options: unknown) => YtPlayer;
+      };
+      onYouTubeIframeAPIReady?: () => void;
+    }
+    interface YtPlayer {
+      playVideo: () => void;
+      getIframe?: () => HTMLIFrameElement;
+    }
+  }
+
   const egg = document.querySelector<HTMLButtonElement>('[data-hero-egg]');
   const video = document.querySelector<HTMLElement>('[data-hero-video]');
   const caption = document.querySelector<HTMLElement>('[data-hero-caption]');
-  const source =
-    'https://www.youtube-nocookie.com/embed/IRfgG3BtVlQ?autoplay=1&start=20&end=90&rel=0&playsinline=1';
+  const videoId = 'IRfgG3BtVlQ';
+  const startAt = 20;
+  const endAt = 90;
+  const safety = 120_000;
 
   if (egg && video && caption) {
     const originalCaption = caption.textContent ?? '';
-    const playFor = 70_000;
     let taps = 0;
     let reset = 0;
     let hide = 0;
+    let api: Promise<void> | null = null;
+
+    const loadApi = () => {
+      api ??= new Promise<void>((resolve, reject) => {
+        const previous = window.onYouTubeIframeAPIReady;
+        window.onYouTubeIframeAPIReady = () => {
+          previous?.();
+          resolve();
+        };
+        const script = document.createElement('script');
+        script.src = 'https://www.youtube.com/iframe_api';
+        script.addEventListener('error', () => reject(new Error('API')), {
+          once: true,
+        });
+        document.head.append(script);
+      });
+      return api;
+    };
 
     const revert = () => {
       window.clearTimeout(hide);
-      video.querySelector('iframe')?.remove();
+      video.replaceChildren();
       video.hidden = true;
       egg.hidden = false;
       caption.textContent = originalCaption;
       taps = 0;
       if (document.activeElement === document.body) {
         egg.focus({ preventScroll: true });
+      }
+    };
+
+    /** Fifth touch: the player is created and started inside this gesture. */
+    const play = async () => {
+      video.hidden = false;
+      egg.hidden = true;
+      caption.textContent = 'Now playing — Kernkraft 400.';
+      hide = window.setTimeout(revert, safety);
+
+      try {
+        await loadApi();
+        const mount = document.createElement('div');
+        video.append(mount);
+        new window.YT!.Player(mount, {
+          videoId,
+          host: 'https://www.youtube-nocookie.com',
+          playerVars: {
+            autoplay: 1,
+            start: startAt,
+            end: endAt,
+            rel: 0,
+            playsinline: 1,
+          },
+          events: {
+            onReady: (event: { target: YtPlayer }) => {
+              event.target.playVideo();
+              event.target.getIframe?.().focus();
+            },
+            onStateChange: (event: { data: number }) => {
+              if (event.data === 0) revert();
+            },
+          },
+        });
+      } catch {
+        const frame = document.createElement('iframe');
+        frame.src = `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&start=${startAt}&end=${endAt}&rel=0&playsinline=1`;
+        frame.title = 'Zombie Nation – Kernkraft 400';
+        frame.allow = 'autoplay; encrypted-media; picture-in-picture';
+        frame.referrerPolicy = 'strict-origin-when-cross-origin';
+        frame.allowFullscreen = true;
+        frame.addEventListener(
+          'load',
+          () => {
+            frame.dataset.loaded = 'true';
+            hide = window.setTimeout(revert, (endAt - startAt) * 1000);
+          },
+          { once: true },
+        );
+        video.replaceChildren(frame);
+        frame.focus();
       }
     };
 
@@ -84,26 +167,7 @@ import heroImage from '../assets/microwave-hero.png';
         }, 2000);
         return;
       }
-
-      const frame = document.createElement('iframe');
-      frame.src = source;
-      frame.title = 'Zombie Nation – Kernkraft 400';
-      frame.allow = 'autoplay; encrypted-media; picture-in-picture';
-      frame.referrerPolicy = 'strict-origin-when-cross-origin';
-      frame.allowFullscreen = true;
-      frame.addEventListener(
-        'load',
-        () => {
-          frame.dataset.loaded = 'true';
-          hide = window.setTimeout(revert, playFor);
-        },
-        { once: true },
-      );
-      video.append(frame);
-      video.hidden = false;
-      egg.hidden = true;
-      caption.textContent = 'Now playing — Kernkraft 400.';
-      frame.focus();
+      void play();
     });
   }
 </script>
