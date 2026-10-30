@@ -119,3 +119,5 @@ scripts/
 public/
   favicon.svg, og.png, site.webmanifest
 ```
+
+<!-- gate check -->
