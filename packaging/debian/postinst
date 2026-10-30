@@ -16,6 +16,21 @@ if [ "$1" = "configure" ]; then
     install -d -o microwave -g microwave -m 0700 /var/lib/microwave
     install -d -o root -g microwave -m 0750 /etc/microwave
 
+    # The unit logs to this file. systemd creates the LogsDirectory= itself, but
+    # only in the exec context and after it has already opened stdout, so the
+    # path has to exist beforehand: a fresh install would otherwise fail with
+    # status=209/STDOUT. The file is pre-created owned by the service user so
+    # logrotate's `su microwave` can read and truncate it.
+    install -d -o microwave -g microwave -m 0750 /var/log/microwave
+    if [ ! -f /var/log/microwave/microwave.log ]; then
+        install -m 0600 -o microwave -g microwave \
+            /dev/null /var/log/microwave/microwave.log
+    else
+        # An upgrade keeps the existing log; only make sure it is usable.
+        chown microwave:microwave /var/log/microwave/microwave.log
+        chmod 0600 /var/log/microwave/microwave.log
+    fi
+
     # The shipped configuration is readable by the service group but not by
     # other local users; it may contain object-store or SMTP credentials.
     if [ -f /etc/microwave/microwave.toml ]; then

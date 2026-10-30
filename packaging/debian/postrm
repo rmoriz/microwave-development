@@ -10,6 +10,7 @@ fi
 
 if [ "$1" = "purge" ]; then
     rm -rf /var/lib/microwave
+    rm -rf /var/log/microwave
     rm -rf /etc/microwave
 
     if getent passwd microwave >/dev/null 2>&1; then
