@@ -959,6 +959,16 @@ surfaces = [
 verify = { kind = "grep", path = "website/homepage/src/components/Hero.astro", pattern = "end: endAt" }
 
 [[claim]]
+id = "mcp-demo"
+summary = "A self-hosted, anonymized terminal recording in the agent section shows an MCP read call answering which nodes converged; the player loads only on click."
+area = "website"
+status = "verified"
+surfaces = [
+  { path = "website/homepage/src/components/McpDemo.astro", needle = "data-mcp-demo-play" },
+]
+verify = { kind = "grep", path = "website/homepage/src/components/McpDemo.astro", pattern = "asciinema-player" }
+
+[[claim]]
 id = "proof-strip"
 summary = "The proof strip links the pedant, chef-client, distro, and single-binary evidence."
 area = "website"
@@ -1110,7 +1120,7 @@ verify = { kind = "grep", path = "website/homepage/src/pages/index.astro", patte
 
 [[claim]]
 id = "privacy-page"
-summary = "The privacy page states no cookies and no analytics, and names the one third-party request: the gated hero video."
+summary = "The privacy page states no cookies and no analytics, names the one third-party request (the gated hero video), and notes that the terminal recording is served locally."
 area = "website"
 status = "verified"
 surfaces = [

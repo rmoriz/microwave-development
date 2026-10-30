@@ -147,6 +147,18 @@ test('agent MCP sales section', () => {
   assert.equal($('#agents h2').length, 1);
   assert.equal($('#agents h3').length, 3);
   assert.equal($('#agents ol.agent-grid > li').length, 3);
+
+  // Self-hosted recording: click to load the player, raw cast linked as fallback.
+  const castUrl = `${BASE_PATH}/demo/mcp-agent.cast`;
+  assert.equal($('#agents .mcp-demo [data-mcp-demo-play]').length, 1);
+  assert.equal($(`#agents .mcp-demo a[href="${castUrl}"]`).length, 1);
+  assert.match(
+    fs.readFileSync(path.join(root, 'dist/index.html'), 'utf8'),
+    /<noscript>[\s\S]*mcp-agent\.cast/,
+  );
+  assert.equal($('#agents iframe').length, 0);
+  assert.equal(fs.existsSync(path.join(root, 'dist/demo/mcp-agent.cast')), true);
+
   assert.doesNotMatch(text, /AI-powered|built-in AI|autonomous|self-healing/);
   assert.equal(
     fs.existsSync(path.join(root, '../../docs/mcp.md')),
@@ -167,7 +179,7 @@ test('final CTA, footer, and legal pages', () => {
   assert.match(text, /not affiliated with or endorsed by Progress Software Corporation/i);
   assert.match(text, /trademarks of Progress Software Corporation/i);
   assert.match(text, /AGPL-3\.0-only/);
-  assert.match(text, /No cookies, no analytics\. One YouTube video, if you find it\./);
+  assert.match(text, /No cookies, no analytics\. One terminal demo, one YouTube video if you find it\./);
   assert.equal($(`a[href="${BASE_PATH}/privacy/"]`).length, 1);
   // Footer plus the support CTA.
   assert.equal($(`a[href="${BASE_PATH}/imprint/"]`).length, 2);

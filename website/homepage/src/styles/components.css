@@ -568,6 +568,78 @@
   font-size: 0.92rem;
 }
 
+.mcp-demo {
+  margin-top: 40px;
+}
+
+.mcp-demo-stage {
+  position: relative;
+  overflow: hidden;
+  aspect-ratio: 80 / 26;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #010d52;
+}
+
+.mcp-demo-stage .ap-player,
+.mcp-demo-stage .ap-player .ap-term {
+  height: 100%;
+}
+
+.mcp-demo-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border-color: var(--text);
+  background: rgba(1, 13, 82, 0.85);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.mcp-demo-play:hover {
+  transform: translate(-50%, calc(-50% - 1px));
+  background: var(--text);
+  color: var(--ink);
+}
+
+.mcp-demo-play:disabled {
+  opacity: 0.7;
+}
+
+.mcp-demo-noscript {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: var(--text-soft);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.mcp-demo figcaption {
+  max-width: 72ch;
+  margin-top: 12px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  line-height: 1.7;
+}
+
+@media (max-width: 600px) {
+  .mcp-demo-stage {
+    overflow-x: auto;
+    aspect-ratio: auto;
+    height: 260px;
+  }
+
+  .mcp-demo-play {
+    font-size: 0.8rem;
+  }
+}
+
 .agent-foot {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);

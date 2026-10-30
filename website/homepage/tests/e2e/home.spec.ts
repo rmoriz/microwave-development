@@ -139,6 +139,23 @@ test('scrolling the video out of view restores the image', async ({ page }) => {
   await expect(egg).toBeVisible();
 });
 
+test('the MCP demo loads only on click and plays the recording', async ({ page }) => {
+  const requests: string[] = [];
+  page.on('request', (request) => requests.push(request.url()));
+  await page.goto(url());
+  await expect(page.locator('.mcp-demo .ap-player')).toHaveCount(0);
+  expect(requests.some((request) => request.includes('/demo/mcp-agent.cast'))).toBe(false);
+
+  const play = page.locator('[data-mcp-demo-play]');
+  await expect(play).toBeVisible();
+  await play.click();
+  await expect(page.locator('.mcp-demo .ap-player')).toBeVisible();
+  await expect(play).toHaveCount(0);
+  await expect(page.locator('.mcp-demo .ap-term-text')).toBeVisible();
+  expect(requests.filter((request) => request.includes('/demo/mcp-agent.cast')).length).toBe(1);
+  await expect(page.locator('.mcp-demo .ap-playback-button')).toHaveAttribute('aria-label', 'Pause');
+});
+
 test('page emits no console errors', async ({ page }) => {
   const errors: string[] = [];
   page.on('console', (msg) => {

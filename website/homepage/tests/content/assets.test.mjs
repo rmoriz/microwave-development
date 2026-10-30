@@ -22,3 +22,18 @@ test('largest hero variant is under 300KB', () => {
     assert.ok(size < 300 * 1024, `${file} is ${size} bytes`);
   }
 });
+
+test('the MCP recording is self-hosted, small, and anonymized', () => {
+  const cast = path.join(root, 'public/demo/mcp-agent.cast');
+  const size = fs.statSync(cast).size;
+  assert.ok(size < 400 * 1024, `mcp-agent.cast is ${size} bytes`);
+
+  const lines = fs.readFileSync(cast, 'utf8').trim().split('\n');
+  const header = JSON.parse(lines[0]);
+  assert.equal(header.version, 3);
+  assert.equal(header.term.cols, 80);
+  assert.ok(lines.length > 2);
+
+  assert.doesNotMatch(lines.join('\n'), /rmoriz|utopia|\/Users\//);
+  assert.match(lines.join('\n'), /workstation\.local/);
+});

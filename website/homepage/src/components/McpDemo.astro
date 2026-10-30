@@ -1,0 +1,60 @@
+---
+import { withBase } from '../lib/paths';
+import 'asciinema-player/dist/bundle/asciinema-player.css';
+
+const cast = withBase('/demo/mcp-agent.cast');
+---
+
+<figure class="mcp-demo">
+  <div class="mcp-demo-stage" data-mcp-demo data-src={cast}>
+    <button class="button mcp-demo-play" type="button" data-mcp-demo-play>
+      <span aria-hidden="true">▶</span> Play the 20 second demo
+    </button>
+    <noscript>
+      <p class="mcp-demo-noscript">
+        The player needs JavaScript. <a class="text-link" href={cast}>Open the recording</a>.
+      </p>
+    </noscript>
+  </div>
+  <figcaption>
+    The agent asks which nodes converged, the endpoint answers with the run
+    table. Recorded against the docker-e2e stack.{' '}
+    <a class="text-link" href={cast}>Download the recording (276 KB)</a>.
+  </figcaption>
+</figure>
+
+<script>
+  const stage = document.querySelector<HTMLElement>('[data-mcp-demo]');
+  const button = stage?.querySelector<HTMLButtonElement>('[data-mcp-demo-play]');
+  const source = stage?.dataset.src;
+
+  if (stage && button && source) {
+    button.addEventListener(
+      'click',
+      async () => {
+        button.disabled = true;
+        try {
+          const { create } = await import('asciinema-player');
+          const narrow = window.matchMedia('(max-width: 600px)').matches;
+          button.remove();
+          const player = create(source, stage, {
+            cols: 80,
+            rows: 26,
+            autoplay: true,
+            fit: narrow ? 'none' : 'width',
+            idleTimeLimit: 1,
+            poster:
+              'data:text/plain,\u001b[2muser@workstation\u001b[0m:\u001b[34m~/work\u001b[0m$ opencode',
+          });
+          if (!player.el.hasAttribute('tabindex')) player.el.setAttribute('tabindex', '-1');
+          player.el.focus({ preventScroll: true });
+        } catch {
+          button.disabled = false;
+          button.textContent = 'Player failed to load — open the recording';
+          button.addEventListener('click', () => window.location.assign(source), { once: true });
+        }
+      },
+      { once: true },
+    );
+  }
+</script>

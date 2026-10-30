@@ -33,7 +33,12 @@ const pages = walk(dist).filter((file) => file.endsWith('.html'));
 const pageMap = new Map(pages.map((file) => [routeFor(file), file]));
 
 function fileForRoute(route) {
-  return pageMap.get(route) ?? pageMap.get(`${route}/`) ?? pageMap.get(`${route}.html`);
+  const page = pageMap.get(route) ?? pageMap.get(`${route}/`) ?? pageMap.get(`${route}.html`);
+  if (page) return page;
+
+  // Plain assets (casts, images) are linked directly, not as pages.
+  const asset = path.join(dist, decodeURIComponent(route));
+  if (fs.existsSync(asset) && fs.statSync(asset).isFile()) return asset;
 }
 
 test('withBase prefixes once and leaves a based path alone', () => {

@@ -6,7 +6,9 @@ built with Astro and vanilla CSS.
 
 It is a single marketing page with a technical deep dive, plus privacy,
 imprint, and 404 pages. There is no application server, no database, no
-analytics, and no third-party runtime request.
+analytics, and no third-party runtime request. The MCP demo player
+(`asciinema-player`) is the one front-end dependency: it is self-hosted and
+loaded only when someone presses play.
 
 ## Requirements
 
@@ -99,6 +101,9 @@ header layer exists:
   on by default and switched off with `writes = false`. Keep the wording
   traceable to `docs/mcp.md` and do not use “AI-powered” or “built-in AI”. The
   content test enforces this.
+- `public/demo/mcp-agent.cast` is the MCP demo. It must stay anonymized
+  (`workstation.local`, `user`, `/home/user/`), stay under 400 KB, and the
+  caption must match what the recording actually shows.
 
 ## Structure
 
@@ -117,7 +122,7 @@ tests/
 scripts/
   generate-og.mjs
 public/
-  favicon.svg, og.png, site.webmanifest
+  favicon.svg, og.png, site.webmanifest, demo/mcp-agent.cast
 ```
 
 <!-- gate check -->
