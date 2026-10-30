@@ -292,8 +292,9 @@ built with [`scripts/build-deb.sh`](scripts/build-deb.sh); see
 
 Pushing a `v*` tag builds release binaries for linux/amd64 and linux/arm64 in
 `.github/workflows/release.yml` and attaches them, with SHA-256 checksums, to
-the GitHub release. Only a tag whose remainder is a Debian version also produces
-a `.deb`; other `v*` tags warn and ship the tarballs only.
+the GitHub release. A tag that is a Debian version also produces a `.deb`; a
+moving tag such as `v-current` is packaged as
+`<workspace version>+snapshot.<date>.g<sha>` instead.
 
 The image default command is the supported container entrypoint:
 

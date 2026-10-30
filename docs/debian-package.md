@@ -50,9 +50,11 @@ package installs on Debian 12+ and Ubuntu 24.04+. For Ubuntu 22.04, build in a
 and the checksum `microwave-server_<version>_<arch>.deb.sha256` for `amd64` and
 `arm64` and attaches both to that GitHub Release, next to the tarballs. A
 `workflow_dispatch` on a tag packages; on a branch it produces only the
-tarballs — no package. A `v*` tag whose remainder is not a Debian version emits
-a warning and ships tarballs only. The package version is the tag's version; the
-run warns when it differs from `[workspace.package]`.
+tarballs — no package. A `v*` tag whose remainder is not a Debian version (for
+example the moving `v-current` snapshot tag) is packaged as
+`<workspace version>+snapshot.<UTC date>.g<short sha>`, so snapshots stay
+installable. Only a tag that is a Debian version sets the package version
+directly, and the run warns when it differs from `[workspace.package]`.
 
 ## Install
 

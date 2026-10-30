@@ -1861,7 +1861,7 @@ verify = { kind = "grep", path = "packaging/debian/microwave-server.service", pa
 
 [[claim]]
 id = "deb-pkg-release-attach"
-summary = "A tag push whose tag is a Debian version builds the .deb and its checksum for amd64 and arm64 and attaches both to the Release; other v* tags ship tarballs only."
+summary = "A tag push builds the .deb and its checksum for amd64 and arm64 and attaches both to the Release; a tag that is not a Debian version is packaged as a workspace-version snapshot."
 area = "deployment"
 status = "verified"
 surfaces = [ { path = "docs/debian-package.md", needle = "microwave-server_<version>_<arch>.deb" } ]
