@@ -2034,3 +2034,19 @@ surfaces = [
   { path = "docs/index.md", needle = "./deployment.md" },
 ]
 verify = { kind = "grep", path = "README.md", pattern = "A Rust reimplementation of the Chef Infra Server API" }
+
+[[claim]]
+id = "homepage-pages-base-path"
+summary = "The homepage keeps its GitHub Pages origin and project base path in one module so links and the build agree."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "website/homepage/src/data/config.ts", needle = "export const BASE_PATH" } ]
+verify = { kind = "grep", path = "website/homepage/src/data/config.ts", pattern = "BASE_PATH = '/microwave-development'" }
+
+[[claim]]
+id = "homepage-robots-sitemap-pointer"
+summary = "robots.txt allows crawling and points at the generated sitemap under the Pages base path."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "website/homepage/src/pages/robots.txt.ts", needle = "Sitemap: ${sitemap.href}" } ]
+verify = { kind = "grep", path = "website/homepage/src/pages/robots.txt.ts", pattern = "sitemap-index.xml" }
