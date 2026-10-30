@@ -47,6 +47,19 @@ for image in $IMAGES; do
                 test -x "/usr/bin/$binary"
             done
             test -f /usr/lib/systemd/system/microwave-server.service
+            grep -qx "StandardOutput=append:/var/log/microwave/microwave.log" \
+                /usr/lib/systemd/system/microwave-server.service
+            grep -qx "StandardError=inherit" \
+                /usr/lib/systemd/system/microwave-server.service
+            grep -qx "LogsDirectory=microwave" \
+                /usr/lib/systemd/system/microwave-server.service
+            test -f /etc/logrotate.d/microwave-server
+            stat -c "%a %U:%G" /etc/logrotate.d/microwave-server | grep -qx "644 root:root"
+            grep -q "^    copytruncate$" /etc/logrotate.d/microwave-server
+            grep -q "^    notifempty$" /etc/logrotate.d/microwave-server
+            grep -q "^    su microwave microwave$" /etc/logrotate.d/microwave-server
+            logrotate -d /etc/logrotate.d/microwave-server 2>&1 | grep -vq "error:"
+            dpkg -s microwave-server | grep -q "^Depends:.*logrotate"
             test -f /etc/microwave/microwave.toml
             id microwave >/dev/null
             stat -c "%a %U:%G" /etc/microwave/microwave.toml | grep -qx "640 root:microwave"

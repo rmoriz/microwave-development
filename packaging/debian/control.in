@@ -4,7 +4,7 @@ Architecture: @ARCH@
 Maintainer: @MAINTAINER@
 Section: admin
 Priority: optional
-Depends: libc6@LIBC_DEP@, libgcc-s1, ca-certificates, adduser
+Depends: libc6@LIBC_DEP@, libgcc-s1, ca-certificates, adduser, logrotate
 Recommends: sqlite3
 Homepage: https://github.com/rmoriz/microwave-development
 Description: Chef Infra Server API-compatible server

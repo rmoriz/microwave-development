@@ -151,7 +151,7 @@ DOC_DIR="$STAGE/usr/share/doc/$PKG"
 
 rm -rf "$STAGE"
 install -d "$STAGE/DEBIAN" "$STAGE/usr/bin" \
-    "$STAGE/usr/lib/systemd/system" "$STAGE/etc/microwave" "$DOC_DIR"
+    "$STAGE/usr/lib/systemd/system" "$STAGE/etc/microwave" "$STAGE/etc/logrotate.d" "$DOC_DIR"
 
 # chef-server-ctl is the same executable as microwave-ctl, so ship it as a
 # symlink: one copy of the CLI in the package, same argv[0] name for the alias.
@@ -162,6 +162,8 @@ ln -s microwave-ctl "$STAGE/usr/bin/chef-server-ctl"
 
 install -m 0644 packaging/debian/microwave-server.service \
     "$STAGE/usr/lib/systemd/system/microwave-server.service"
+install -m 0644 packaging/debian/microwave-server.logrotate \
+    "$STAGE/etc/logrotate.d/microwave-server"
 install -m 0644 packaging/microwave.toml.example \
     "$STAGE/etc/microwave/microwave.toml"
 install -m 0644 README.md LICENSE "$DOC_DIR/"
