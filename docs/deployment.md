@@ -383,7 +383,7 @@ Two operational points:
 # 1. Binary and service account
 sudo install -m 0755 target/release/microwave-server  /usr/local/bin/
 sudo install -m 0755 target/release/microwave-ctl     /usr/local/bin/
-sudo install -m 0755 target/release/chef-server-ctl   /usr/local/bin/
+sudo ln -sf microwave-ctl /usr/local/bin/chef-server-ctl
 sudo install -m 0755 target/release/microwave-migrate /usr/local/bin/
 sudo useradd --system --uid 10001 --home-dir /var/lib/microwave \
      --shell /usr/sbin/nologin microwave
@@ -1559,9 +1559,10 @@ snapshot or need to stage the copy yourself:
    layout is not converted automatically by the snapshot tools; for an external
    S3/Garage bucket, replicate the bucket and keep the object keys
    `organization-<org_id>/checksum-<md5>`.
-5. **Verify** with `microwave-ctl status`, `user-list`, `org-list`,
-   `org-show <org>`, and a `knife` or `chef-client` read against a test org.
-6. **Start the server** and drain clients over gradually.
+5. **Start the server.**
+6. **Verify** with `microwave-ctl status`, `user-list`, `org-list`,
+   `org-show <org>`, and a `knife` or `chef-client` read against a test org,
+   then drain clients over gradually.
 
 What the import preserves: users with their password hash format (legacy
 bcrypt/SHA1 variants are verified and upgraded on login), client and user
