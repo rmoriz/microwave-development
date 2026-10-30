@@ -211,7 +211,7 @@ required once it is on. See [Mail (SMTP)](#mail-smtp).
 |---|---|
 | `mail.enabled`<br/>`MW_MAIL__ENABLED` | Default `false`. Enable outbound password-reset mail. |
 | `mail.host`<br/>`MW_MAIL__HOST` | Unset by default. SMTP relay hostname. Required when mail is enabled. |
-| `mail.port`<br/>`MW_MAIL__PORT` | Default `mail.security`. Defaults to `587` for `starttls`, `465` for `tls`, and `25` for `none`. Must be greater than zero. |
+| `mail.port`<br/>`MW_MAIL__PORT` | Derived from `mail.security`. Defaults to `587` for `starttls`, `465` for `tls`, and `25` for `none`. Must be greater than zero. |
 | `mail.security`<br/>`MW_MAIL__SECURITY` | Default `starttls`. `starttls` (default), `tls` (implicit TLS/SMTPS), or `none` (explicit plaintext). `none` rejects SMTP AUTH for non-loopback hosts; remote authenticated relays must use `starttls` or `tls`. |
 | `mail.username`<br/>`MW_MAIL__USERNAME` | Unset by default. SMTP AUTH username. Requires `mail.password`. |
 | `mail.password`<br/>`MW_MAIL__PASSWORD` | Unset by default. SMTP AUTH password. Prefer the environment variable. Never logged or serialized, and absent from `microwave-config.json` backups. |
