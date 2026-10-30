@@ -9,7 +9,7 @@ if [ -d /run/systemd/system ]; then
 fi
 
 if [ "$1" = "purge" ]; then
-    # A purge drops the mutable state as well, including the service log and
+    # A purge also drops the log directory that postinst created, together with
     # its rotation state.
     rm -rf /var/lib/microwave
     rm -rf /var/log/microwave
