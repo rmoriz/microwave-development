@@ -2,7 +2,7 @@ name: pages
 
 on:
   push:
-    branches: [main, feat/docs-site]
+    branches: [main]
     paths:
       - 'website/homepage/**'
       - 'website/docs/**'
