@@ -31,28 +31,32 @@ surface.
 
 ## Try it in five minutes
 
-You need Rust, curl, a `chef-client` 18+ binary (or `MW_E2E_CHEF_CLIENT` pointing at one), and Ruby with `mixlib-authentication` (or `MW_E2E_RUBY`). A missing piece exits `2` and names itself.
-
-```sh
-scripts/run-chef-client-e2e.sh
-```
-
-The harness builds a throwaway server on a free loopback port with a temporary data directory, so
-it leaves anything you already run untouched. Success is exit `0` with `chef-client e2e: PASS`,
-the converge recipe's `marker.txt` left in the artifact directory, and the saved node the harness
-verifies. Set `MW_E2E_COMPAT=1` to grant the default environment's read ACE and synthesize the v2
-`all_files` manifest for a server that returns neither.
-
-To drive the server yourself instead:
+Start the server:
 
 ```sh
 cargo run -p microwave-server -- serve --check
 cargo run -p microwave-server -- serve
 ```
 
-The first run writes the superuser credentials to `./data/pivotal.pem`, `./data/pivotal.password`
-and `./data/objectstore.secret`. TLS, SMTP, Docker, systemd, backup and restore, and the external
-backends are in the [deployment guide](https://rmoriz.github.io/microwave-development/docs/deployment/).
+`--check` validates the configuration and initializes the database without binding a listener. The
+first run writes the superuser credentials to `./data/pivotal.pem`, `./data/pivotal.password` and
+`./data/objectstore.secret`. Use `MW_PATHS__DATA_DIR` to choose another data directory. TLS, SMTP,
+Docker, systemd, backup and restore, and the external backends are in the
+[deployment guide](https://rmoriz.github.io/microwave-development/docs/deployment/).
+
+To prove that a stock `chef-client` converges against the server end to end, run the harness:
+
+```sh
+scripts/run-chef-client-e2e.sh
+```
+
+It needs `curl`, a `chef-client` 18+ binary, and Ruby with `mixlib-authentication`. Point
+`MW_E2E_CHEF_CLIENT` and `MW_E2E_RUBY` at them when they are not on `PATH`; a missing piece exits `2`
+and names itself. The harness builds a throwaway server on a free loopback port with a temporary data
+directory, so it leaves anything you already run untouched. Success is exit `0` with
+`chef-client e2e: PASS`, the converge recipe's `marker.txt` left in the artifact directory, and the
+saved node the harness verifies. Set `MW_E2E_COMPAT=1` to grant the default environment's read ACE
+and synthesize the v2 `all_files` manifest for a server that returns neither.
 
 ## What works
 
