@@ -950,7 +950,7 @@ verify = { kind = "grep", path = "website/homepage/src/components/Hero.astro", p
 
 [[claim]]
 id = "hero-easter-egg"
-summary = "Five quick taps on the hero image start a YouTube player at 0:20, stop it at 1:30, and return the image; scrolling the player out of view also returns it."
+summary = "Five quick taps on the hero image start a YouTube player at 0:21, stop it at 1:30, and return the image; scrolling the player out of view also returns it."
 area = "website"
 status = "verified"
 surfaces = [

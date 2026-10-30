@@ -116,7 +116,7 @@ test('five taps on the hero image play the video, then restore the image', async
   await expect(frame).toBeVisible();
   await expect(frame).toHaveAttribute('src', /youtube-nocookie\.com\/embed\/IRfgG3BtVlQ/);
   const src = await frame.getAttribute('src');
-  expect(src).toContain('start=20');
+  expect(src).toContain('start=21');
   expect(src).toContain('end=90');
   await expect(page.locator('[data-hero-egg]')).toBeHidden();
   await expect(page.locator('[data-hero-caption]')).toHaveText(/Kernkraft 400/);
