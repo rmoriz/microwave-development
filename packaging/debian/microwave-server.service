@@ -31,8 +31,9 @@ TimeoutStopSec=30s
 
 # systemd creates and owns these. Leave them to systemd; drop-ins should not
 # repoint them. The binary itself only writes below the data directory. systemd
-# creates the log directory but not the log file, which the package pre-creates
-# 0600 microwave:microwave (postinst) so logrotate can truncate it under `su`.
+# would create the log file root-owned when it opens the append target, so the
+# package pre-creates it 0600 microwave:microwave (postinst) and keeps that
+# stable; rotation runs as root either way.
 StateDirectory=microwave
 StateDirectoryMode=0700
 LogsDirectory=microwave

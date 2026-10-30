@@ -60,12 +60,18 @@ for image in $IMAGES; do
             stat -c "%a %U:%G" /etc/logrotate.d/microwave-server | grep -qx "644 root:root"
             grep -Eq "^[[:space:]]+copytruncate$" /etc/logrotate.d/microwave-server
             grep -Eq "^[[:space:]]+notifempty$" /etc/logrotate.d/microwave-server
-            grep -Eq "^[[:space:]]+su microwave microwave$" /etc/logrotate.d/microwave-server
+            grep -Eq "^[[:space:]]+daily$" /etc/logrotate.d/microwave-server
+            grep -Eq "^[[:space:]]+rotate 14$" /etc/logrotate.d/microwave-server
+            grep -Eq "^[[:space:]]+compress$" /etc/logrotate.d/microwave-server
+            grep -Eq "^[[:space:]]+delaycompress$" /etc/logrotate.d/microwave-server
+            grep -Eq "^[[:space:]]+su root root$" /etc/logrotate.d/microwave-server
             ! logrotate -d /etc/logrotate.d/microwave-server 2>&1 | grep -q "error:"
             dpkg -s microwave-server | grep -q "^Depends:.*logrotate"
 
             # The unit cannot start unless postinst already created these:
-            # systemd opens the append target before it makes LogsDirectory=.
+            # systemd opens the append target itself, as root, before it makes
+            # LogsDirectory=, so the package creates the file as the service
+            # user instead of leaving it to systemd.
             stat -c "%a %U:%G" /var/log/microwave | grep -qx "750 microwave:microwave"
             stat -c "%a %U:%G" /var/log/microwave/microwave.log \
                 | grep -qx "600 microwave:microwave"
@@ -103,14 +109,13 @@ for image in $IMAGES; do
                 systemd-analyze verify /usr/lib/systemd/system/microwave-server.service
             fi
 
-            # A plain remove keeps mutable state, so the log survives it; only
-            # the purge below is allowed to drop it. The logrotate rule is not a
-            # conffile, so dpkg already drops it here: reinstall afterwards so
-            # the purge assertions run against a fully installed package instead
-            # of an empty file list.
+            # A plain remove keeps mutable state and conffiles, so the log and
+            # the logrotate rule survive it; only the purge below is allowed to
+            # drop them. Reinstall afterwards so the purge assertions run
+            # against a fully installed package instead of an empty file list.
             apt-get remove -y microwave-server >/dev/null
             test -f /var/log/microwave/microwave.log
-            test ! -f /etc/logrotate.d/microwave-server
+            test -f /etc/logrotate.d/microwave-server
 
             apt-get install -y --no-install-recommends "/pkg/$DEB_NAME" >/dev/null
             test -f /etc/logrotate.d/microwave-server

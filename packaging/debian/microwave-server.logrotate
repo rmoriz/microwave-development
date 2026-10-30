@@ -7,6 +7,6 @@
     delaycompress
     missingok
     notifempty
-    su microwave microwave
+    su root root
     copytruncate
 }

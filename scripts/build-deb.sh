@@ -34,7 +34,7 @@ for argument in "$@"; do
         --skip-build) SKIP_BUILD=1 ;;
         --print-version) PRINT_VERSION=1 ;;
         -h|--help)
-            sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -172,7 +172,7 @@ for script in postinst prerm postrm; do
     install -m 0755 "packaging/debian/$script" "$STAGE/DEBIAN/$script"
 done
 
-printf '/etc/microwave/microwave.toml\n' > "$STAGE/DEBIAN/conffiles"
+printf '/etc/microwave/microwave.toml\n/etc/logrotate.d/microwave-server\n' > "$STAGE/DEBIAN/conffiles"
 
 sed -e "s|@VERSION@|$VERSION|g" \
     -e "s|@ARCH@|$DEB_ARCH|g" \
