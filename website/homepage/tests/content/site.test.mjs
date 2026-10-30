@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as cheerio from 'cheerio';
+import { BASE_PATH } from '../../src/data/config.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const html = fs.readFileSync(path.join(root, 'dist/index.html'), 'utf8');
@@ -36,8 +37,8 @@ test('hero and navigation', () => {
   assert.match($('body').text(), /AGPL-3\.0/);
   assert.match($('body').text(), /Agent-ready/);
   assert.match($('body').text(), /Experimental MCP for AI agents/);
-  assert.equal($('.nav-desktop a[href="/#agents"]').length, 1);
-  assert.equal($('.nav-mobile a[href="/#agents"]').length, 1);
+  assert.equal($(`.nav-desktop a[href="${BASE_PATH}/#agents"]`).length, 1);
+  assert.equal($(`.nav-mobile a[href="${BASE_PATH}/#agents"]`).length, 1);
   assert.match($('picture img').attr('alt'), /rainbow neon microwave/i);
   assert.equal($('body').text().includes('docker run'), false);
 });
@@ -110,7 +111,7 @@ test('migration, support, and FAQ', () => {
 
 test('agent MCP sales section', () => {
   const text = $('body').text();
-  const guide = 'https://github.com/rmoriz/microwave-development/blob/main/docs/mcp.md';
+  const guide = `${BASE_PATH}/docs/mcp/`;
 
   assert.equal($('#agents').length, 1);
   assert.equal($('#product').nextAll('#agents').length, 1, '#agents follows #product');
@@ -157,8 +158,10 @@ test('final CTA, footer, and legal pages', () => {
   assert.match(text, /trademarks of Progress Software Corporation/i);
   assert.match(text, /AGPL-3\.0-only/);
   assert.match(text, /No cookies, no analytics, no third-party requests/i);
-  assert.equal($('a[href="/privacy/"]').length, 1);
-  assert.equal($('a[href="/imprint/"]').length, 1);
+  assert.equal($(`a[href="${BASE_PATH}/privacy/"]`).length, 1);
+  assert.equal($(`a[href="${BASE_PATH}/imprint/"]`).length, 1);
+  // Footer nav; the Migration section links to the same docs page.
+  assert.equal($(`.footer-nav a[href="${BASE_PATH}/docs/"]`).length, 1);
   assert.doesNotMatch(text, /cheaper than|drop the license|end of life|official partner|invented tiers/i);
   assert.equal($('link[rel="preload"][as="image"]').length, 1);
 

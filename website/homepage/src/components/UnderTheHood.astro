@@ -1,10 +1,11 @@
 ---
 import { site } from '../data/site';
+import { withBase } from '../lib/paths';
 
 const docs = {
-  deployment: `${site.github}/blob/main/docs/deployment.md`,
+  deployment: withBase('/docs/deployment/'),
   migration: `${site.github}/blob/main/crates/microwave-migrate/README.md`,
-  mcp: `${site.github}/blob/main/docs/mcp.md`,
+  mcp: withBase('/docs/mcp/'),
   readme: `${site.github}#readme`,
 };
 ---

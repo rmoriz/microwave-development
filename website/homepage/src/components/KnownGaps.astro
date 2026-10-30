@@ -1,5 +1,6 @@
 ---
 import { site } from '../data/site';
+import { withBase } from '../lib/paths';
 
 const gaps = [
   {
@@ -49,7 +50,7 @@ const gaps = [
     <ul class="gaps-list">
       {gaps.map((gap) => (
         <li>
-          <a href={`${site.github}/blob/main/docs/remaining-work.md#${gap.claim}`}>
+          <a href={`${withBase('/docs/remaining-work/')}#${gap.claim}`}>
             {gap.text} <span aria-hidden="true">↗</span>
           </a>
         </li>

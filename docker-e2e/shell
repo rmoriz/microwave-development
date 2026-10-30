@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+#
+# Open an interactive shell in the workstation container.
+#
+# `docker compose exec` always needs a command, so there is no "exec without a
+# command" to configure in the image. This wrapper is the short path:
+#
+#   ./shell
+#
+# It starts bash in /root/work with the knife config and the MCP settings the
+# prepare unit staged, so `knife` and `opencode` work without prefixes.
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+if ! docker compose ps --status running --services 2>/dev/null \
+        | grep -qx workstation; then
+    echo "shell: the workstation service is not running" >&2
+    echo "shell: start the stack first, for example 'docker compose up -d'" >&2
+    exit 1
+fi
+
+exec docker compose exec -it workstation bash

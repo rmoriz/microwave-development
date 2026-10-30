@@ -13,7 +13,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Documentation-only changes must not pay for a full Rust build.
+  # Every job that can be gated hangs off these filters. Workflow edits are not
+  # in them on purpose: on a pull request the action sees the whole branch, so
+  # listing the workflows here would keep every job running for the rest of the
+  # branch's life. The claims job lints them instead.
+  changes:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      homepage: ${{ steps.filter.outputs.homepage }}
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'crates/**'
+              - 'bin/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain*'
+            homepage:
+              - 'website/homepage/**'
+            docs:
+              - 'docs/**'
+              - 'website/docs/**'
+
   fmt:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +57,8 @@ jobs:
       - run: cargo fmt --all --check
 
   clippy:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -35,6 +71,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -55,6 +93,7 @@ jobs:
           cache: npm
           cache-dependency-path: website/homepage/package-lock.json
       - run: python3 -m unittest discover -s scripts/tests
+      - run: bash scripts/tests/test-build-deb-version.sh
       - run: python3 scripts/check-claims.py
       # Ruby's YAML parser accepts files GitHub rejects (an unavailable
       # expression context breaks the whole workflow at run time, with no job
@@ -65,6 +104,8 @@ jobs:
           ./actionlint
 
   homepage:
+    needs: changes
+    if: needs.changes.outputs.homepage == 'true'
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -79,3 +120,22 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm test
+
+  docs:
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: website/docs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: website/docs/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: test -f build/index.html && grep -q 'href="/microwave-development/docs/' build/index.html

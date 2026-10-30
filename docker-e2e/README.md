@@ -10,12 +10,13 @@ node actually needs:
    downloads the newest `nginx` and `postgresql` cookbooks from Chef Supermarket,
    uploads them plus the local wrapper cookbooks to microwave-server, and creates
    a role whose `run_list` points at nginx and PostgreSQL 18.
-3. **node-debian**, **node-ubuntu**, **node-fedora** — three distro containers
-   with [Cinc Client](https://cinc.sh/) installed. Each one boots systemd as
-   PID 1, registers with the validator, converges with `role[e2e_role]`, and
-   stays running so the result can be inspected with `docker exec`.
+3. **node-debian**, **node-ubuntu**, **node-fedora**, **node-amazon** — four
+   distro containers with [Cinc Client](https://cinc.sh/) installed. Each one
+   boots systemd as PID 1, registers with the validator, converges with
+   `role[e2e_role]`, and stays running so the result can be inspected with
+   `docker exec`.
 4. **workstation** — Cinc Workstation and OpenCode, for driving the stack by
-   hand. Not published; reach it with `docker compose exec`.
+   hand. Not published; reach it with `docker compose exec` or `./shell`.
 
 Nothing runs on the host except `docker compose`.
 
@@ -33,7 +34,7 @@ Follow the seed and the node output:
 
 ```sh
 docker compose logs -f seed
-docker compose logs -f node-debian node-ubuntu node-fedora
+docker compose logs -f node-debian node-ubuntu node-fedora node-amazon
 ```
 
 The node services get a TTY, so systemd's console output (including the Cinc
@@ -63,9 +64,9 @@ docker compose down -v
 2. creates the organization with `knife org create e2e` — or reuses it if it
    already exists — and keeps the generated `e2e-validator` key on the shared
    volume;
-3. deletes the `node-debian`, `node-ubuntu`, and `node-fedora` node and client
-   objects with the `pivotal` superuser key so repeated runs can register
-   again, and writes a new `run-id` generation marker;
+3. deletes the `node-debian`, `node-ubuntu`, `node-fedora`, and `node-amazon`
+   node and client objects with the `pivotal` superuser key so repeated runs
+   can register again, and writes a new `run-id` generation marker;
 4. writes a `Berksfile` pinning the two Supermarket cookbooks and runs
    `berks vendor`;
 5. uploads every resolved cookbook with `knife cookbook upload --all`, and
@@ -115,16 +116,20 @@ docker compose exec node-debian cinc-client
 ## Workstation
 
 `workstation` is a Cinc Workstation plus OpenCode box for driving the stack by
-hand. It publishes no port; use `docker compose exec`:
+hand. It publishes no port; use `docker compose exec`, or `./shell` for the
+common case of an interactive shell:
 
 ```sh
+./shell
 docker compose exec workstation bash
 docker compose exec workstation opencode
 ```
 
 `knife` is preconfigured for the `e2e` organization: `knife node list`,
 `knife cookbook list`, and the other commands work without a `-c` flag or a
-`--server-url`. Exec sessions start in `/work`, where OpenCode picks up
+`--server-url`. A bare `knife list` works because `/root/work` is pinned as the
+`chef_repo_path`; from any other directory use `knife list /nodes` or
+`knife node list`. Exec sessions start in `/root/work`, where OpenCode picks up
 `opencode.json`. It needs a model provider once; the login is kept in the
 `workstation-opencode` volume:
 
@@ -132,9 +137,10 @@ docker compose exec workstation opencode
 docker compose exec workstation opencode auth login
 ```
 
-The container's PID 1 stays root because systemd needs it, but `opencode` drops
-to the unprivileged `dev` user (uid 1000), which owns `/home/dev` and the staged
-knife config. `knife` works from both a root session and `su dev`.
+The container runs everything as root, including OpenCode; there is no
+unprivileged user and no init system in the image. The staged knife config is
+`/root/work/.chef` (`KNIFE_HOME`), so `knife` works from any shell in the
+container.
 
 Check the MCP connection with `docker compose exec workstation opencode mcp list`.
 
@@ -172,10 +178,11 @@ and in `microwave/microwave.toml` under `[mcp.organizations.e2e]`.
 | `POSTGRES_COOKBOOK` / `POSTGRES_VERSION` | `postgresql` / `13.0.5` | Supermarket cookbook |
 | `NGINX_RECIPE` | `e2e_nginx` | nginx recipe in the role run_list |
 | `POSTGRES_RECIPE` | `e2e_postgresql` | PostgreSQL recipe in the role run_list |
-| `NODE_NAMES` | `node-debian node-ubuntu node-fedora` | Client names the seed resets |
-| `DEBIAN_IMAGE` | `debian:bookworm` | Debian node base image |
-| `UBUNTU_IMAGE` | `ubuntu:24.04` | Ubuntu node base image |
-| `FEDORA_IMAGE` | `fedora:41` | Fedora node base image |
+| `NODE_NAMES` | `node-debian node-ubuntu node-fedora node-amazon` | Client names the seed resets |
+| `DEBIAN_IMAGE` | `debian:trixie` | Debian node base image |
+| `UBUNTU_IMAGE` | `ubuntu:26.04` | Ubuntu node base image |
+| `FEDORA_IMAGE` | `fedora:45` | Fedora node base image |
+| `AMAZON_IMAGE` | `amazonlinux:2023` | Amazon Linux node base image |
 | `CINC_VERSION` | `19` | Cinc Client major version |
 
 ## Notes and trade-offs
@@ -186,9 +193,10 @@ and in `microwave/microwave.toml` under `[mcp.organizations.e2e]`.
   binding to `0.0.0.0` would hand knife and the nodes URLs they cannot reach.
   The Compose healthcheck uses the same name.
 - **Cinc, not Chef Infra Client.** Debian and Ubuntu install through
-  `omnitruck.cinc.sh`. Cinc has no Fedora package, so the Fedora image
-  installs Cinc's compatible `el9` RPM (the omnibus package is
-  self-contained). Both paths are pinned by `CINC_VERSION`.
+  `omnitruck.cinc.sh`; Amazon Linux uses the `amazon/2023` RPM from the same
+  service. Cinc has no Fedora package, so the Fedora image installs Cinc's
+  compatible `el9` RPM (the omnibus package is self-contained). All paths are
+  pinned by `CINC_VERSION`.
 - **Newest cookbook versions.** `nginx` 12.3.4 is the newest `nginx` release,
   but it is resource-only: it ships no recipes. The seed therefore also
   uploads the local `e2e_nginx` wrapper cookbook
@@ -202,17 +210,21 @@ and in `microwave/microwave.toml` under `[mcp.organizations.e2e]`.
   Debian/Ubuntu; Fedora is not a supported platform of the cookbook, so the
   wrapper installs the distro `postgresql-server` there. No PostgreSQL
   configuration, users, or databases are managed.
-- **systemd in the nodes and the workstation.** Those containers run
-  `/sbin/init` as PID 1.
+- **systemd in the nodes only.** The node containers run `/sbin/init` as PID 1.
   That keeps the container alive after the converge and lets the service
-  resource manage nginx on all three distros. It needs `privileged: true`, a
-  shared cgroup mount, `/run` and `/tmp` tmpfs, and `stop_signal:
-  SIGRTMIN+3`; all of that is set in `docker-compose.yml`. A TTY is attached
-  so the container has a `/dev/console` and `docker compose logs` is useful.
-- **Fedora package provider.** Fedora 41 ships dnf5 without Python, but Chef's
-  `dnf_package` provider drives libdnf through a Python helper. The Fedora
-  image installs `python3`, `python3-libdnf5`, and `python3-rpm` so
-  `nginx_install` works.
+  resource manage nginx on all distros. It needs `privileged: true`, a shared
+  cgroup mount, `/run` and `/tmp` tmpfs, and `stop_signal: SIGRTMIN+3`; all of
+  that is set in `docker-compose.yml`. A TTY is attached so the container has a
+  `/dev/console` and `docker compose logs` is useful. The workstation needs
+  none of it: its entrypoint runs the prepare script once and then sleeps.
+- **Fedora package provider.** Fedora ships dnf5 without Python in the base
+  image, but Chef's `dnf_package` provider drives libdnf through a Python
+  helper. The Fedora image installs `python3`, `python3-libdnf5`, and
+  `python3-rpm` so `nginx_install` works.
+- **Amazon Linux package provider.** Amazon Linux 2023 ships dnf4 with its
+  Python bindings built in, so its image only needs `python3`; there is no
+  `python3-libdnf5` package. It also only publishes versioned PostgreSQL
+  packages, which is why the wrapper installs `postgresql16-server` there.
 - **Fedora DNS.** Fedora's preset enables `systemd-resolved`, which does not
   resolve Compose service names such as `microwave` through Docker's embedded
   DNS (glibc does). The node image masks `systemd-resolved` so

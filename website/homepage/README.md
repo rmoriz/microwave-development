@@ -1,7 +1,8 @@
 # Microwave homepage
 
-The static landing page for [microwave.io](https://microwave.io), built with
-Astro and vanilla CSS.
+The landing page for the project published at
+[https://rmoriz.github.io/microwave-development/](https://rmoriz.github.io/microwave-development/),
+built with Astro and vanilla CSS.
 
 It is a single marketing page with a technical deep dive, plus privacy,
 imprint, and 404 pages. There is no application server, no database, no
@@ -9,7 +10,7 @@ analytics, and no third-party runtime request.
 
 ## Requirements
 
-- Node.js 22 or newer
+- Node.js 22.18 or newer (unflagged TypeScript type stripping)
 - npm
 
 ## Commands
@@ -25,43 +26,48 @@ npm run test:e2e
 npm test
 ```
 
-- `npm run dev` starts the local development server.
+- `npm run dev` serves at `http://localhost:4321/microwave-development/`.
 - `npm run build` writes the static site to `dist/`.
 - `npm run preview` serves `dist/` locally. Astro 7 may keep the preview server
   in the background; stop it with `npx astro preview stop`.
 - `npm run check` runs the Astro and TypeScript checks.
 - `npm run test:content` builds the site and runs the Node content, link, SEO,
   and asset assertions.
-- `npm run test:e2e` runs Playwright against the production build. Install the
+- `npm run test:e2e` runs Playwright against the production build, served from
+  `.preview/microwave-development/` so the base path is exercised. Install the
   browser once with `npx playwright install chromium`.
 - `npm test` runs the type check, content tests, and browser tests.
 - `npm run og` regenerates `public/og.png` from the hero image.
 
 ## Deployment
 
-The build output is a plain static `dist/` directory. Any static host works.
+The build output is a plain static `dist/` directory. Astro writes every
+internal URL under the configured base path, so `dist/` must be served from
+`/microwave-development/` (the base in `src/data/config.ts`), not from a domain
+root.
 
-### Cloudflare Pages
+### GitHub Pages
 
-- Root directory: `website/homepage`
-- Build command: `npm run build`
-- Build output directory: `dist`
-- Node version: 22 or newer
+`.github/workflows/pages.yml` builds the homepage and the docs into one artifact
+and deploys it to `https://rmoriz.github.io/microwave-development/` on every
+push to `main` that touches the sites or a published guide, and on manual
+dispatch. A manual dispatch must be started on `main`: the `deploy` job is
+gated to `refs/heads/main`, because a branch run has no `github-pages`
+environment deployment.
 
-### Netlify
-
-- Base directory: `website/homepage`
-- Build command: `npm run build`
-- Publish directory: `website/homepage/dist`
-- Node version: 22 or newer
+- Internal URLs must go through `withBase()` from `src/lib/paths.ts`.
+- `SITE_URL` and `BASE_PATH` live in `src/data/config.ts`; `robots.txt` and the
+  sitemap are generated from them.
+- `BASE_PATH` and the docs `baseUrl` must move together.
+- Pages has no cache-header configuration; it sets its own.
 
 ### Cache headers
 
-- `/_astro/*`: `public, max-age=31536000, immutable`
-- HTML: short-lived, revalidated on deploy
+Pages serves its own header defaults, so these values are aspirational until a
+header layer exists:
 
-The site uses `https://microwave.io` as its canonical origin. Configure the
-apex domain in the host and redirect `www` to the apex if both are enabled.
+- `${BASE_PATH}/_astro/*`: `public, max-age=31536000, immutable`
+- HTML: short-lived, revalidated on deploy
 
 ## Before launch
 
@@ -75,8 +81,8 @@ apex domain in the host and redirect `www` to the apex if both are enabled.
   Debian, Ubuntu, and Fedora.” That was verified by running
   `docker-e2e/docker-compose.yml` and checking all three nodes. Re-run that
   stack before changing the claim.
-- Check the privacy page once the hosting provider is final. It intentionally
-  does not name a provider or retention period yet.
+- Check the privacy page once hosting is final. It names GitHub Pages as the
+  host and links GitHub's privacy statement, but names no retention period.
 
 ## Content rules
 
@@ -100,9 +106,10 @@ apex domain in the host and redirect `www` to the apex if both are enabled.
 src/
   assets/       hero image
   components/   one component per page section, plus nav and footer
-  data/         site constants, links, and legal placeholders
+  data/         site constants, links, legal placeholders, canonical origin
   layouts/      Base layout, fonts, metadata, reveal script
-  pages/        index, privacy, imprint, 404
+  lib/          base-path helper
+  pages/        index, privacy, imprint, 404, robots.txt route
   styles/       tokens, global rules, component styles
 tests/
   content/      built-HTML assertions and link integrity
@@ -110,5 +117,5 @@ tests/
 scripts/
   generate-og.mjs
 public/
-  favicon.svg, og.png, robots.txt, site.webmanifest
+  favicon.svg, og.png, site.webmanifest
 ```

@@ -7,11 +7,14 @@ import '../styles/global.css';
 import '../styles/components.css';
 import Footer from '../components/Footer.astro';
 import GridField from '../components/GridField.astro';
+import { SITE_URL } from '../data/config';
 import { site } from '../data/site';
+import { withBase } from '../lib/paths';
 
 interface Props {
   title: string;
   description: string;
+  /** Absolute URL or an already base-prefixed path. */
   image?: string;
   noindex?: boolean;
   preload?: {
@@ -25,13 +28,13 @@ interface Props {
 const {
   title,
   description,
-  image = '/og.png',
+  image = withBase('/og.png'),
   noindex = false,
   preload,
 } = Astro.props;
-const origin = Astro.site ?? new URL('https://microwave.io');
+const origin = Astro.site ?? new URL(SITE_URL);
 const canonical = new URL(Astro.url.pathname, origin);
-const socialImage = new URL(image, origin);
+const socialImage = new URL(withBase(image), origin);
 const schema = {
   '@context': 'https://schema.org',
   '@type': 'SoftwareApplication',
@@ -52,8 +55,8 @@ const schema = {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title}</title>
     <meta name="description" content={description} />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="manifest" href="/site.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href={withBase('/favicon.svg')} />
+    <link rel="manifest" href={withBase('/site.webmanifest')} />
     <meta name="theme-color" content="#2a4d6e" />
     <link rel="canonical" href={canonical} />
     {preload && (

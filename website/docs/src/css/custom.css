@@ -1,0 +1,137 @@
+/**
+ * Palette taken from the Astro homepage (`website/homepage/src/styles/tokens.css`):
+ * paper `#f7f5ef`, ink `#2a4d6e`, cyan accent `#3ddcff`. Light mode uses the
+ * paper background with ink text, dark mode the ink background with paper text,
+ * so the guides and the landing page read as one product in both modes.
+ */
+:root {
+  /* Link/primary colour has to carry text on paper, so light mode darkens the
+     cyan until it clears 4.5:1 on #f7f5ef. */
+  --ifm-color-primary: #1f5f80;
+  --ifm-color-primary-dark: #1b5573;
+  --ifm-color-primary-darker: #19506c;
+  --ifm-color-primary-darkest: #144258;
+  --ifm-color-primary-light: #23698d;
+  --ifm-color-primary-lighter: #256e94;
+  --ifm-color-primary-lightest: #2a7ca7;
+
+  --ifm-background-color: #f7f5ef;
+  --ifm-background-surface-color: #fffdf7;
+  --ifm-navbar-background-color: #f7f5ef;
+  --ifm-footer-background-color: #2a4d6e;
+
+  --ifm-color-content: #1c3145;
+  --ifm-color-content-secondary: #4a627a;
+  --ifm-heading-color: #2a4d6e;
+  --ifm-link-color: #1f5f80;
+  --ifm-link-hover-color: #144258;
+  --ifm-menu-color: #2a4d6e;
+  --ifm-menu-color-active: #1f5f80;
+  --ifm-menu-color-background-active: rgba(42, 77, 110, 0.1);
+
+  --ifm-footer-color: #f7f5ef;
+  --ifm-footer-link-color: #d7e3ee;
+  --ifm-footer-link-hover-color: #ffffff;
+  --ifm-footer-title-color: #ffffff;
+
+  --ifm-toc-border-color: rgba(42, 77, 110, 0.18);
+  --ifm-table-border-color: rgba(42, 77, 110, 0.2);
+  --ifm-table-stripe-background: rgba(42, 77, 110, 0.04);
+  --ifm-code-background: rgba(42, 77, 110, 0.08);
+  --ifm-blockquote-color: #3c556d;
+  --ifm-blockquote-border-color: rgba(42, 77, 110, 0.35);
+
+  --ifm-font-family-base: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --ifm-font-family-monospace: 'JetBrains Mono', ui-monospace, SFMono-Regular,
+    Menlo, monospace;
+  --ifm-heading-font-family: 'Space Grotesk', 'Inter', ui-sans-serif, system-ui,
+    sans-serif;
+  --ifm-code-font-size: 92%;
+  --docusaurus-highlighted-code-line-bg: rgba(42, 77, 110, 0.1);
+}
+
+html[data-theme='dark'] {
+  /* On the ink background the homepage cyan is legible again. */
+  --ifm-color-primary: #3ddcff;
+  --ifm-color-primary-dark: #1fd6ff;
+  --ifm-color-primary-darker: #10d3ff;
+  --ifm-color-primary-darkest: #00b6e0;
+  --ifm-color-primary-light: #5be2ff;
+  --ifm-color-primary-lighter: #6ae5ff;
+  --ifm-color-primary-lightest: #98edff;
+
+  --ifm-background-color: #223e59;
+  --ifm-background-surface-color: #2a4d6e;
+  --ifm-navbar-background-color: #2a4d6e;
+  --ifm-footer-background-color: #1d354b;
+
+  --ifm-color-content: #f7f5ef;
+  --ifm-color-content-secondary: #c9d1dc;
+  --ifm-heading-color: #ffffff;
+  --ifm-link-color: #7fe6ff;
+  --ifm-link-hover-color: #b3f1ff;
+  --ifm-menu-color: #dbe4ee;
+  --ifm-menu-color-active: #7fe6ff;
+  --ifm-menu-color-background-active: rgba(61, 220, 255, 0.14);
+
+  --ifm-footer-color: #e8edf3;
+  --ifm-footer-link-color: #d7e3ee;
+  --ifm-footer-link-hover-color: #ffffff;
+  --ifm-footer-title-color: #ffffff;
+
+  --ifm-toc-border-color: rgba(247, 245, 239, 0.16);
+  --ifm-table-border-color: rgba(247, 245, 239, 0.2);
+  --ifm-table-stripe-background: rgba(247, 245, 239, 0.04);
+  --ifm-code-background: rgba(247, 245, 239, 0.1);
+  --ifm-blockquote-color: #dbe4ee;
+  --ifm-blockquote-border-color: rgba(247, 245, 239, 0.35);
+  --docusaurus-highlighted-code-line-bg: rgba(247, 245, 239, 0.1);
+}
+
+.navbar__title {
+  font-family: var(--ifm-heading-font-family);
+  letter-spacing: 0.01em;
+}
+
+html[data-theme='dark'] .navbar {
+  border-bottom: 1px solid rgba(247, 245, 239, 0.12);
+}
+
+html[data-theme='dark'] .theme-doc-sidebar-container {
+  border-right-color: rgba(247, 245, 239, 0.12);
+}
+
+/*
+ * Reference tables lead with a short key and end with the explanation. Left to
+ * auto layout a single long default value takes the middle column's room, so
+ * pin the first two columns and give the prose the rest. Below the desktop
+ * breakpoint keep Infima's scrolling auto layout instead of squeezing cells.
+ */
+@media (min-width: 768px) {
+  article table {
+    display: table;
+    width: 100%;
+    table-layout: fixed;
+  }
+
+  article table th:first-child,
+  article table td:first-child {
+    width: 34%;
+  }
+
+  /* Three-column tables have a short middle cell (an auth or argument list);
+     keep it narrow so the description gets the room. */
+  article table:has(thead th:nth-child(3)) th:first-child,
+  article table:has(thead th:nth-child(3)) td:first-child {
+    width: 28%;
+  }
+
+  article table:has(thead th:nth-child(3)) th:nth-child(2),
+  article table:has(thead th:nth-child(3)) td:nth-child(2) {
+    width: 12%;
+  }
+
+  article table code {
+    overflow-wrap: anywhere;
+  }
+}

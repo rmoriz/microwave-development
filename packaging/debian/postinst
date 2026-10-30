@@ -16,6 +16,22 @@ if [ "$1" = "configure" ]; then
     install -d -o microwave -g microwave -m 0700 /var/lib/microwave
     install -d -o root -g microwave -m 0750 /etc/microwave
 
+    # The package pre-creates this file. When it is absent, systemd opens the
+    # append target as root and leaves a root-owned file behind; it also opens
+    # stdout before it makes the LogsDirectory=, so a missing path fails the
+    # start with status=209/STDOUT. Creating it here keeps path, owner and mode
+    # stable. Rotation runs as root either way, so a root-owned file can never
+    # wedge it.
+    install -d -o microwave -g microwave -m 0750 /var/log/microwave
+    if [ ! -f /var/log/microwave/microwave.log ]; then
+        install -m 0600 -o microwave -g microwave \
+            /dev/null /var/log/microwave/microwave.log
+    else
+        # An upgrade keeps the existing log; only make sure it is usable.
+        chown microwave:microwave /var/log/microwave/microwave.log
+        chmod 0600 /var/log/microwave/microwave.log
+    fi
+
     # The shipped configuration is readable by the service group but not by
     # other local users; it may contain object-store or SMTP credentials.
     if [ -f /etc/microwave/microwave.toml ]; then

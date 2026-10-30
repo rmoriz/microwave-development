@@ -1,0 +1,79 @@
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/homepage/**'
+      - 'website/docs/**'
+      - 'docs/index.md'
+      - 'docs/deployment.md'
+      - 'docs/mcp.md'
+      - 'docs/debian-package.md'
+      - 'docs/remaining-work.md'
+      - 'docs/pedant-report.md'
+      - 'docs/pedant-extended-report.md'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            website/homepage/package-lock.json
+            website/docs/package-lock.json
+      - name: Build the homepage
+        working-directory: website/homepage
+        run: |
+          npm ci
+          npm run check
+          npm run test:content
+      - name: Build the docs
+        working-directory: website/docs
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+      - name: Assemble the site
+        run: |
+          set -euo pipefail
+          mkdir -p website/homepage/dist/docs
+          cp -R website/docs/build/. website/homepage/dist/docs/
+          touch website/homepage/dist/.nojekyll
+          test -f website/homepage/dist/.nojekyll
+          test -f website/homepage/dist/docs/index.html
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/homepage/dist
+
+  deploy:
+    needs: build
+    # A manual dispatch from a branch has no deployment record, so the
+    # github-pages environment only accepts refs/heads/main.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

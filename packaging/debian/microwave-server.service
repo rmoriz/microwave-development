@@ -14,6 +14,11 @@ Group=microwave
 # belong in a drop-in such as /etc/systemd/system/microwave-server.service.d/.
 ExecStartPre=/usr/bin/microwave-ctl --config /etc/microwave/microwave.toml check-config
 ExecStart=/usr/bin/microwave-server serve --config /etc/microwave/microwave.toml
+# The process logs to stderr. Send that to the log file the package pre-creates
+# (below); logrotate rotates it with copytruncate: the server has no log-reopen
+# signal, SIGHUP reloads TLS only.
+StandardOutput=append:/var/log/microwave/microwave.log
+StandardError=inherit
 # SIGHUP reloads the TLS certificate/key pair when the TLS listener is enabled.
 # With plain HTTP it logs that there is nothing to reload and continues, so
 # `systemctl reload` is always safe. It does not re-read the rest of the
@@ -24,10 +29,15 @@ Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s
 
-# Creates /var/lib/microwave (0700) and /etc/microwave. The binary only writes
-# below the data directory.
+# systemd creates and owns these. Leave them to systemd; drop-ins should not
+# repoint them. The binary itself only writes below the data directory. systemd
+# would create the log file root-owned when it opens the append target, so the
+# package pre-creates it 0600 microwave:microwave (postinst) and keeps that
+# stable; rotation runs as root either way.
 StateDirectory=microwave
 StateDirectoryMode=0700
+LogsDirectory=microwave
+LogsDirectoryMode=0750
 ConfigurationDirectory=microwave
 ConfigurationDirectoryMode=0755
 

@@ -1,0 +1,12 @@
+# The server has no log-file reopen signal (SIGHUP reloads TLS only), so
+# rotation copies the file and truncates it in place.
+/var/log/microwave/microwave.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    su root root
+    copytruncate
+}

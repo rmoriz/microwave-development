@@ -6,13 +6,17 @@
 # a builder container, because the binaries must be linked against Linux glibc.
 #
 # Usage:
-#   scripts/build-deb.sh [--skip-build]
+#   scripts/build-deb.sh [--skip-build] [--print-version]
+#
+#   --print-version   Print the resolved package version and exit
 #
 # Environment:
 #   BUILD_IMAGE       Builder image for non-Linux hosts
 #                     (default: rust:1-bookworm)
 #   DEB_ARCH          Override the Debian architecture (default: from uname -m)
 #   DEB_MAINTAINER    Maintainer field (default: git identity)
+#   DEB_VERSION       Package version (default: [workspace.package] version
+#                     from Cargo.toml; one leading "v" is stripped)
 #   DEB_OUTPUT_DIR    Output directory, relative to the repository root
 #                     (default: dist)
 #   CARGO_TARGET_DIR  Cargo target directory (default: target)
@@ -24,9 +28,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 SKIP_BUILD=0
+PRINT_VERSION=0
 for argument in "$@"; do
     case "$argument" in
         --skip-build) SKIP_BUILD=1 ;;
+        --print-version) PRINT_VERSION=1 ;;
         -h|--help)
             sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
@@ -42,6 +48,24 @@ VERSION="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version[[:space:]]*=[[:spac
 if [ -z "$VERSION" ]; then
     echo "error: could not read version from [workspace.package] in Cargo.toml" >&2
     exit 1
+fi
+
+if [ -n "${DEB_VERSION:-}" ]; then
+    VERSION="${DEB_VERSION#v}"
+fi
+VALID=0
+case "$VERSION" in
+    ''|*[!0-9A-Za-z.+~-]*|[!0-9]*) ;;
+    *) VALID=1 ;;
+esac
+if [ "$VALID" -eq 0 ]; then
+    echo "error: '${DEB_VERSION:-$VERSION}' is not a Debian version" >&2
+    exit 1
+fi
+
+if [ "$PRINT_VERSION" -eq 1 ]; then
+    echo "$VERSION"
+    exit 0
 fi
 
 if [ -z "${DEB_ARCH:-}" ]; then
@@ -79,6 +103,7 @@ if [ "$(uname -s)" != "Linux" ] && [ "${MW_DEB_IN_CONTAINER:-0}" != "1" ]; then
         -e CARGO_TARGET_DIR=/work/target/deb-linux \
         -e DEB_ARCH \
         -e DEB_MAINTAINER \
+        -e DEB_VERSION \
         -e DEB_OUTPUT_DIR="${DEB_OUTPUT_DIR:-dist}" \
         -v microwave-deb-cargo-registry:/usr/local/cargo/registry \
         -v microwave-deb-cargo-git:/usr/local/cargo/git \
@@ -126,7 +151,7 @@ DOC_DIR="$STAGE/usr/share/doc/$PKG"
 
 rm -rf "$STAGE"
 install -d "$STAGE/DEBIAN" "$STAGE/usr/bin" \
-    "$STAGE/usr/lib/systemd/system" "$STAGE/etc/microwave" "$DOC_DIR"
+    "$STAGE/usr/lib/systemd/system" "$STAGE/etc/microwave" "$STAGE/etc/logrotate.d" "$DOC_DIR"
 
 # chef-server-ctl is the same executable as microwave-ctl, so ship it as a
 # symlink: one copy of the CLI in the package, same argv[0] name for the alias.
@@ -137,6 +162,8 @@ ln -s microwave-ctl "$STAGE/usr/bin/chef-server-ctl"
 
 install -m 0644 packaging/debian/microwave-server.service \
     "$STAGE/usr/lib/systemd/system/microwave-server.service"
+install -m 0644 packaging/debian/microwave-server.logrotate \
+    "$STAGE/etc/logrotate.d/microwave-server"
 install -m 0644 packaging/microwave.toml.example \
     "$STAGE/etc/microwave/microwave.toml"
 install -m 0644 README.md LICENSE "$DOC_DIR/"
@@ -145,7 +172,7 @@ for script in postinst prerm postrm; do
     install -m 0755 "packaging/debian/$script" "$STAGE/DEBIAN/$script"
 done
 
-printf '/etc/microwave/microwave.toml\n' > "$STAGE/DEBIAN/conffiles"
+printf '/etc/microwave/microwave.toml\n/etc/logrotate.d/microwave-server\n' > "$STAGE/DEBIAN/conffiles"
 
 sed -e "s|@VERSION@|$VERSION|g" \
     -e "s|@ARCH@|$DEB_ARCH|g" \

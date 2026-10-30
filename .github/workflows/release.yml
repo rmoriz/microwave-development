@@ -23,9 +23,11 @@ jobs:
           - target: linux-amd64
             runner: ubuntu-24.04
             triple: x86_64-unknown-linux-gnu
+            deb_arch: amd64
           - target: linux-arm64
             runner: ubuntu-24.04-arm
             triple: aarch64-unknown-linux-gnu
+            deb_arch: arm64
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -34,6 +36,37 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+      - name: Resolve the package version
+        id: deb
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "enabled=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The tag is the source of truth; the script shares the validation.
+          raw="$GITHUB_REF_NAME"
+          if ! version="$(DEB_VERSION="$raw" scripts/build-deb.sh --print-version 2>"$RUNNER_TEMP/deb-version.err")"; then
+            echo "::warning::tag '$GITHUB_REF_NAME' is not a Debian version (no .deb); shipping tarballs only: $(tr '\n' ' ' < "$RUNNER_TEMP/deb-version.err")"
+            echo "enabled=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The script always prints a version on success; this covers a script
+          # that exits 0 without output.
+          if [ -z "$version" ]; then
+            echo "::warning::tag '$GITHUB_REF_NAME' resolved to an empty version (no .deb); shipping tarballs only"
+            echo "enabled=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          workspace_version="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -n1)"
+          if [ -z "$workspace_version" ]; then
+            echo "::warning::could not read the [workspace.package] version; tag version $version is not compared"
+          elif [ "$version" != "$workspace_version" ]; then
+            echo "::warning::tag version $version differs from the workspace version $workspace_version"
+          fi
+          echo "enabled=1" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Build the binaries
         run: |
           cargo build --release --locked \
@@ -59,6 +92,17 @@ jobs:
           else
             shasum -a 256 "dist/${name}.tar.gz" > "dist/${name}.tar.gz.sha256"
           fi
+      - name: Package the .deb
+        if: steps.deb.outputs.enabled == '1'
+        shell: bash
+        env:
+          DEB_VERSION: ${{ steps.deb.outputs.version }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+          CARGO_TARGET_DIR: target/${{ matrix.triple }}
+        run: |
+          set -euo pipefail
+          scripts/build-deb.sh --skip-build
+          sha256sum dist/*.deb > "dist/microwave-server_${DEB_VERSION}_${DEB_ARCH}.deb.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}

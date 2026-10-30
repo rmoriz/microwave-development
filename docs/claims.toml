@@ -1299,7 +1299,7 @@ id = "deploy-data-dir-default"
 summary = "The default data directory is ./data."
 area = "deployment"
 status = "verified"
-surfaces = [ { path = "docs/deployment.md", needle = "| `paths.data_dir` | `MW_PATHS__DATA_DIR` | `./data` |" } ]
+surfaces = [ { path = "docs/deployment.md", needle = "| `paths.data_dir`<br/>`MW_PATHS__DATA_DIR` | Default `./data`." } ]
 verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = 'data_dir: "./data"' }
 
 [[claim]]
@@ -1850,6 +1850,22 @@ surfaces = [ { path = "docs/debian-package.md", needle = "The unit is a separate
 verify = { kind = "grep", path = "packaging/debian/microwave-server.service", pattern = "ExecStart=/usr/bin/microwave-server" }
 
 [[claim]]
+id = "deb-pkg-release-attach"
+summary = "A tag push whose tag is a Debian version builds the .deb and its checksum for amd64 and arm64 and attaches both to the Release; other v* tags ship tarballs only."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/debian-package.md", needle = "microwave-server_<version>_<arch>.deb" } ]
+verify = { kind = "file", path = ".github/workflows/release.yml" }
+
+[[claim]]
+id = "deb-pkg-log-rotation"
+summary = "The package logs to /var/log/microwave and logrotate rotates the file daily, keeping 14 compressed generations."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/debian-package.md", needle = "/etc/logrotate.d/microwave-server" } ]
+verify = { kind = "file", path = "packaging/debian/microwave-server.logrotate" }
+
+[[claim]]
 id = "dep-audit-base64"
 summary = "Direct base64 requires 0.23 and the lock resolves 0.23.1."
 area = "tooling"
@@ -2022,3 +2038,31 @@ area = "tooling"
 status = "verified"
 surfaces = [ { path = "scripts/run-chef-client-e2e.sh", needle = "MW_E2E_COMPAT          1 to provision" } ]
 verify = { kind = "grep", path = "scripts/run-chef-client-e2e.sh", pattern = "MW_E2E_COMPAT:-0" }
+
+[[claim]]
+id = "docs-index-entry-point"
+summary = "docs/index.md opens the docs site with the same drop-in pitch the README uses and links every published guide."
+area = "docs"
+status = "verified"
+surfaces = [
+  { path = "docs/index.md", needle = "Microwave Server is a Rust reimplementation of the Chef Infra Server API" },
+  { path = "docs/index.md", needle = "./mcp.md" },
+  { path = "docs/index.md", needle = "./deployment.md" },
+]
+verify = { kind = "grep", path = "README.md", pattern = "A Rust reimplementation of the Chef Infra Server API" }
+
+[[claim]]
+id = "homepage-pages-base-path"
+summary = "The homepage keeps its GitHub Pages origin and project base path in one module so links and the build agree."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "website/homepage/src/data/config.ts", needle = "export const BASE_PATH" } ]
+verify = { kind = "grep", path = "website/homepage/src/data/config.ts", pattern = "BASE_PATH = '/microwave-development'" }
+
+[[claim]]
+id = "homepage-robots-sitemap-pointer"
+summary = "robots.txt allows crawling and points at the generated sitemap under the Pages base path."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "website/homepage/src/pages/robots.txt.ts", needle = "Sitemap: ${sitemap.href}" } ]
+verify = { kind = "grep", path = "website/homepage/src/pages/robots.txt.ts", pattern = "sitemap-index.xml" }

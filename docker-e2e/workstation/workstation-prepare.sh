@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
 # Stage the knife config the seed wrote on the read-only hand-over volume into
-# the root home, so plain `knife …` works without -c flags, then connect the
+# the workspace, so plain `knife …` works without -c flags, then connect the
 # OpenCode MCP client.
 #
-# Started by workstation-prepare.service. The container keeps running after the
-# unit (systemd stays PID 1), so the box can be used with `docker exec`.
+# Started by the workstation entrypoint. The container stays up after this
+# script returns, so the box can be used with `docker compose exec` / `./shell`.
 #
 set -euo pipefail
 
 SHARED=/shared
-CHEF_DIR=/home/dev/.chef
+CHEF_DIR=/root/work/.chef
 
 echo "workstation: waiting for the seed to write $SHARED/knife.rb"
 for _ in $(seq 1 300); do
@@ -27,12 +27,16 @@ fi
 install -d -m 0700 "$CHEF_DIR"
 cp "$SHARED/knife.rb" "$CHEF_DIR/knife.rb"
 cp "$SHARED/pivotal.pem" "$CHEF_DIR/pivotal.pem"
-# The hand-over is root-owned 0600; hand the staged copy to the OpenCode user.
-chown dev:dev "$CHEF_DIR" "$CHEF_DIR/knife.rb" "$CHEF_DIR/pivotal.pem"
 chmod 0600 "$CHEF_DIR/knife.rb" "$CHEF_DIR/pivotal.pem"
 # The shared volume is read-only here; point the config at the staged key.
 sed -i "s|client_key \"$SHARED/pivotal.pem\"|client_key \"$CHEF_DIR/pivotal.pem\"|" \
     "$CHEF_DIR/knife.rb"
+
+# knife infers a chef repo from the config directory and then rejects relative
+# paths when the working directory is outside it, so a bare `knife list` from
+# /root/work failed with "Attempt to use relative path ''". Pin the repo root
+# to the workspace, which is where the shell starts.
+printf '%s\n' 'chef_repo_path "/root/work"' >>"$CHEF_DIR/knife.rb"
 
 echo "workstation: knife is configured for $(knife node list | wc -l) nodes"
 
@@ -41,7 +45,7 @@ echo "workstation: knife is configured for $(knife node list | wc -l) nodes"
 # Warm the service up and reload once so the endpoint is connected before the
 # box is used.
 echo "workstation: connecting the MCP client"
-cd /work
+cd /root/work
 opencode mcp list >/dev/null 2>&1 || true
 opencode reload >/dev/null 2>&1 || true
 for _ in $(seq 1 30); do

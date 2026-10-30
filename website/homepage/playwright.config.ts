@@ -1,4 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
+import { BASE_PATH } from './src/data/config';
+
+const previewDir = `.preview${BASE_PATH}`;
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -9,8 +12,8 @@ export default defineConfig({
   },
   webServer: {
     command:
-      'npm run build && python3 -m http.server 4321 --bind 127.0.0.1 --directory dist',
-    url: 'http://127.0.0.1:4321',
+      `npm run build && rm -rf .preview && mkdir -p ${previewDir} && cp -R dist/. ${previewDir}/ && python3 -m http.server 4321 --bind 127.0.0.1 --directory .preview`,
+    url: `http://127.0.0.1:4321${BASE_PATH}/`,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

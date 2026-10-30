@@ -9,8 +9,9 @@
 # with TEST_IMAGES="debian:12-slim" (space-separated).
 #
 # Each container installs the package through apt, checks the installed
-# layout and service account, runs both binaries, validates the configuration
-# and then purges the package to exercise the postrm cleanup.
+# layout and service account, runs both binaries, validates the configuration,
+# removes the package to check the state a reinstall needs survives, and then
+# purges it to exercise the postrm cleanup.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,6 +48,52 @@ for image in $IMAGES; do
                 test -x "/usr/bin/$binary"
             done
             test -f /usr/lib/systemd/system/microwave-server.service
+            grep -qx "StandardOutput=append:/var/log/microwave/microwave.log" \
+                /usr/lib/systemd/system/microwave-server.service
+            grep -qx "StandardError=inherit" \
+                /usr/lib/systemd/system/microwave-server.service
+            grep -qx "LogsDirectory=microwave" \
+                /usr/lib/systemd/system/microwave-server.service
+            grep -qx "LogsDirectoryMode=0750" \
+                /usr/lib/systemd/system/microwave-server.service
+            test -f /etc/logrotate.d/microwave-server
+            stat -c "%a %U:%G" /etc/logrotate.d/microwave-server | grep -qx "644 root:root"
+            grep -Eq "^[[:space:]]+copytruncate$" /etc/logrotate.d/microwave-server
+            grep -Eq "^[[:space:]]+notifempty$" /etc/logrotate.d/microwave-server
+            grep -Eq "^[[:space:]]+daily$" /etc/logrotate.d/microwave-server
+            grep -Eq "^[[:space:]]+rotate 14$" /etc/logrotate.d/microwave-server
+            grep -Eq "^[[:space:]]+compress$" /etc/logrotate.d/microwave-server
+            grep -Eq "^[[:space:]]+delaycompress$" /etc/logrotate.d/microwave-server
+            grep -Eq "^[[:space:]]+su root root$" /etc/logrotate.d/microwave-server
+            ! logrotate -d /etc/logrotate.d/microwave-server 2>&1 | grep -q "error:"
+            dpkg -s microwave-server | grep -q "^Depends:.*logrotate"
+
+            # The unit cannot start unless postinst already created these:
+            # systemd opens the append target itself, as root, before it makes
+            # LogsDirectory=, so the package creates the file as the service
+            # user instead of leaving it to systemd.
+            stat -c "%a %U:%G" /var/log/microwave | grep -qx "750 microwave:microwave"
+            stat -c "%a %U:%G" /var/log/microwave/microwave.log \
+                | grep -qx "600 microwave:microwave"
+
+            # Rotate for real: the rule has to work on the file ownership the
+            # package creates.
+            install -d -o microwave -g microwave -m 0750 /var/log/microwave
+            echo hello > /var/log/microwave/microwave.log
+            chown microwave:microwave /var/log/microwave/microwave.log
+            logrotate -f /etc/logrotate.d/microwave-server
+            test -f /var/log/microwave/microwave.log.1
+            test ! -s /var/log/microwave/microwave.log
+
+            # An upgrade has to repair a log file an older release left
+            # root-owned instead of only creating a missing one.
+            chown root:root /var/log/microwave/microwave.log
+            chmod 0600 /var/log/microwave/microwave.log
+            apt-get install -y --no-install-recommends \
+                --reinstall "/pkg/$DEB_NAME" >/dev/null
+            stat -c "%a %U:%G" /var/log/microwave/microwave.log \
+                | grep -qx "600 microwave:microwave"
+            logrotate -f /etc/logrotate.d/microwave-server
             test -f /etc/microwave/microwave.toml
             id microwave >/dev/null
             stat -c "%a %U:%G" /etc/microwave/microwave.toml | grep -qx "640 root:microwave"
@@ -62,8 +109,21 @@ for image in $IMAGES; do
                 systemd-analyze verify /usr/lib/systemd/system/microwave-server.service
             fi
 
+            # A plain remove keeps mutable state and conffiles, so the log and
+            # the logrotate rule survive it; only the purge below is allowed to
+            # drop them. Reinstall afterwards so the purge assertions run
+            # against a fully installed package instead of an empty file list.
+            apt-get remove -y microwave-server >/dev/null
+            test -f /var/log/microwave/microwave.log
+            test -f /etc/logrotate.d/microwave-server
+
+            apt-get install -y --no-install-recommends "/pkg/$DEB_NAME" >/dev/null
+            test -f /etc/logrotate.d/microwave-server
+
             apt-get purge -y microwave-server >/dev/null
             test ! -d /var/lib/microwave
+            test ! -d /var/log/microwave
+            test ! -f /etc/logrotate.d/microwave-server
             if getent passwd microwave >/dev/null 2>&1; then
                 echo "error: service user survived purge" >&2
                 exit 1

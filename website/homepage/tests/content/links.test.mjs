@@ -4,9 +4,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as cheerio from 'cheerio';
+import { BASE_PATH } from '../../src/data/config.ts';
+import { withBase } from '../../src/lib/paths.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const dist = path.join(root, 'dist');
+
+function withoutBase(href) {
+  if (href === BASE_PATH) return '/';
+  return href.startsWith(`${BASE_PATH}/`) ? href.slice(BASE_PATH.length) : href;
+}
 
 function walk(dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -28,6 +35,15 @@ const pageMap = new Map(pages.map((file) => [routeFor(file), file]));
 function fileForRoute(route) {
   return pageMap.get(route) ?? pageMap.get(`${route}/`) ?? pageMap.get(`${route}.html`);
 }
+
+test('withBase prefixes once and leaves a based path alone', () => {
+  assert.equal(withBase('/og.png'), `${BASE_PATH}/og.png`);
+  assert.equal(withBase(withBase('/og.png')), `${BASE_PATH}/og.png`);
+  assert.equal(withBase('https://example.test/og.png'), 'https://example.test/og.png');
+  assert.equal(withBase('mailto:hello@example.test'), 'mailto:hello@example.test');
+  assert.equal(withBase('tel:+49123'), 'tel:+49123');
+  assert.equal(withBase('//cdn.example.test/og.png'), '//cdn.example.test/og.png');
+});
 
 test('all internal links and fragments resolve; external links are secure', () => {
   assert.ok(pages.length >= 3, 'expected the homepage and legal pages');
@@ -51,7 +67,17 @@ test('all internal links and fragments resolve; external links are secure', () =
 
       assert.ok(href.startsWith('/') || href.startsWith('#'), `unexpected href at ${where}`);
 
-      const [rawPath, hash] = href.split('#');
+      if (!href.startsWith('#')) {
+        assert.ok(
+          href === BASE_PATH || href.startsWith(`${BASE_PATH}/`),
+          `internal href outside ${BASE_PATH} at ${where}`,
+        );
+
+        // The docs are a separate build, copied in by the Pages workflow.
+        if (href.startsWith(`${BASE_PATH}/docs/`)) return;
+      }
+
+      const [rawPath, hash] = withoutBase(href).split('#');
       const targetRoute = rawPath === '' ? from : rawPath;
       const targetFile = fileForRoute(targetRoute);
       assert.ok(targetFile, `missing target at ${where}`);
