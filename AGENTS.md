@@ -57,11 +57,13 @@ committing Rust. The homepage has no linter beyond `astro check`.
   (`microwave-e2e-node-debian`, `-ubuntu`, `-fedora`, `-amazon`). Verify node
   image changes with `docker compose build node-debian node-ubuntu
   node-fedora node-amazon` from `docker-e2e/`, not with ad-hoc `docker build`.
-- Do not leave one-off images behind. Manual builds like the old
-  `mw-node-check` / `mw-workstation-check` tags from
+- Clean up every check image and container in the same step that created it.
+  One-off builds such as the `mw-node-check` / `mw-workstation-check` tags in
   `docs/superpowers/plans/` pile up, shadow the real stack names, and confuse
   later checks. If a throwaway build is unavoidable, tag it obviously, then
-  `docker rmi` it and `docker rm -f` its containers in the same step.
+  `docker rm -f` its containers and `docker rmi` the image before moving on —
+  also when the check passed. Never leave `mw-*` tags or `*check*` containers
+  behind.
 - `docker-e2e/client/Dockerfile` is shared by all nodes and branches on the
   base image (`apt-get`, `ID=amzn`, `dnf`); a change there affects every node,
   so build all four after touching it.
