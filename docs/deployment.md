@@ -1444,6 +1444,33 @@ the legacy server never stored them. A migration also does not reindex, so
 remote OpenSearch/Elasticsearch documents stay missing until
 `microwave-ctl reindex` runs afterwards.
 
+### Combining both paths
+
+The two paths overlap in only one direction, so a crawl plus a knife backup gets
+closer to complete than either alone — but the order is fixed:
+
+1. Run `microwave-migrate from-api` (optionally `--bookshelf-dir`) and import the
+   crawl. Policies, policy groups and their ACLs exist only here.
+2. Run `microwave-migrate import-knife-backup` **last**, with `--merge-users
+   --replace-user-credentials` and, when you have that material, `--secrets-dir`
+   and `--replace-acls`. Password hashes from `key_dump.json`, the real `admin`
+   flags, server-owned secrets and cookbook blobs exist only there.
+
+A crawl after the knife import would undo it: snapshot import force-sets
+`password_hash`, `admin` and the profile on conflict, and the crawl fills all
+three empty. Against a bootstrapped target the crawl has already created the
+users, which is why the knife step needs `--merge-users`; without
+`--replace-user-credentials` a merged user keeps the empty crawl hash and admin
+off.
+
+Quiesce the source between the runs. The backup is a point-in-time copy and the
+crawl is live, so anything written in between lands inconsistently.
+
+Even combined, neither path covers OAuth applications, grants and tokens,
+`kvpair` rows, Data Collector/telemetry configuration, or policyfile
+`cookbook_artifacts`. Recreate the OAuth applications through the `/id`
+application routes and carry the rest over from the legacy configuration.
+
 Pass `--bookshelf-dir DIR` to also copy cookbook file blobs into a local
 object-store tree at `DIR/organization-<org_id>/checksum-<md5>`. Existing
 checksums are skipped, relative file URLs are signed and resolved against

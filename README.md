@@ -95,8 +95,9 @@ the configured SQLite or PostgreSQL database. A `knife ec backup` directory impo
 directly with `import-knife-backup`.
 
 Neither path is lossless: no cookbook blobs without `--bookshelf-dir`, no password hashes or
-`admin` flags, and no client or user private keys. The full runbook, the limits, and the
-`chef-server.rb` translation table are in
+`admin` flags, and no client or user private keys. Run both to get closer — the crawl first for
+policies and policy groups, the knife backup last for hashes and admin flags. The full runbook, the
+limits, and the `chef-server.rb` translation table are in
 [deployment § 10](https://rmoriz.github.io/microwave-development/docs/deployment/#10-migration-from-a-legacy-server).
 
 ## Pedant compatibility

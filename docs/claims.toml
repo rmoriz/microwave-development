@@ -328,6 +328,16 @@ surfaces = [
 verify = { kind = "grep", path = "docs/deployment.md", pattern = "Without the flag `from-api` remains metadata-only" }
 
 [[claim]]
+id = "migrate-combined-order"
+summary = "Deployment: a combined migration runs the crawl first and the knife backup last."
+area = "migration"
+status = "verified"
+surfaces = [
+  { path = "docs/deployment.md", needle = "Run `microwave-migrate import-knife-backup` **last**" },
+]
+verify = { kind = "grep", path = "docs/deployment.md", pattern = "would undo it: snapshot import force-sets" }
+
+[[claim]]
 id = "readme-migrate-knife-gaps"
 summary = "Deployment: the knife importer carries no cookbook artifacts, policies or policy groups, or OAuth applications."
 area = "migration"
