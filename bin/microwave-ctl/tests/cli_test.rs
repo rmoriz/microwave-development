@@ -29,6 +29,28 @@ fn run(dir: &Path, args: &[&str]) -> Output {
     ctl(dir).args(args).output().unwrap()
 }
 
+/// The `chef-server-ctl` alias ships as a symlink to `microwave-ctl`; build the
+/// same shape here so `argv[0]` carries the alias name.
+#[cfg(unix)]
+fn ctl_alias(dir: &Path, bin_dir: &Path) -> Command {
+    use std::os::unix::fs::symlink;
+
+    let alias = bin_dir.join("chef-server-ctl");
+    if !alias.exists() {
+        symlink(assert_cmd::cargo::cargo_bin("microwave-ctl"), &alias).unwrap();
+    }
+    let mut command = Command::new(alias);
+    command
+        .env_remove("MW_CONFIG")
+        .env_remove("MW_DATABASE__DRIVER")
+        .env_remove("MW_DATABASE__URL")
+        .env_remove("MW_AUTH__SUPERUSER_NAME")
+        .env_remove("MW_SERVER_BIN")
+        .env_remove("MW_SERVICE_FOREGROUND")
+        .env("MW_PATHS__DATA_DIR", dir);
+    command
+}
+
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
@@ -278,19 +300,16 @@ fn backup_and_restore_round_trip() {
     assert!(SqliteStore::verify_database(&data.path().join("microwave.db")).is_ok());
 }
 
+#[cfg(unix)]
 #[test]
 fn chef_server_ctl_alias_uses_the_same_dispatch() {
     let dir = tempfile::tempdir().unwrap();
-    let alias = || {
-        let mut command = Command::cargo_bin("chef-server-ctl").unwrap();
-        command
-            .env_remove("MW_CONFIG")
-            .env_remove("MW_DATABASE__DRIVER")
-            .env_remove("MW_DATABASE__URL")
-            .env_remove("MW_AUTH__SUPERUSER_NAME")
-            .env("MW_PATHS__DATA_DIR", dir.path());
-        command
-    };
+    let bins = tempfile::tempdir().unwrap();
+    let alias = || ctl_alias(dir.path(), bins.path());
+
+    let help = alias().arg("--help").output().unwrap();
+    assert_success(&help);
+    assert!(stdout(&help).contains("chef-server-ctl"));
 
     let version = alias().arg("version").output().unwrap();
     assert_success(&version);
@@ -2109,16 +2128,12 @@ fn psql_executes_against_the_configured_sqlite_database() {
     assert_eq!(stdout(&output).trim(), "1");
 }
 
+#[cfg(unix)]
 #[test]
 fn chef_server_ctl_alias_exposes_the_new_commands() {
     let dir = tempfile::tempdir().unwrap();
-    let output = Command::cargo_bin("chef-server-ctl")
-        .unwrap()
-        .env_remove("MW_CONFIG")
-        .env_remove("MW_DATABASE__DRIVER")
-        .env_remove("MW_DATABASE__URL")
-        .env_remove("MW_AUTH__SUPERUSER_NAME")
-        .env("MW_PATHS__DATA_DIR", dir.path())
+    let bins = tempfile::tempdir().unwrap();
+    let output = ctl_alias(dir.path(), bins.path())
         .args(["maintenance", "status"])
         .output()
         .unwrap();

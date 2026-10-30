@@ -5,7 +5,7 @@
 # Builds the three deployable binaries from the Cargo workspace:
 #   * microwave-server    — the HTTP daemon
 #   * microwave-ctl       — the operational CLI
-#   * chef-server-ctl     — compatibility alias built from the same CLI crate
+#   * chef-server-ctl     — compatibility alias symlinked to microwave-ctl
 #   * microwave-migrate   — snapshot export/import
 #
 # Build:

@@ -9,10 +9,6 @@ rust-version.workspace = true
 name = "microwave-ctl"
 path = "src/main.rs"
 
-[[bin]]
-name = "chef-server-ctl"
-path = "src/bin/chef-server-ctl.rs"
-
 [dependencies]
 microwave-ctl = { path = "../../crates/microwave-ctl" }
 
