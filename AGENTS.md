@@ -15,6 +15,7 @@ Run the suite for the area you touched, not the whole workspace by default.
 | Change | Verify with |
 |---|---|
 | `website/**` only | `cd website/homepage && npm test` |
+| `website/docs/**` | `cd website/docs && npm run build` |
 | `website/**` and `docs/mcp.md` | the same; the content test asserts guide facts |
 | `docs/mcp.md` only | the same; it checks the guide file |
 | `crates/**`, `bin/**`, `Cargo.toml` | `cargo test --workspace` |
