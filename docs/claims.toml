@@ -1299,7 +1299,7 @@ id = "deploy-data-dir-default"
 summary = "The default data directory is ./data."
 area = "deployment"
 status = "verified"
-surfaces = [ { path = "docs/deployment.md", needle = "| `paths.data_dir` | `MW_PATHS__DATA_DIR` | `./data` |" } ]
+surfaces = [ { path = "docs/deployment.md", needle = "| `paths.data_dir`<br/>`MW_PATHS__DATA_DIR` | Default `./data`." } ]
 verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = 'data_dir: "./data"' }
 
 [[claim]]

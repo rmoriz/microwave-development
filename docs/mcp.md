@@ -175,20 +175,44 @@ internet-facing.
 
 ## Configuration reference
 
-All keys are optional. Defaults are the built-in values.
+All keys are optional. Defaults are the built-in values. Each row shows the
+TOML key and, underneath, the `MW_*` variable that overrides it: `MW_` plus the
+key with every level separated by `__` and the segments upper-cased. Rows
+without a variable are TOML-only.
 
-| TOML key | Environment | Default | Notes |
-|---|---|---|---|
-| `mcp.enabled` | `MW_MCP__ENABLED` | `false` | Mounts `POST /organizations/<org>/mcp`. |
-| `mcp.max_results` | `MW_MCP__MAX_RESULTS` | `100` | Clamped to `1`-`1000`. Caps the `limit` of every list tool that accepts one. |
-| `mcp.max_result_bytes` | `MW_MCP__MAX_RESULT_BYTES` | `1048576` (1 MiB) | Clamped to 1 KiB-16 MiB. A larger serialized result is an error, never truncated. |
-| `mcp.max_upload_bytes` | `MW_MCP__MAX_UPLOAD_BYTES` | `10485760` (10 MiB) | Clamped to 1 byte-250 MiB. Caps decoded cookbook upload bytes. |
-| `mcp.allowed_hosts` | `MW_MCP__ALLOWED_HOSTS` (comma-separated) | empty | Empty derives host variants from `server.public_url`. |
-| `mcp.allowed_origins` | `MW_MCP__ALLOWED_ORIGINS` (comma-separated) | empty | Empty disables Origin checks. |
-| `mcp.organizations` | none | empty | Map keyed by organization name. |
-| `mcp.organizations.<org>.token` | none | unset | Inline bearer token; wins over the secret. Requires a restart to change. |
-| `mcp.organizations.<org>.principal` | none | `auth.superuser_name` | User the token acts as. |
-| `mcp.organizations.<org>.writes` | none | `true` | `false` hides and rejects the write tools. |
+#### Enablement and principals
+
+Mounting the endpoint and deciding which user a tool call runs as. See
+[Enablement](#enablement) and [Principal and ACLs](#principal-and-acls).
+
+| Setting | Details |
+|---|---|
+| `mcp.enabled`<br/>`MW_MCP__ENABLED` | Default `false`. Mounts `POST /organizations/<org>/mcp`. |
+| `mcp.organizations.<org>.token` | Unset by default. Inline bearer token; wins over the secret. Requires a restart to change. |
+| `mcp.organizations.<org>.principal` | Default `auth.superuser_name`. User the token acts as. |
+| `mcp.organizations.<org>.writes` | Default `true`. `false` hides and rejects the write tools; see [Write access](#write-access). |
+
+#### Limits
+
+Bounds are clamped by the server and enforced before a response is written;
+[Result limits and errors](#result-limits-and-errors) has the failure
+behaviour.
+
+| Setting | Details |
+|---|---|
+| `mcp.max_results`<br/>`MW_MCP__MAX_RESULTS` | Default `100`. Clamped to `1`-`1000`. Caps the `limit` of every list tool that accepts one. |
+| `mcp.max_result_bytes`<br/>`MW_MCP__MAX_RESULT_BYTES` | Default `1048576` (1 MiB). Clamped to 1 KiB-16 MiB. A larger serialized result is an error, never truncated. |
+| `mcp.max_upload_bytes`<br/>`MW_MCP__MAX_UPLOAD_BYTES` | Default `10485760` (10 MiB). Clamped to 1 byte-250 MiB. Caps decoded cookbook upload bytes; see [Cookbook upload](#cookbook-upload). |
+
+#### Host and origin checks
+
+Both lists are comma-separated and drive the checks described in
+[Host and origin checks](#host-and-origin-checks).
+
+| Setting | Details |
+|---|---|
+| `mcp.allowed_hosts`<br/>`MW_MCP__ALLOWED_HOSTS` | Empty by default. Empty derives host variants from `server.public_url`. |
+| `mcp.allowed_origins`<br/>`MW_MCP__ALLOWED_ORIGINS` | Empty by default. Empty disables Origin checks. |
 
 Per-organization entries have no environment override. Bare TOML keys accept
 `-` and `_`, so `[mcp.organizations.team-1]` is a valid table key for the
@@ -325,7 +349,7 @@ The endpoint exposes 11 read tools and, when `writes = true`, 8 write tools
 Always registered.
 
 | Tool | Arguments | Result |
-|---|---|---|
+|---|---|
 | `list_nodes` | `query?`, `environment?`, `limit?` | Name, environment, policy name/group, `updated_at`. `query` is a case-insensitive substring match on the node name. |
 | `get_node` | `name` | Full node object. |
 | `list_environments` | `limit?` | Name and `updated_at`. |
@@ -354,7 +378,7 @@ newer clean runs.
 Registered only when the organization has `writes = true`.
 
 | Tool | Arguments | Semantics |
-|---|---|---|
+|---|---|
 | `create_node` | `name`, `environment?`, `run_list?`, `normal?`, `policy_name?`, `policy_group?` | Builds a node document and runs the create path (container `nodes` Create ACL). |
 | `update_node` | `name`, `node` (full document) | Same normalization and validation as `PUT /nodes/:name`. Node Update ACL. This is a replacement, not JSON patch. |
 | `delete_node` | `name` | Node Delete ACL. |

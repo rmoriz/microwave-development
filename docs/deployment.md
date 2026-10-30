@@ -108,72 +108,148 @@ A complete annotated example is
 
 ### Keys and environment overrides
 
-| TOML key | Environment | Default | Notes |
-|---|---|---|---|
-| `server.bind` | `MW_SERVER__BIND` | `0.0.0.0:8000` | Listener address. Plain HTTP unless `server.tls` is configured. |
-| `server.worker_threads` | `MW_SERVER__WORKER_THREADS` | `0` | `0` = size from available CPUs. |
-| `server.public_url` | `MW_SERVER__PUBLIC_URL` | unset | Public origin used to build password-reset links, e.g. `https://chef.example.com`. Required when mail is enabled. Must be an absolute origin with no credentials, path, query, or fragment. `https` is required except for loopback hosts, which may use `http`. |
-| `server.tls.enabled` | `MW_SERVER__TLS__ENABLED` | unset | `true` requires both paths; `false` forces plain HTTP; unset enables TLS when either path is set (the other is then required and validated). |
-| `server.tls.cert_path` | `MW_SERVER__TLS__CERT_PATH` | unset | PEM certificate chain, leaf first. Setting either path enables TLS. |
-| `server.tls.key_path` | `MW_SERVER__TLS__KEY_PATH` | unset | PEM private key matching the certificate. Never printed or logged. |
-| `server.tls.reload_interval_seconds` | `MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS` | `0` | Periodic certificate/key reload interval in seconds. `0` disables polling; `SIGHUP` still reloads immediately on Unix. Requires TLS, maximum `604800` (seven days). |
-| `paths.data_dir` | `MW_PATHS__DATA_DIR` | `./data` | All mutable state. |
-| `database.driver` | `MW_DATABASE__DRIVER` | `sqlite` | `sqlite` or `postgres`. |
-| `database.url` | `MW_DATABASE__URL` | `sqlite://<data_dir>/microwave.db` | `sqlite://<path>` or a `postgres://` URL. Both backends are supported by the server, `microwave-ctl`, and `microwave-migrate`. |
-| `storage.compression` | `MW_STORAGE__COMPRESSION` | `zlib` | `zlib` stores new `serialized_object` rows as `mwz1:` + base64(zlib(JSON)); `none` stores plain JSON. Reads accept both formats either way, so existing databases keep working. |
-| `search.backend` | `MW_SEARCH__BACKEND` | `embedded` | `embedded`, `opensearch`, `elasticsearch`. |
-| `search.url` | `MW_SEARCH__URL` | unset | Required for the remote backends, e.g. `http://opensearch:9200`. |
-| `search.timeout_ms` | `MW_SEARCH__TIMEOUT_MS` | `30000` | Request timeout for remote backend HTTP calls. Must be greater than zero; bounds `_bulk`, `_delete_by_query`, and `_refresh` so an unresponsive cluster cannot blackhole the server or CLI. |
-| `depsolver.timeout_ms` | `MW_DEPSOLVER__TIMEOUT_MS` | `20000` | Dependency solve deadline; must be greater than zero. |
-| `depsolver.max_concurrent` | `MW_DEPSOLVER__MAX_CONCURRENT` | `4` | Concurrent solver permits; excess requests receive `503 Dependency solver overloaded`. |
-| `search.strict_result_acls` | `MW_SEARCH__STRICT_RESULT_ACLS` | `true` | Hide search rows the caller cannot READ. Upstream calls this `strict_search_result_acls`; the reported `total` remains the pre-filter count. |
-| `object_store.backend` | `MW_OBJECT_STORE__BACKEND` | `local` | `local`, `s3`, `garage`. |
-| `object_store.bucket` | `MW_OBJECT_STORE__BUCKET` | unset | Required for `s3`/`garage`. |
-| `object_store.endpoint` | `MW_OBJECT_STORE__ENDPOINT` | unset | Required for `s3`/`garage`. See the reachability caveat below. |
-| `object_store.region` | `MW_OBJECT_STORE__REGION` | `us-east-1` | Must match the S3 gateway region. |
-| `object_store.access_key` | `MW_OBJECT_STORE__ACCESS_KEY` | unset | Falls back to the `bookshelf.access_key_id` secret. |
-| `object_store.secret_key` | `MW_OBJECT_STORE__SECRET_KEY` | unset | Falls back to the `bookshelf.secret_access_key` secret. |
-| `object_store.path_style` | `MW_OBJECT_STORE__PATH_STYLE` | `true` | Keep `true` for Garage/MinIO. |
-| `object_store.secret` | `MW_OBJECT_STORE__SECRET` | generated | Only used by the local `/bookshelf` backend. |
-| `auth.skew_seconds` | `MW_AUTH__SKEW_SECONDS` | `900` | `X-Ops-Timestamp` tolerance. |
-| `auth.superuser_name` | `MW_AUTH__SUPERUSER_NAME` | `pivotal` | Account that cannot be demoted and receives platform-superuser privileges. |
-| `server.default_orgname` | `MW_SERVER__DEFAULT_ORGNAME` | unset | Rewrite upstream short paths (`/nodes`, `/search`, `/cookbooks`, …) to this organization. Signature verification still uses the client's original path. |
-| `server.trusted_proxies` | `MW_SERVER__TRUSTED_PROXIES` | empty | Comma-separated IPs/CIDRs/socket addresses allowed to set `X-Forwarded-Host`/`X-Forwarded-Proto`. Untrusted peers fall back to `Host`. |
-| `stats.username` / `stats.password` | `MW_STATS__USERNAME` / `MW_STATS__PASSWORD` | unset | Optional Basic auth for `/_stats`; when set, `/_status` remains public. |
-| `auth.password_reset_token_in_response` | `MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE` | `false` | Development-only: return the `/id/password-reset` URL in the HTTP response. Leave disabled in production; it allows account takeover. This still applies when mail is enabled. |
-| `auth.password_reset_ttl_seconds` | `MW_AUTH__PASSWORD_RESET_TTL_SECONDS` | `3600` | Password-reset token lifetime in seconds. Must be greater than zero and at most `604800` (seven days). The reset email derives its expiry text from this value. |
-| `mail.enabled` | `MW_MAIL__ENABLED` | `false` | Enable outbound password-reset mail. Disabled by default; all other mail keys are ignored while this is false or `mail.host` is empty. |
-| `mail.host` | `MW_MAIL__HOST` | unset | SMTP relay hostname. Required when mail is enabled. |
-| `mail.port` | `MW_MAIL__PORT` | derived | Defaults to `587` for `starttls`, `465` for `tls`, and `25` for `none`. Must be greater than zero. |
-| `mail.security` | `MW_MAIL__SECURITY` | `starttls` | `starttls` (default), `tls` (implicit TLS/SMTPS), or `none` (explicit plaintext). `none` rejects SMTP AUTH for non-loopback hosts; remote authenticated relays must use `starttls` or `tls`. |
-| `mail.username` | `MW_MAIL__USERNAME` | unset | SMTP AUTH username. Requires `mail.password`. |
-| `mail.password` | `MW_MAIL__PASSWORD` | unset | SMTP AUTH password. Prefer the environment variable. Never logged or serialized, and absent from `microwave-config.json` backups. |
-| `mail.auth` | `MW_MAIL__AUTH` | `auto` | `auto`, `plain`, `login`, or `none`. `auto`, `plain`, and `login` require a username and password; `none` rejects credentials. |
-| `mail.from` | `MW_MAIL__FROM` | unset | `From` header, for example `Chef Infra Server <chef@example.com>`. Required when mail is enabled; a display name is accepted. |
-| `mail.reply_to` | `MW_MAIL__REPLY_TO` | unset | Optional `Reply-To` header. |
-| `mail.timeout_ms` | `MW_MAIL__TIMEOUT_MS` | `10000` | SMTP timeout in milliseconds. Must be greater than zero. |
-| `mail.hello_name` | `MW_MAIL__HELLO_NAME` | unset | EHLO/HELO name. When unset the mail library's default is used. |
-| `mail.tls_ca_path` | `MW_MAIL__TLS_CA_PATH` | unset | Extra PEM CA certificate used to verify a relay with a private CA; system roots remain trusted. Read when the mailer is built at startup, so an unreadable or unparseable file fails startup. |
-| `keygen.size` | `MW_KEYGEN__SIZE` | `3` | Maximum number of pre-generated 2048-bit RSA keypairs kept in memory. `0` disables caching and generates on demand. Maximum `1024`. |
-| `keygen.workers` | `MW_KEYGEN__WORKERS` | `1` | Background key-generation threads. Must not exceed `keygen.size`; maximum `8`. `0` leaves refilling to `warm_up`. |
-| `keygen.warm_up` | `MW_KEYGEN__WARM_UP` | `false` | Fill the cache synchronously during startup. Requires `keygen.size > 0`. Leave `false` to keep startup fast and let workers refill in the background. |
-| `data_collector.store` | `MW_DATA_COLLECTOR__STORE` | `forward` | `forward`, `local`, or `both`. `local`/`both` persist `run_converge` reports locally, and `local`/`both` also keep `POST /organizations/:org/data-collector` enabled without `root_url`. |
-| `data_collector.keep_runs` | `MW_DATA_COLLECTOR__KEEP_RUNS` | `50` | Reports kept per `(organization, node)`; `0` keeps everything. Old reports are pruned after each successful insert. |
-| `data_collector.root_url` | `MW_DATA_COLLECTOR__ROOT_URL` | unset | Enables forwarding of the payload to the external collector, e.g. `https://automate.example.com/data-collector/v0/`. |
-| `data_collector.token` | `MW_DATA_COLLECTOR__TOKEN` | unset | Shared bearer token accepted inbound and sent upstream as `x-data-collector-token`. Falls back to the `data_collector.token` secret. |
-| `data_collector.timeout` | `MW_DATA_COLLECTOR__TIMEOUT` (alias `MW_DATA_COLLECTOR__TIMEOUT_MS`) | `30000` | Upstream forwarding and response-read timeout in milliseconds (TOML alias `timeout_ms`). Must be greater than zero; `check-config` rejects `0`. |
-| `data_collector.actions_enabled` | `MW_DATA_COLLECTOR__ACTIONS_ENABLED` | `false` | Opt in to `oc_chef_action` mutation notifications while `root_url` is configured. `root_url` alone only enables client payload forwarding. Actions are only sent when `store` allows forwarding (`forward`/`both`), and are disabled automatically when `root_url` is unset. |
-| `data_collector.service_hostname` | `MW_DATA_COLLECTOR__SERVICE_HOSTNAME` | unset | `service_hostname` reported in action messages. Falls back to the request `X-Forwarded-Host` (or `Host`), then `localhost`. |
-| `compliance_proxy.url` | `MW_COMPLIANCE_PROXY__URL` | unset | Enables the Automate compliance profile proxy routes. Non-empty value only; unset means every method returns `404`. |
-| `compliance_proxy.token` | `MW_COMPLIANCE_PROXY__TOKEN` | unset | Service token sent upstream. Falls back to `data_collector.token` or the `data_collector.token` secret. |
-| `compliance_proxy.token_header` | `MW_COMPLIANCE_PROXY__TOKEN_HEADER` | `x-data-collector-token` | Header that carries the service token. Invalid, framing, routing, and hop-by-hop header names are rejected by config validation. |
-| `compliance_proxy.timeout` | `MW_COMPLIANCE_PROXY__TIMEOUT` (alias `MW_COMPLIANCE_PROXY__TIMEOUT_MS`) | `30000` | Request and response-read timeout in milliseconds (TOML alias `timeout_ms`). Must be greater than zero. |
-| `compliance_proxy.insecure_skip_tls_verify` | `MW_COMPLIANCE_PROXY__INSECURE_SKIP_TLS_VERIFY` | `false` | Skip certificate verification for a test/private compliance upstream. Keep `false` in production. |
-| `required_recipe.enabled` | `MW_REQUIRED_RECIPE__ENABLED` (alias `MW_REQUIRED_RECIPE__ENABLE`) | `false` | Enables `GET /organizations/:org/required_recipe`. TOML alias `enable`. |
-| `required_recipe.path` | `MW_REQUIRED_RECIPE__PATH` | unset | Recipe file served as `text/plain` when the endpoint is enabled. |
-| `telemetry.enabled` | `MW_TELEMETRY__ENABLED` | `false` | Reserved toggle. No outbound sender is implemented, so enabling it does not phone home. |
-| `telemetry.reporting_url` | `MW_TELEMETRY__REPORTING_URL` | unset | Reserved reporting destination for a future opt-in exporter. |
-| `telemetry.interval_seconds` | `MW_TELEMETRY__INTERVAL_SECONDS` | `86400` | Reserved exporter interval. |
+Each setting appears twice below: the TOML key, and the environment variable
+that overrides it. The variable is the key with `MW_` in front, every level
+separated by `__`, and the segments upper-cased — `server.tls.cert_path`
+becomes `MW_SERVER__TLS__CERT_PATH`. `unset` means the default leaves the
+setting empty rather than giving it a value; `empty` means an empty list.
+
+The groups below link to the section that explains the behaviour. `check-config`
+validates the whole set before you start the server.
+
+#### Listener and identity
+
+How the process listens, how it names itself to clients, and what a proxy may
+tell it.
+
+| Setting | Details |
+|---|---|
+| `server.bind`<br/>`MW_SERVER__BIND` | Default `0.0.0.0:8000`. Listener address. Plain HTTP unless `server.tls` is configured. |
+| `server.worker_threads`<br/>`MW_SERVER__WORKER_THREADS` | Default `0`. `0` = size from available CPUs. |
+| `server.public_url`<br/>`MW_SERVER__PUBLIC_URL` | Unset by default. Public origin used to build password-reset links, e.g. `https://chef.example.com`. Required when mail is enabled. Must be an absolute origin with no credentials, path, query, or fragment. `https` is required except for loopback hosts, which may use `http`. |
+| `server.default_orgname`<br/>`MW_SERVER__DEFAULT_ORGNAME` | Unset by default. Rewrite upstream short paths (`/nodes`, `/search`, `/cookbooks`, …) to this organization. Signature verification still uses the client's original path. |
+| `server.trusted_proxies`<br/>`MW_SERVER__TRUSTED_PROXIES` | Empty by default. Comma-separated IPs/CIDRs/socket addresses allowed to set `X-Forwarded-Host`/`X-Forwarded-Proto`. Untrusted peers fall back to `Host`. |
+
+#### TLS
+
+See [TLS listener](#tls-listener) for the certificate setup and the reload
+behaviour.
+
+| Setting | Details |
+|---|---|
+| `server.tls.enabled`<br/>`MW_SERVER__TLS__ENABLED` | Unset by default. `true` requires both paths; `false` forces plain HTTP; unset enables TLS when either path is set (the other is then required and validated). |
+| `server.tls.cert_path`<br/>`MW_SERVER__TLS__CERT_PATH` | Unset by default. PEM certificate chain, leaf first. Setting either path enables TLS. |
+| `server.tls.key_path`<br/>`MW_SERVER__TLS__KEY_PATH` | Unset by default. PEM private key matching the certificate. Never printed or logged. |
+| `server.tls.reload_interval_seconds`<br/>`MW_SERVER__TLS__RELOAD_INTERVAL_SECONDS` | Default `0`. Periodic certificate/key reload interval in seconds. `0` disables polling; `SIGHUP` still reloads immediately on Unix. Requires TLS, maximum `604800` (seven days). |
+
+#### Paths, database and storage
+
+The data directory and the metadata backend. Both backends are supported by
+the server, `microwave-ctl`, and `microwave-migrate`; see
+[Backup and restore](#9-backup-and-restore) for what the directory holds.
+
+| Setting | Details |
+|---|---|
+| `paths.data_dir`<br/>`MW_PATHS__DATA_DIR` | Default `./data`. All mutable state. |
+| `database.driver`<br/>`MW_DATABASE__DRIVER` | Default `sqlite`. `sqlite` or `postgres`. |
+| `database.url`<br/>`MW_DATABASE__URL` | Default `sqlite://<data_dir>/microwave.db`. `sqlite://<path>` or a `postgres://` URL. |
+| `storage.compression`<br/>`MW_STORAGE__COMPRESSION` | Default `zlib`. `zlib` stores new `serialized_object` rows as `mwz1:` + base64(zlib(JSON)); `none` stores plain JSON. Reads accept both formats either way, so existing databases keep working. |
+
+#### Search and dependency solver
+
+Search backends are explained in [Search](#search). The solver bounds
+concurrent cookbook solves so overlapping requests queue instead of starving
+the server.
+
+| Setting | Details |
+|---|---|
+| `search.backend`<br/>`MW_SEARCH__BACKEND` | Default `embedded`. `embedded`, `opensearch`, `elasticsearch`. |
+| `search.url`<br/>`MW_SEARCH__URL` | Unset by default. Required for the remote backends, e.g. `http://opensearch:9200`. |
+| `search.timeout_ms`<br/>`MW_SEARCH__TIMEOUT_MS` | Default `30000`. Request timeout for remote backend HTTP calls. Must be greater than zero; bounds `_bulk`, `_delete_by_query`, and `_refresh` so an unresponsive cluster cannot blackhole the server or CLI. |
+| `search.strict_result_acls`<br/>`MW_SEARCH__STRICT_RESULT_ACLS` | Default `true`. Hide search rows the caller cannot READ. Upstream calls this `strict_search_result_acls`; the reported `total` remains the pre-filter count. |
+| `depsolver.timeout_ms`<br/>`MW_DEPSOLVER__TIMEOUT_MS` | Default `20000`. Dependency solve deadline; must be greater than zero. |
+| `depsolver.max_concurrent`<br/>`MW_DEPSOLVER__MAX_CONCURRENT` | Default `4`. Concurrent solver permits; excess requests receive `503 Dependency solver overloaded`. |
+
+#### Object store
+
+Backends, credentials, and the reachability caveat are in
+[Object store](#object-store); the local backend has its own
+[caveat](#the-local-object-store-caveat).
+
+| Setting | Details |
+|---|---|
+| `object_store.backend`<br/>`MW_OBJECT_STORE__BACKEND` | Default `local`. `local`, `s3`, `garage`. |
+| `object_store.bucket`<br/>`MW_OBJECT_STORE__BUCKET` | Unset by default. Required for `s3`/`garage`. |
+| `object_store.endpoint`<br/>`MW_OBJECT_STORE__ENDPOINT` | Unset by default. Required for `s3`/`garage`. See the reachability caveat below. |
+| `object_store.region`<br/>`MW_OBJECT_STORE__REGION` | Default `us-east-1`. Must match the S3 gateway region. |
+| `object_store.access_key`<br/>`MW_OBJECT_STORE__ACCESS_KEY` | Unset by default. Falls back to the `bookshelf.access_key_id` secret. |
+| `object_store.secret_key`<br/>`MW_OBJECT_STORE__SECRET_KEY` | Unset by default. Falls back to the `bookshelf.secret_access_key` secret. |
+| `object_store.path_style`<br/>`MW_OBJECT_STORE__PATH_STYLE` | Default `true`. Keep `true` for Garage/MinIO. |
+| `object_store.secret`<br/>`MW_OBJECT_STORE__SECRET` | Generated by default. Only used by the local `/bookshelf` backend. |
+
+#### Authentication and status endpoints
+
+Signature tolerance, the protected superuser account, password-reset
+behaviour, and optional auth on the metrics endpoint described under
+[Endpoints](#endpoints).
+
+| Setting | Details |
+|---|---|
+| `auth.skew_seconds`<br/>`MW_AUTH__SKEW_SECONDS` | Default `900`. `X-Ops-Timestamp` tolerance. |
+| `auth.superuser_name`<br/>`MW_AUTH__SUPERUSER_NAME` | Default `pivotal`. Account that cannot be demoted and receives platform-superuser privileges. |
+| `auth.password_reset_token_in_response`<br/>`MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE` | Default `false`. Development-only: return the `/id/password-reset` URL in the HTTP response. Leave disabled in production; it allows account takeover. This still applies when mail is enabled. |
+| `auth.password_reset_ttl_seconds`<br/>`MW_AUTH__PASSWORD_RESET_TTL_SECONDS` | Default `3600`. Password-reset token lifetime in seconds. Must be greater than zero and at most `604800` (seven days). The reset email derives its expiry text from this value. |
+| `stats.username`<br/>`stats.password`<br/>`MW_STATS__USERNAME`<br/>`MW_STATS__PASSWORD` | Unset by default. Optional Basic auth for `/_stats`; when set, `/_status` remains public. Set both. |
+
+#### Mail
+
+Outbound password-reset mail. Everything except `mail.enabled` is ignored
+while mail is disabled or `mail.host` is empty; `server.public_url` becomes
+required once it is on. See [Mail (SMTP)](#mail-smtp).
+
+| Setting | Details |
+|---|---|
+| `mail.enabled`<br/>`MW_MAIL__ENABLED` | Default `false`. Enable outbound password-reset mail. |
+| `mail.host`<br/>`MW_MAIL__HOST` | Unset by default. SMTP relay hostname. Required when mail is enabled. |
+| `mail.port`<br/>`MW_MAIL__PORT` | Default `mail.security`. Defaults to `587` for `starttls`, `465` for `tls`, and `25` for `none`. Must be greater than zero. |
+| `mail.security`<br/>`MW_MAIL__SECURITY` | Default `starttls`. `starttls` (default), `tls` (implicit TLS/SMTPS), or `none` (explicit plaintext). `none` rejects SMTP AUTH for non-loopback hosts; remote authenticated relays must use `starttls` or `tls`. |
+| `mail.username`<br/>`MW_MAIL__USERNAME` | Unset by default. SMTP AUTH username. Requires `mail.password`. |
+| `mail.password`<br/>`MW_MAIL__PASSWORD` | Unset by default. SMTP AUTH password. Prefer the environment variable. Never logged or serialized, and absent from `microwave-config.json` backups. |
+| `mail.auth`<br/>`MW_MAIL__AUTH` | Default `auto`. `auto`, `plain`, `login`, or `none`. `auto`, `plain`, and `login` require a username and password; `none` rejects credentials. |
+| `mail.from`<br/>`MW_MAIL__FROM` | Unset by default. `From` header, for example `Chef Infra Server <chef@example.com>`. Required when mail is enabled; a display name is accepted. |
+| `mail.reply_to`<br/>`MW_MAIL__REPLY_TO` | Unset by default. Optional `Reply-To` header. |
+| `mail.timeout_ms`<br/>`MW_MAIL__TIMEOUT_MS` | Default `10000`. SMTP timeout in milliseconds. Must be greater than zero. |
+| `mail.hello_name`<br/>`MW_MAIL__HELLO_NAME` | Unset by default. EHLO/HELO name. When unset the mail library's default is used. |
+| `mail.tls_ca_path`<br/>`MW_MAIL__TLS_CA_PATH` | Unset by default. Extra PEM CA certificate used to verify a relay with a private CA; system roots remain trusted. Read when the mailer is built at startup, so an unreadable or unparseable file fails startup. |
+
+#### Key cache, Data Collector and integrations
+
+Background services and the optional Automate integrations. Forwarding,
+retention, and the action messages are described under
+[Data Collector, required recipe, and telemetry](#data-collector-required-recipe-and-telemetry).
+
+| Setting | Details |
+|---|---|
+| `keygen.size`<br/>`MW_KEYGEN__SIZE` | Default `3`. Maximum number of pre-generated 2048-bit RSA keypairs kept in memory. `0` disables caching and generates on demand. Maximum `1024`. |
+| `keygen.workers`<br/>`MW_KEYGEN__WORKERS` | Default `1`. Background key-generation threads. Must not exceed `keygen.size`; maximum `8`. `0` leaves refilling to `warm_up`. |
+| `keygen.warm_up`<br/>`MW_KEYGEN__WARM_UP` | Default `false`. Fill the cache synchronously during startup. Requires `keygen.size > 0`. Leave `false` to keep startup fast and let workers refill in the background. |
+| `data_collector.store`<br/>`MW_DATA_COLLECTOR__STORE` | Default `forward`. `forward`, `local`, or `both`. `local`/`both` persist `run_converge` reports locally, and `local`/`both` also keep `POST /organizations/:org/data-collector` enabled without `root_url`. |
+| `data_collector.keep_runs`<br/>`MW_DATA_COLLECTOR__KEEP_RUNS` | Default `50`. Reports kept per `(organization, node)`; `0` keeps everything. Old reports are pruned after each successful insert. |
+| `data_collector.root_url`<br/>`MW_DATA_COLLECTOR__ROOT_URL` | Unset by default. Enables forwarding of the payload to the external collector, e.g. `https://automate.example.com/data-collector/v0/`. |
+| `data_collector.token`<br/>`MW_DATA_COLLECTOR__TOKEN` | Unset by default. Shared bearer token accepted inbound and sent upstream as `x-data-collector-token`. Falls back to the `data_collector.token` secret. |
+| `data_collector.timeout`<br/>`MW_DATA_COLLECTOR__TIMEOUT`<br/>(alias `MW_DATA_COLLECTOR__TIMEOUT_MS`) | Default `30000`. Upstream forwarding and response-read timeout in milliseconds (TOML alias `timeout_ms`). Must be greater than zero; `check-config` rejects `0`. |
+| `data_collector.actions_enabled`<br/>`MW_DATA_COLLECTOR__ACTIONS_ENABLED` | Default `false`. Opt in to `oc_chef_action` mutation notifications while `root_url` is configured. `root_url` alone only enables client payload forwarding. Actions are only sent when `store` allows forwarding (`forward`/`both`), and are disabled automatically when `root_url` is unset. |
+| `data_collector.service_hostname`<br/>`MW_DATA_COLLECTOR__SERVICE_HOSTNAME` | Unset by default. `service_hostname` reported in action messages. Falls back to the request `X-Forwarded-Host` (or `Host`), then `localhost`. |
+| `compliance_proxy.url`<br/>`MW_COMPLIANCE_PROXY__URL` | Unset by default. Enables the Automate compliance profile proxy routes. Non-empty value only; unset means every method returns `404`. |
+| `compliance_proxy.token`<br/>`MW_COMPLIANCE_PROXY__TOKEN` | Unset by default. Service token sent upstream. Falls back to `data_collector.token` or the `data_collector.token` secret. |
+| `compliance_proxy.token_header`<br/>`MW_COMPLIANCE_PROXY__TOKEN_HEADER` | Default `x-data-collector-token`. Header that carries the service token. Invalid, framing, routing, and hop-by-hop header names are rejected by config validation. |
+| `compliance_proxy.timeout`<br/>`MW_COMPLIANCE_PROXY__TIMEOUT`<br/>(alias `MW_COMPLIANCE_PROXY__TIMEOUT_MS`) | Default `30000`. Request and response-read timeout in milliseconds (TOML alias `timeout_ms`). Must be greater than zero. |
+| `compliance_proxy.insecure_skip_tls_verify`<br/>`MW_COMPLIANCE_PROXY__INSECURE_SKIP_TLS_VERIFY` | Default `false`. Skip certificate verification for a test/private compliance upstream. Keep `false` in production. |
+| `required_recipe.enabled`<br/>`MW_REQUIRED_RECIPE__ENABLED`<br/>(alias `MW_REQUIRED_RECIPE__ENABLE`) | Default `false`. Enables `GET /organizations/:org/required_recipe`. TOML alias `enable`. |
+| `required_recipe.path`<br/>`MW_REQUIRED_RECIPE__PATH` | Unset by default. Recipe file served as `text/plain` when the endpoint is enabled. |
+| `telemetry.enabled`<br/>`MW_TELEMETRY__ENABLED` | Default `false`. Reserved toggle. No outbound sender is implemented, so enabling it does not phone home. |
+| `telemetry.reporting_url`<br/>`MW_TELEMETRY__REPORTING_URL` | Unset by default. Reserved reporting destination for a future opt-in exporter. |
+| `telemetry.interval_seconds`<br/>`MW_TELEMETRY__INTERVAL_SECONDS` | Default `86400`. Reserved exporter interval. |
 
 `storage.compression` applies to new writes. Decompression is capped at 64 MiB
 per value; corrupt or oversized compressed values fail with a storage error
@@ -1388,23 +1464,23 @@ token = "secret-token"
 
 Common mappings:
 
-| Legacy `chef-server.rb` setting | Microwave equivalent | Notes |
-| --- | --- | --- |
-| `api_fqdn` | `server.public_url` for links; reverse-proxy `Host`/`X-Forwarded-*` for request routing | Microwave builds API URLs from the request host and forwarded headers. Set `server.public_url` for password-reset links and any absolute URL that must not depend on the request. |
-| `postgresql['max_connections']`, pool tuning | PostgreSQL server-side tuning plus `database.url` | Microwave does not expose a connection-pool size. Tune PostgreSQL itself. |
-| `postgresql['work_mem']` | PostgreSQL server setting | Unchanged concept; configure in PostgreSQL. |
-| `nginx['ssl_protocols']`, TLS settings | `server.tls.cert_path`, `server.tls.key_path`, and reverse-proxy TLS settings | Microwave terminates TLS directly or behind a proxy. |
-| `data_collector['root_url']`, `data_collector['token']` | `data_collector.root_url`, `data_collector.token` | Direct equivalent. |
-| `compliance_proxy.url` | `compliance_proxy.url` | Direct equivalent. |
-| `search_provider` | `search.backend` (`embedded`, `opensearch`, `elasticsearch`) | Solr is not supported. Use OpenSearch/Elasticsearch for remote search. |
-| `search.url` | `search.url` | Direct equivalent. |
-| `object_store` S3/Garage settings | `[object_store]` | Direct equivalent for backend, bucket, endpoint, region, credentials, and path style. |
-| `storage.compression` | `storage.compression` | `zlib` or `none`. |
-| `auth.skew_seconds` | `auth.skew_seconds` | Direct equivalent. |
-| `oc_id` settings | `[auth]` superuser and OAuth routes | Microwave uses its own oc-id-compatible identity surface; most oc-id Ruby settings have no equivalent. |
-| `rabbitmq[...]`, `opscode_solr4[...]`, analytics settings | none | These services are EOL/removed in Chef Infra Server 14+. Microwave has no RabbitMQ, Solr, or analytics service. |
-| `dark_launch[...]` | none | Not used. |
-| `telemetry[...]` | `telemetry.*` | Microwave stores telemetry configuration but does not send telemetry. |
+| Legacy `chef-server.rb` setting | Microwave equivalent. Notes |
+| --- | ---. --- |
+| `api_fqdn` | Default: `server.public_url` for links; reverse-proxy `Host`/`X-Forwarded-*` for request routing. Microwave builds API URLs from the request host and forwarded headers. Set `server.public_url` for password-reset links and any absolute URL that must not depend on the request. |
+| `postgresql['max_connections']`, pool tuning | Default `PostgreSQL server-side tuning plus `database.url``. Microwave does not expose a connection-pool size. Tune PostgreSQL itself. |
+| `postgresql['work_mem']` | Default `PostgreSQL server setting`. Unchanged concept; configure in PostgreSQL. |
+| `nginx['ssl_protocols']`, TLS settings | Default: `server.tls.cert_path`, `server.tls.key_path`, and reverse-proxy TLS settings. Microwave terminates TLS directly or behind a proxy. |
+| `data_collector['root_url']`, `data_collector['token']` | `data_collector.root_url`, `data_collector.token`. Direct equivalent. |
+| `compliance_proxy.url` | Default `compliance_proxy.url`. Direct equivalent. |
+| `search_provider` | Default: `search.backend` (`embedded`, `opensearch`, `elasticsearch`). Solr is not supported. Use OpenSearch/Elasticsearch for remote search. |
+| `search.url` | Default `search.url`. Direct equivalent. |
+| `object_store` S3/Garage settings | Default `[object_store]`. Direct equivalent for backend, bucket, endpoint, region, credentials, and path style. |
+| `storage.compression` | Default `storage.compression`. `zlib` or `none`. |
+| `auth.skew_seconds` | Default `auth.skew_seconds`. Direct equivalent. |
+| `oc_id` settings | Default: `[auth]` superuser and OAuth routes. Microwave uses its own oc-id-compatible identity surface; most oc-id Ruby settings have no equivalent. |
+| `rabbitmq[...]`, `opscode_solr4[...]`, analytics settings | none. These services are EOL/removed in Chef Infra Server 14+. Microwave has no RabbitMQ, Solr, or analytics service. |
+| `dark_launch[...]` | none. Not used. |
+| `telemetry[...]` | Default `telemetry.*`. Microwave stores telemetry configuration but does not send telemetry. |
 
 Secrets and keys are not imported from `chef-server.rb`. Use `microwave-ctl set-secret` or `MW_*` environment variables, and migrate server-private material with
 `microwave-migrate import-knife-backup --secrets-dir ...` or `microwave-ctl backup --include-private-keys`.
@@ -1584,15 +1660,15 @@ deployments, the same parallel-run approach applies.
 ### Endpoints
 
 | Endpoint | Auth | Purpose |
-|---|---|---|
+|---|---|
 | `GET /_status` | none | `{"status":"pong","upstreams":{"chef_sql":"pong","chef_index":"pong","bookshelf":"pong"},"upstream_details":{...},"keygen":{"status":"ok","cached":3,"capacity":3,"workers":1,"worker_healthy":true,"worker_failures":0,"warm_up_failures":0,"generated_on_demand":0},"indexing":{"mode":"embedded"}}`. |
 | `GET /_stats` | none | Request counters, authentication failures, uptime, maintenance state, and node count. JSON by default, Prometheus text with `Accept: text/plain` or `?format=prometheus`. |
 | `GET /server_api_version` | none | `min_api_version` / `max_api_version` (`0`/`2`). |
-| `GET /license` | signed | Node license counters: configured limit, current node count, `limit_exceeded`, and the upgrade URL. Telemetry is disabled by default. |
-| `POST /organizations/:org/data-collector` | signed or `x-data-collector-token` | Present when `data_collector.root_url` is configured or `data_collector.store` is `local`/`both`. When `store` is `forward`/`both` and `root_url` is configured, forwards the JSON body and preserves the collector's status and body. `local` returns `200 {}` without forwarding while still storing `run_converge` reports; `both` also stores them. Timeouts map to `504`, other upstream failures to `502`; a disabled endpoint returns `404`. |
-| `GET /organizations/:org/owners/:owner/compliance[/profile]` | signed | Present only when `compliance_proxy.url` is configured. Rewrites to `/compliance/profiles/:owner[/profile]` and preserves the upstream status and body. Timeouts map to `504`, other upstream failures to `502`. |
-| `GET /compliance/organizations/:org/owners/:owner/compliance[/profile]` | signed | Legacy chef-gate spelling of the same compliance proxy route. |
-| `GET /organizations/:org/required_recipe` | signed | Present only when `required_recipe.enabled` is true. Returns the configured recipe file as `text/plain`; `POST` returns `405`, and the disabled endpoint returns `404` for every method. |
+| `GET /license` | `signed` | Node license counters: configured limit, current node count, `limit_exceeded`, and the upgrade URL. Telemetry is disabled by default. |
+| `POST /organizations/:org/data-collector` | `signed` or `x-data-collector-token` | Present when `data_collector.root_url` is configured or `data_collector.store` is `local`/`both`. When `store` is `forward`/`both` and `root_url` is configured, forwards the JSON body and preserves the collector's status and body. `local` returns `200 {}` without forwarding while still storing `run_converge` reports; `both` also stores them. Timeouts map to `504`, other upstream failures to `502`; a disabled endpoint returns `404`. |
+| `GET /organizations/:org/owners/:owner/compliance[/profile]` | `signed` | Present only when `compliance_proxy.url` is configured. Rewrites to `/compliance/profiles/:owner[/profile]` and preserves the upstream status and body. Timeouts map to `504`, other upstream failures to `502`. |
+| `GET /compliance/organizations/:org/owners/:owner/compliance[/profile]` | `signed` | Legacy chef-gate spelling of the same compliance proxy route. |
+| `GET /organizations/:org/required_recipe` | `signed` | Present only when `required_recipe.enabled` is true. Returns the configured recipe file as `text/plain`; `POST` returns `405`, and the disabled endpoint returns `404` for every method. |
 
 ### Data Collector, required recipe, and telemetry
 

@@ -100,3 +100,26 @@ html[data-theme='dark'] .navbar {
 html[data-theme='dark'] .theme-doc-sidebar-container {
   border-right-color: rgba(247, 245, 239, 0.12);
 }
+
+/*
+ * Reference tables lead with a short key and end with the explanation. Left to
+ * auto layout a single long default value takes the middle column's room, so
+ * pin the first two columns and give the prose the rest. Below the desktop
+ * breakpoint keep Infima's scrolling auto layout instead of squeezing cells.
+ */
+@media (min-width: 768px) {
+  article table {
+    display: table;
+    width: 100%;
+    table-layout: fixed;
+  }
+
+  article table th:first-child,
+  article table td:first-child {
+    width: 34%;
+  }
+
+  article table code {
+    overflow-wrap: anywhere;
+  }
+}
