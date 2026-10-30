@@ -6,13 +6,17 @@
 # a builder container, because the binaries must be linked against Linux glibc.
 #
 # Usage:
-#   scripts/build-deb.sh [--skip-build]
+#   scripts/build-deb.sh [--skip-build] [--print-version]
+#
+#   --print-version   Print the resolved package version and exit
 #
 # Environment:
 #   BUILD_IMAGE       Builder image for non-Linux hosts
 #                     (default: rust:1-bookworm)
 #   DEB_ARCH          Override the Debian architecture (default: from uname -m)
 #   DEB_MAINTAINER    Maintainer field (default: git identity)
+#   DEB_VERSION       Package version (default: [workspace.package] version
+#                     from Cargo.toml; one leading "v" is stripped)
 #   DEB_OUTPUT_DIR    Output directory, relative to the repository root
 #                     (default: dist)
 #   CARGO_TARGET_DIR  Cargo target directory (default: target)
@@ -24,11 +28,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 SKIP_BUILD=0
+PRINT_VERSION=0
 for argument in "$@"; do
     case "$argument" in
         --skip-build) SKIP_BUILD=1 ;;
+        --print-version) PRINT_VERSION=1 ;;
         -h|--help)
-            sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -42,6 +48,24 @@ VERSION="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version[[:space:]]*=[[:spac
 if [ -z "$VERSION" ]; then
     echo "error: could not read version from [workspace.package] in Cargo.toml" >&2
     exit 1
+fi
+
+if [ -n "${DEB_VERSION:-}" ]; then
+    VERSION="${DEB_VERSION#v}"
+fi
+VALID=0
+case "$VERSION" in
+    ''|*[!0-9A-Za-z.+~-]*|[!0-9]*) ;;
+    *) VALID=1 ;;
+esac
+if [ "$VALID" -eq 0 ]; then
+    echo "error: '$VERSION' is not a Debian version" >&2
+    exit 1
+fi
+
+if [ "$PRINT_VERSION" -eq 1 ]; then
+    echo "$VERSION"
+    exit 0
 fi
 
 if [ -z "${DEB_ARCH:-}" ]; then
