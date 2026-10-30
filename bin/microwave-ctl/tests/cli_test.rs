@@ -2090,6 +2090,7 @@ fn check_config_accepts_a_postgres_url_without_connecting() {
         .output()
         .unwrap();
     assert_success(&output);
+    assert!(stdout(&output).contains("ok: database"));
     assert!(stdout(&output).contains("ok: database.pool_size 10"));
 }
 

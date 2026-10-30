@@ -26,6 +26,9 @@ pub fn check_config(context: &Context) -> Result<(), CtlError> {
         checks.push(format!("data_dir {}", context.data_dir.display()));
     }
 
+    // Defensive: `Context::load` already runs `Config::validate`, which rejects
+    // a zero value. This only fires for configs built without validation; keep
+    // it when the load path changes.
     if config.database.pool_size == 0 {
         problems.push("database.pool_size must be greater than zero".to_string());
     }
