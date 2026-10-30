@@ -7,10 +7,14 @@ the pages that are published.
 
 ```sh
 npm install
-npm run dev      # http://localhost:3000/docs/
+npm run dev      # http://localhost:3000/microwave-development/docs/
 npm run build    # static site into build/
 npm run preview  # serve build/ locally
 ```
+
+The site deploys to GitHub Pages under
+`https://rmoriz.github.io/microwave-development/docs/`. `baseUrl` must stay in
+sync with the homepage's `BASE_PATH`.
 
 ## Adding a page
 

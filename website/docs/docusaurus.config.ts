@@ -8,8 +8,8 @@ const config: Config = {
   tagline: 'A Rust reimplementation of the Chef Infra Server API',
   favicon: 'img/favicon.svg',
 
-  url: 'https://microwave.io',
-  baseUrl: '/docs/',
+  url: 'https://rmoriz.github.io',
+  baseUrl: '/microwave-development/docs/',
   organizationName: 'rmoriz',
   projectName: 'microwave-development',
 
@@ -79,7 +79,11 @@ const config: Config = {
           position: 'left',
         },
         {type: 'doc', docId: 'mcp', label: 'MCP', position: 'left'},
-        {href: 'https://microwave.io', label: 'microwave.io', position: 'right'},
+        {
+          href: 'https://rmoriz.github.io/microwave-development/',
+          label: 'Homepage',
+          position: 'right',
+        },
         {
           href: 'https://github.com/rmoriz/microwave-development',
           label: 'GitHub',
@@ -110,8 +114,8 @@ const config: Config = {
           title: 'Project',
           items: [
             {
-              label: 'microwave.io',
-              href: 'https://microwave.io',
+              label: 'Homepage',
+              href: 'https://rmoriz.github.io/microwave-development/',
             },
             {
               label: 'Source',
