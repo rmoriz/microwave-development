@@ -1,5 +1,6 @@
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
+import {themes as prismThemes} from 'prism-react-renderer';
 import githubRelativeLinks from './plugins/github-relative-links.mjs';
 
 const config: Config = {
@@ -122,6 +123,10 @@ const config: Config = {
       copyright: `Microwave Server is an independent project, not affiliated with or endorsed by Progress. Built with Docusaurus.`,
     },
     prism: {
+      // The classic preset defaults to the dark Palenight theme in both modes,
+      // which leaves a dark slab on the paper background.
+      theme: prismThemes.github,
+      darkTheme: prismThemes.nightOwl,
       additionalLanguages: ['bash', 'toml', 'ruby', 'rust', 'json'],
     },
   } satisfies Preset.ThemeConfig,
