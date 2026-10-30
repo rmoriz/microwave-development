@@ -23,6 +23,7 @@ const needsCompletion = !site.legal.operator || !site.legal.address;
         {address}<br />
         <a href={`mailto:${site.legal.email}`}>{site.legal.email}</a>
       </address>
+      {site.legal.vatId && <p>VAT-ID: {site.legal.vatId}</p>}
       {needsCompletion && (
         <p class="legal-warning">This page must be completed before launch.</p>
       )}

@@ -171,7 +171,13 @@ test('final CTA, footer, and legal pages', () => {
   for (const page of ['privacy', 'imprint']) {
     const pageHtml = fs.readFileSync(path.join(root, `dist/${page}/index.html`), 'utf8');
     const pageDoc = cheerio.load(pageHtml);
-    assert.match(pageHtml, /hello@microwave\.io/);
+    assert.match(pageHtml, /info\+microwave@moriz\.de/);
     assert.equal(pageDoc('header.site-header').length, 1);
   }
+
+  const imprint = fs.readFileSync(path.join(root, 'dist/imprint/index.html'), 'utf8');
+  assert.match(imprint, /Roland Moriz/);
+  assert.match(imprint, /Hedwig-Dransfeld-Allee 14, 80637 Munich, Germany/);
+  assert.match(imprint, /DE246360556/);
+  assert.doesNotMatch(imprint, /to be supplied|must be completed/);
 });
