@@ -1850,6 +1850,22 @@ surfaces = [ { path = "docs/debian-package.md", needle = "The unit is a separate
 verify = { kind = "grep", path = "packaging/debian/microwave-server.service", pattern = "ExecStart=/usr/bin/microwave-server" }
 
 [[claim]]
+id = "deb-pkg-release-attach"
+summary = "A tag push builds the .deb and its checksum for amd64 and arm64 and attaches both to the Release."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/debian-package.md", needle = "microwave-server_<version>_<arch>.deb" } ]
+verify = { kind = "file", path = ".github/workflows/release.yml" }
+
+[[claim]]
+id = "deb-pkg-log-rotation"
+summary = "The package logs to /var/log/microwave and logrotate rotates the file daily, keeping 14 compressed generations."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/debian-package.md", needle = "/etc/logrotate.d/microwave-server" } ]
+verify = { kind = "file", path = "packaging/debian/microwave-server.logrotate" }
+
+[[claim]]
 id = "dep-audit-base64"
 summary = "Direct base64 requires 0.23 and the lock resolves 0.23.1."
 area = "tooling"

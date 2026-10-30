@@ -40,6 +40,16 @@ embeds versioned glibc symbols. With the default `rust:1-bookworm` image the
 package installs on Debian 12+ and Ubuntu 24.04+. For Ubuntu 22.04, build in a
 22.04-based image that provides Rust and set `BUILD_IMAGE` accordingly.
 
+### Release builds
+
+`.github/workflows/release.yml` runs on `v*` tag pushes and on manual
+`workflow_dispatch`. A tag push builds `microwave-server_<version>_<arch>.deb`
+and a matching `.sha256` file for `amd64` and `arm64` and attaches both to that
+GitHub Release, next to the tarballs. A `workflow_dispatch` runs on a branch
+and produces only the tarballs — no package. The tag has to be a Debian
+version: the leading `v` is stripped and anything other than a digit at the
+start fails the job.
+
 ## Install
 
 ```sh
@@ -62,6 +72,7 @@ failed first start (for example a busy port) does not fail the installation.
 | `/usr/lib/systemd/system/microwave-server.service` | Hardened systemd unit |
 | `/etc/microwave/microwave.toml` | Conffile with the local single-node defaults |
 | `/var/lib/microwave` | Data directory (SQLite database, bookshelf, generated keys) |
+| `/var/log/microwave/microwave.log` | Service log, rotated by `/etc/logrotate.d/microwave-server` |
 | `/usr/share/doc/microwave-server/` | README, LICENSE, Debian copyright |
 
 The unit is a separate copy of `packaging/systemd/microwave-server.service`
@@ -76,6 +87,20 @@ journalctl -u microwave-server -f
 sudo microwave-ctl --config /etc/microwave/microwave.toml status
 sudo systemctl restart microwave-server
 ```
+
+The unit's stdout and stderr go to `/var/log/microwave/microwave.log` via
+`StandardOutput=append:`. The postinst creates `/var/log/microwave` 0750
+`microwave:microwave` and pre-creates the log file 0600 `microwave:microwave`,
+which the unit's `LogsDirectory=microwave` would otherwise create only too late;
+a fresh start would fail on the missing path. journald therefore only carries
+the unit's start and stop messages.
+
+`/etc/logrotate.d/microwave-server` rotates the file daily, keeps 14
+compressed generations, and uses `copytruncate` because the server has no
+log-reopen signal. A `systemctl reload` does not rotate; use
+`logrotate -f /etc/logrotate.d/microwave-server` when you need it now. The
+`logrotate` package is a hard dependency, so the rule installs with the
+package.
 
 Configuration changes outside the TLS certificate pair require a restart.
 `systemctl reload microwave-server` sends SIGHUP, which only reloads the TLS
@@ -99,7 +124,8 @@ sudo apt purge microwave-server                            # remove data and use
 
 `/etc/microwave/microwave.toml` is a conffile: local edits survive upgrades and
 dpkg asks before replacing them. A purge removes `/var/lib/microwave`,
-`/etc/microwave` and the `microwave` user/group.
+`/etc/logrotate.d/microwave-server`, `/var/log/microwave`, `/etc/microwave` and
+the `microwave` user/group. A plain remove keeps the log directory.
 
 ## Test
 

@@ -1885,9 +1885,13 @@ journalctl -u microwave-server -f
 docker compose logs -f microwave
 ```
 
-There is no file logging or in-process rotation; use journald or the container
-log driver. `SIGTERM` and `SIGINT` trigger graceful shutdown: the listener
-stops accepting new connections and in-flight requests are allowed to finish.
+There is no in-process rotation. The packaged service appends its stderr to
+`/var/log/microwave/microwave.log` and `/etc/logrotate.d/microwave-server`
+rotates it daily (see [Debian and Ubuntu packages](debian-package.md)); journald
+then only carries start/stop messages. Containers and manual installs have no
+such file and use journald or the container log driver. `SIGTERM` and `SIGINT`
+trigger graceful shutdown: the listener stops accepting new connections and
+in-flight requests are allowed to finish.
 The TLS listener caps the drain at 5 seconds; plain HTTP waits for active
 requests to complete. `SIGTERM`/`SIGINT` exit with status 0 when the drain
 finishes, so `docker stop` does not need to escalate to `SIGKILL`. Process
