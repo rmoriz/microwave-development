@@ -939,6 +939,16 @@ surfaces = [
 verify = { kind = "grep", path = "website/homepage/src/components/Hero.astro", pattern = "Chef Infra Server API" }
 
 [[claim]]
+id = "hero-easter-egg"
+summary = "Five quick taps on the hero image swap it for a YouTube embed that starts at 0:20, ends at 1:30, and returns to the image."
+area = "website"
+status = "verified"
+surfaces = [
+  { path = "website/homepage/src/components/Hero.astro", needle = "data-hero-egg" },
+]
+verify = { kind = "grep", path = "website/homepage/src/components/Hero.astro", pattern = "end=90" }
+
+[[claim]]
 id = "proof-strip"
 summary = "The proof strip links the pedant, chef-client, distro, and single-binary evidence."
 area = "website"
@@ -1090,13 +1100,13 @@ verify = { kind = "grep", path = "website/homepage/src/pages/index.astro", patte
 
 [[claim]]
 id = "privacy-page"
-summary = "The privacy page states no cookies, no analytics, and no third-party requests."
+summary = "The privacy page states no cookies and no analytics, and names the one third-party request: the gated hero video."
 area = "website"
 status = "verified"
 surfaces = [
   { path = "website/homepage/src/pages/privacy.astro", needle = "sets no cookies" },
 ]
-verify = { kind = "grep", path = "website/homepage/src/pages/privacy.astro", pattern = "no third-party" }
+verify = { kind = "grep", path = "website/homepage/src/pages/privacy.astro", pattern = "youtube-nocookie" }
 
 [[claim]]
 id = "imprint-page"

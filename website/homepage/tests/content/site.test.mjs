@@ -157,7 +157,7 @@ test('final CTA, footer, and legal pages', () => {
   assert.match(text, /not affiliated with or endorsed by Progress Software Corporation/i);
   assert.match(text, /trademarks of Progress Software Corporation/i);
   assert.match(text, /AGPL-3\.0-only/);
-  assert.match(text, /No cookies, no analytics, no third-party requests/i);
+  assert.match(text, /No cookies, no analytics\. One YouTube video, if you find it\./);
   assert.equal($(`a[href="${BASE_PATH}/privacy/"]`).length, 1);
   assert.equal($(`a[href="${BASE_PATH}/imprint/"]`).length, 1);
   // Footer nav; the hero and closing CTAs lead to the guides.
@@ -168,12 +168,20 @@ test('final CTA, footer, and legal pages', () => {
   assert.doesNotMatch(text, /cheaper than|drop the license|end of life|official partner|invented tiers/i);
   assert.equal($('link[rel="preload"][as="image"]').length, 1);
 
+  // Easter egg: the hero image is a button; the embed is not requested up front.
+  assert.equal($('.hero-egg[data-hero-egg]').length, 1);
+  assert.equal($('.hero-video[hidden]').length, 1);
+  assert.equal($('.hero-video iframe').length, 0);
+
   for (const page of ['privacy', 'imprint']) {
     const pageHtml = fs.readFileSync(path.join(root, `dist/${page}/index.html`), 'utf8');
     const pageDoc = cheerio.load(pageHtml);
     assert.match(pageHtml, /info\+microwave@moriz\.de/);
     assert.equal(pageDoc('header.site-header').length, 1);
   }
+
+  const privacy = fs.readFileSync(path.join(root, 'dist/privacy/index.html'), 'utf8');
+  assert.match(privacy, /youtube-nocookie\.com/);
 
   const imprint = fs.readFileSync(path.join(root, 'dist/imprint/index.html'), 'utf8');
   assert.match(imprint, /Roland Moriz/);

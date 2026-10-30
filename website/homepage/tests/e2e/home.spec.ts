@@ -104,6 +104,30 @@ test('reduced motion disables reveals and smooth scrolling', async ({ page }) =>
   expect(styles.revealAnimation).toBe('none');
 });
 
+test('five taps on the hero image play the video, then restore the image', async ({ page }) => {
+  await page.clock.install();
+  await page.goto(url());
+  await expect(page.locator('iframe')).toHaveCount(0);
+  const egg = page.locator('[data-hero-egg]');
+  for (let tap = 0; tap < 5; tap += 1) {
+    await egg.click();
+  }
+  const frame = page.locator('.hero-video iframe');
+  await expect(frame).toBeVisible();
+  await expect(frame).toHaveAttribute(
+    'src',
+    /youtube-nocookie\.com\/embed\/IRfgG3BtVlQ\?autoplay=1&start=20&end=90/,
+  );
+  await expect(page.locator('[data-hero-egg]')).toBeHidden();
+  await expect(page.locator('[data-hero-caption]')).toHaveText(/Kernkraft 400/);
+  await expect(frame).toHaveAttribute('data-loaded', 'true');
+
+  await page.clock.fastForward(70_000);
+  await expect(frame).toHaveCount(0);
+  await expect(egg).toBeVisible();
+  await expect(page.locator('[data-hero-caption]')).toHaveText(/single binary/);
+});
+
 test('page emits no console errors', async ({ page }) => {
   const errors: string[] = [];
   page.on('console', (msg) => {

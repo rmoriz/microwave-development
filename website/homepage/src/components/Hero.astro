@@ -26,17 +26,84 @@ import heroImage from '../assets/microwave-hero.png';
     </div>
 
     <figure class="hero-figure">
-      <Picture
-        src={heroImage}
-        formats={['avif', 'webp']}
-        fallbackFormat="webp"
-        widths={[640, 960, 1280, 1536]}
-        sizes="(min-width: 900px) 46vw, 100vw"
-        alt="A rainbow neon microwave glowing on a dark surface"
-        loading="eager"
-        fetchpriority="high"
-      />
-      <figcaption>Artist's impression. The real thing is a single binary.</figcaption>
+      <button
+        class="hero-egg"
+        type="button"
+        data-hero-egg
+        aria-label="Play the hidden microwave video"
+      >
+        <Picture
+          src={heroImage}
+          formats={['avif', 'webp']}
+          fallbackFormat="webp"
+          widths={[640, 960, 1280, 1536]}
+          sizes="(min-width: 900px) 46vw, 100vw"
+          alt="A rainbow neon microwave glowing on a dark surface"
+          loading="eager"
+          fetchpriority="high"
+        />
+      </button>
+      <div class="hero-video" data-hero-video hidden></div>
+      <figcaption data-hero-caption>Artist's impression. The real thing is a single binary.</figcaption>
     </figure>
   </div>
 </section>
+
+<script>
+  const egg = document.querySelector<HTMLButtonElement>('[data-hero-egg]');
+  const video = document.querySelector<HTMLElement>('[data-hero-video]');
+  const caption = document.querySelector<HTMLElement>('[data-hero-caption]');
+  const source =
+    'https://www.youtube-nocookie.com/embed/IRfgG3BtVlQ?autoplay=1&start=20&end=90&rel=0&playsinline=1';
+
+  if (egg && video && caption) {
+    const originalCaption = caption.textContent ?? '';
+    const playFor = 70_000;
+    let taps = 0;
+    let reset = 0;
+    let hide = 0;
+
+    const revert = () => {
+      window.clearTimeout(hide);
+      video.querySelector('iframe')?.remove();
+      video.hidden = true;
+      egg.hidden = false;
+      caption.textContent = originalCaption;
+      taps = 0;
+      if (document.activeElement === document.body) {
+        egg.focus({ preventScroll: true });
+      }
+    };
+
+    egg.addEventListener('click', () => {
+      taps += 1;
+      window.clearTimeout(reset);
+      if (taps < 5) {
+        reset = window.setTimeout(() => {
+          taps = 0;
+        }, 2000);
+        return;
+      }
+
+      const frame = document.createElement('iframe');
+      frame.src = source;
+      frame.title = 'Zombie Nation – Kernkraft 400';
+      frame.allow = 'autoplay; encrypted-media; picture-in-picture';
+      frame.referrerPolicy = 'strict-origin-when-cross-origin';
+      frame.allowFullscreen = true;
+      frame.addEventListener(
+        'load',
+        () => {
+          frame.dataset.loaded = 'true';
+          hide = window.setTimeout(revert, playFor);
+        },
+        { once: true },
+      );
+      video.append(frame);
+      video.hidden = false;
+      egg.hidden = true;
+      caption.textContent = 'Now playing — Kernkraft 400.';
+      frame.focus();
+    });
+  }
+</script>
