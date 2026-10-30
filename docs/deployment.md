@@ -726,6 +726,10 @@ journalctl -u microwave-server -f
 sudo -u microwave microwave-ctl --config /etc/microwave/microwave.toml status
 ```
 
+On a packaged host this journal shows only unit lifecycle lines; the
+application log is `/var/log/microwave/microwave.log` (see
+[Debian and Ubuntu packages](debian-package.md#operate)).
+
 The CLI can drive the same unit when `systemctl` is available:
 
 ```sh
@@ -735,6 +739,10 @@ sudo microwave-ctl service restart
 microwave-ctl service status
 microwave-ctl service tail --lines 100 --follow
 ```
+
+On a packaged host `microwave-ctl service tail` and the `gather-logs` bundle
+therefore contain unit lifecycle lines only; the application log is
+`/var/log/microwave/microwave.log`.
 
 `service` delegates to `systemctl` and, for `tail`, `journalctl`, using the
 `microwave-server` unit. Override the unit with `--unit` or
@@ -1889,10 +1897,11 @@ There is no in-process rotation. The packaged service appends its stderr to
 `/var/log/microwave/microwave.log` and `/etc/logrotate.d/microwave-server`
 rotates it daily (see [Debian and Ubuntu packages](debian-package.md)); journald
 then only carries start/stop messages. Containers and manual installs have no
-such file and use journald or the container log driver. `SIGTERM` and `SIGINT`
-trigger graceful shutdown: the listener stops accepting new connections and
-in-flight requests are allowed to finish.
-The TLS listener caps the drain at 5 seconds; plain HTTP waits for active
+such file and use journald or the container log driver.
+
+`SIGTERM` and `SIGINT` trigger graceful shutdown: the listener stops accepting
+new connections and in-flight requests are allowed to finish. The TLS listener
+caps the drain at 5 seconds; plain HTTP waits for active
 requests to complete. `SIGTERM`/`SIGINT` exit with status 0 when the drain
 finishes, so `docker stop` does not need to escalate to `SIGKILL`. Process
 teardown can also wait for one in-progress background keypair generation to

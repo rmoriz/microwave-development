@@ -321,7 +321,8 @@ fn readme_report() -> String {
     writeln!(
         out,
         "- journal.txt: the last 1000 lines of the service journal, when journalctl is \
-         available."
+         available. On a packaged host it holds only unit lifecycle lines; the \
+         application log is /var/log/microwave/microwave.log."
     )
     .unwrap();
     writeln!(

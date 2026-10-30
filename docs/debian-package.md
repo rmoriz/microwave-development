@@ -11,9 +11,10 @@ builds on your own Debian/Ubuntu hosts.
 scripts/build-deb.sh
 ```
 
-The result is `dist/microwave-server_<version>_<arch>.deb`. The version comes
-from `[workspace.package]` in `Cargo.toml`; the architecture is derived from the
-host (`amd64`, `arm64`, `armhf`).
+The result is `dist/microwave-server_<version>_<arch>.deb`. In CI the version
+comes from the release tag (one leading `v` is stripped); a local build takes it
+from `[workspace.package]` in `Cargo.toml`. The architecture is derived from the
+host (`amd64`, `arm64`, `armhf`), or from `DEB_ARCH`.
 
 On Linux the script builds natively. On macOS or another non-Linux host it
 re-executes itself in Docker (`BUILD_IMAGE`, default `rust:1-bookworm`) because
@@ -29,6 +30,8 @@ Useful overrides:
 | `DEB_MAINTAINER` | `Maintainer:` field (defaults to `git config user.*`) |
 | `DEB_OUTPUT_DIR` | Output directory, default `dist` |
 | `CARGO_TARGET_DIR` | Cargo target directory, default `target` |
+| `DEB_VERSION` | Package version instead of `[workspace.package]` (one leading `v` is stripped) |
+| `--print-version` (argument) | Print the resolved version and exit |
 
 `scripts/build-deb.sh --skip-build` reuses binaries that are already in
 `target/release`; it is useful while iterating on the packaging metadata.
@@ -46,9 +49,10 @@ package installs on Debian 12+ and Ubuntu 24.04+. For Ubuntu 22.04, build in a
 `workflow_dispatch`. A tag push builds `microwave-server_<version>_<arch>.deb`
 and the checksum `microwave-server_<version>_<arch>.deb.sha256` for `amd64` and
 `arm64` and attaches both to that GitHub Release, next to the tarballs. A
-`workflow_dispatch` runs on a branch and produces only the tarballs — no
-package. The tag has to be a Debian version: the leading `v` is stripped and
-anything other than a digit at the start fails the job.
+`workflow_dispatch` on a tag packages; on a branch it produces only the
+tarballs — no package. A `v*` tag whose remainder is not a Debian version emits
+a warning and ships tarballs only. The package version is the tag's version; the
+run warns when it differs from `[workspace.package]`.
 
 ## Install
 
@@ -71,6 +75,7 @@ failed first start (for example a busy port) does not fail the installation.
 | `/usr/bin/microwave-migrate` | Snapshot export/import |
 | `/usr/lib/systemd/system/microwave-server.service` | Hardened systemd unit |
 | `/etc/microwave/microwave.toml` | Conffile with the local single-node defaults |
+| `/etc/logrotate.d/microwave-server` | Conffile with the daily rotation rule |
 | `/var/lib/microwave` | Data directory (SQLite database, bookshelf, generated keys) |
 | `/var/log/microwave/microwave.log` | Service log, rotated by `/etc/logrotate.d/microwave-server` |
 | `/usr/share/doc/microwave-server/` | README, LICENSE, Debian copyright |
@@ -88,19 +93,26 @@ sudo microwave-ctl --config /etc/microwave/microwave.toml status
 sudo systemctl restart microwave-server
 ```
 
-The unit's stdout and stderr go to `/var/log/microwave/microwave.log` via
-`StandardOutput=append:`. The postinst creates `/var/log/microwave` 0750
-`microwave:microwave` and pre-creates the log file 0600 `microwave:microwave`,
-which the unit's `LogsDirectory=microwave` would otherwise create only too late;
-a fresh start would fail on the missing path. journald therefore only carries
-the unit's own lifecycle messages (start, stop, reload, exit and failure).
+On a packaged host `journalctl -u microwave-server` shows only unit lifecycle
+lines; the application log is `/var/log/microwave/microwave.log`.
 
-`/etc/logrotate.d/microwave-server` rotates the file daily, keeps 14
-compressed generations, and uses `copytruncate` because the server has no
-log-reopen signal. A `systemctl reload` does not rotate; use
-`logrotate -f /etc/logrotate.d/microwave-server` when you need it now. The
-`logrotate` package is a hard dependency, so the rule installs with the
-package.
+The unit's stdout and stderr go to `/var/log/microwave/microwave.log` via
+`StandardOutput=append:`. systemd opens that file itself as root, so it would
+create it root-owned when it is absent; the postinst pre-creates
+`/var/log/microwave` 0750 `microwave:microwave` and the log file 0600
+`microwave:microwave` so the path and its ownership are stable. It also opens
+the file before it makes the `LogsDirectory=`, so a fresh start would otherwise
+fail on the missing path. Removing the file and restarting recreates it
+root-owned, which is harmless because rotation runs as root either way. journald
+therefore only carries the unit's own lifecycle messages (start, stop, reload,
+exit and failure); the application log is the file.
+
+`/etc/logrotate.d/microwave-server` rotates the file daily, keeps 14 compressed
+generations with `delaycompress`, and uses `copytruncate` because the server has
+no log-reopen signal. It runs as root (`su root root`). A `systemctl reload` does
+not rotate; use `logrotate -f /etc/logrotate.d/microwave-server` when you need
+it now. The `logrotate` package is a hard dependency, so the rule installs with
+the package.
 
 Configuration changes outside the TLS certificate pair require a restart.
 `systemctl reload microwave-server` sends SIGHUP, which only reloads the TLS
@@ -123,11 +135,12 @@ sudo apt purge microwave-server                            # remove data and use
 ```
 
 `/etc/microwave/microwave.toml` is a conffile: local edits survive upgrades and
-dpkg asks before replacing them. The logrotate rule is a regular package file,
-so even a plain `apt remove` drops `/etc/logrotate.d/microwave-server`, while
-`/var/log/microwave` stays behind. A purge removes `/var/lib/microwave`,
-`/var/log/microwave` and with it the rotation state, `/etc/microwave` and the
-`microwave` user/group.
+dpkg asks before replacing them. `/etc/logrotate.d/microwave-server` is a
+conffile too, with the same upgrade behaviour, and both survive a plain
+`apt remove`, as does `/var/log/microwave`. A purge removes `/var/lib/microwave`,
+`/var/log/microwave` and with it the rotated generations (logrotate's own state
+lives in `/var/lib/logrotate/status`), `/etc/microwave`, the logrotate rule and
+the `microwave` user/group.
 
 ## Test
 
@@ -137,6 +150,7 @@ scripts/test-deb.sh
 
 The script installs the newest `dist/*.deb` in `debian:12-slim` and
 `ubuntu:24.04`, checks the file layout and permissions, runs both binaries,
-validates the configuration as the `microwave` user, and purges the package to
-exercise the postrm cleanup. Override the images with
+validates the configuration as the `microwave` user, exercises rotation, removes
+and reinstalls the package to check what a reinstall needs survives, and purges
+it to exercise the postrm cleanup. Override the images with
 `TEST_IMAGES="debian:12-slim"`.
