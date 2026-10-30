@@ -9,8 +9,9 @@
 # with TEST_IMAGES="debian:12-slim" (space-separated).
 #
 # Each container installs the package through apt, checks the installed
-# layout and service account, runs both binaries, validates the configuration
-# and then purges the package to exercise the postrm cleanup.
+# layout and service account, runs both binaries, validates the configuration,
+# removes the package to check the state a reinstall needs survives, and then
+# purges it to exercise the postrm cleanup.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -102,9 +103,15 @@ for image in $IMAGES; do
                 systemd-analyze verify /usr/lib/systemd/system/microwave-server.service
             fi
 
+            # A plain remove keeps mutable state, so the log survives it; only
+            # the purge below is allowed to drop it.
+            apt-get remove -y microwave-server >/dev/null
+            test -f /var/log/microwave/microwave.log
+
             apt-get purge -y microwave-server >/dev/null
             test ! -d /var/lib/microwave
             test ! -d /var/log/microwave
+            test ! -f /etc/logrotate.d/microwave-server
             if getent passwd microwave >/dev/null 2>&1; then
                 echo "error: service user survived purge" >&2
                 exit 1
