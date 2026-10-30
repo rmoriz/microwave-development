@@ -349,7 +349,7 @@ The endpoint exposes 11 read tools and, when `writes = true`, 8 write tools
 Always registered.
 
 | Tool | Arguments | Result |
-|---|---|
+|---|---|---|
 | `list_nodes` | `query?`, `environment?`, `limit?` | Name, environment, policy name/group, `updated_at`. `query` is a case-insensitive substring match on the node name. |
 | `get_node` | `name` | Full node object. |
 | `list_environments` | `limit?` | Name and `updated_at`. |
@@ -378,7 +378,7 @@ newer clean runs.
 Registered only when the organization has `writes = true`.
 
 | Tool | Arguments | Semantics |
-|---|---|
+|---|---|---|
 | `create_node` | `name`, `environment?`, `run_list?`, `normal?`, `policy_name?`, `policy_group?` | Builds a node document and runs the create path (container `nodes` Create ACL). |
 | `update_node` | `name`, `node` (full document) | Same normalization and validation as `PUT /nodes/:name`. Node Update ACL. This is a replacement, not JSON patch. |
 | `delete_node` | `name` | Node Delete ACL. |

@@ -119,6 +119,18 @@ html[data-theme='dark'] .theme-doc-sidebar-container {
     width: 34%;
   }
 
+  /* Three-column tables have a short middle cell (an auth or argument list);
+     keep it narrow so the description gets the room. */
+  article table:has(thead th:nth-child(3)) th:first-child,
+  article table:has(thead th:nth-child(3)) td:first-child {
+    width: 28%;
+  }
+
+  article table:has(thead th:nth-child(3)) th:nth-child(2),
+  article table:has(thead th:nth-child(3)) td:nth-child(2) {
+    width: 12%;
+  }
+
   article table code {
     overflow-wrap: anywhere;
   }
