@@ -16,13 +16,22 @@ got="$(scripts/build-deb.sh --print-version)"
 got="$(DEB_VERSION=v1.2.3 scripts/build-deb.sh --print-version)"
 [ "$got" = "1.2.3" ] || fail "expected 1.2.3, got '$got'"
 
+got="$(DEB_VERSION=v1.2.3-rc.1 scripts/build-deb.sh --print-version)"
+[ "$got" = "1.2.3-rc.1" ] || fail "expected 1.2.3-rc.1, got '$got'"
+
 got="$(DEB_VERSION=2.0.0~rc.1 scripts/build-deb.sh --print-version)"
 [ "$got" = "2.0.0~rc.1" ] || fail "expected 2.0.0~rc.1, got '$got'"
 
-DEB_VERSION=not_a_version scripts/build-deb.sh --print-version >/dev/null 2>&1 \
-    && fail "an underscore is not a Debian version character"
+status=0
+DEB_VERSION=not_a_version scripts/build-deb.sh --print-version >/dev/null 2>&1 || status=$?
+[ "$status" -eq 1 ] || fail "an underscore is not a Debian version character (exit $status)"
 
-DEB_VERSION=v scripts/build-deb.sh --print-version >/dev/null 2>&1 \
-    && fail "an empty version must fail"
+status=0
+DEB_VERSION=vv1.0 scripts/build-deb.sh --print-version >/dev/null 2>&1 || status=$?
+[ "$status" -eq 1 ] || fail "only one leading v is stripped (exit $status)"
+
+status=0
+DEB_VERSION=v scripts/build-deb.sh --print-version >/dev/null 2>&1 || status=$?
+[ "$status" -eq 1 ] || fail "an empty version must fail (exit $status)"
 
 echo "ok"

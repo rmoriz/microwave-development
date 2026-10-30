@@ -94,6 +94,7 @@ jobs:
           cache: npm
           cache-dependency-path: website/homepage/package-lock.json
       - run: python3 -m unittest discover -s scripts/tests
+      - run: bash scripts/tests/test-build-deb-version.sh
       - run: python3 scripts/check-claims.py
       # Ruby's YAML parser accepts files GitHub rejects (an unavailable
       # expression context breaks the whole workflow at run time, with no job

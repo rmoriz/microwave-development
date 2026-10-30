@@ -59,7 +59,7 @@ case "$VERSION" in
     *) VALID=1 ;;
 esac
 if [ "$VALID" -eq 0 ]; then
-    echo "error: '$VERSION' is not a Debian version" >&2
+    echo "error: '${DEB_VERSION:-$VERSION}' is not a Debian version" >&2
     exit 1
 fi
 
@@ -103,6 +103,7 @@ if [ "$(uname -s)" != "Linux" ] && [ "${MW_DEB_IN_CONTAINER:-0}" != "1" ]; then
         -e CARGO_TARGET_DIR=/work/target/deb-linux \
         -e DEB_ARCH \
         -e DEB_MAINTAINER \
+        -e DEB_VERSION \
         -e DEB_OUTPUT_DIR="${DEB_OUTPUT_DIR:-dist}" \
         -v microwave-deb-cargo-registry:/usr/local/cargo/registry \
         -v microwave-deb-cargo-git:/usr/local/cargo/git \
