@@ -45,15 +45,19 @@ jobs:
             echo "enabled=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          version="${GITHUB_REF_NAME#v}"
-          case "$version" in
-            '' | *[!0-9A-Za-z.+~-]* | [!0-9]*) ;;
-            *) echo "enabled=1" >> "$GITHUB_OUTPUT"
-               echo "version=$version" >> "$GITHUB_OUTPUT"
-               exit 0 ;;
-          esac
-          echo "error: '$GITHUB_REF_NAME' is not a Debian version" >&2
-          exit 1
+          # The tag is the source of truth; the script shares the validation.
+          version="$(DEB_VERSION="$GITHUB_REF_NAME" scripts/build-deb.sh --print-version || true)"
+          if [ -z "$version" ]; then
+            echo "::warning::$GITHUB_REF_NAME is not a Debian version; shipping tarballs only"
+            echo "enabled=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          workspace_version="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -n1)"
+          if [ "$version" != "$workspace_version" ]; then
+            echo "::warning::tag version $version differs from the workspace version $workspace_version"
+          fi
+          echo "enabled=1" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Build the binaries
         run: |
           cargo build --release --locked \
