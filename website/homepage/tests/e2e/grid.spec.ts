@@ -1,7 +1,8 @@
 import { test, expect } from '@playwright/test';
+import { url } from './base';
 
 test('grid sits behind content without taking clicks', async ({ page }) => {
-  await page.goto('/');
+  await page.goto(url());
   const field = page.locator('.grid-field');
   await expect(field).toHaveCount(1);
   await expect(field).toHaveAttribute('aria-hidden', 'true');
@@ -25,7 +26,7 @@ test('grid holds still under reduced motion and on phones', async ({
   page,
 }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.goto('/');
+  await page.goto(url());
   const plane = page.locator('.grid-field__plane');
   await expect(plane).toHaveCSS('animation-name', 'none');
   expect(await plane.evaluate((el) => getComputedStyle(el).transform)).toMatch(
@@ -34,14 +35,14 @@ test('grid holds still under reduced motion and on phones', async ({
 
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.setViewportSize({ width: 375, height: 800 });
-  await page.goto('/');
+  await page.goto(url());
   await expect(plane).toHaveCSS('animation-name', 'none');
   await expect(plane).toHaveCSS('opacity', '0.1');
 });
 
 test('grid runs on desktop with motion allowed', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto('/');
+  await page.goto(url());
   await expect(page.locator('.grid-field__plane')).toHaveCSS(
     'animation-name',
     'grid-flow',

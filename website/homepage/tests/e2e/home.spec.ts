@@ -1,11 +1,14 @@
 import { test, expect } from '@playwright/test';
+import { url } from './base';
 
 const widths = [320, 375, 768, 900, 1440];
+const product = url('/#product');
+const agents = url('/#agents');
 
 test('no horizontal overflow at narrow and wide viewports', async ({ page }) => {
   for (const width of widths) {
     await page.setViewportSize({ width, height: 900 });
-    await page.goto('/');
+    await page.goto(url());
     const overflow = await page.evaluate(
       () => document.documentElement.scrollWidth - window.innerWidth,
     );
@@ -16,7 +19,7 @@ test('no horizontal overflow at narrow and wide viewports', async ({ page }) => 
 test('desktop navigation stays on one line where it is shown', async ({ page }) => {
   for (const width of [900, 1100, 1440]) {
     await page.setViewportSize({ width, height: 900 });
-    await page.goto('/');
+    await page.goto(url());
     if (await page.locator('.nav-desktop').isVisible()) {
       const height = await page.locator('.nav-desktop .nav-links').evaluate((element) => {
         return element.getBoundingClientRect().height;
@@ -32,25 +35,25 @@ test('mobile navigation opens and closes without JavaScript', async ({ browser }
     viewport: { width: 375, height: 900 },
   });
   const page = await context.newPage();
-  await page.goto('/');
+  await page.goto(url());
   const summary = page.locator('.nav-mobile summary');
   await expect(summary).toBeVisible();
   await summary.click();
-  await expect(page.locator('.nav-mobile a[href="/#product"]')).toBeVisible();
-  await expect(page.locator('.nav-mobile a[href="/#agents"]')).toBeVisible();
+  await expect(page.locator(`.nav-mobile a[href="${product}"]`)).toBeVisible();
+  await expect(page.locator(`.nav-mobile a[href="${agents}"]`)).toBeVisible();
   await context.close();
 });
 
 test('anchor links clear the sticky header', async ({ page }) => {
-  await page.goto('/');
-  await page.locator('.nav-desktop a[href="/#product"]').click();
+  await page.goto(url());
+  await page.locator(`.nav-desktop a[href="${product}"]`).click();
   await expect(page).toHaveURL(/#product$/);
   const top = await page.locator('#product').evaluate((element) => {
     return element.getBoundingClientRect().top;
   });
   expect(top).toBeGreaterThanOrEqual(72);
 
-  await page.locator('.nav-desktop a[href="/#agents"]').click();
+  await page.locator(`.nav-desktop a[href="${agents}"]`).click();
   await expect(page).toHaveURL(/#agents$/);
   const agentTop = await page.locator('#agents').evaluate((element) => {
     return element.getBoundingClientRect().top;
@@ -59,15 +62,15 @@ test('anchor links clear the sticky header', async ({ page }) => {
 });
 
 test('legal pages keep working primary navigation', async ({ page }) => {
-  await page.goto('/privacy/');
+  await page.goto(url('/privacy/'));
   await expect(page.locator('header.site-header')).toBeVisible();
-  await page.locator('.nav-desktop a[href="/#product"]').click();
+  await page.locator(`.nav-desktop a[href="${product}"]`).click();
   await expect(page).toHaveURL(/\/#product$/);
   await expect(page.locator('#product')).toBeVisible();
 });
 
 test('technical accordions are keyboard operable', async ({ page }) => {
-  await page.goto('/');
+  await page.goto(url());
   const first = page.locator('#under-the-hood details').first();
   const summary = first.locator('summary');
   await summary.focus();
@@ -78,7 +81,7 @@ test('technical accordions are keyboard operable', async ({ page }) => {
 test('JavaScript-disabled content is complete', async ({ browser }) => {
   const context = await browser.newContext({ javaScriptEnabled: false });
   const page = await context.newPage();
-  await page.goto('/');
+  await page.goto(url());
   await expect(page.locator('h1')).toHaveText('Get cooking without becoming a chef.');
   await expect(page.locator('#agents')).toBeVisible();
   await expect(page.locator('#support')).toBeVisible();
@@ -87,7 +90,7 @@ test('JavaScript-disabled content is complete', async ({ browser }) => {
 
 test('reduced motion disables reveals and smooth scrolling', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.goto('/');
+  await page.goto(url());
   expect(await page.locator('.reveal').count()).toBeGreaterThan(0);
   const styles = await page.evaluate(() => {
     const root = getComputedStyle(document.documentElement);
@@ -106,7 +109,7 @@ test('page emits no console errors', async ({ page }) => {
   page.on('console', (msg) => {
     if (msg.type() === 'error') errors.push(msg.text());
   });
-  await page.goto('/');
+  await page.goto(url());
   await page.waitForLoadState('networkidle');
   expect(errors).toEqual([]);
 });

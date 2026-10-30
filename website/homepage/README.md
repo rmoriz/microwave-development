@@ -39,7 +39,10 @@ npm test
 
 ## Deployment
 
-The build output is a plain static `dist/` directory. Any static host works.
+The build output is a plain static `dist/` directory. Astro writes every
+internal URL under the configured base path, so `dist/` must be served from
+`/microwave-development/` (the base in `src/data/config.ts`), not from a domain
+root.
 
 ### Cloudflare Pages
 
@@ -60,8 +63,10 @@ The build output is a plain static `dist/` directory. Any static host works.
 - `/_astro/*`: `public, max-age=31536000, immutable`
 - HTML: short-lived, revalidated on deploy
 
-The site uses `https://microwave.io` as its canonical origin. Configure the
-apex domain in the host and redirect `www` to the apex if both are enabled.
+The site uses `https://rmoriz.github.io` as its canonical origin and
+`/microwave-development` as its base path. Both live in `src/data/config.ts`.
+The Playwright suite serves the build from `.preview/microwave-development/` so
+the base path is exercised.
 
 ## Before launch
 
@@ -100,9 +105,10 @@ apex domain in the host and redirect `www` to the apex if both are enabled.
 src/
   assets/       hero image
   components/   one component per page section, plus nav and footer
-  data/         site constants, links, and legal placeholders
+  data/         site constants, links, legal placeholders, canonical origin
   layouts/      Base layout, fonts, metadata, reveal script
-  pages/        index, privacy, imprint, 404
+  lib/          base-path helper
+  pages/        index, privacy, imprint, 404, robots.txt route
   styles/       tokens, global rules, component styles
 tests/
   content/      built-HTML assertions and link integrity
@@ -110,5 +116,5 @@ tests/
 scripts/
   generate-og.mjs
 public/
-  favicon.svg, og.png, robots.txt, site.webmanifest
+  favicon.svg, og.png, site.webmanifest
 ```

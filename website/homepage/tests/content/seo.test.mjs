@@ -4,13 +4,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as cheerio from 'cheerio';
+import { BASE_PATH, SITE_URL } from '../../src/data/config.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const $ = cheerio.load(fs.readFileSync(path.join(root, 'dist/index.html'), 'utf8'));
 
+const home = `${SITE_URL}${BASE_PATH}/`;
+
 test('SEO metadata and JSON-LD', () => {
-  assert.equal($('link[rel="canonical"]').attr('href'), 'https://microwave.io/');
-  assert.equal($('meta[property="og:image"]').attr('content'), 'https://microwave.io/og.png');
+  assert.equal($('link[rel="canonical"]').attr('href'), home);
+  assert.equal($('meta[property="og:image"]').attr('content'), `${home}og.png`);
+  assert.equal($('meta[name="twitter:image"]').attr('content'), `${home}og.png`);
   assert.equal($('meta[name="twitter:card"]').attr('content'), 'summary_large_image');
   const json = JSON.parse($('script[type="application/ld+json"]').text());
   assert.equal(json['@type'], 'SoftwareApplication');
@@ -26,7 +30,7 @@ test('sitemap and robots exist', () => {
   assert.equal(fs.existsSync(path.join(root, 'dist/sitemap-index.xml')), true);
   assert.match(
     fs.readFileSync(path.join(root, 'dist/robots.txt'), 'utf8'),
-    /Sitemap: https:\/\/microwave\.io/,
+    new RegExp(`Sitemap: ${SITE_URL}${BASE_PATH}/sitemap-index.xml`),
   );
 });
 

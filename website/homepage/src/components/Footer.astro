@@ -1,5 +1,6 @@
 ---
 import { site } from '../data/site';
+import { withBase } from '../lib/paths';
 ---
 <footer class="site-footer">
   <div class="container">
@@ -19,9 +20,9 @@ import { site } from '../data/site';
 
       <nav class="footer-nav" aria-label="Site">
         <h2>Site</h2>
-        <a href="/privacy/">Privacy</a>
-        <a href="/imprint/">Imprint</a>
-        <a href="/#faq">FAQ</a>
+        <a href={withBase('/privacy/')}>Privacy</a>
+        <a href={withBase('/imprint/')}>Imprint</a>
+        <a href={withBase('/#faq')}>FAQ</a>
       </nav>
     </div>
 

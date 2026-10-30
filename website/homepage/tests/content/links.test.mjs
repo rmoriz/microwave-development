@@ -4,9 +4,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as cheerio from 'cheerio';
+import { BASE_PATH } from '../../src/data/config.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const dist = path.join(root, 'dist');
+
+function withoutBase(href) {
+  if (href === BASE_PATH) return '/';
+  return href.startsWith(`${BASE_PATH}/`) ? href.slice(BASE_PATH.length) : href;
+}
 
 function walk(dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -51,7 +57,17 @@ test('all internal links and fragments resolve; external links are secure', () =
 
       assert.ok(href.startsWith('/') || href.startsWith('#'), `unexpected href at ${where}`);
 
-      const [rawPath, hash] = href.split('#');
+      if (!href.startsWith('#')) {
+        assert.ok(
+          href === BASE_PATH || href.startsWith(`${BASE_PATH}/`),
+          `internal href outside ${BASE_PATH} at ${where}`,
+        );
+
+        // The docs are a separate build, copied in by the Pages workflow.
+        if (href.startsWith(`${BASE_PATH}/docs/`)) return;
+      }
+
+      const [rawPath, hash] = withoutBase(href).split('#');
       const targetRoute = rawPath === '' ? from : rawPath;
       const targetFile = fileForRoute(targetRoute);
       assert.ok(targetFile, `missing target at ${where}`);

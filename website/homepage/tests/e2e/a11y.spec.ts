@@ -1,10 +1,11 @@
 import { test, expect } from '@playwright/test';
+import { url } from './base';
 import AxeBuilder from '@axe-core/playwright';
 
 for (const width of [375, 1440]) {
   test(`no serious accessibility violations at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
-    await page.goto('/');
+    await page.goto(url());
     const results = await new AxeBuilder({ page }).analyze();
     const serious = results.violations.filter(
       (violation) =>
@@ -15,7 +16,7 @@ for (const width of [375, 1440]) {
 }
 
 test('selection stays visible on cream surfaces', async ({ page }) => {
-  await page.goto('/');
+  await page.goto(url());
   for (const selector of ['a.button-primary', 'a.skip-link']) {
     const style = await page
       .locator(selector)
@@ -29,7 +30,7 @@ test('selection stays visible on cream surfaces', async ({ page }) => {
 });
 
 test('focus ring stays visible on the blue surfaces', async ({ page }) => {
-  await page.goto('/');
+  await page.goto(url());
   const cta = page.locator('a.button-primary').first();
   for (let i = 0; i < 30; i += 1) {
     if (await cta.evaluate((el) => el === document.activeElement)) break;
@@ -40,7 +41,7 @@ test('focus ring stays visible on the blue surfaces', async ({ page }) => {
 });
 
 test('skip link reaches the main landmark', async ({ page }) => {
-  await page.goto('/');
+  await page.goto(url());
   await page.keyboard.press('Tab');
   await expect(page.locator('a.skip-link')).toBeFocused();
   await page.keyboard.press('Enter');
