@@ -46,6 +46,8 @@ committing Rust. The homepage has no linter beyond `astro check`.
   overflow at 320/375/768/900/1440 px, and keep one `h1` plus a sane heading
   order.
 - No runtime requests, client-side framework, or new dependency.
+- Internal URLs go through `withBase()`; `BASE_PATH` and the docs `baseUrl`
+  change together. Pages serves the site under `/microwave-development/`.
 
 ## Rust notes
 

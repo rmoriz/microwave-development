@@ -1,0 +1,68 @@
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/homepage/**'
+      - 'website/docs/**'
+      - 'docs/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            website/homepage/package-lock.json
+            website/docs/package-lock.json
+      - name: Build the homepage
+        working-directory: website/homepage
+        run: |
+          npm ci
+          npm run check
+          npm run test:content
+      - name: Build the docs
+        working-directory: website/docs
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+      - name: Assemble the site
+        run: |
+          set -euo pipefail
+          mkdir -p website/homepage/dist/docs
+          cp -R website/docs/build/. website/homepage/dist/docs/
+          touch website/homepage/dist/.nojekyll
+          test -f website/homepage/dist/.nojekyll
+          test -f website/homepage/dist/docs/index.html
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/homepage/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

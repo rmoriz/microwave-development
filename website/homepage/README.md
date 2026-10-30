@@ -1,7 +1,8 @@
 # Microwave homepage
 
-The static landing page for [microwave.io](https://microwave.io), built with
-Astro and vanilla CSS.
+The landing page for the project published at
+[https://rmoriz.github.io/microwave-development/](https://rmoriz.github.io/microwave-development/),
+built with Astro and vanilla CSS.
 
 It is a single marketing page with a technical deep dive, plus privacy,
 imprint, and 404 pages. There is no application server, no database, no
@@ -9,7 +10,7 @@ analytics, and no third-party runtime request.
 
 ## Requirements
 
-- Node.js 22 or newer
+- Node.js 22.18 or newer (unflagged TypeScript type stripping)
 - npm
 
 ## Commands
@@ -25,14 +26,15 @@ npm run test:e2e
 npm test
 ```
 
-- `npm run dev` starts the local development server.
+- `npm run dev` serves at `http://localhost:4321/microwave-development/`.
 - `npm run build` writes the static site to `dist/`.
 - `npm run preview` serves `dist/` locally. Astro 7 may keep the preview server
   in the background; stop it with `npx astro preview stop`.
 - `npm run check` runs the Astro and TypeScript checks.
 - `npm run test:content` builds the site and runs the Node content, link, SEO,
   and asset assertions.
-- `npm run test:e2e` runs Playwright against the production build. Install the
+- `npm run test:e2e` runs Playwright against the production build, served from
+  `.preview/microwave-development/` so the base path is exercised. Install the
   browser once with `npx playwright install chromium`.
 - `npm test` runs the type check, content tests, and browser tests.
 - `npm run og` regenerates `public/og.png` from the hero image.
@@ -44,29 +46,22 @@ internal URL under the configured base path, so `dist/` must be served from
 `/microwave-development/` (the base in `src/data/config.ts`), not from a domain
 root.
 
-### Cloudflare Pages
+### GitHub Pages
 
-- Root directory: `website/homepage`
-- Build command: `npm run build`
-- Build output directory: `dist`
-- Node version: 22 or newer
+`.github/workflows/pages.yml` builds the homepage and the docs into one artifact
+and deploys it to `https://rmoriz.github.io/microwave-development/` on every
+push to `main` that touches the sites or `docs/`, and on manual dispatch.
 
-### Netlify
-
-- Base directory: `website/homepage`
-- Build command: `npm run build`
-- Publish directory: `website/homepage/dist`
-- Node version: 22 or newer
+- Internal URLs must go through `withBase()` from `src/lib/paths.ts`.
+- `SITE_URL` and `BASE_PATH` live in `src/data/config.ts`; `robots.txt` and the
+  sitemap are generated from them.
+- `BASE_PATH` and the docs `baseUrl` must move together.
+- Pages has no cache-header configuration; it sets its own.
 
 ### Cache headers
 
 - `/_astro/*`: `public, max-age=31536000, immutable`
 - HTML: short-lived, revalidated on deploy
-
-The site uses `https://rmoriz.github.io` as its canonical origin and
-`/microwave-development` as its base path. Both live in `src/data/config.ts`.
-The Playwright suite serves the build from `.preview/microwave-development/` so
-the base path is exercised.
 
 ## Before launch
 

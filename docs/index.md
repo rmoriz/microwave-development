@@ -31,4 +31,4 @@ Progress.
 
 The code, the issue tracker and these pages live at
 [github.com/rmoriz/microwave-development](https://github.com/rmoriz/microwave-development).
-The marketing page is [microwave.io](https://microwave.io).
+The marketing page is [Homepage](https://rmoriz.github.io/microwave-development/).
