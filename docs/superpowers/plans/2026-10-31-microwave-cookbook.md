@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Debian 13 (`trixie`) only; `metadata.rb` carries `chef_version '>= 19.4.46, < 20'` and `unified_mode true` in every resource.
+- Debian 13 (`trixie`) only; `metadata.rb` carries `chef_version '>= 19.4.46', '< 20'` (two arguments; one comma string is not a valid `Gem::Requirement`) and `unified_mode true` in every resource.
 - PostgreSQL 19 from `https://apt.postgresql.org/pub/repos/apt`, suite `trixie-pgdg`, components `main 19`, key `ACCC4CF8`; package `postgresql-19`.
 - OpenSearch **3.9.0** from `https://artifacts.opensearch.org/releases/bundle/opensearch/3.x/apt`, suite `stable`; package `opensearch`, pinned with `apt_preference`.
 - Microwave package from `https://github.com/rmoriz/microwave-development/releases`; asset `microwave-server_<version>_<arch>.deb`, digest from the sibling `.sha256` (two columns, first field).
@@ -49,7 +49,7 @@
 
 - [ ] **Step 1: Write metadata, attributes, Gemfile and harness**
 
-`metadata.rb`: `name 'microwave'`, `maintainer 'Roland Moriz'`, `license 'AGPL-3.0'`, `chef_version '>= 19.4.46, < 20'`, `supports 'debian', '>= 13.0'`, `recipe 'microwave::default', 'Server and backends on one node'`, `recipe 'microwave::server'`, `recipe 'microwave::database'`, `recipe 'microwave::search'`.
+`metadata.rb`: `name 'microwave'`, `maintainer 'Roland Moriz'`, `license 'AGPL-3.0'`, `chef_version '>= 19.4.46', '< 20'`, `supports 'debian', '>= 13.0'`, `recipe 'microwave::default', 'Server and backends on one node'`, `recipe 'microwave::server'`, `recipe 'microwave::database'`, `recipe 'microwave::search'`.
 
 `attributes/default.rb`:
 
@@ -84,7 +84,7 @@ require 'spec_helper'
 describe 'microwave metadata' do
   it 'supports debian 13 and the client floor' do
     meta = Chef::Cookbook::Metadata.new
-    expect(File.read('metadata.rb')).to match(/chef_version '>= 19\.4\.46, < 20'/)
+    expect(File.read('metadata.rb')).to match(/chef_version '>= 19\.4\.46'/)
     expect(meta).to be_truthy
   end
 end
