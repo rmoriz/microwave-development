@@ -8,7 +8,7 @@ const cast = withBase('/demo/mcp-agent.cast');
 <figure class="mcp-demo">
   <div class="mcp-demo-stage" data-mcp-demo data-src={cast}>
     <button class="button mcp-demo-play" type="button" data-mcp-demo-play>
-      <span aria-hidden="true">▶</span> Play the 20 second demo
+      <span aria-hidden="true">▶</span> Play the 16 second demo
     </button>
     <noscript>
       <p class="mcp-demo-noscript">
@@ -18,8 +18,7 @@ const cast = withBase('/demo/mcp-agent.cast');
   </div>
   <figcaption>
     The agent asks which nodes converged, the endpoint answers with the run
-    table. Recorded against the docker-e2e stack.{' '}
-    <a class="text-link" href={cast}>Download the recording (276 KB)</a>.
+    table. Recorded against the docker-e2e stack.
   </figcaption>
 </figure>
 
@@ -39,7 +38,7 @@ const cast = withBase('/demo/mcp-agent.cast');
           button.remove();
           const player = create(source, stage, {
             cols: 80,
-            rows: 26,
+            rows: narrow ? 26 : 30,
             autoplay: true,
             fit: narrow ? 'none' : 'width',
             idleTimeLimit: 1,

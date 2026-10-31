@@ -151,7 +151,8 @@ test('agent MCP sales section', () => {
   // Self-hosted recording: click to load the player, raw cast linked as fallback.
   const castUrl = `${BASE_PATH}/demo/mcp-agent.cast`;
   assert.equal($('#agents .mcp-demo [data-mcp-demo-play]').length, 1);
-  assert.equal($(`#agents .mcp-demo a[href="${castUrl}"]`).length, 1);
+  // No download link in the caption; only the no-JS fallback points at the cast.
+  assert.equal($(`#agents .mcp-demo a[href="${castUrl}"]`).length, 0);
   assert.match(
     fs.readFileSync(path.join(root, 'dist/index.html'), 'utf8'),
     /<noscript>[\s\S]*mcp-agent\.cast/,
