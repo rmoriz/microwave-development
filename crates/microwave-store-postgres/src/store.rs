@@ -157,10 +157,13 @@ impl PostgresStore {
     }
 }
 
-/// Clamp a configured pool size into `u32`; absurd sizes saturate instead of
-/// panicking at startup. Configuration already rejects `0`.
+/// Clamp a configured pool size into `u32` and away from `0`.
+///
+/// Absurd sizes saturate instead of panicking at startup. The configuration
+/// rejects `0`, but the compatibility constructors can receive it directly, so
+/// it becomes one connection here.
 fn pool_cap(pool_size: usize) -> u32 {
-    u32::try_from(pool_size).unwrap_or(u32::MAX)
+    u32::try_from(pool_size).unwrap_or(u32::MAX).max(1)
 }
 
 pub(crate) fn db(error: sqlx::Error) -> StoreError {
@@ -196,4 +199,17 @@ pub(crate) fn org_from_row(row: &PgRow) -> Result<microwave_store::Org, sqlx::Er
         created_at: row.try_get(4)?,
         updated_at: row.try_get(5)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pool_cap;
+
+    #[test]
+    fn pool_cap_never_returns_zero() {
+        assert_eq!(pool_cap(0), 1);
+        assert_eq!(pool_cap(1), 1);
+        assert_eq!(pool_cap(10), 10);
+        assert_eq!(pool_cap(usize::MAX), u32::MAX);
+    }
 }
