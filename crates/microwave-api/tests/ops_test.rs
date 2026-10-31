@@ -172,6 +172,7 @@ async fn stats_renders_prometheus_text() {
     assert!(body.contains("microwave_server_maintenance 0"));
     assert!(body.contains("microwave_server_nodes 0"));
     assert!(!body.contains("microwave_server_db_pool_connections"));
+    assert!(!body.contains("microwave_server_db_pool_connections_max"));
 
     let response = get(&app, "/_stats?format=prometheus").await;
     assert_eq!(response.status(), StatusCode::OK);

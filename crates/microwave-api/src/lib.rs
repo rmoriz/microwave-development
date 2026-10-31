@@ -41,6 +41,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use microwave_store::PoolStats;
 use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
 
@@ -281,28 +282,7 @@ async fn stats(
              # TYPE microwave_server_nodes gauge\n",
         );
         body.push_str(&format!("microwave_server_nodes {node_count}\n"));
-        if let Some(pool) = pool {
-            body.push_str(
-                "# HELP microwave_server_db_pool_connections Database pool connections by state.\n\
-                 # TYPE microwave_server_db_pool_connections gauge\n",
-            );
-            body.push_str(&format!(
-                "microwave_server_db_pool_connections{{state=\"idle\"}} {}\n",
-                pool.idle
-            ));
-            body.push_str(&format!(
-                "microwave_server_db_pool_connections{{state=\"in_use\"}} {}\n",
-                pool.in_use
-            ));
-            body.push_str(
-                "# HELP microwave_server_db_pool_connections_max Configured pool size.\n\
-                 # TYPE microwave_server_db_pool_connections_max gauge\n",
-            );
-            body.push_str(&format!(
-                "microwave_server_db_pool_connections_max {}\n",
-                pool.max
-            ));
-        }
+        push_pool_gauges(&mut body, pool);
 
         return Ok((
             [(
@@ -314,6 +294,57 @@ async fn stats(
             .into_response());
     }
 
+    Ok(Json(stats_json(&snapshot, maintenance, node_count, pool)).into_response())
+}
+
+/// Append the PostgreSQL pool gauges to a Prometheus text exposition body, if
+/// the backend has a pool.
+fn push_pool_gauges(body: &mut String, pool: Option<PoolStats>) {
+    let Some(pool) = pool else {
+        return;
+    };
+    body.push_str(
+        "# HELP microwave_server_db_pool_connections Database pool connections by state.\n\
+         # TYPE microwave_server_db_pool_connections gauge\n",
+    );
+    body.push_str(&format!(
+        "microwave_server_db_pool_connections{{state=\"idle\"}} {}\n",
+        pool.idle
+    ));
+    body.push_str(&format!(
+        "microwave_server_db_pool_connections{{state=\"in_use\"}} {}\n",
+        pool.in_use
+    ));
+    body.push_str(
+        "# HELP microwave_server_db_pool_connections_max Configured pool size.\n\
+         # TYPE microwave_server_db_pool_connections_max gauge\n",
+    );
+    body.push_str(&format!(
+        "microwave_server_db_pool_connections_max {}\n",
+        pool.max
+    ));
+}
+
+/// Render the pool gauges as the JSON `db_pool` document, if the backend has a
+/// pool.
+fn pool_gauges_json(pool: Option<PoolStats>) -> Option<Value> {
+    pool.map(|pool| {
+        json!({
+            "idle": pool.idle,
+            "in_use": pool.in_use,
+            "max": pool.max,
+        })
+    })
+}
+
+/// Build the `/_stats` JSON document, with `db_pool` only when the backend has
+/// a pool.
+fn stats_json(
+    snapshot: &MetricsSnapshot,
+    maintenance: bool,
+    node_count: u64,
+    pool: Option<PoolStats>,
+) -> Value {
     let mut body = json!({
         "uptime_seconds": snapshot.uptime_seconds,
         "requests": {
@@ -328,14 +359,10 @@ async fn stats(
         "maintenance": maintenance,
         "nodes": node_count,
     });
-    if let Some(pool) = pool {
-        body["db_pool"] = json!({
-            "idle": pool.idle,
-            "in_use": pool.in_use,
-            "max": pool.max,
-        });
+    if let Some(db_pool) = pool_gauges_json(pool) {
+        body["db_pool"] = db_pool;
     }
-    Ok(Json(body).into_response())
+    body
 }
 
 fn stats_not_acceptable() -> ApiError {
@@ -437,4 +464,90 @@ async fn license(State(state): State<AppState>) -> Result<Json<Value>, ApiError>
 
 async fn not_found() -> ApiError {
     ApiError::not_found("not found")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const POOL: PoolStats = PoolStats {
+        idle: 1,
+        in_use: 2,
+        max: 3,
+    };
+
+    fn snapshot() -> MetricsSnapshot {
+        Metrics::new().snapshot()
+    }
+
+    #[test]
+    fn pool_gauges_keep_their_shape_and_order() {
+        let mut body = String::new();
+        push_pool_gauges(&mut body, Some(POOL));
+
+        let idle = body
+            .find("microwave_server_db_pool_connections{state=\"idle\"} 1\n")
+            .expect("idle sample");
+        let in_use = body
+            .find("microwave_server_db_pool_connections{state=\"in_use\"} 2\n")
+            .expect("in_use sample");
+        let max = body
+            .find("microwave_server_db_pool_connections_max 3\n")
+            .expect("max sample");
+        assert!(idle < in_use, "idle must precede in_use");
+        assert!(in_use < max, "in_use must precede max");
+        assert!(body.contains(
+            "# HELP microwave_server_db_pool_connections Database pool connections by state.\n\
+             # TYPE microwave_server_db_pool_connections gauge\n"
+        ));
+        assert!(body.contains(
+            "# HELP microwave_server_db_pool_connections_max Configured pool size.\n\
+             # TYPE microwave_server_db_pool_connections_max gauge\n"
+        ));
+    }
+
+    #[test]
+    fn pool_gauges_append_after_the_node_count() {
+        let mut body = String::from(
+            "# HELP microwave_server_nodes Number of nodes in the metadata store.\n\
+             # TYPE microwave_server_nodes gauge\n\
+             microwave_server_nodes 0\n",
+        );
+        push_pool_gauges(&mut body, Some(POOL));
+
+        let nodes = body.find("microwave_server_nodes 0\n").expect("nodes line");
+        let pool = body
+            .find("microwave_server_db_pool_connections{state=\"idle\"}")
+            .expect("pool block");
+        assert!(nodes < pool, "the pool block must follow the node count");
+    }
+
+    #[test]
+    fn pool_gauges_leave_the_body_alone_without_a_pool() {
+        let body = "microwave_server_nodes 0\n";
+        let mut with_none = body.to_string();
+        push_pool_gauges(&mut with_none, None);
+        assert_eq!(with_none, body);
+    }
+
+    #[test]
+    fn pool_gauges_json_serialises_every_field() {
+        assert_eq!(
+            serde_json::to_string(&pool_gauges_json(Some(POOL)).unwrap()).unwrap(),
+            r#"{"idle":1,"in_use":2,"max":3}"#
+        );
+        assert!(pool_gauges_json(None).is_none());
+    }
+
+    #[test]
+    fn stats_json_attaches_the_pool_only_when_present() {
+        let with_pool = stats_json(&snapshot(), false, 0, Some(POOL));
+        assert_eq!(with_pool["db_pool"]["idle"], 1);
+        assert_eq!(with_pool["db_pool"]["in_use"], 2);
+        assert_eq!(with_pool["db_pool"]["max"], 3);
+        assert_eq!(with_pool["nodes"], 0);
+
+        let without_pool = stats_json(&snapshot(), false, 0, None);
+        assert!(without_pool.get("db_pool").is_none());
+    }
 }
