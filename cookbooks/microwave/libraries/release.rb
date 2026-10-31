@@ -13,34 +13,34 @@ module Microwave
         'aarch64' => 'arm64',
         'arm64' => 'arm64',
       }.freeze
+      DIGEST = /\A\h{64}\z/.freeze
     end
 
     class Missing < StandardError; end
     class UnsupportedArch < StandardError; end
 
-    # Returns { url:, sha256: } for the release's .deb of the given machine.
+    # Returns { name:, url:, sha256: } for the release's .deb of the given machine.
     def self.asset(version:, arch:)
-      tag = version == 'latest' ? latest_tag : "v#{version}"
+      release = release_for(version)
+      tag = version == 'latest' ? release['tag_name'].to_s : "v#{version}"
+      raise Missing, 'release latest has no tag_name' if tag.empty?
+      if release['draft']
+        raise Missing, "release #{tag} is a draft; pin a published version instead"
+      end
+
       package = "#{PACKAGE}_#{tag.delete_prefix('v')}_#{architecture(arch, tag)}.deb"
-      assets = release(tag)['assets'] || []
+      assets = release['assets'] || []
 
       deb = asset_named(assets, package, tag)
+      url = download_url(deb, package, tag)
       digest = asset_named(assets, "#{package}.sha256", tag)
-      sha256 = fetch(digest['browser_download_url']).split.first
-      raise Missing, "release #{tag} has no digest for #{package}" if sha256.nil?
+      sha256 = digest_for(digest, tag)
 
-      { url: deb['browser_download_url'], sha256: sha256 }
+      { name: deb['name'], url: url, sha256: sha256 }
     end
 
-    def self.latest_tag
-      tag = release_json("#{API}/latest")['tag_name'].to_s
-      raise Missing, 'release latest has no tag_name' if tag.empty?
-
-      tag
-    end
-
-    def self.release(tag)
-      release_json("#{API}/tags/#{tag}")
+    def self.release_for(version)
+      version == 'latest' ? release_json("#{API}/latest") : release_json("#{API}/tags/v#{version}")
     end
 
     def self.asset_named(assets, name, tag)
@@ -48,6 +48,24 @@ module Microwave
       raise Missing, "release #{tag} has no asset #{name}" if found.nil?
 
       found
+    end
+
+    def self.download_url(asset, name, tag)
+      url = asset['browser_download_url'].to_s
+      raise Missing, "release #{tag} asset #{name} has no browser_download_url" if url.empty?
+
+      url
+    end
+
+    def self.digest_for(asset, tag)
+      name = asset['name']
+      url = download_url(asset, name, tag)
+      sha256 = fetch(url).split.first.to_s
+      unless DIGEST.match?(sha256)
+        raise Missing, "release #{tag} asset #{name} has an unusable digest"
+      end
+
+      sha256
     end
 
     def self.architecture(machine, tag)
@@ -65,7 +83,8 @@ module Microwave
     end
 
     def self.headers
-      headers = { 'Accept' => 'application/vnd.github+json' }
+      headers = {}
+      headers['Accept'] = 'application/vnd.github+json'
       token = ENV.fetch('GITHUB_TOKEN', nil)
       headers['Authorization'] = "Bearer #{token}" unless token.nil? || token.empty?
       headers

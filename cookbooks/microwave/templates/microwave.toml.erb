@@ -1,7 +1,8 @@
+<% toml = ->(value) { value.to_s.gsub('\\') { '\\\\' }.gsub('"') { '\\"' } } -%>
 [server]
-bind = "<%= @bind %>"
+bind = "<%= toml.(@bind) %>"
 <% if @public_url -%>
-public_url = "<%= @public_url %>"
+public_url = "<%= toml.(@public_url) %>"
 <% end -%>
 
 [paths]
@@ -12,8 +13,8 @@ backend = "local"
 
 [database]
 driver = "postgres"
-url = "<%= @database_url %>"
+url = "<%= toml.(@database_url) %>"
 
 [search]
 backend = "opensearch"
-url = "<%= @search_url %>"
+url = "<%= toml.(@search_url) %>"

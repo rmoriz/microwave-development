@@ -11,7 +11,7 @@ property :ca_certs, Array, default: []
 
 action :install do
   release = Microwave::Release.asset(version: new_resource.version, arch: node['kernel']['machine'])
-  package_path = ::File.join('/var/cache/microwave', ::File.basename(release[:url]))
+  package_path = ::File.join('/var/cache/microwave', release[:name])
 
   directory '/var/cache/microwave' do
     owner 'root'
@@ -78,7 +78,8 @@ action :install do
     owner 'root'
     group 'root'
     mode '0644'
-    notifies :run, 'execute[systemctl daemon-reload]', :delayed
+    notifies :run, 'execute[systemctl daemon-reload]', :immediately
+    notifies :restart, 'service[microwave-server]', :delayed
   end
 
   execute 'systemctl daemon-reload' do
