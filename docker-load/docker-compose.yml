@@ -51,8 +51,9 @@ services:
       args:
         RUST_VERSION: ${RUST_VERSION:-1}
         CINC_VERSION: ${CINC_VERSION:-19}
-    # The server runs as UID 10001; the seed runs as root because the bind
-    # mounts belong to the host user. Hand the data volume back afterwards.
+        UID: ${UID:-10001}
+    # The server runs as UID 10001 unless overridden; the seed runs as root
+    # because the bind mounts belong to the host user. Hand the volume back.
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >
@@ -66,7 +67,7 @@ services:
         --versions ${MW_SEED_VERSIONS:-600}
         --targets ${MW_SEED_TARGETS:-5000}
         --canary ${MW_SEED_CANARY:-20};
-        status=$$?; chown -R 10001:10001 /var/lib/microwave; exit $$status
+        status=$$?; chown -R ${UID:-10001}:${UID:-10001} /var/lib/microwave; exit $$status
     depends_on:
       postgres:
         condition: service_healthy
@@ -134,6 +135,7 @@ services:
       args:
         RUST_VERSION: ${RUST_VERSION:-1}
         CINC_VERSION: ${CINC_VERSION:-19}
+        UID: ${UID:-10001}
     image: "" # keep the generated name so `down --rmi local` removes it
     depends_on:
       microwave:
