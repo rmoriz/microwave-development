@@ -5,6 +5,7 @@
 //! converges every target node over signed HTTP. This module owns the CLI
 //! dispatch and the seed pipeline; the HTTP driver lives in later modules.
 
+pub mod canary;
 mod cli;
 pub mod client;
 pub mod fingerprint;
@@ -364,6 +365,30 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
         fingerprint.pool_size = Some(size);
     }
 
+    // The canary runs after the driver and never changes the exit status.
+    let canary = if args.canary == 0 {
+        canary::Canary::default()
+    } else {
+        let keys_dir = keys::key_dir(&args.keys);
+        let targets = manifest
+            .iter()
+            .filter(|entry| entry.kind == KeyKind::Canary)
+            .take(args.canary)
+            .map(|entry| canary::Target {
+                node: entry.name.clone(),
+                key: keys_dir.join(format!("{}.pem", entry.name)),
+            })
+            .collect();
+        let canary = runtime.block_on(canary::run(&args.chef_client, targets, &args.server_url));
+        for line in canary.lines() {
+            println!("{line}");
+        }
+        if let Some(note) = &canary.note {
+            println!("{note}");
+        }
+        canary
+    };
+
     println!(
         "converged {nodes} nodes as {}",
         if args.superuser {
@@ -403,7 +428,7 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
         println!("{} nodes did not complete", metrics.failed);
     }
 
-    let results = report::Results::new(
+    let mut results = report::Results::new(
         nodes,
         metrics.completed,
         metrics.failed,
@@ -412,6 +437,8 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
         std::mem::take(&mut metrics.pool_samples),
         metrics.superuser,
     );
+    results.canary = canary.lines();
+    results.canary_note = canary.note;
     let path = report::write(&args.out, &fingerprint, &config_json, &results)
         .map_err(|error| LoadError::Diagnostic(format!("report: {error}")))?;
     println!("report: {}", path.display());

@@ -39,6 +39,9 @@ const COOKBOOK_FILES: [&str; 3] = ["recipes/default.rb", "attributes/default.rb"
 /// `CANARY_RECIPES` cookbooks of the pool.
 pub const CANARY_RECIPES: usize = 5;
 
+/// Environment every canary node is seeded in.
+pub const CANARY_ENVIRONMENT: &str = ENVIRONMENTS[0];
+
 /// Versions the pool needs before `CANARY_RECIPES` cookbooks exist.
 fn canary_versions() -> usize {
     (CANARY_RECIPES - 1) * 3 + 1
@@ -354,7 +357,7 @@ impl Fixture {
                 .collect();
             let body = serde_json::json!({
                 "name": name,
-                "chef_environment": "load-default",
+                "chef_environment": CANARY_ENVIRONMENT,
                 "json_class": "Chef::Node",
                 "chef_type": "node",
                 "normal": {},
@@ -368,7 +371,7 @@ impl Fixture {
                 authz_id: authz_id.clone(),
                 org_id: ORG_ID.into(),
                 name,
-                environment: "load-default".into(),
+                environment: CANARY_ENVIRONMENT.into(),
                 policy_name: None,
                 policy_group: None,
                 serialized_object: Some(body.to_string()),
