@@ -577,7 +577,8 @@
   position: relative;
   overflow: hidden;
   max-width: 640px;
-  aspect-ratio: 4 / 3;
+  /* The cast is 80x26 cells; the box keeps that grid so no row is cut off. */
+  aspect-ratio: 100 / 73;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #010d52;
@@ -632,10 +633,7 @@
 
 @media (max-width: 600px) {
   .mcp-demo-stage {
-    overflow-x: auto;
-    aspect-ratio: auto;
     max-width: none;
-    height: 260px;
   }
 
   .mcp-demo-play {

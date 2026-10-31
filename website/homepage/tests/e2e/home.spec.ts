@@ -156,6 +156,34 @@ test('the MCP demo loads only on click and plays the recording', async ({ page }
   await expect(page.locator('.mcp-demo .ap-playback-button')).toHaveAttribute('aria-label', 'Pause');
 });
 
+test('the demo shows the whole recording on a phone in portrait', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto(url());
+  const play = page.locator('[data-mcp-demo-play]');
+  await play.scrollIntoViewIfNeeded();
+  await play.click();
+  const term = page.locator('.mcp-demo .ap-term');
+  await expect(term).toBeVisible();
+
+  const fit = await page.evaluate(() => {
+    const stage = document.querySelector('[data-mcp-demo]')!;
+    const terminal = stage.querySelector('.ap-term')!;
+    const stageBox = stage.getBoundingClientRect();
+    const termBox = terminal.getBoundingClientRect();
+    return {
+      clippedBelow: termBox.bottom - stageBox.bottom,
+      clippedRight: termBox.right - stageBox.right,
+      hiddenRows: terminal.scrollHeight - terminal.clientHeight,
+      pageOverflow: document.documentElement.scrollWidth - window.innerWidth,
+    };
+  });
+
+  expect(fit.clippedBelow).toBeLessThanOrEqual(1);
+  expect(fit.clippedRight).toBeLessThanOrEqual(1);
+  expect(fit.hiddenRows).toBeLessThanOrEqual(1);
+  expect(fit.pageOverflow).toBeLessThanOrEqual(1);
+});
+
 test('page emits no console errors', async ({ page }) => {
   const errors: string[] = [];
   page.on('console', (msg) => {

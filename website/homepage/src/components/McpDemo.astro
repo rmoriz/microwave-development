@@ -34,13 +34,12 @@ const cast = withBase('/demo/mcp-agent.cast');
         button.disabled = true;
         try {
           const { create } = await import('asciinema-player');
-          const narrow = window.matchMedia('(max-width: 600px)').matches;
           button.remove();
           const player = create(source, stage, {
             cols: 80,
-            rows: narrow ? 26 : 30,
+            rows: 26,
             autoplay: true,
-            fit: narrow ? 'none' : 'width',
+            fit: 'width',
             idleTimeLimit: 1,
             poster:
               'data:text/plain,\u001b[2muser@workstation\u001b[0m:\u001b[34m~/work\u001b[0m$ opencode',
