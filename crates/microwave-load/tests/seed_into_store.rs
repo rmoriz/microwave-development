@@ -4,7 +4,8 @@
 use microwave_load::{seed, Fixture, KeyKind, SeedArgs, Sizes, ORG_ID, ORG_NAME};
 use microwave_objectstore::{LocalObjectStore, ObjectStore};
 use microwave_store::{Compression, Permission, SqliteStore};
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 fn seeded() -> Fixture {
     let mut fixture = Fixture::build(Sizes {
@@ -159,22 +160,22 @@ fn seed_refuses_a_populated_store() {
         "marker key\n",
     )
     .expect("marker key writes");
+    // Keygen truncates an existing `<actor>.pem`, so comparing names alone
+    // would miss a clobbered key. Read every file instead.
     let key_files = || {
-        let mut names: Vec<String> = std::fs::read_dir(directory.path().join("keys.json.d"))
-            .expect("key directory reads")
-            .map(|entry| {
-                entry
-                    .expect("key entry")
-                    .file_name()
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect();
-        names.sort();
-        names
+        let mut files: BTreeMap<PathBuf, Vec<u8>> = BTreeMap::new();
+        for entry in
+            std::fs::read_dir(directory.path().join("keys.json.d")).expect("key directory reads")
+        {
+            let path = entry.expect("key entry").path();
+            let contents = std::fs::read(&path).expect("key reads");
+            files.insert(path, contents);
+        }
+        files
     };
+    let marker = directory.path().join("keys.json.d/marker.pem");
     let before = key_files();
-    assert!(before.iter().any(|name| name == "marker.pem"));
+    assert!(before.contains_key(&marker));
     assert!(before.len() > 1, "the seed wrote keypairs: {before:?}");
 
     let error = seed(seed_args(directory.path())).expect_err("second seed fails");
@@ -182,18 +183,13 @@ fn seed_refuses_a_populated_store() {
     assert!(message.contains("--data-dir"), "{message}");
     assert!(message.contains("fresh"), "{message}");
     assert_eq!(
-        std::fs::read_to_string(&manifest).expect("manifest reads"),
-        "marker manifest\n",
-        "the refused seed leaves the manifest untouched"
-    );
-    assert_eq!(
         key_files(),
         before,
         "the refused seed leaves every PEM untouched"
     );
     assert_eq!(
-        std::fs::read_to_string(directory.path().join("keys.json.d/marker.pem"))
-            .expect("marker key reads"),
-        "marker key\n"
+        std::fs::read_to_string(&manifest).expect("manifest reads"),
+        "marker manifest\n",
+        "the refused seed leaves the manifest untouched"
     );
 }

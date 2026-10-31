@@ -5,6 +5,7 @@ use microwave_api::{router, AppState};
 use microwave_config::{Config, DatabaseDriver, ObjectStoreBackend, StorageCompression};
 use microwave_objectstore::{LocalObjectStore, ObjectStore, S3Config, S3ObjectStore};
 use microwave_store::{Compression, MetadataStore, SqliteStore};
+use microwave_store_postgres::PostgresStore;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -121,13 +122,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .into());
                         }
                         let store = Arc::new(
-                        microwave_store_postgres::PostgresStore::connect_with_compression_and_pool(
-                            &database_url,
-                            compression,
-                            config.database.pool_size,
-                        )
-                        .await?,
-                    );
+                            PostgresStore::connect_with_compression_and_pool(
+                                &database_url,
+                                compression,
+                                config.database.pool_size,
+                            )
+                            .await?,
+                        );
                         (store, None)
                     }
                 };
