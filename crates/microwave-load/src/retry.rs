@@ -4,6 +4,11 @@
 //! The same budget applies here: `200ms * 2^attempt` plus ±20 % jitter, on
 //! `503`, `502`, `504`, `429` and transport errors. Every other `4xx` is
 //! final, because a `403` or `412` will not turn green by waiting.
+//!
+//! A `429` `retry-after` is deliberately ignored in favour of the fixed
+//! backoff: the load test compares runs against each other, and a server that
+//! answers with wildly different header values would make the retry timing a
+//! second variable. The fixed schedule keeps every run comparable.
 
 use crate::LoadError;
 use reqwest::StatusCode;
@@ -22,9 +27,21 @@ const SOLVER_OVERLOADED: &[u8] = b"Dependency solver overloaded";
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RetryCount(pub u32);
 
+impl std::fmt::Display for RetryCount {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 /// How many `503` responses reported an overloaded dependency solver.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SolverOverloaded(pub u32);
+
+impl std::fmt::Display for SolverOverloaded {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
 
 /// A finished attempt: status and body, retried by [`execute`] or returned.
 #[derive(Debug)]
@@ -67,7 +84,7 @@ pub fn is_solver_overload(body: &[u8]) -> bool {
 ///
 /// Returns the last attempt together with the number of retries and solver
 /// overloads seen. A transport error that survives the whole budget is
-/// returned as an error.
+/// returned as an error that carries both counters.
 pub async fn execute<F, Fut>(
     mut attempt: F,
 ) -> Result<(Attempt, RetryCount, SolverOverloaded), LoadError>
@@ -93,7 +110,7 @@ where
             }
             Err(error) => {
                 if last {
-                    return Err(error);
+                    return Err(error.counted(retries, solver));
                 }
             }
         }

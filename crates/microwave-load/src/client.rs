@@ -23,6 +23,18 @@ pub struct Outcome {
     pub solver_overloaded: SolverOverloaded,
 }
 
+/// Build the one HTTP client of a whole run, with an idle pool that holds every
+/// concurrency slot.
+///
+/// The pool size lives here so no call site can build its own unbounded client
+/// and silently drop the keep-alive reuse the measurement depends on.
+pub fn run_http(concurrency: usize) -> Result<reqwest::Client, LoadError> {
+    reqwest::Client::builder()
+        .pool_max_idle_per_host(concurrency)
+        .build()
+        .map_err(LoadError::transport)
+}
+
 /// Signs and sends requests for one actor.
 #[derive(Debug, Clone)]
 pub struct NodeClient {
@@ -49,12 +61,23 @@ impl NodeClient {
 
     /// Send one request. A relative `path` starts with `/` and is signed; an
     /// absolute URL such as a presigned `/bookshelf` URL is fetched unsigned.
+    ///
+    /// # Errors
+    ///
+    /// A relative path without the leading slash is rejected before it hits the
+    /// wire, and a transport error that survives the retry budget comes back as
+    /// [`LoadError::Transport`] with the counters the budget gathered.
     pub async fn send(
         &self,
         method: Method,
         path: &str,
         body: Option<Vec<u8>>,
     ) -> Result<Outcome, LoadError> {
+        if !is_absolute(path) && !path.starts_with('/') {
+            return Err(LoadError::Message(format!(
+                "relative path '{path}' does not start with '/'"
+            )));
+        }
         let (attempt, retries, solver_overloaded) =
             retry::execute(|| async { self.attempt(method.clone(), path, body.as_deref()).await })
                 .await?;
@@ -79,10 +102,16 @@ impl NodeClient {
         } else {
             path.to_string()
         };
+        // Presigned URLs answer with raw blob bytes; the API answers JSON.
+        let accept = if signed {
+            "application/json"
+        } else {
+            "application/octet-stream"
+        };
         let mut request = self
             .http
             .request(method.clone(), &url)
-            .header("Accept", "application/json");
+            .header("Accept", accept);
 
         if let Some(body) = body {
             let content_type = if signed {
@@ -98,9 +127,13 @@ impl NodeClient {
             request = self.sign(request, &method, path, body.unwrap_or_default())?;
         }
 
-        let response = request.send().await?;
+        let response = request.send().await.map_err(LoadError::transport)?;
         let status = response.status();
-        let body = response.bytes().await?.to_vec();
+        let body = response
+            .bytes()
+            .await
+            .map_err(LoadError::transport)?
+            .to_vec();
         Ok(retry::Attempt { status, body })
     }
 
@@ -408,6 +441,11 @@ mod tests {
             if headers.contains_key("x-ops-sign") {
                 return StatusCode::BAD_REQUEST;
             }
+            if headers.get("accept").and_then(|value| value.to_str().ok())
+                != Some("application/octet-stream")
+            {
+                return StatusCode::BAD_REQUEST;
+            }
             if uri.query() != Some("token=abc") {
                 return StatusCode::BAD_REQUEST;
             }
@@ -438,6 +476,54 @@ mod tests {
         assert_eq!(mock.calls(), 1);
     }
 
+    #[tokio::test]
+    async fn a_relative_query_is_not_part_of_the_signature() {
+        let mock = verifying().await;
+
+        let outcome = client(&mock)
+            .send(
+                Method::GET,
+                "/organizations/load/nodes/n1?verbose=true",
+                None,
+            )
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(outcome.status, StatusCode::OK);
+        assert_eq!(mock.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_relative_path_must_start_with_a_slash() {
+        let mock = scripted(Vec::new()).await;
+
+        let error = client(&mock)
+            .send(Method::GET, "organizations/load/nodes/n1", None)
+            .await
+            .expect_err("relative paths need the leading slash");
+
+        assert!(matches!(error, LoadError::Message(_)), "{error:?}");
+        assert_eq!(mock.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_run_client_carries_a_sized_pool() {
+        let mock = verifying().await;
+        let client = NodeClient::new(
+            run_http(1).expect("client builds"),
+            mock.url.clone(),
+            "load-client-00000".to_string(),
+            PRIVATE_KEY.to_string(),
+        );
+
+        let outcome = client
+            .send(Method::GET, "/organizations/load/nodes/n1", None)
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(outcome.status, StatusCode::OK);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_transport_error_is_retried_until_the_budget_is_gone() {
         // Bind and drop, so the port stays free but nothing listens on it.
@@ -460,7 +546,14 @@ mod tests {
             .await
             .expect_err("nothing listens");
 
-        assert!(matches!(error, LoadError::Transport(_)));
+        assert!(matches!(
+            error,
+            LoadError::Transport {
+                retries: RetryCount(retry::MAX_RETRIES),
+                solver_503: SolverOverloaded(0),
+                ..
+            }
+        ));
         // Five backoffs of at least 80 % of 200, 400, 800, 1600 and 3200ms.
         assert!(started.elapsed() >= std::time::Duration::from_millis(4_960));
     }

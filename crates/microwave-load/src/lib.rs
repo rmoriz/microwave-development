@@ -9,13 +9,17 @@ mod cli;
 pub mod client;
 mod fixture;
 pub mod keys;
+pub mod metrics;
 pub mod retry;
+pub mod sequence;
 
 pub use cli::{Cli, Command, RunArgs, SeedArgs};
 pub use client::{NodeClient, Outcome};
 pub use fixture::{BookBlob, Fixture, KeyEntry, KeyKind, Sizes, ORG_ID, ORG_NAME, SUPERUSER};
 pub use keys::ActorKey;
+pub use metrics::Metrics;
 pub use retry::{RetryCount, SolverOverloaded};
+pub use sequence::converge;
 
 use clap::Parser;
 use microwave_objectstore::{LocalObjectStore, ObjectStore};
@@ -38,8 +42,37 @@ pub enum LoadError {
     Io(#[from] std::io::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("transport: {0}")]
-    Transport(#[from] reqwest::Error),
+    #[error("transport after {retries} retries ({solver_503} solver 503s): {source}")]
+    Transport {
+        retries: RetryCount,
+        solver_503: SolverOverloaded,
+        #[source]
+        source: reqwest::Error,
+    },
+}
+
+impl LoadError {
+    /// A transport error from an attempt that has counted nothing yet; the
+    /// retry loop attaches its counters when the budget is gone.
+    pub(crate) fn transport(source: reqwest::Error) -> Self {
+        Self::Transport {
+            retries: RetryCount::default(),
+            solver_503: SolverOverloaded::default(),
+            source,
+        }
+    }
+
+    /// Carry the retry and solver counters into an exhausted transport error.
+    pub(crate) fn counted(self, retries: RetryCount, solver_503: SolverOverloaded) -> Self {
+        match self {
+            Self::Transport { source, .. } => Self::Transport {
+                retries,
+                solver_503,
+                source,
+            },
+            other => other,
+        }
+    }
 }
 
 /// Parse process arguments and dispatch.
@@ -186,13 +219,102 @@ fn target(args: &SeedArgs) -> String {
     }
 }
 
-/// Placeholder for the HTTP driver: prints the resolved configuration.
+/// Read the manifest, build the one run client, converge every target and print
+/// the endpoint table.
+///
+/// A client entry names its node: the fixture pairs `load-client-NNNNN` with
+/// `load-node-NNNNN`, and canary entries are left to a real `chef-client`.
 fn run_load(args: RunArgs) -> Result<(), LoadError> {
-    println!("server: {}", args.server_url);
-    println!("manifest: {}", args.keys.display());
-    println!("concurrency: {}", args.concurrency);
-    println!("canary: {}", args.canary);
-    println!("report: {}", args.out.display());
-    println!("run is not implemented yet");
+    let manifest = keys::read_manifest(&args.keys)?;
+    let superuser = manifest
+        .iter()
+        .find(|entry| entry.kind == KeyKind::Superuser)
+        .cloned();
+    if args.superuser && superuser.is_none() {
+        return Err(LoadError::Message(format!(
+            "manifest {} has no superuser entry required by --superuser",
+            args.keys.display()
+        )));
+    }
+
+    let concurrency = args.concurrency.max(1);
+    let http = client::run_http(concurrency)?;
+    let mut targets = Vec::new();
+    for entry in manifest
+        .iter()
+        .filter(|entry| entry.kind == KeyKind::Client)
+    {
+        let signer = superuser.as_ref().unwrap_or(entry);
+        targets.push(sequence::Target {
+            node: entry.name.replacen("load-client-", "load-node-", 1),
+            client: NodeClient::new(
+                http.clone(),
+                args.server_url.clone(),
+                signer.name.clone(),
+                signer.private_key.clone(),
+            ),
+        });
+    }
+    if targets.is_empty() {
+        return Err(LoadError::Message(format!(
+            "manifest {} has no client entries",
+            args.keys.display()
+        )));
+    }
+
+    let credentials = match (args.stats_user.clone(), args.stats_pass.clone()) {
+        (Some(user), Some(pass)) => Some((user, pass)),
+        _ => None,
+    };
+    let config = sequence::RunConfig {
+        org: ORG_NAME.to_string(),
+        upload: args.upload,
+        superuser: args.superuser,
+        concurrency,
+        ramp: std::time::Duration::from_secs(args.ramp),
+    };
+    let stats_url = format!(
+        "{}/_stats?format=json",
+        args.server_url.trim_end_matches('/')
+    );
+    let nodes = targets.len();
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let (mut metrics, pool_samples) = runtime.block_on(async {
+        let poller = metrics::StatsPoller::start(http, stats_url, credentials);
+        let metrics = sequence::run_all(&config, targets).await;
+        let pool_samples = poller.finish();
+        (metrics, pool_samples)
+    });
+    metrics.pool_samples = pool_samples;
+
+    println!(
+        "converged {nodes} nodes as {}",
+        if args.superuser {
+            "superuser"
+        } else {
+            "their clients"
+        }
+    );
+    println!(
+        "completed: {}, failed: {}",
+        metrics.completed, metrics.failed
+    );
+    for (endpoint, summary) in metrics.summaries() {
+        println!(
+            "{endpoint}: n={} status={:?} p50={}us p95={}us p99={}us max={}us retries={} solver_503={}",
+            summary.count,
+            summary.statuses,
+            summary.p50,
+            summary.p95,
+            summary.p99,
+            summary.max,
+            summary.retries,
+            summary.solver_503
+        );
+    }
+    println!("pool samples: {}", metrics.pool_samples.len());
     Ok(())
 }

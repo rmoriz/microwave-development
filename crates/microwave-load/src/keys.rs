@@ -138,6 +138,58 @@ pub fn write_manifest(manifest: &Path, actors: &[ActorKey]) -> Result<(), LoadEr
     Ok(())
 }
 
+/// One manifest line with the private key already read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyFile {
+    pub kind: KeyKind,
+    pub name: String,
+    pub private_key: String,
+}
+
+/// Read the manifest [`write_manifest`] produced.
+pub fn read_manifest(manifest: &Path) -> Result<Vec<KeyFile>, LoadError> {
+    let text = fs::read_to_string(manifest)?;
+    parse_manifest(&text)
+}
+
+/// Parse manifest text; the path is the rest of the line, so a key directory
+/// with spaces stays usable.
+fn parse_manifest(text: &str) -> Result<Vec<KeyFile>, LoadError> {
+    let mut entries = Vec::new();
+    for (number, line) in text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.is_empty())
+    {
+        let mut fields = line.splitn(3, ' ');
+        let kind = match fields.next() {
+            Some("superuser") => KeyKind::Superuser,
+            Some("client") => KeyKind::Client,
+            Some("canary") => KeyKind::Canary,
+            other => {
+                return Err(LoadError::Message(format!(
+                    "manifest line {}: unknown kind {other:?}",
+                    number + 1
+                )))
+            }
+        };
+        let name = fields.next().filter(|name| !name.is_empty());
+        let path = fields.next().filter(|path| !path.is_empty());
+        let (Some(name), Some(path)) = (name, path) else {
+            return Err(LoadError::Message(format!(
+                "manifest line {}: expected '<kind> <name> <private-key-path>'",
+                number + 1
+            )));
+        };
+        entries.push(KeyFile {
+            kind,
+            name: name.to_string(),
+            private_key: fs::read_to_string(path)?,
+        });
+    }
+    Ok(entries)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +286,36 @@ mod tests {
             };
             assert_eq!(row.actor_type, expected);
         }
+    }
+
+    #[test]
+    fn a_written_manifest_reads_back_with_its_keys() {
+        let mut fixture = fixture();
+        let actors = generate(&mut fixture, true).expect("keys generate");
+        let directory = tempfile::tempdir().expect("tempdir");
+        let manifest = directory.path().join("load.keys");
+        write_manifest(&manifest, &actors).expect("manifest writes");
+
+        let read = read_manifest(&manifest).expect("manifest reads");
+        let expected: Vec<(KeyKind, &str)> = actors
+            .iter()
+            .map(|actor| (actor.entry.kind, actor.entry.name.as_str()))
+            .collect();
+        let actual: Vec<(KeyKind, &str)> = read
+            .iter()
+            .map(|entry| (entry.kind, entry.name.as_str()))
+            .collect();
+        assert_eq!(actual, expected);
+        for (entry, actor) in read.iter().zip(&actors) {
+            assert_eq!(entry.private_key, actor.private_key_pem);
+        }
+    }
+
+    #[test]
+    fn a_malformed_manifest_names_the_line() {
+        let error = parse_manifest("superuser load-superuser\n").expect_err("two fields");
+        assert!(error.to_string().contains("line 1"), "{error}");
+        let error = parse_manifest("bogus name /ignored.pem").expect_err("unknown kind");
+        assert!(error.to_string().contains("unknown kind"), "{error}");
     }
 }
