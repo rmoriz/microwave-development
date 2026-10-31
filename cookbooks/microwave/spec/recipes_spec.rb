@@ -86,7 +86,6 @@ end
 describe 'microwave::default with create_organization' do
   before do
     stub_backend_material
-    stub_command('curl -fsS http://127.0.0.1:8000/_status').and_return(true)
     stub_command('chef-server-ctl --config /etc/microwave/microwave.toml org-list | grep -qx demo')
       .and_return(false)
   end
@@ -98,12 +97,15 @@ describe 'microwave::default with create_organization' do
   end
 
   let(:ctl) { 'chef-server-ctl --config /etc/microwave/microwave.toml' }
+  let(:status_url) { 'http://chef.example.com:8000/_status' }
 
   it 'creates the admin only when it is missing, then the organization and the membership' do
     command = chef_run.execute('microwave_organization').command
 
     expect(command.split("\n").map(&:strip)).to eq(
       [
+        'for i in $(seq 1 20); do curl -fsS http://chef.example.com:8000/_status && break; ' \
+        '[ "$i" -lt 20 ] && sleep 3; done &&',
         "{ #{ctl} user-list | grep -qx pivotal || " \
         "#{ctl} user-create pivotal --email pivotal@example.com --admin -f /tmp/pivotal.pem ; } &&",
         "#{ctl} org-create demo --full-name 'Microwave Demo' --association-user pivotal -f /tmp/demo-validator.pem &&",
@@ -112,16 +114,50 @@ describe 'microwave::default with create_organization' do
     )
   end
 
+  it 'waits for the status endpoint inside the command, bounded and on the bind address' do
+    command = chef_run.execute('microwave_organization').command
+
+    expect(command).to include("for i in $(seq 1 20); do curl -fsS #{status_url} && break")
+    expect(command).to include('[ "$i" -lt 20 ] && sleep 3; done &&')
+    expect(command).to include(status_url)
+    expect(command).to start_with('for i in $(seq 1 20); do curl -fsS http://chef.example.com:8000/_status')
+  end
+
+  it 'follows a non-default bind in the status URL' do
+    run = runner do |node|
+      node.automatic['fqdn'] = 'other.example.com'
+      node.normal['microwave']['create_organization'] = true
+    end.converge('microwave-test::all_in_one')
+
+    expect(run.execute('microwave_organization').command)
+      .to include('curl -fsS http://other.example.com:8000/_status')
+  end
+
+  it 'installs curl before the execute, because the package does not ship it' do
+    resources = chef_run.resource_collection.to_a
+    package = resources.index { |resource| resource.name == 'curl' }
+    execute = resources.index { |resource| resource.name == 'microwave_organization' }
+
+    expect(chef_run).to install_apt_package('curl')
+    expect(package).to be < execute
+  end
+
   it 'converges only once the organization is absent' do
     expect(chef_run.execute('microwave_organization').not_if.map(&:command))
       .to eq(["#{ctl} org-list | grep -qx demo"])
   end
 
-  it 'waits for the service status endpoint, with retries behind it' do
+  it 'keeps the missing organization as the only guard' do
     organization = chef_run.execute('microwave_organization')
 
-    expect(organization.only_if.map(&:command)).to eq(['curl -fsS http://127.0.0.1:8000/_status'])
-    expect(organization.retries).to eq(5)
+    expect(organization.only_if).to be_empty
+    expect(organization.not_if.size).to eq(1)
+  end
+
+  it 'retries the command itself, with retries behind it' do
+    organization = chef_run.execute('microwave_organization')
+
+    expect(organization.retries).to eq(3)
     expect(organization.retry_delay).to eq(3)
   end
 
@@ -136,11 +172,18 @@ describe 'microwave::default with create_organization' do
 end
 
 describe 'microwave::default with create_organization when only demo2 exists' do
+  # the fake ctl answers org-list with whatever lives in ORG_LIST, so the guard
+  # can be exercised against both directions
+  def fake_ctl(dir)
+    ctl = ::File.join(dir, 'chef-server-ctl')
+    ::File.write(ctl, "#!/bin/sh\ncase \"$*\" in *org-list*) echo \"$ORG_LIST\" ;; esac\n")
+    ::File.chmod(0o755, ctl)
+    ctl
+  end
+
   around do |example|
     Dir.mktmpdir do |dir|
-      ctl = ::File.join(dir, 'chef-server-ctl')
-      ::File.write(ctl, "#!/bin/sh\ncase \"$*\" in *org-list*) echo demo2 ;; esac\n")
-      ::File.chmod(0o755, ctl)
+      fake_ctl(dir)
       path = ENV.fetch('PATH')
       ENV['PATH'] = "#{dir}:#{path}"
       begin
@@ -153,7 +196,6 @@ describe 'microwave::default with create_organization when only demo2 exists' do
 
   before do
     stub_backend_material
-    stub_command('curl -fsS http://127.0.0.1:8000/_status').and_return(true)
     stub_command("#{ctl} org-list | grep -qx demo").and_return(false)
   end
 
@@ -168,11 +210,20 @@ describe 'microwave::default with create_organization when only demo2 exists' do
   it 'does not mistake demo2 for the demo organization' do
     guard = chef_run.execute('microwave_organization').not_if.first.command
 
-    # run the real guard against a user list that only carries demo2
-    `#{guard} > /dev/null 2>&1`
+    # run the real guard against an org list that only carries demo2
+    `ORG_LIST=demo2 #{guard} > /dev/null 2>&1`
 
     expect($CHILD_STATUS).not_to be_success
     expect(chef_run).to run_execute('microwave_organization')
+  end
+
+  it 'skips the execute when the org list carries demo' do
+    guard = chef_run.execute('microwave_organization').not_if.first.command
+
+    # positive control: the same guard must now succeed, which makes not_if skip
+    `ORG_LIST=demo #{guard} > /dev/null 2>&1`
+
+    expect($CHILD_STATUS).to be_success
   end
 end
 

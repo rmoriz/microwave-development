@@ -17,13 +17,16 @@ microwave_server 'default' do
     if password.to_s.empty?
       password = begin
                    ::File.read('/etc/microwave/db.password').strip
-                 rescue Errno::ENOENT
+                 rescue Errno::ENOENT, Errno::EACCES
                    raise "microwave::server needs node['microwave']['database_password'] " \
                          'or a readable /etc/microwave/db.password'
                  end
     end
 
-    raise "microwave::server needs node['microwave']['database_password']" if password.to_s.empty?
+    if password.to_s.empty?
+      raise "microwave::server needs node['microwave']['database_password'] " \
+            'or a non-empty /etc/microwave/db.password'
+    end
 
     "postgres://#{node['microwave']['database_user']}:#{password}@#{node['microwave']['database_host']}:" \
       "#{node['microwave']['database_port']}/#{node['microwave']['database_name']}?sslmode=require"
@@ -44,21 +47,25 @@ end
 
 # The deployment proof: one admin, one organization, one membership. The CLI
 # is microwave-ctl behind a chef-server-ctl symlink; the runbook name is kept.
-# The execute only fires once the service answers on its status endpoint, and
-# every step is guarded on its own, so a re-run repairs a half finished run
+# The command waits for the status endpoint itself, bounded, so a service that
+# never comes up fails the converge loudly instead of skipping the step. Every
+# step after that is guarded on its own, so a re-run repairs a half finished run
 # instead of tripping over the user that already exists.
 if node['microwave']['create_organization']
   ctl = 'chef-server-ctl --config /etc/microwave/microwave.toml'
+  status_url = "http://#{node['microwave']['bind']}:8000/_status"
+
+  apt_package 'curl' # the readiness probe below needs it, the package does not ship it
 
   execute 'microwave_organization' do
     command <<~COMMAND
+      for i in $(seq 1 20); do curl -fsS #{status_url} && break; [ "$i" -lt 20 ] && sleep 3; done &&
       { #{ctl} user-list | grep -qx pivotal || #{ctl} user-create pivotal --email pivotal@example.com --admin -f /tmp/pivotal.pem ; } &&
       #{ctl} org-create demo --full-name 'Microwave Demo' --association-user pivotal -f /tmp/demo-validator.pem &&
       #{ctl} org-user-add demo pivotal
     COMMAND
-    retries 5
+    retries 3
     retry_delay 3
-    only_if 'curl -fsS http://127.0.0.1:8000/_status'
     not_if "#{ctl} org-list | grep -qx demo"
   end
 end
