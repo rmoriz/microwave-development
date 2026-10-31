@@ -1,0 +1,19 @@
+[server]
+bind = "<%= @bind %>"
+<% if @public_url -%>
+public_url = "<%= @public_url %>"
+<% end -%>
+
+[paths]
+data_dir = "/var/lib/microwave"
+
+[object_store]
+backend = "local"
+
+[database]
+driver = "postgres"
+url = "<%= @database_url %>"
+
+[search]
+backend = "opensearch"
+url = "<%= @search_url %>"

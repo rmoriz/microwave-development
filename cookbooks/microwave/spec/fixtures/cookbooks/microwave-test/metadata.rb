@@ -1,0 +1,6 @@
+name 'microwave-test'
+maintainer 'Roland Moriz'
+license 'AGPL-3.0'
+description 'Fixture cookbook for the microwave ChefSpec suite'
+version '0.1.0'
+depends 'microwave'

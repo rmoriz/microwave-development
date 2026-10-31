@@ -1,10 +1,11 @@
 require 'chefspec'
 
 Dir[File.expand_path('../libraries/*.rb', __dir__)].sort.each { |library| load library }
+Dir[File.expand_path('support/**/*.rb', __dir__)].sort.each { |support| require support }
 
 RSpec.configure do |c|
   c.cookbook_path = [
-    File.expand_path('..', __dir__),
+    File.expand_path('../..', __dir__),
     File.expand_path('../spec/fixtures/cookbooks', __dir__),
   ]
   c.platform = 'debian'

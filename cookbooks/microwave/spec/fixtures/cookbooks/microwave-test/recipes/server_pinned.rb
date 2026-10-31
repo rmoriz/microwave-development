@@ -1,0 +1,5 @@
+microwave_server 'default' do
+  database_url 'postgres://microwave:generated@db.example.com:5432/microwave?sslmode=require'
+  search_url 'https://search.example.com:9200'
+  version '0.1.0'
+end

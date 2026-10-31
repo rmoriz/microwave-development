@@ -1,0 +1,6 @@
+[Unit]
+After=postgresql.service opensearch.service
+Wants=postgresql.service opensearch.service
+
+[Service]
+LimitMEMLOCK=infinity
