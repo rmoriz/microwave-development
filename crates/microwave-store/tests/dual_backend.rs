@@ -1389,9 +1389,10 @@ mod suite {
             .expect("constrained environment exists");
         assert_eq!(found.cookbook_constraints, environment.cookbook_constraints);
 
-        // The shared named-object SQL selects a literal NULL for these.
+        // The shared named-object SQL selects a literal NULL for these, so the
+        // read path must map it to `None` rather than fail or return a value.
         let role_name = unique("constrained-role");
-        let role = store
+        store
             .create_role(
                 org_id,
                 &role_name,
@@ -1400,21 +1401,36 @@ mod suite {
             )
             .await
             .expect("create role");
+        let role = store
+            .find_role(org_id, &role_name)
+            .await
+            .expect("find role")
+            .expect("role exists");
         assert_eq!(role.cookbook_constraints, None);
         let bag_name = unique("constrained-bag");
-        let bag = store
+        store
             .create_data_bag(org_id, &bag_name, creator)
             .await
             .expect("create data bag");
+        let bag = store
+            .find_data_bag(org_id, &bag_name)
+            .await
+            .expect("find data bag")
+            .expect("data bag exists");
         assert_eq!(bag.cookbook_constraints, None);
 
         let updated_body = format!(
             r#"{{"name":"{name}","cookbook_versions":{{"apache":"= 1.4.0","nginx":"~> 2.4"}}}}"#
         );
-        let updated = store
+        store
             .update_environment(org_id, &name, &updated_body)
             .await
             .expect("update environment constraints");
+        let updated = store
+            .find_environment(org_id, &name)
+            .await
+            .expect("reload updated environment")
+            .expect("updated environment exists");
         assert_eq!(
             updated.cookbook_constraints.as_deref(),
             Some(r#"{"apache":"= 1.4.0","nginx":"~> 2.4"}"#)
@@ -1423,10 +1439,15 @@ mod suite {
         // Dropping the constraint on update clears the column instead of
         // keeping the previous map.
         let cleared_body = format!(r#"{{"name":"{name}"}}"#);
-        let cleared = store
+        store
             .update_environment(org_id, &name, &cleared_body)
             .await
             .expect("clear environment constraints");
+        let cleared = store
+            .find_environment(org_id, &name)
+            .await
+            .expect("reload cleared environment")
+            .expect("cleared environment exists");
         assert_eq!(cleared.cookbook_constraints, None);
 
         store
