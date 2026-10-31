@@ -2104,3 +2104,27 @@ area = "docs"
 status = "verified"
 surfaces = [ { path = "website/homepage/src/pages/robots.txt.ts", needle = "Sitemap: ${sitemap.href}" } ]
 verify = { kind = "grep", path = "website/homepage/src/pages/robots.txt.ts", pattern = "sitemap-index.xml" }
+
+[[claim]]
+id = "load-test-postgres-only"
+summary = "The load test stack always runs against PostgreSQL, so a report is only comparable to another run with the same fingerprint."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/load-test.md", needle = "This stack always uses PostgreSQL." } ]
+verify = { kind = "grep", path = "docs/load-test.md", pattern = "This stack always uses PostgreSQL." }
+
+[[claim]]
+id = "load-test-no-gate"
+summary = "The load test harness is run by hand and is not a CI gate."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/load-test.md", needle = "The harness is not a CI gate." } ]
+verify = { kind = "grep", path = "docs/load-test.md", pattern = "The harness is not a CI gate." }
+
+[[claim]]
+id = "load-test-canary-not-a-gate"
+summary = "A canary failure is reported in the load test report but never fails the run."
+area = "tooling"
+status = "verified"
+surfaces = [ { path = "docs/load-test.md", needle = "A canary failure is reported but never fails the run." } ]
+verify = { kind = "grep", path = "docs/load-test.md", pattern = "A canary failure is reported but never fails the run." }

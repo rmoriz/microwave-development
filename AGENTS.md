@@ -82,6 +82,13 @@ committing Rust. The homepage has no linter beyond `astro check`.
   such as `amazonlinux:2027`. Only the tags pinned in `docker-compose.yml`
   should remain.
 
+## docker-load notes
+
+- `docker-load/docker-compose.yml` owns the load test stack. Build and tear it
+  down through it, never with ad-hoc `docker build`, and always
+  `down -v --rmi local`; `run.sh` ends on that, so no container, volume or
+  locally built image survives a run.
+
 ## Committing
 
 - Work directly on the current branch unless told otherwise.

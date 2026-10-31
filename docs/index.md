@@ -22,6 +22,8 @@ Progress.
   packaging layer, what it installs, and what it deliberately leaves out.
 - **[HTTP API parity and tests](./http-parity.md)** — the signed API surface,
   the authorization model, and the dual-backend suites that pin them down.
+- **[Run the load test](./load-test.md)** — the converge harness, how to read
+  its report and fingerprint, and how to compare two runs.
 
 ## How do you know it works?
 

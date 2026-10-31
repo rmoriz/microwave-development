@@ -12,6 +12,7 @@ const sidebars: SidebarsConfig = {
         {type: 'doc', id: 'mcp', label: 'MCP endpoint'},
         {type: 'doc', id: 'debian-package', label: 'Debian packages'},
         {type: 'doc', id: 'http-parity', label: 'HTTP API parity'},
+        {type: 'doc', id: 'load-test', label: 'Load test'},
       ],
     },
     {
