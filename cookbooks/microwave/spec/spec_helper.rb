@@ -1,3 +1,5 @@
+require 'English'
+
 require 'chefspec'
 
 Dir[File.expand_path('../libraries/*.rb', __dir__)].sort.each { |library| load library }

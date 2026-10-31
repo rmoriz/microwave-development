@@ -70,10 +70,24 @@ describe 'microwave::default with backend material from attributes' do
   end
 end
 
+describe 'microwave::default under a wrapper with its own backend hosts' do
+  before { stub_backend_material }
+
+  let(:chef_run) { runner.converge('microwave-test::all_in_one_wrapper') }
+
+  it 'keeps the wrapper node.default hosts instead of the loopback fallback' do
+    server = chef_run.microwave_server('default')
+
+    expect(server.database_url).to include('@db.wrapper.example.com:5432/')
+    expect(server.search_url).to eq('https://search.wrapper.example.com:9200')
+  end
+end
+
 describe 'microwave::default with create_organization' do
   before do
     stub_backend_material
-    stub_command('chef-server-ctl --config /etc/microwave/microwave.toml org-list | grep -q demo')
+    stub_command('curl -fsS http://127.0.0.1:8000/_status').and_return(true)
+    stub_command('chef-server-ctl --config /etc/microwave/microwave.toml org-list | grep -qx demo')
       .and_return(false)
   end
 
@@ -85,12 +99,13 @@ describe 'microwave::default with create_organization' do
 
   let(:ctl) { 'chef-server-ctl --config /etc/microwave/microwave.toml' }
 
-  it 'creates the admin, the organization and the membership in one execute' do
+  it 'creates the admin only when it is missing, then the organization and the membership' do
     command = chef_run.execute('microwave_organization').command
 
     expect(command.split("\n").map(&:strip)).to eq(
       [
-        "#{ctl} user-create pivotal --email pivotal@example.com --admin -f /tmp/pivotal.pem &&",
+        "{ #{ctl} user-list | grep -qx pivotal || " \
+        "#{ctl} user-create pivotal --email pivotal@example.com --admin -f /tmp/pivotal.pem ; } &&",
         "#{ctl} org-create demo --full-name 'Microwave Demo' --association-user pivotal -f /tmp/demo-validator.pem &&",
         "#{ctl} org-user-add demo pivotal",
       ]
@@ -99,7 +114,15 @@ describe 'microwave::default with create_organization' do
 
   it 'converges only once the organization is absent' do
     expect(chef_run.execute('microwave_organization').not_if.map(&:command))
-      .to eq(["#{ctl} org-list | grep -q demo"])
+      .to eq(["#{ctl} org-list | grep -qx demo"])
+  end
+
+  it 'waits for the service status endpoint, with retries behind it' do
+    organization = chef_run.execute('microwave_organization')
+
+    expect(organization.only_if.map(&:command)).to eq(['curl -fsS http://127.0.0.1:8000/_status'])
+    expect(organization.retries).to eq(5)
+    expect(organization.retry_delay).to eq(3)
   end
 
   it 'runs after the server resource' do
@@ -109,6 +132,47 @@ describe 'microwave::default with create_organization' do
 
     expect(execute).to eq(resources.size - 1)
     expect(execute).to be > server
+  end
+end
+
+describe 'microwave::default with create_organization when only demo2 exists' do
+  around do |example|
+    Dir.mktmpdir do |dir|
+      ctl = ::File.join(dir, 'chef-server-ctl')
+      ::File.write(ctl, "#!/bin/sh\ncase \"$*\" in *org-list*) echo demo2 ;; esac\n")
+      ::File.chmod(0o755, ctl)
+      path = ENV.fetch('PATH')
+      ENV['PATH'] = "#{dir}:#{path}"
+      begin
+        example.run
+      ensure
+        ENV['PATH'] = path
+      end
+    end
+  end
+
+  before do
+    stub_backend_material
+    stub_command('curl -fsS http://127.0.0.1:8000/_status').and_return(true)
+    stub_command("#{ctl} org-list | grep -qx demo").and_return(false)
+  end
+
+  let(:ctl) { 'chef-server-ctl --config /etc/microwave/microwave.toml' }
+
+  let(:chef_run) do
+    runner do |node|
+      node.normal['microwave']['create_organization'] = true
+    end.converge('microwave-test::all_in_one')
+  end
+
+  it 'does not mistake demo2 for the demo organization' do
+    guard = chef_run.execute('microwave_organization').not_if.first.command
+
+    # run the real guard against a user list that only carries demo2
+    `#{guard} > /dev/null 2>&1`
+
+    expect($CHILD_STATUS).not_to be_success
+    expect(chef_run).to run_execute('microwave_organization')
   end
 end
 
@@ -155,6 +219,24 @@ describe 'microwave::server without a database host' do
 
   it 'raises and names the attribute' do
     expect { chef_run }.to raise_error(/node\['microwave'\]\['database_host'\]/)
+  end
+end
+
+describe 'microwave::server without a password anywhere' do
+  let(:chef_run) do
+    runner do |node|
+      node.normal['microwave']['database_host'] = 'db.example.com'
+      node.normal['microwave']['search_host'] = 'search.example.com'
+    end.converge('microwave-test::server_recipe')
+  end
+
+  it 'raises naming the attribute instead of leaking Errno::ENOENT' do
+    allow(::File).to receive(:read).and_call_original
+    allow(::File).to receive(:read).with('/etc/microwave/db.password')
+                                   .and_raise(Errno::ENOENT, '/etc/microwave/db.password')
+
+    expect { chef_run.microwave_server('default').database_url }
+      .to raise_error(RuntimeError, /node\['microwave'\]\['database_password'\]/)
   end
 end
 

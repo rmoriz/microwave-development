@@ -14,7 +14,16 @@ microwave_server 'default' do
 
   database_url lazy {
     password = node['microwave']['database_password']
-    password = ::File.read('/etc/microwave/db.password').strip if password.to_s.empty?
+    if password.to_s.empty?
+      password = begin
+                   ::File.read('/etc/microwave/db.password').strip
+                 rescue Errno::ENOENT
+                   raise "microwave::server needs node['microwave']['database_password'] " \
+                         'or a readable /etc/microwave/db.password'
+                 end
+    end
+
+    raise "microwave::server needs node['microwave']['database_password']" if password.to_s.empty?
 
     "postgres://#{node['microwave']['database_user']}:#{password}@#{node['microwave']['database_host']}:" \
       "#{node['microwave']['database_port']}/#{node['microwave']['database_name']}?sslmode=require"
@@ -35,15 +44,21 @@ end
 
 # The deployment proof: one admin, one organization, one membership. The CLI
 # is microwave-ctl behind a chef-server-ctl symlink; the runbook name is kept.
+# The execute only fires once the service answers on its status endpoint, and
+# every step is guarded on its own, so a re-run repairs a half finished run
+# instead of tripping over the user that already exists.
 if node['microwave']['create_organization']
   ctl = 'chef-server-ctl --config /etc/microwave/microwave.toml'
 
   execute 'microwave_organization' do
     command <<~COMMAND
-      #{ctl} user-create pivotal --email pivotal@example.com --admin -f /tmp/pivotal.pem &&
+      { #{ctl} user-list | grep -qx pivotal || #{ctl} user-create pivotal --email pivotal@example.com --admin -f /tmp/pivotal.pem ; } &&
       #{ctl} org-create demo --full-name 'Microwave Demo' --association-user pivotal -f /tmp/demo-validator.pem &&
       #{ctl} org-user-add demo pivotal
     COMMAND
-    not_if "#{ctl} org-list | grep -q demo"
+    retries 5
+    retry_delay 3
+    only_if 'curl -fsS http://127.0.0.1:8000/_status'
+    not_if "#{ctl} org-list | grep -qx demo"
   end
 end
