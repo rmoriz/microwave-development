@@ -123,6 +123,17 @@ async fn stats_reports_json_counters() {
 }
 
 #[tokio::test]
+async fn stats_json_omits_pool_without_a_pool() {
+    let app = support::app(support::state_with_pivotal());
+
+    let response = get(&app, "/_stats?format=json").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = support::response_json(response).await;
+    assert_eq!(body["nodes"], 0);
+    assert!(body.get("db_pool").is_none());
+}
+
+#[tokio::test]
 async fn stats_renders_prometheus_text() {
     let app = support::app(support::state_with_pivotal());
 
@@ -160,6 +171,7 @@ async fn stats_renders_prometheus_text() {
     assert!(body.contains("microwave_server_uptime_seconds "));
     assert!(body.contains("microwave_server_maintenance 0"));
     assert!(body.contains("microwave_server_nodes 0"));
+    assert!(!body.contains("microwave_server_db_pool_connections"));
 
     let response = get(&app, "/_stats?format=prometheus").await;
     assert_eq!(response.status(), StatusCode::OK);

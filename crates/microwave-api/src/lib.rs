@@ -218,6 +218,7 @@ async fn stats(
     };
 
     let snapshot = state.metrics.snapshot();
+    let pool = state.store.pool_stats().await;
     let maintenance = state
         .store
         .maintenance_enabled()
@@ -280,6 +281,28 @@ async fn stats(
              # TYPE microwave_server_nodes gauge\n",
         );
         body.push_str(&format!("microwave_server_nodes {node_count}\n"));
+        if let Some(pool) = pool {
+            body.push_str(
+                "# HELP microwave_server_db_pool_connections Database pool connections by state.\n\
+                 # TYPE microwave_server_db_pool_connections gauge\n",
+            );
+            body.push_str(&format!(
+                "microwave_server_db_pool_connections{{state=\"idle\"}} {}\n",
+                pool.idle
+            ));
+            body.push_str(&format!(
+                "microwave_server_db_pool_connections{{state=\"in_use\"}} {}\n",
+                pool.in_use
+            ));
+            body.push_str(
+                "# HELP microwave_server_db_pool_connections_max Configured pool size.\n\
+                 # TYPE microwave_server_db_pool_connections_max gauge\n",
+            );
+            body.push_str(&format!(
+                "microwave_server_db_pool_connections_max {}\n",
+                pool.max
+            ));
+        }
 
         return Ok((
             [(
@@ -291,7 +314,7 @@ async fn stats(
             .into_response());
     }
 
-    Ok(Json(json!({
+    let mut body = json!({
         "uptime_seconds": snapshot.uptime_seconds,
         "requests": {
             "total": snapshot.total_requests,
@@ -304,8 +327,15 @@ async fn stats(
         },
         "maintenance": maintenance,
         "nodes": node_count,
-    }))
-    .into_response())
+    });
+    if let Some(pool) = pool {
+        body["db_pool"] = json!({
+            "idle": pool.idle,
+            "in_use": pool.in_use,
+            "max": pool.max,
+        });
+    }
+    Ok(Json(body).into_response())
 }
 
 fn stats_not_acceptable() -> ApiError {
