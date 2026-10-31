@@ -11,3 +11,9 @@ path = "src/main.rs"
 
 [dependencies]
 microwave-load = { path = "../../crates/microwave-load" }
+
+[dev-dependencies]
+axum.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

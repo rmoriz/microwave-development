@@ -1738,12 +1738,15 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "clap",
+ "libc",
  "microwave-crypto",
  "microwave-objectstore",
  "microwave-store",
  "microwave-store-postgres",
  "reqwest",
+ "serde",
  "serde_json",
+ "sqlx",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -1753,7 +1756,11 @@ dependencies = [
 name = "microwave-load-bin"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "microwave-load",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

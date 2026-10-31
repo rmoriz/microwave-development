@@ -7,14 +7,17 @@
 
 mod cli;
 pub mod client;
+pub mod fingerprint;
 mod fixture;
 pub mod keys;
 pub mod metrics;
+pub mod report;
 pub mod retry;
 pub mod sequence;
 
 pub use cli::{Cli, Command, RunArgs, SeedArgs};
 pub use client::{NodeClient, Outcome};
+pub use fingerprint::Fingerprint;
 pub use fixture::{BookBlob, Fixture, KeyEntry, KeyKind, Sizes, ORG_ID, ORG_NAME, SUPERUSER};
 pub use keys::ActorKey;
 pub use metrics::Metrics;
@@ -25,7 +28,29 @@ use clap::Parser;
 use microwave_objectstore::{LocalObjectStore, ObjectStore};
 use microwave_store::{Compression, IdentityRepository, SqliteStore};
 use std::path::Path;
+use std::process::ExitCode;
 use thiserror::Error;
+
+/// Process exit status; diagnostic, never a gate.
+///
+/// [`Self::Completed`] also covers a run whose retries were exhausted: the
+/// report says how many nodes did not complete instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ExitStatus {
+    /// The run completed; `0`.
+    Completed = 0,
+    /// The server was unreachable at start or the fixture is missing; `2`.
+    Unavailable = 2,
+    /// The fingerprint or the report failed; `3`.
+    Diagnostic = 3,
+}
+
+impl ExitStatus {
+    pub fn code(self) -> ExitCode {
+        ExitCode::from(self as u8)
+    }
+}
 
 /// Everything a failed seed can report.
 #[derive(Debug, Error)]
@@ -42,6 +67,12 @@ pub enum LoadError {
     Io(#[from] std::io::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+    /// The server was unreachable at start or the fixture is missing.
+    #[error("{0}")]
+    Fixture(String),
+    /// Fingerprint or report failure.
+    #[error("{0}")]
+    Diagnostic(String),
     #[error("transport after {retries} retries ({solver_503} solver 503s): {source}")]
     Transport {
         retries: RetryCount,
@@ -52,6 +83,22 @@ pub enum LoadError {
 }
 
 impl LoadError {
+    /// The exit status this error maps to. Everything that is neither a
+    /// fixture nor a diagnostic problem is setup trouble and exits `2`.
+    pub fn status(&self) -> ExitStatus {
+        match self {
+            Self::Diagnostic(_) => ExitStatus::Diagnostic,
+            Self::Fixture(_)
+            | Self::Message(_)
+            | Self::Store(_)
+            | Self::ObjectStore(_)
+            | Self::Crypto(_)
+            | Self::Io(_)
+            | Self::Json(_)
+            | Self::Transport { .. } => ExitStatus::Unavailable,
+        }
+    }
+
     /// A transport error from an attempt that has counted nothing yet; the
     /// retry loop attaches its counters when the budget is gone.
     pub(crate) fn transport(source: reqwest::Error) -> Self {
@@ -75,9 +122,15 @@ impl LoadError {
     }
 }
 
-/// Parse process arguments and dispatch.
-pub fn run() -> Result<(), LoadError> {
-    dispatch(Cli::parse())
+/// Parse process arguments, dispatch, and turn a failure into its exit status.
+pub fn run() -> ExitStatus {
+    match dispatch(Cli::parse()) {
+        Ok(()) => ExitStatus::Completed,
+        Err(error) => {
+            eprintln!("error: {error}");
+            error.status()
+        }
+    }
 }
 
 /// Execute an already-parsed command.
@@ -219,26 +272,34 @@ fn target(args: &SeedArgs) -> String {
     }
 }
 
-/// Read the manifest, build the one run client, converge every target and print
-/// the endpoint table.
+/// Read the manifest, fingerprint the machine, build the one run client,
+/// converge every target and write the report.
 ///
 /// A client entry names its node: the fixture pairs `load-client-NNNNN` with
 /// `load-node-NNNNN`, and canary entries are left to a real `chef-client`.
 fn run_load(args: RunArgs) -> Result<(), LoadError> {
-    let manifest = keys::read_manifest(&args.keys)?;
+    let concurrency = args.concurrency.max(1);
+    let http = client::run_http(concurrency)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(reachable(&http, &args.server_url))?;
+
+    let manifest = keys::read_manifest(&args.keys)
+        .map_err(|error| LoadError::Fixture(format!("fixture {}: {error}", args.keys.display())))?;
     let superuser = manifest
         .iter()
         .find(|entry| entry.kind == KeyKind::Superuser)
         .cloned();
     if args.superuser && superuser.is_none() {
-        return Err(LoadError::Message(format!(
+        return Err(LoadError::Fixture(format!(
             "manifest {} has no superuser entry required by --superuser",
             args.keys.display()
         )));
     }
 
-    let concurrency = args.concurrency.max(1);
-    let http = client::run_http(concurrency)?;
+    let mut fingerprint = fingerprint(&args, &runtime)?;
+
     let mut targets = Vec::new();
     for entry in manifest
         .iter()
@@ -256,7 +317,7 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
         });
     }
     if targets.is_empty() {
-        return Err(LoadError::Message(format!(
+        return Err(LoadError::Fixture(format!(
             "manifest {} has no client entries",
             args.keys.display()
         )));
@@ -278,10 +339,18 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
         args.server_url.trim_end_matches('/')
     );
     let nodes = targets.len();
+    let config_json = serde_json::json!({
+        "server_url": args.server_url,
+        "nodes": nodes,
+        "concurrency": concurrency,
+        "ramp_seconds": args.ramp,
+        "upload": args.upload,
+        "superuser": args.superuser,
+        "canary_requested": args.canary,
+        "chef_client": args.chef_client,
+        "commit": args.commit,
+    });
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
     let (mut metrics, pool_samples) = runtime.block_on(async {
         let poller = metrics::StatsPoller::start(http, stats_url, credentials);
         let metrics = sequence::run_all(&config, targets).await;
@@ -289,6 +358,9 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
         (metrics, pool_samples)
     });
     metrics.pool_samples = pool_samples;
+    if let Some(size) = resolved_pool_size(&metrics.pool_samples) {
+        fingerprint.pool_size = Some(size);
+    }
 
     println!(
         "converged {nodes} nodes as {}",
@@ -325,5 +397,106 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
         );
     }
     println!("pool samples: {}", metrics.pool_samples.len());
+    if metrics.failed > 0 {
+        println!("{} nodes did not complete", metrics.failed);
+    }
+
+    let results = report::Results::new(
+        nodes,
+        metrics.completed,
+        metrics.failed,
+        metrics.failures().to_vec(),
+        metrics.summaries(),
+        std::mem::take(&mut metrics.pool_samples),
+        metrics.superuser,
+    );
+    let path = report::write(&args.out, &fingerprint, &config_json, &results)
+        .map_err(|error| LoadError::Diagnostic(format!("report: {error}")))?;
+    println!("report: {}", path.display());
     Ok(())
+}
+
+/// Refuse to start against a server that does not answer its liveness probe.
+async fn reachable(http: &reqwest::Client, server_url: &str) -> Result<(), LoadError> {
+    let url = format!("{}/_status", server_url.trim_end_matches('/'));
+    match http.get(&url).send().await {
+        Ok(response) if response.status().is_success() => Ok(()),
+        Ok(response) => Err(LoadError::Fixture(format!(
+            "server {url} answered {}",
+            response.status()
+        ))),
+        Err(error) => Err(LoadError::Fixture(format!(
+            "server {url} unreachable: {error}"
+        ))),
+    }
+}
+
+/// Measure the machine and layer the wrapper file and the flags on top.
+///
+/// The wrapper file merges under the measured values; the `--commit` flag and
+/// the poller's pool size go over them. Every failure here is a diagnostic
+/// one: a report without a trustworthy fingerprint is not worth writing.
+fn fingerprint(
+    args: &RunArgs,
+    runtime: &tokio::runtime::Runtime,
+) -> Result<Fingerprint, LoadError> {
+    std::fs::create_dir_all(&args.out).map_err(|error| {
+        LoadError::Diagnostic(format!("output directory {}: {error}", args.out.display()))
+    })?;
+    let mut fingerprint = fingerprint::collect(&args.out);
+    if let Some(path) = &args.fingerprint {
+        let wrapper = fingerprint::read(path)
+            .map_err(|error| LoadError::Diagnostic(format!("fingerprint: {error}")))?;
+        fingerprint.merge_under(&wrapper);
+    }
+    if let Some(commit) = &args.commit {
+        fingerprint.server_commit = Some(commit.clone());
+    }
+    if let Some(url) = &args.postgres_url {
+        runtime
+            .block_on(fingerprint.measure_postgres(url))
+            .map_err(|error| LoadError::Diagnostic(format!("fingerprint: {error}")))?;
+    }
+    Ok(fingerprint)
+}
+
+/// The server's pool size as the last poller sample saw it.
+fn resolved_pool_size(samples: &[serde_json::Value]) -> Option<u32> {
+    samples
+        .iter()
+        .rev()
+        .find_map(|sample| sample.get("max").and_then(serde_json::Value::as_u64))
+        .and_then(|max| u32::try_from(max).ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_pool_size_is_the_last_reported_maximum() {
+        let samples = vec![
+            serde_json::json!({ "max": 10 }),
+            serde_json::json!({ "max": 20 }),
+            serde_json::json!({ "idle": 1 }),
+        ];
+        assert_eq!(resolved_pool_size(&samples), Some(20));
+        assert_eq!(resolved_pool_size(&[]), None);
+    }
+
+    #[test]
+    fn diagnostic_errors_exit_three_and_setup_errors_exit_two() {
+        assert_eq!(
+            LoadError::Diagnostic("x".into()).status(),
+            ExitStatus::Diagnostic
+        );
+        assert_eq!(
+            LoadError::Fixture("x".into()).status(),
+            ExitStatus::Unavailable
+        );
+        assert_eq!(
+            LoadError::Message("x".into()).status(),
+            ExitStatus::Unavailable
+        );
+    }
 }
