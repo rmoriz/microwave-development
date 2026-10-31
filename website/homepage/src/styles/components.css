@@ -69,6 +69,25 @@
   margin-left: auto;
 }
 
+/* The accent fill marks Download as the primary action in the bar. */
+.nav-download {
+  border-color: transparent;
+  background: linear-gradient(100deg, var(--green), var(--cyan));
+  color: var(--ink);
+  box-shadow: 0 0 18px rgba(77, 255, 158, 0.25);
+}
+
+.nav-download:hover {
+  background: linear-gradient(100deg, var(--cyan), var(--green));
+  color: var(--ink);
+  box-shadow: 0 0 26px rgba(61, 220, 255, 0.45);
+}
+
+.nav-download:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 3px;
+}
+
 .nav-mobile {
   display: none;
   margin-left: auto;
