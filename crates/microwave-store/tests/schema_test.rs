@@ -259,3 +259,53 @@ fn adds_user_profile_columns_to_legacy_databases() {
     assert_eq!(user.display_name.as_deref(), Some("Alice"));
     assert_eq!(user.first_name.as_deref(), Some("Alice"));
 }
+
+#[test]
+fn adds_the_environment_constraints_column_to_fresh_and_legacy_databases() {
+    let dir = tempfile::tempdir().unwrap();
+    let fresh_path = dir.path().join("fresh-env.db");
+    drop(SqliteStore::open(&fresh_path).unwrap());
+    assert!(
+        environment_columns(&fresh_path).contains(&"cookbook_constraints".to_string()),
+        "a fresh database must have the column"
+    );
+
+    let legacy_path = dir.path().join("legacy-env.db");
+    {
+        let connection = rusqlite::Connection::open(&legacy_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE environments (
+                     id TEXT PRIMARY KEY,
+                     authz_id TEXT NOT NULL UNIQUE,
+                     org_id TEXT NOT NULL,
+                     name TEXT NOT NULL,
+                     serialized_object BLOB,
+                     last_updated_by TEXT NOT NULL DEFAULT '',
+                     created_at TEXT NOT NULL,
+                     updated_at TEXT NOT NULL,
+                     UNIQUE (org_id, name)
+                 );",
+            )
+            .unwrap();
+    }
+    drop(SqliteStore::open(&legacy_path).unwrap());
+
+    assert!(
+        environment_columns(&legacy_path).contains(&"cookbook_constraints".to_string()),
+        "migrate must add the column to databases created without it"
+    );
+}
+
+fn environment_columns(path: &std::path::Path) -> Vec<String> {
+    let connection = rusqlite::Connection::open(path).unwrap();
+    let mut statement = connection
+        .prepare("PRAGMA table_info(environments)")
+        .unwrap();
+    let columns = statement
+        .query_map([], |row| row.get(1))
+        .unwrap()
+        .collect::<Result<Vec<String>, _>>()
+        .unwrap();
+    columns
+}

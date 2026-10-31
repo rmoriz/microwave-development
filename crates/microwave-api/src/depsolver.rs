@@ -225,14 +225,31 @@ fn cookbook_world(versions: &[StoredCookbookVersion]) -> Result<World, ApiError>
 fn environment_constraints(
     environment: &StoredObject,
 ) -> Result<BTreeMap<String, Constraint>, ApiError> {
+    if let Some(stored) = environment.cookbook_constraints.as_deref() {
+        if !stored.is_empty() && stored != "{}" {
+            let map: BTreeMap<String, Value> =
+                serde_json::from_str(stored).map_err(|_| ApiError::internal())?;
+            if !map.is_empty() {
+                return parse_constraints(map.iter());
+            }
+        }
+    }
+
+    // Rows written before the column existed, and rows a restore left NULL,
+    // still carry their constraints in the body.
     let value: Value =
         serde_json::from_str(&environment.serialized_object).map_err(|_| ApiError::internal())?;
     let Some(object) = value.get("cookbook_versions").and_then(Value::as_object) else {
         return Ok(BTreeMap::new());
     };
+    parse_constraints(object.iter())
+}
 
+fn parse_constraints<'a>(
+    entries: impl Iterator<Item = (&'a String, &'a Value)>,
+) -> Result<BTreeMap<String, Constraint>, ApiError> {
     let mut constraints = BTreeMap::new();
-    for (name, value) in object {
+    for (name, value) in entries {
         let text = value.as_str().ok_or_else(ApiError::internal)?;
         let constraint = Constraint::parse(text).map_err(|_| ApiError::internal())?;
         constraints.insert(name.clone(), constraint);

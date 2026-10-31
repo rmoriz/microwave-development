@@ -57,6 +57,40 @@ async fn assert_error(response: Response, status: StatusCode, message: &str) {
     assert_eq!(body, json!({ "error": [message] }));
 }
 
+async fn put_cookbook(app: &axum::Router, name: &str, version: &str) {
+    let manifest = json!({
+        "name": format!("{name}-{version}"),
+        "cookbook_name": name,
+        "version": version,
+        "json_class": "Chef::CookbookVersion",
+        "chef_type": "cookbook_version",
+        "frozen?": false,
+        "metadata": { "version": version, "dependencies": {} },
+        "all_files": [],
+    });
+    let response = request(
+        app,
+        "PUT",
+        &format!("/organizations/acme/cookbooks/{name}/{version}"),
+        serde_json::to_string(&manifest).unwrap().as_bytes(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+async fn solve(app: &axum::Router, environment: &str, run_list: Value) -> (StatusCode, Value) {
+    let body = json!({ "run_list": run_list });
+    let response = request(
+        app,
+        "POST",
+        &format!("/organizations/acme/environments/{environment}/cookbook_versions"),
+        serde_json::to_string(&body).unwrap().as_bytes(),
+    )
+    .await;
+    let status = response.status();
+    (status, support::response_json(response).await)
+}
+
 #[tokio::test]
 async fn create_rejects_invalid_environment_bodies() {
     let app = support::app(support::state_with_pivotal());
@@ -431,4 +465,53 @@ async fn default_environment_update_and_delete_return_405_with_allow() {
     assert_eq!(response.status(), StatusCode::OK);
     let environment: Value = support::response_json(response).await;
     assert_eq!(environment["name"], "_default");
+}
+
+#[tokio::test]
+async fn stores_cookbook_constraints_so_solves_apply_them() {
+    let state = support::state_with_pivotal();
+    let app = support::app(state.clone());
+    create_org(&app).await;
+    put_cookbook(&app, "app", "1.0.0").await;
+    put_cookbook(&app, "app", "2.0.0").await;
+
+    let response = request(
+        &app,
+        "POST",
+        "/organizations/acme/environments",
+        br#"{"name":"pinned","cookbook_versions":{"app":"= 1.0.0"}}"#,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let fetched = support::response_json(
+        request(&app, "GET", "/organizations/acme/environments/pinned", b"").await,
+    )
+    .await;
+    assert_eq!(fetched["cookbook_versions"], json!({ "app": "= 1.0.0" }));
+
+    // The write path derived the map into its own column.
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
+    let stored = state
+        .sqlite()
+        .find_environment(&org.id, "pinned")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.cookbook_constraints.as_deref(),
+        Some(r#"{"app":"= 1.0.0"}"#)
+    );
+
+    // A run-list version that violates the stored constraint has no versions.
+    let (status, body) = solve(&app, "pinned", json!(["app@2.0.0"])).await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+    assert_eq!(
+        body["error"][0]["cookbooks_with_no_versions"],
+        json!(["(app = 2.0.0)"])
+    );
+
+    // Without a run-list version the constraint decides the pick.
+    let (status, body) = solve(&app, "pinned", json!(["app"])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["app"]["version"], "1.0.0");
 }

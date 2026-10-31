@@ -204,6 +204,9 @@ fn migrate(connection: &Connection) -> Result<(), StoreError> {
     for column in ["display_name", "first_name", "middle_name", "last_name"] {
         add_column_if_missing(connection, "users", column, "TEXT")?;
     }
+    // Environment `cookbook_versions` constraints are derived on write; older
+    // rows stay NULL and the solver parses the body for those.
+    add_column_if_missing(connection, "environments", "cookbook_constraints", "TEXT")?;
     Ok(())
 }
 

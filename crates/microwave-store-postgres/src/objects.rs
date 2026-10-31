@@ -46,6 +46,7 @@ impl PostgresStore {
             authz_id,
             name: name.into(),
             serialized_object: body.into(),
+            cookbook_constraints: None,
             created_at: timestamp.clone(),
             updated_at: timestamp,
         })
@@ -58,8 +59,9 @@ impl PostgresStore {
         name: &str,
     ) -> Result<Option<StoredObject>, StoreError> {
         let sql = format!(
-            "SELECT id, authz_id, name, serialized_object, created_at, updated_at
-             FROM {table} WHERE org_id = $1 AND name = $2"
+            "SELECT id, authz_id, name, serialized_object, created_at, updated_at{}
+             FROM {table} WHERE org_id = $1 AND name = $2",
+            constraints_selection(table)
         );
         let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(org_id)
@@ -80,8 +82,9 @@ impl PostgresStore {
         org_id: &str,
     ) -> Result<Vec<StoredObject>, StoreError> {
         let sql = format!(
-            "SELECT id, authz_id, name, serialized_object, created_at, updated_at
-             FROM {table} WHERE org_id = $1 ORDER BY name"
+            "SELECT id, authz_id, name, serialized_object, created_at, updated_at{}
+             FROM {table} WHERE org_id = $1 ORDER BY name",
+            constraints_selection(table)
         );
         let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(org_id)
@@ -176,6 +179,27 @@ impl PostgresStore {
         transaction.commit().await.map_err(db)?;
         Ok(())
     }
+
+    /// Store the derived `cookbook_versions` constraint map of an environment.
+    ///
+    /// This is a second statement after the named-object write, so a crash in
+    /// between leaves the column `NULL`. The solver reader then parses
+    /// `serialized_object`, which makes that a cost problem, not a correctness
+    /// one.
+    async fn set_environment_constraints(
+        &self,
+        id: &str,
+        constraints: Option<String>,
+    ) -> Result<(), StoreError> {
+        sqlx::query("UPDATE environments SET cookbook_constraints = $1 WHERE id = $2")
+            .bind(constraints)
+            .bind(id)
+            .execute(self.pool())
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
     async fn find_named_objects_by_ids(
         &self,
         table: &str,
@@ -186,8 +210,9 @@ impl PostgresStore {
             return Ok(Vec::new());
         }
         let sql = format!(
-            "SELECT id, authz_id, name, serialized_object, created_at, updated_at
-             FROM {table} WHERE org_id = $1 AND id = ANY($2) ORDER BY name"
+            "SELECT id, authz_id, name, serialized_object, created_at, updated_at{}
+             FROM {table} WHERE org_id = $1 AND id = ANY($2) ORDER BY name",
+            constraints_selection(table)
         );
         let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(org_id)
@@ -429,15 +454,21 @@ impl ObjectRepository for PostgresStore {
         body: &str,
         creator_authz_id: &str,
     ) -> Result<StoredObject, StoreError> {
-        self.create_named_object(
-            org_id,
-            "environments",
-            "environments",
-            name,
-            body,
-            creator_authz_id,
-        )
-        .await
+        let mut environment = self
+            .create_named_object(
+                org_id,
+                "environments",
+                "environments",
+                name,
+                body,
+                creator_authz_id,
+            )
+            .await?;
+        let constraints = microwave_store::environment_constraints(body);
+        self.set_environment_constraints(&environment.id, constraints.clone())
+            .await?;
+        environment.cookbook_constraints = constraints;
+        Ok(environment)
     }
 
     async fn find_environment(
@@ -471,8 +502,14 @@ impl ObjectRepository for PostgresStore {
         name: &str,
         body: &str,
     ) -> Result<StoredObject, StoreError> {
-        self.update_named_object("environments", org_id, name, body)
-            .await
+        let mut environment = self
+            .update_named_object("environments", org_id, name, body)
+            .await?;
+        let constraints = microwave_store::environment_constraints(body);
+        self.set_environment_constraints(&environment.id, constraints.clone())
+            .await?;
+        environment.cookbook_constraints = constraints;
+        Ok(environment)
     }
 
     async fn delete_environment(&self, org_id: &str, name: &str) -> Result<(), StoreError> {
@@ -831,12 +868,23 @@ fn node_from_row(row: &PgRow) -> Result<StoredNode, sqlx::Error> {
     })
 }
 
+/// Extra `SELECT` column for the environment-only constraint map. Roles and
+/// data bags share the named-object SQL, so they select a literal `NULL`.
+fn constraints_selection(table: &str) -> &'static str {
+    if table == "environments" {
+        ", cookbook_constraints"
+    } else {
+        ", NULL"
+    }
+}
+
 fn stored_object_from_row(row: &PgRow) -> Result<StoredObject, sqlx::Error> {
     Ok(StoredObject {
         id: row.try_get(0)?,
         authz_id: row.try_get(1)?,
         name: row.try_get(2)?,
         serialized_object: row.try_get(3)?,
+        cookbook_constraints: row.try_get(6)?,
         created_at: row.try_get(4)?,
         updated_at: row.try_get(5)?,
     })

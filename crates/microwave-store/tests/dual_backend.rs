@@ -1367,6 +1367,84 @@ mod suite {
         Vec::new()
     }
 
+    pub async fn environment_constraints(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let fixture = fixture(store.as_ref()).await;
+        let org_id = &fixture.org.id;
+        let creator = &fixture.creator_authz_id;
+        let name = unique("constrained-env");
+
+        let body = format!(r#"{{"name":"{name}","cookbook_versions":{{"apache":">= 1.2.0"}}}}"#);
+        let environment = store
+            .create_environment(org_id, &name, &body, creator)
+            .await
+            .expect("create constrained environment");
+        assert_eq!(
+            environment.cookbook_constraints.as_deref(),
+            Some(r#"{"apache":">= 1.2.0"}"#)
+        );
+        let found = store
+            .find_environment(org_id, &name)
+            .await
+            .expect("find constrained environment")
+            .expect("constrained environment exists");
+        assert_eq!(found.cookbook_constraints, environment.cookbook_constraints);
+
+        // The shared named-object SQL selects a literal NULL for these.
+        let role_name = unique("constrained-role");
+        let role = store
+            .create_role(
+                org_id,
+                &role_name,
+                &format!(r#"{{"name":"{role_name}"}}"#),
+                creator,
+            )
+            .await
+            .expect("create role");
+        assert_eq!(role.cookbook_constraints, None);
+        let bag_name = unique("constrained-bag");
+        let bag = store
+            .create_data_bag(org_id, &bag_name, creator)
+            .await
+            .expect("create data bag");
+        assert_eq!(bag.cookbook_constraints, None);
+
+        let updated_body = format!(
+            r#"{{"name":"{name}","cookbook_versions":{{"apache":"= 1.4.0","nginx":"~> 2.4"}}}}"#
+        );
+        let updated = store
+            .update_environment(org_id, &name, &updated_body)
+            .await
+            .expect("update environment constraints");
+        assert_eq!(
+            updated.cookbook_constraints.as_deref(),
+            Some(r#"{"apache":"= 1.4.0","nginx":"~> 2.4"}"#)
+        );
+
+        // Dropping the constraint on update clears the column instead of
+        // keeping the previous map.
+        let cleared_body = format!(r#"{{"name":"{name}"}}"#);
+        let cleared = store
+            .update_environment(org_id, &name, &cleared_body)
+            .await
+            .expect("clear environment constraints");
+        assert_eq!(cleared.cookbook_constraints, None);
+
+        store
+            .delete_role(org_id, &role_name)
+            .await
+            .expect("delete role");
+        store
+            .delete_data_bag(org_id, &bag_name)
+            .await
+            .expect("delete data bag");
+        store
+            .delete_environment(org_id, &name)
+            .await
+            .expect("delete environment");
+        cleanup_org(store.as_ref(), org_id).await;
+        Vec::new()
+    }
+
     pub async fn cookbooks(store: &Arc<dyn MetadataStore>) -> Vec<String> {
         let fixture = fixture(store.as_ref()).await;
         let org = &fixture.org;
@@ -3104,6 +3182,7 @@ matrix!(
         identity,
         authz,
         objects,
+        environment_constraints,
         cookbooks,
         policies,
         artifacts,
@@ -3124,6 +3203,7 @@ matrix!(
         identity,
         authz,
         objects,
+        environment_constraints,
         cookbooks,
         policies,
         artifacts,

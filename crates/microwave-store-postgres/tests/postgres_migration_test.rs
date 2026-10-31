@@ -592,6 +592,59 @@ async fn imports_snapshot_with_compression_none() {
     drop_scratch_database(&url, &scratch_name).await;
 }
 
+#[tokio::test]
+async fn migration_adds_the_environment_constraints_column() {
+    let Some(url) = test_url() else {
+        eprintln!(
+            "SKIP: MICROWAVE_TEST_POSTGRES_URL is not set; start a disposable \
+             PostgreSQL with scripts/run-postgres-tests.sh"
+        );
+        return;
+    };
+    let suffix = suffix();
+
+    // A fresh database gets the column straight from the embedded schema.
+    let (name, fresh_url) = create_scratch_database(&url, &format!("{suffix}-fresh")).await;
+    let store = PostgresStore::connect(&fresh_url)
+        .await
+        .expect("migrate fresh scratch database");
+    assert!(
+        environment_constraints_column_exists(store.pool()).await,
+        "fresh database is missing environments.cookbook_constraints"
+    );
+
+    // A database created before the column existed gains it on the next
+    // migration run, which must stay idempotent.
+    sqlx::query("ALTER TABLE environments DROP COLUMN cookbook_constraints")
+        .execute(store.pool())
+        .await
+        .expect("drop the column to simulate an older database");
+    assert!(!environment_constraints_column_exists(store.pool()).await);
+    store.migrate().await.expect("re-run the migration");
+    assert!(
+        environment_constraints_column_exists(store.pool()).await,
+        "re-running the migration did not restore the column"
+    );
+    store.migrate().await.expect("migration stays idempotent");
+
+    drop(store);
+    drop_scratch_database(&url, &name).await;
+}
+
+async fn environment_constraints_column_exists(pool: &sqlx::PgPool) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (
+             SELECT 1 FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name = 'environments'
+               AND column_name = 'cookbook_constraints'
+         )",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("query the environment columns")
+}
+
 fn database_url_with_name(url: &str, name: &str) -> String {
     let (base, query) = match url.split_once('?') {
         Some((base, query)) => (base, format!("?{query}")),

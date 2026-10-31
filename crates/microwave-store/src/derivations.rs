@@ -21,3 +21,21 @@ pub fn cookbook_dependencies(manifest: &str) -> Option<String> {
     }
     serde_json::to_string(&compact).ok()
 }
+
+/// Compact JSON of `cookbook_versions`, or `None` when the body has none or
+/// one entry is not a string.
+pub fn environment_constraints(body: &str) -> Option<String> {
+    let body: serde_json::Value = serde_json::from_str(body).ok()?;
+    let constraints = body.get("cookbook_versions")?.as_object()?;
+    if constraints.is_empty() {
+        return None;
+    }
+    let mut compact = serde_json::Map::with_capacity(constraints.len());
+    for (name, value) in constraints {
+        compact.insert(
+            name.clone(),
+            serde_json::Value::String(value.as_str()?.to_string()),
+        );
+    }
+    serde_json::to_string(&compact).ok()
+}

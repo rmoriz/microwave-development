@@ -282,6 +282,48 @@ async fn falls_back_to_the_manifest_for_legacy_rows() {
 }
 
 #[tokio::test]
+async fn prefers_stored_environment_constraints_over_the_body() {
+    let (app, state) = setup_with_state().await;
+    put_cookbook(&app, "app", "1.0.0", json!({})).await;
+    put_cookbook(&app, "app", "2.0.0", json!({})).await;
+    create_environment(&app, "pinned", json!({ "app": "= 1.0.0" })).await;
+    state
+        .sqlite()
+        .lock_connection_for_test()
+        .execute(
+            "UPDATE environments SET serialized_object = ?1 WHERE name = 'pinned'",
+            [r#"{"name":"pinned"}"#],
+        )
+        .unwrap();
+
+    // The body no longer carries constraints; only the stored column does.
+    let (status, body) = solve(&app, "pinned", json!(["app"])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["app"]["version"], "1.0.0");
+}
+
+#[tokio::test]
+async fn falls_back_to_the_environment_body_for_null_constraints() {
+    let (app, state) = setup_with_state().await;
+    put_cookbook(&app, "app", "1.0.0", json!({})).await;
+    put_cookbook(&app, "app", "2.0.0", json!({})).await;
+    create_environment(&app, "pinned", json!({ "app": "= 1.0.0" })).await;
+    state
+        .sqlite()
+        .lock_connection_for_test()
+        .execute(
+            "UPDATE environments SET cookbook_constraints = NULL WHERE name = 'pinned'",
+            [],
+        )
+        .unwrap();
+
+    // Rows whose column was never filled still solve from the body.
+    let (status, body) = solve(&app, "pinned", json!(["app"])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["app"]["version"], "1.0.0");
+}
+
+#[tokio::test]
 async fn returns_v2_all_files_in_solve_responses() {
     let app = setup().await;
     let checksum = upload_hello(&app).await;

@@ -1,5 +1,6 @@
 use crate::authz::Permission;
 use crate::compression::{decode_serialized, encode_serialized};
+use crate::derivations::environment_constraints;
 use crate::identity::{new_id, now};
 use crate::sqlite::{in_placeholders, SqliteStore, StoreError};
 use rusqlite::{params, params_from_iter, OptionalExtension, Transaction};
@@ -23,6 +24,7 @@ pub struct StoredObject {
     pub authz_id: String,
     pub name: String,
     pub serialized_object: String,
+    pub cookbook_constraints: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -252,14 +254,18 @@ impl SqliteStore {
         body: &str,
         creator_authz_id: &str,
     ) -> Result<StoredObject, StoreError> {
-        self.create_named_object(
+        let mut environment = self.create_named_object(
             org_id,
             "environments",
             "environments",
             name,
             body,
             creator_authz_id,
-        )
+        )?;
+        let constraints = environment_constraints(body);
+        self.set_environment_constraints(&environment.id, constraints.clone())?;
+        environment.cookbook_constraints = constraints;
+        Ok(environment)
     }
 
     pub fn find_environment(
@@ -293,11 +299,34 @@ impl SqliteStore {
         name: &str,
         body: &str,
     ) -> Result<StoredObject, StoreError> {
-        self.update_named_object("environments", org_id, name, body)
+        let mut environment = self.update_named_object("environments", org_id, name, body)?;
+        let constraints = environment_constraints(body);
+        self.set_environment_constraints(&environment.id, constraints.clone())?;
+        environment.cookbook_constraints = constraints;
+        Ok(environment)
     }
 
     pub fn delete_environment(&self, org_id: &str, name: &str) -> Result<(), StoreError> {
         self.delete_named_object("environments", org_id, name)
+    }
+
+    /// Store the derived `cookbook_versions` constraint map of an environment.
+    ///
+    /// This is a second statement after the named-object write, so a crash in
+    /// between leaves the column `NULL`. The solver reader then parses
+    /// `serialized_object`, which makes that a cost problem, not a correctness
+    /// one.
+    fn set_environment_constraints(
+        &self,
+        id: &str,
+        constraints: Option<String>,
+    ) -> Result<(), StoreError> {
+        let connection = self.connection();
+        connection.execute(
+            "UPDATE environments SET cookbook_constraints = ?1 WHERE id = ?2",
+            params![constraints, id],
+        )?;
+        Ok(())
     }
 
     pub fn create_role(
@@ -566,6 +595,7 @@ impl SqliteStore {
             authz_id,
             name: name.into(),
             serialized_object: body.into(),
+            cookbook_constraints: None,
             created_at: now.clone(),
             updated_at: now,
         })
@@ -579,8 +609,9 @@ impl SqliteStore {
     ) -> Result<Option<StoredObject>, StoreError> {
         let connection = self.connection();
         let sql = format!(
-            "SELECT id, authz_id, name, serialized_object, created_at, updated_at
-             FROM {table} WHERE org_id = ?1 AND name = ?2"
+            "SELECT id, authz_id, name, serialized_object, created_at, updated_at{}
+             FROM {table} WHERE org_id = ?1 AND name = ?2",
+            constraints_selection(table)
         );
         let object = connection
             .query_row(&sql, params![org_id, name], stored_object_from_row)
@@ -595,8 +626,9 @@ impl SqliteStore {
     ) -> Result<Vec<StoredObject>, StoreError> {
         let connection = self.connection();
         let sql = format!(
-            "SELECT id, authz_id, name, serialized_object, created_at, updated_at
-             FROM {table} WHERE org_id = ?1 ORDER BY name"
+            "SELECT id, authz_id, name, serialized_object, created_at, updated_at{}
+             FROM {table} WHERE org_id = ?1 ORDER BY name",
+            constraints_selection(table)
         );
         let mut statement = connection.prepare(&sql)?;
         let rows = statement.query_map([org_id], stored_object_from_row)?;
@@ -618,8 +650,9 @@ impl SqliteStore {
         }
         let connection = self.connection();
         let sql = format!(
-            "SELECT id, authz_id, name, serialized_object, created_at, updated_at
+            "SELECT id, authz_id, name, serialized_object, created_at, updated_at{}
              FROM {table} WHERE org_id = ? AND id IN ({}) ORDER BY name",
+            constraints_selection(table),
             in_placeholders(ids.len())
         );
         let mut statement = connection.prepare(&sql)?;
@@ -795,6 +828,16 @@ fn node_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredNode> {
     })
 }
 
+/// Extra `SELECT` column for the environment-only constraint map. Roles and
+/// data bags share the named-object SQL, so they select a literal `NULL`.
+fn constraints_selection(table: &str) -> &'static str {
+    if table == "environments" {
+        ", cookbook_constraints"
+    } else {
+        ", NULL"
+    }
+}
+
 /// Read the `name` member of a normalized named-object body.
 fn requested_name(body: &str) -> Option<String> {
     let document: serde_json::Value = serde_json::from_str(body).ok()?;
@@ -811,6 +854,7 @@ fn stored_object_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObj
         authz_id: row.get(1)?,
         name: row.get(2)?,
         serialized_object: row.get(3)?,
+        cookbook_constraints: row.get(6)?,
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
     })

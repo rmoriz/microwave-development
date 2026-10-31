@@ -268,11 +268,18 @@ CREATE TABLE IF NOT EXISTS environments (
     org_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     serialized_object TEXT,
+    cookbook_constraints TEXT,
     last_updated_by TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE (org_id, name)
 );
+
+-- Environment `cookbook_versions` constraints, derived on write. Databases
+-- created before the column existed gain it here; rows that stay NULL are
+-- solved from `serialized_object` instead.
+ALTER TABLE environments
+    ADD COLUMN IF NOT EXISTS cookbook_constraints TEXT;
 
 CREATE TABLE IF NOT EXISTS data_bags (
     id TEXT PRIMARY KEY,

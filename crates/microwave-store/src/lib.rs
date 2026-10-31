@@ -33,7 +33,7 @@ pub use compression::{
     Compression, COMPRESSED_PREFIX, MAX_DECOMPRESSED_BYTES,
 };
 pub use cookbooks::{parse_version, StoredCookbookVersion};
-pub use derivations::cookbook_dependencies;
+pub use derivations::{cookbook_dependencies, environment_constraints};
 pub use identity::{ActorKey, ActorType, Client, Org, Principal, User, UserPatch, UserProfile};
 pub use maintenance::MAINTENANCE_KV_KEY;
 pub use membership::Invitation;
