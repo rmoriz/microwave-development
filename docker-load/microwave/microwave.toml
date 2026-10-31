@@ -1,0 +1,48 @@
+# Configuration of the server this stack measures.
+#
+# This is the exact file the harness loads, and the file to copy for a
+# bare-metal run. `bind` names the Compose service instead of 0.0.0.0 because
+# microwave-server builds the presigned /bookshelf URLs from it: the load
+# container has to reach that address.
+[server]
+bind = "microwave:8000"
+
+[paths]
+data_dir = "/var/lib/microwave"
+
+[database]
+driver = "postgres"
+url = "postgres://load:load@postgres:5432/load"
+# Connections this process opens. Raise it together with
+# MW_PG_MAX_CONNECTIONS for a pool-size comparison run; run.sh records both in
+# the fingerprint.
+pool_size = 10
+
+[search]
+backend = "embedded"
+
+[object_store]
+backend = "local"
+
+[keygen]
+# Pre-generated keypairs, so concurrent client key creation does not stall the
+# run; `warm_up = false` keeps start-up fast.
+size = 8
+workers = 4
+warm_up = false
+
+[auth]
+superuser_name = "load-superuser"
+
+[depsolver]
+# The reference concurrency: excess solves answer 503 and are retried.
+max_concurrent = 4
+
+[data_collector]
+store = "local"
+
+[stats]
+# The driver polls /_stats with this pair for the pool gauges; run.sh passes
+# it as --stats-user/--stats-pass and the compose file mirrors it.
+username = "load"
+password = "load-stats"

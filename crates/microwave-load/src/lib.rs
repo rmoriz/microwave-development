@@ -378,7 +378,14 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
                 key: entry.path.clone(),
             })
             .collect();
-        runtime.block_on(canary::run(&args.chef_client, targets, &args.server_url))
+        // A real chef-client points at an organization, not the server root:
+        // the node, its run list, the ACL checks and the data-collector path
+        // all live below `/organizations/<org>`.
+        let org_url = format!(
+            "{}/organizations/{ORG_NAME}",
+            args.server_url.trim_end_matches('/')
+        );
+        runtime.block_on(canary::run(&args.chef_client, targets, &org_url))
     };
 
     println!(

@@ -5,6 +5,10 @@
 # Local package output
 /dist/
 
+# docker-load run artifacts (key manifest, reports)
+/docker-load/keys/
+/docker-load/out/
+
 # Local editor and OS files
 .DS_Store
 *.swp

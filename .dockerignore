@@ -18,6 +18,8 @@ microwave.toml
 *.pem
 *.password
 *.secret
+docker-load/keys/
+docker-load/out/
 
 # Documentation, tests and local tooling.
 docs/

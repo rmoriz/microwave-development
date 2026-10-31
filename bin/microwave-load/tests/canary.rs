@@ -238,9 +238,9 @@ async fn canary_outcomes_and_the_failure_tail_reach_the_report() {
         "--node-name canary-0",
         "--environment load-default",
         "--chef-license accept",
-        &format!("--server-url {url}"),
+        &format!("--server {url}/organizations/load"),
         &format!(
-            "--client-key {}",
+            "--client_key {}",
             directory.path().join("elsewhere/canary-0.pem").display()
         ),
     ] {

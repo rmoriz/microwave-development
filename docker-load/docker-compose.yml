@@ -1,0 +1,169 @@
+# Microwave Server converge load test stack.
+#
+#   cd docker-load
+#   ./run.sh          # reference run
+#   ./run.sh smoke    # shrunken fixture, for a first look
+#
+# Services, in start order:
+#   postgres  - metadata backend, pinned image, throwaway credentials
+#   seed      - microwave-load seed: fixture, keys and cookbook blobs
+#   microwave - the server under test, built from the repository Dockerfile
+#   load      - microwave-load run, started by run.sh (profiles run|smoke)
+#
+# The listener binds to its Compose DNS name instead of 0.0.0.0 so the
+# presigned /bookshelf URLs it hands to the driver resolve from the load
+# container. `microwave/microwave.toml` is the measured configuration and the
+# file a bare-metal operator copies.
+name: microwave-load
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: load
+      POSTGRES_USER: load
+      # Throwaway credentials for a throwaway database.
+      POSTGRES_PASSWORD: load
+    # Raise max_connections together with MW_POOL_SIZE; run.sh also records
+    # both in the fingerprint.
+    command:
+      [
+        "postgres",
+        "-c",
+        "max_connections=${MW_PG_MAX_CONNECTIONS:-200}",
+        "-c",
+        "shared_buffers=${MW_PG_SHARED_BUFFERS:-256MB}",
+      ]
+    volumes:
+      # PostgreSQL 18 wants the parent directory, so pg_upgrade keeps working.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U load -d load"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 5s
+
+  seed:
+    build:
+      context: ..
+      dockerfile: docker-load/load/Dockerfile
+      args:
+        RUST_VERSION: ${RUST_VERSION:-1}
+        CINC_VERSION: ${CINC_VERSION:-19}
+    # The server runs as UID 10001; the seed runs as root because the bind
+    # mounts belong to the host user. Hand the data volume back afterwards.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        microwave-load seed
+        --server-url http://microwave:8000
+        --data-dir /var/lib/microwave
+        --keys /keys/load.keys
+        --postgres-url postgres://load:load@postgres:5432/load
+        --nodes ${MW_SEED_NODES:-20000}
+        --roles ${MW_SEED_ROLES:-1000}
+        --versions ${MW_SEED_VERSIONS:-600}
+        --targets ${MW_SEED_TARGETS:-5000}
+        --canary ${MW_SEED_CANARY:-20};
+        status=$$?; chown -R 10001:10001 /var/lib/microwave; exit $$status
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # Cookbook blobs go to the server's own data directory.
+      - microwave-data:/var/lib/microwave
+      # The key manifest and its private keys are read by `load`.
+      - ./keys:/keys
+    restart: "no"
+
+  microwave:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        RUST_VERSION: ${RUST_VERSION:-1}
+    command:
+      [
+        "microwave-ctl",
+        "service",
+        "start",
+        "--foreground",
+        "--config",
+        "/etc/microwave/microwave.toml",
+      ]
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      MW_CONFIG: /etc/microwave/microwave.toml
+      # The healthcheck runs inside this container and must use the same name
+      # the listener is bound to.
+      MW_HEALTHCHECK_HOST: microwave
+      MW_HTTP_PORT: "8000"
+      # Overrides database.pool_size in the mounted configuration.
+      MW_DATABASE__POOL_SIZE: ${MW_POOL_SIZE:-10}
+      # Must match [stats] in the mounted configuration.
+      MW_STATS__USERNAME: load
+      MW_STATS__PASSWORD: load-stats
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - microwave-data:/var/lib/microwave
+      - ./microwave/microwave.toml:/etc/microwave/microwave.toml:ro
+    ports:
+      - "${MW_LOAD_PORT:-18081}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://microwave:8000/_status >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "${MW_SERVER_CPUS:-2}"
+          memory: ${MW_SERVER_MEM:-4g}
+    mem_limit: ${MW_SERVER_MEM:-4g}
+
+  load:
+    build:
+      context: ..
+      dockerfile: docker-load/load/Dockerfile
+      args:
+        RUST_VERSION: ${RUST_VERSION:-1}
+        CINC_VERSION: ${CINC_VERSION:-19}
+    image: "" # keep the generated name so `down --rmi local` removes it
+    depends_on:
+      microwave:
+        condition: service_healthy
+    profiles: ["run", "smoke"]
+    # run.sh starts this service with the full argument list; the command below
+    # is what a plain `docker compose --profile run up` gets.
+    command:
+      [
+        "run",
+        "--server-url",
+        "http://microwave:8000",
+        "--keys",
+        "/keys/load.keys",
+        "--out",
+        "/out",
+        "--stats-user",
+        "load",
+        "--stats-pass",
+        "load-stats",
+      ]
+    volumes:
+      - ./keys:/keys:ro
+      - ./out:/out
+    deploy:
+      resources:
+        limits:
+          cpus: "${MW_LOAD_CPUS:-4}"
+          memory: ${MW_LOAD_MEM:-4g}
+    mem_limit: ${MW_LOAD_MEM:-4g}
+    restart: "no"
+
+volumes:
+  pgdata:
+  microwave-data:
