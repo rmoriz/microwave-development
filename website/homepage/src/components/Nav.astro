@@ -25,6 +25,7 @@ const links = [
     </nav>
 
     <div class="nav-actions">
+      <a class="nav-github" href={site.releases}>Download</a>
       <a class="nav-github" href={site.github}>GitHub</a>
       <a class="button button-primary button-small" href={site.docs}>Docs</a>
     </div>
@@ -36,6 +37,7 @@ const links = [
           {links.map((link) => (
             <li><a href={link.href}>{link.label}</a></li>
           ))}
+          <li><a href={site.releases}>Download</a></li>
           <li><a href={site.github}>GitHub</a></li>
           <li><a class="button button-primary" href={site.docs}>Docs</a></li>
         </ul>

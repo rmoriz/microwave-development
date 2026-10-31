@@ -39,6 +39,9 @@ test('hero and navigation', () => {
   assert.match($('body').text(), /Experimental MCP for AI agents/);
   assert.equal($(`.nav-desktop a[href="${BASE_PATH}/#agents"]`).length, 1);
   assert.equal($(`.nav-mobile a[href="${BASE_PATH}/#agents"]`).length, 1);
+  const releases = 'https://github.com/rmoriz/microwave-development/releases';
+  assert.equal($(`.nav-actions a[href="${releases}"]`).length, 1);
+  assert.equal($(`.nav-mobile a[href="${releases}"]`).length, 1);
   assert.match($('picture img').attr('alt'), /rainbow neon microwave/i);
   assert.equal($('body').text().includes('docker run'), false);
 });

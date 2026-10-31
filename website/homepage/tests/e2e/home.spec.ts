@@ -41,7 +41,19 @@ test('mobile navigation opens and closes without JavaScript', async ({ browser }
   await summary.click();
   await expect(page.locator(`.nav-mobile a[href="${product}"]`)).toBeVisible();
   await expect(page.locator(`.nav-mobile a[href="${agents}"]`)).toBeVisible();
+  await expect(page.locator('.nav-mobile a[href$="/releases"]')).toBeVisible();
   await context.close();
+});
+
+test('the desktop navigation links to the releases', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(url());
+  const download = page.locator('.nav-actions a', { hasText: 'Download' });
+  await expect(download).toBeVisible();
+  await expect(download).toHaveAttribute(
+    'href',
+    'https://github.com/rmoriz/microwave-development/releases',
+  );
 });
 
 test('anchor links clear the sticky header', async ({ page }) => {

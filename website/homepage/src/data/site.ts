@@ -9,6 +9,7 @@ export const site = {
     'Microwave Server is an independent, open-source Chef Infra Server API implementation in Rust. Works with Cinc Client, keeps your cookbooks and CLI, and is free to self-host under AGPL-3.0.',
   email: 'info+microwave@moriz.de',
   github: 'https://github.com/rmoriz/microwave-development',
+  releases: 'https://github.com/rmoriz/microwave-development/releases',
   runFromSource: 'https://github.com/rmoriz/microwave-development#run-locally',
   docs: withBase('/docs/'),
   mcp: withBase('/docs/mcp/'),
