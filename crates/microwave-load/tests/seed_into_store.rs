@@ -149,8 +149,18 @@ fn seed_refuses_a_populated_store() {
     let directory = tempfile::tempdir().expect("tempdir");
     seed(seed_args(directory.path())).expect("first seed runs");
 
+    // The store is checked before keygen, so a doomed re-seed must leave the
+    // manifest alone instead of pairing old database keys with new PEMs.
+    let manifest = directory.path().join("keys.json");
+    std::fs::write(&manifest, "marker manifest\n").expect("marker writes");
+
     let error = seed(seed_args(directory.path())).expect_err("second seed fails");
     let message = error.to_string();
     assert!(message.contains("--data-dir"), "{message}");
     assert!(message.contains("fresh"), "{message}");
+    assert_eq!(
+        std::fs::read_to_string(&manifest).expect("manifest reads"),
+        "marker manifest\n",
+        "the refused seed leaves the manifest untouched"
+    );
 }

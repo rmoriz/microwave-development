@@ -49,11 +49,15 @@ pub fn dispatch(cli: Cli) -> Result<(), LoadError> {
     }
 }
 
-/// Build the fixture, write keys and blobs, and apply the snapshot.
+/// Open the store, refuse a populated one, then build the fixture, write keys
+/// and blobs, and apply the snapshot.
 ///
 /// The fixture keeps fixed ids, so the target store must be empty; a populated
 /// SQLite file would collide on the global `UNIQUE (org_id, name)` container
-/// rows and silently rebind existing cookbooks.
+/// rows and silently rebind existing cookbooks. The emptiness check therefore
+/// runs before the fixture build and keygen: a doomed re-seed must not spend
+/// minutes on keys and overwrite the `--keys` manifest and its PEM files while
+/// the surviving database keeps the previous seed's public keys.
 pub fn seed(args: SeedArgs) -> Result<(), LoadError> {
     let sizes = Sizes {
         nodes: args.nodes,
@@ -62,12 +66,8 @@ pub fn seed(args: SeedArgs) -> Result<(), LoadError> {
         targets: args.targets,
         canary: args.canary,
     };
-    let mut fixture = Fixture::build(sizes).map_err(LoadError::Message)?;
-    let actors = keys::generate(&mut fixture, args.shared_key)?;
-    keys::write_manifest(&args.keys, &actors)?;
-    let books = std::mem::take(&mut fixture.books);
 
-    match &args.postgres_url {
+    let actors = match &args.postgres_url {
         Some(url) => {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -81,6 +81,7 @@ pub fn seed(args: SeedArgs) -> Result<(), LoadError> {
                     )
                     .await?;
                 require_empty(store.list_orgs().await?.len(), "--postgres-url")?;
+                let (fixture, books, actors) = prepare(&args, sizes)?;
                 write_books(&args.data_dir, &books)?;
                 store.import_snapshot(&fixture.snapshot).await?;
                 for (id, constraints) in constrained(&fixture) {
@@ -88,36 +89,51 @@ pub fn seed(args: SeedArgs) -> Result<(), LoadError> {
                         .set_environment_constraints(&id, Some(constraints))
                         .await?;
                 }
-                Ok::<_, LoadError>(())
-            })?;
+                Ok::<_, LoadError>(actors)
+            })?
         }
         None => {
             let database = args.data_dir.join("microwave.db");
             let store = SqliteStore::open_with_compression(&database, Compression::None)?;
             require_empty(store.list_orgs()?.len(), "--data-dir")?;
+            let (fixture, books, actors) = prepare(&args, sizes)?;
             write_books(&args.data_dir, &books)?;
             store.import_snapshot(&fixture.snapshot)?;
             for (id, constraints) in constrained(&fixture) {
                 store.set_environment_constraints(&id, Some(constraints))?;
             }
+            actors
         }
-    }
+    };
 
     println!(
         "seeded org {ORG_NAME} for {} into {}: {} nodes, {} roles, {} cookbook versions, {} clients, {} canaries",
         args.server_url,
         target(&args),
-        fixture.sizes.nodes,
-        fixture.sizes.roles,
-        fixture.sizes.versions,
-        fixture.sizes.targets,
-        fixture.sizes.canary
+        sizes.nodes,
+        sizes.roles,
+        sizes.versions,
+        sizes.targets,
+        sizes.canary
     );
-    println!("{} keypairs in {}", actors.len(), args.keys.display());
+    println!("{actors} keypairs in {}", args.keys.display());
     Ok(())
 }
 
-/// Fail before touching the store when the target store already has data.
+/// Build the fixture, generate the actor keys and write the manifest.
+///
+/// Returns the fixture, its blobs and the keypair count. Only called once the
+/// store proved empty, because it writes into `--keys` and `keys.d/`.
+fn prepare(args: &SeedArgs, sizes: Sizes) -> Result<(Fixture, Vec<BookBlob>, usize), LoadError> {
+    let mut fixture = Fixture::build(sizes).map_err(LoadError::Message)?;
+    let actors = keys::generate(&mut fixture, args.shared_key)?;
+    keys::write_manifest(&args.keys, &actors)?;
+    let books = std::mem::take(&mut fixture.books);
+    Ok((fixture, books, actors.len()))
+}
+
+/// Fail before the fixture build and keygen when the target store already has
+/// data.
 fn require_empty(orgs: usize, flag: &str) -> Result<(), LoadError> {
     if orgs == 0 {
         return Ok(());
