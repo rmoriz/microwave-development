@@ -316,7 +316,7 @@ impl SqliteStore {
     /// between leaves the column `NULL`. The solver reader then parses
     /// `serialized_object`, which makes that a cost problem, not a correctness
     /// one.
-    fn set_environment_constraints(
+    pub fn set_environment_constraints(
         &self,
         id: &str,
         constraints: Option<String>,

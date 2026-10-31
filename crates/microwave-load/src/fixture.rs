@@ -35,6 +35,18 @@ const GROUP_NAME: &str = "load-clients";
 
 const COOKBOOK_FILES: [&str; 3] = ["recipes/default.rb", "attributes/default.rb", "metadata.rb"];
 
+/// Recipes the static canary run list carries; it names the first
+/// `CANARY_RECIPES` cookbooks of the pool.
+pub const CANARY_RECIPES: usize = 5;
+
+/// Versions the pool needs before `CANARY_RECIPES` cookbooks exist.
+fn canary_versions() -> usize {
+    (CANARY_RECIPES - 1) * 3 + 1
+}
+
+/// Roles a node's run list carries.
+const NODE_ROLES: usize = 3;
+
 /// The three environments the node bodies rotate through.
 const ENVIRONMENTS: [&str; 3] = ["load-default", "load-constrained-a", "load-constrained-b"];
 
@@ -99,13 +111,17 @@ impl Sizes {
                 self.targets, self.nodes
             ));
         }
-        // Canary run lists name `load-cb-0001`..`0005`, which needs two full
-        // cookbooks' worth of versions before the fifth cookbook exists.
-        if self.canary > 0 && self.versions < 13 {
-            return Err(format!(
-                "--versions must be at least 13 when --canary is set (got {})",
-                self.versions
-            ));
+        // Canary run lists name the first `CANARY_RECIPES` cookbooks, so the
+        // pool must reach that many cookbooks before a canary can run.
+        if self.canary > 0 {
+            let needed = canary_versions();
+            if self.versions < needed {
+                return Err(format!(
+                    "--versions must be at least {needed} when --canary is set: a canary run list \
+                     needs a {CANARY_RECIPES}-package run list (got {})",
+                    self.versions
+                ));
+            }
         }
         Ok(())
     }
@@ -246,7 +262,7 @@ impl Fixture {
             let authz_id = format!("load-authz-env-{:04}", index + 1);
             let mut constraints = serde_json::Map::new();
             match index {
-                1 => constraints.insert("load-cb-0001".into(), "= 1.0.0".into()),
+                1 => constraints.insert("load-cb-0001".into(), "1.0.0".into()),
                 2 => constraints.insert("load-cb-0002".into(), "~> 1.0".into()),
                 _ => None,
             };
@@ -297,9 +313,10 @@ impl Fixture {
 
         for index in 0..sizes.nodes {
             let environment = ENVIRONMENTS[index % ENVIRONMENTS.len()];
-            let role = format!("load-role-{:04}", index % sizes.roles);
             let name = format!("load-node-{index:05}");
-            let run_list = vec![format!("role[{role}]")];
+            let run_list: Vec<String> = (0..NODE_ROLES.min(sizes.roles))
+                .map(|slot| format!("role[load-role-{:04}]", (index + slot) % sizes.roles))
+                .collect();
             let body = serde_json::json!({
                 "name": name,
                 "chef_environment": environment,
@@ -332,7 +349,7 @@ impl Fixture {
         for index in 0..sizes.canary {
             let name = format!("canary-{index}");
             let authz_id = format!("load-authz-canary-node-{index:02}");
-            let run_list: Vec<String> = (1..=5)
+            let run_list: Vec<String> = (1..=CANARY_RECIPES)
                 .map(|recipe| format!("recipe[load-cb-{recipe:04}::default]"))
                 .collect();
             let body = serde_json::json!({
@@ -468,7 +485,7 @@ impl Fixture {
                     major,
                     minor,
                     patch,
-                    frozen: true,
+                    frozen: false,
                     meta_attributes: None,
                     meta_deps: microwave_store::cookbook_dependencies(&serialized),
                     meta_long_desc: None,
@@ -566,17 +583,19 @@ fn grant_group_reads(
     cookbooks: usize,
     roles: usize,
 ) {
-    let mut targets = Vec::with_capacity(4 + environments.len() + roles + cookbooks);
+    let mut targets = Vec::with_capacity(5 + environments.len() + roles + cookbooks);
     for name in ["cookbooks", "environments", "roles", "sandboxes"] {
-        targets.push(format!("load-authz-container-{name}"));
+        targets.push((format!("load-authz-container-{name}"), "read"));
     }
-    targets.extend(environments.iter().cloned());
-    targets.extend((0..roles).map(|index| format!("load-authz-role-{index:04}")));
-    targets.extend((0..cookbooks).map(|index| format!("load-authz-cb-{:04}", index + 1)));
-    for target in targets {
+    // `--upload` creates a sandbox before it presigns a blob.
+    targets.push(("load-authz-container-sandboxes".into(), "create"));
+    targets.extend(environments.iter().map(|id| (id.clone(), "read")));
+    targets.extend((0..roles).map(|index| (format!("load-authz-role-{index:04}"), "read")));
+    targets.extend((0..cookbooks).map(|index| (format!("load-authz-cb-{:04}", index + 1), "read")));
+    for (target, permission) in targets {
         snapshot.authz_acl_group.push(AuthzAclGroupRow {
             target_authz_id: target,
-            permission: "read".into(),
+            permission: permission.into(),
             group_authz_id: GROUP_AUTHZ.into(),
         });
     }
@@ -728,6 +747,60 @@ mod tests {
                 Some("actor")
             );
         }
+    }
+
+    #[test]
+    fn every_node_carries_three_distinct_roles() {
+        let fixture = Fixture::build(small()).expect("fixture builds");
+        let nodes = fixture
+            .snapshot
+            .nodes
+            .iter()
+            .filter(|node| node.name.starts_with("load-node-"));
+        for node in nodes {
+            let body: serde_json::Value =
+                serde_json::from_str(node.serialized_object.as_deref().expect("node body"))
+                    .expect("node body parses");
+            let run_list: Vec<&str> = body["run_list"]
+                .as_array()
+                .expect("run list is an array")
+                .iter()
+                .map(|entry| entry.as_str().expect("run list entries are strings"))
+                .collect();
+            assert_eq!(run_list.len(), NODE_ROLES);
+            let distinct: std::collections::BTreeSet<_> = run_list.iter().collect();
+            assert_eq!(distinct.len(), NODE_ROLES, "roles repeat in {}", node.name);
+        }
+    }
+
+    #[test]
+    fn the_client_group_may_create_sandboxes() {
+        let fixture = Fixture::build(small()).expect("fixture builds");
+        let sandboxes = fixture
+            .snapshot
+            .containers
+            .iter()
+            .find(|container| container.name == "sandboxes")
+            .expect("sandbox container exists");
+        for permission in ["read", "create"] {
+            assert!(
+                fixture.snapshot.authz_acl_group.iter().any(|row| {
+                    row.target_authz_id == sandboxes.authz_id
+                        && row.group_authz_id == GROUP_AUTHZ
+                        && row.permission == permission
+                }),
+                "group lacks {permission} on sandboxes"
+            );
+        }
+    }
+
+    #[test]
+    fn the_canary_guard_names_the_run_list_width() {
+        let mut sizes = small();
+        sizes.versions = 6;
+        let error = Fixture::build(sizes).expect_err("6 versions cannot feed five cookbooks");
+        assert!(error.contains("at least 13"), "{error}");
+        assert!(error.contains("5-package run list"), "{error}");
     }
 
     #[test]

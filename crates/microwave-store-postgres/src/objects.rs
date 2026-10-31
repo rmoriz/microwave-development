@@ -186,7 +186,7 @@ impl PostgresStore {
     /// between leaves the column `NULL`. The solver reader then parses
     /// `serialized_object`, which makes that a cost problem, not a correctness
     /// one.
-    async fn set_environment_constraints(
+    pub async fn set_environment_constraints(
         &self,
         id: &str,
         constraints: Option<String>,
