@@ -369,24 +369,16 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
     let canary = if args.canary == 0 {
         canary::Canary::default()
     } else {
-        let keys_dir = keys::key_dir(&args.keys);
         let targets = manifest
             .iter()
             .filter(|entry| entry.kind == KeyKind::Canary)
             .take(args.canary)
             .map(|entry| canary::Target {
                 node: entry.name.clone(),
-                key: keys_dir.join(format!("{}.pem", entry.name)),
+                key: entry.path.clone(),
             })
             .collect();
-        let canary = runtime.block_on(canary::run(&args.chef_client, targets, &args.server_url));
-        for line in canary.lines() {
-            println!("{line}");
-        }
-        if let Some(note) = &canary.note {
-            println!("{note}");
-        }
-        canary
+        runtime.block_on(canary::run(&args.chef_client, targets, &args.server_url))
     };
 
     println!(
@@ -426,6 +418,13 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
     println!("pool samples: {}", metrics.pool_samples.len());
     if metrics.failed > 0 {
         println!("{} nodes did not complete", metrics.failed);
+    }
+    // The canary block follows the driver summary.
+    for line in canary.lines() {
+        println!("{line}");
+    }
+    if let Some(note) = &canary.note {
+        println!("{note}");
     }
 
     let mut results = report::Results::new(

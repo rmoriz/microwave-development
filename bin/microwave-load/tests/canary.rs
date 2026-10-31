@@ -55,7 +55,16 @@ async fn serve() -> (String, tokio::task::JoinHandle<()>) {
 const KEY: &str = include_str!("../../../crates/microwave-crypto/tests/fixtures/test_key.pem");
 
 /// A manifest with one driver client and two canaries, and their key files.
+///
+/// The canary keys live outside the default `load.keys.d`, so a run that
+/// rebuilds the path instead of reading the manifest fails the client-key
+/// assertion.
 fn manifest(directory: &Path) -> PathBuf {
+    manifest_with(directory, true)
+}
+
+/// Like [`manifest`], optionally without canary entries.
+fn manifest_with(directory: &Path, canaries: bool) -> PathBuf {
     let keys = directory.join("load.keys");
     let key_directory = directory.join("load.keys.d");
     std::fs::create_dir(&key_directory).expect("key directory");
@@ -63,10 +72,14 @@ fn manifest(directory: &Path) -> PathBuf {
     std::fs::write(&key, KEY).expect("key writes");
     let mut lines = format!("superuser load-superuser {}\n", key.display());
     lines.push_str(&format!("client load-client-00000 {}\n", key.display()));
-    for canary in 0..2 {
-        let path = key_directory.join(format!("canary-{canary}.pem"));
-        std::fs::write(&path, KEY).expect("canary key writes");
-        lines.push_str(&format!("canary canary-{canary} {}\n", path.display()));
+    if canaries {
+        let elsewhere = directory.join("elsewhere");
+        std::fs::create_dir(&elsewhere).expect("elsewhere directory");
+        for canary in 0..2 {
+            let path = elsewhere.join(format!("canary-{canary}.pem"));
+            std::fs::write(&path, KEY).expect("canary key writes");
+            lines.push_str(&format!("canary canary-{canary} {}\n", path.display()));
+        }
     }
     std::fs::write(&keys, lines).expect("manifest writes");
     keys
@@ -91,6 +104,7 @@ while [ $# -gt 0 ]; do
 done
 printf '%s\n' "$args" > "{record}/$node.argv"
 case "$node" in
+  canary-0) printf 'canary warning\n' >&2 ;;
   canary-1) printf 'converge failed\n' >&2; exit 1 ;;
 esac
 exit 0
@@ -133,6 +147,17 @@ async fn run(args: Vec<String>, path: String) -> Output {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// Every argv file the stub recorded, joined.
+fn captured_argv(directory: &Path) -> String {
+    std::fs::read_dir(directory)
+        .expect("directory")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.extension() == Some("argv".as_ref()))
+        .map(|path| std::fs::read_to_string(path).expect("argv reads"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn report(out: &Path) -> (String, serde_json::Value) {
@@ -185,17 +210,24 @@ async fn canary_outcomes_and_the_failure_tail_reach_the_report() {
     assert_eq!(failed.len(), 1, "{canary_lines:?}");
     assert_eq!(ok[0], "canary-0: ok");
 
+    // The canary block follows the driver summary.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let summary = stdout.find("converged ").expect("driver summary");
+    let canary = stdout.find("canary-0: ok").expect("canary line");
+    assert!(summary < canary, "{stdout}");
+
     let (markdown, json) = report(&out);
     assert!(markdown.contains("- canary-0: ok"), "{markdown}");
+    assert!(markdown.contains("  canary warning"), "{markdown}");
     assert!(markdown.contains("canary-1: failed (exit 1"), "{markdown}");
     assert!(markdown.contains("  converge failed"), "{markdown}");
     let lines = json["results"]["canary"]
         .as_array()
         .expect("canary lines in the json");
     assert_eq!(lines.len(), 2);
-    assert!(lines
-        .iter()
-        .any(|line| line.as_str() == Some("canary-0: ok")));
+    assert!(lines.iter().any(|line| line
+        .as_str()
+        .is_some_and(|line| line.starts_with("canary-0: ok") && line.contains("canary warning"))));
     assert!(lines.iter().any(|line| line
         .as_str()
         .is_some_and(|line| line.starts_with("canary-1: failed (exit 1)")
@@ -209,7 +241,7 @@ async fn canary_outcomes_and_the_failure_tail_reach_the_report() {
         &format!("--server-url {url}"),
         &format!(
             "--client-key {}",
-            directory.path().join("load.keys.d/canary-0.pem").display()
+            directory.path().join("elsewhere/canary-0.pem").display()
         ),
     ] {
         assert!(called.contains(expected), "{expected:?} in {called:?}");
@@ -268,8 +300,40 @@ async fn zero_canaries_skip_the_processes_entirely() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.contains("canary-0:"), "{stdout}");
     assert!(!stdout.contains("canary skipped"), "{stdout}");
+    let called = captured_argv(directory.path());
+    assert!(!called.contains("canary-0"), "{called}");
 
     let (markdown, json) = report(&out);
     assert!(markdown.contains("No canary ran."), "{markdown}");
     assert!(json["results"]["canary_note"].is_null());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_manifest_without_canary_entries_says_so() {
+    let (url, server) = serve().await;
+    let directory = tempfile::tempdir().expect("tempdir");
+    let bin = stub(directory.path());
+    let keys = manifest_with(directory.path(), false);
+    let out = directory.path().join("out");
+    let mut args = args(&url, &keys, &out);
+    args.extend(["--canary".to_string(), "2".to_string()]);
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let output = run(args, path).await;
+    server.abort();
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let note = "canary skipped: the manifest lists no canary entries";
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(note), "{stdout}");
+
+    let (markdown, json) = report(&out);
+    assert!(markdown.contains(note), "{markdown}");
+    assert_eq!(json["results"]["canary_note"], note);
+    assert_eq!(json["results"]["canary"].as_array().map(Vec::len), Some(0));
+    assert_eq!(captured_argv(directory.path()), "");
 }

@@ -6,19 +6,32 @@
 //! goes into the report and never into the exit status.
 
 use crate::fixture::CANARY_ENVIRONMENT;
+use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
+use tokio::task::{Id, JoinSet};
+use tokio::time::timeout;
 
 /// At most this many canary processes run at once.
 pub const MAX_CONCURRENCY: usize = 4;
 /// Stderr lines kept per canary; a failed converge can be verbose.
 pub const STDERR_TAIL: usize = 20;
+/// A single canary child may run this long, then it is killed and reported as
+/// `failed (timeout)`.
+///
+/// Ten minutes is well past a slow real converge; the bound matters because the
+/// canary runs after the driver, so a hung child would otherwise keep the run
+/// from ever writing its report.
+pub const CANARY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// How long a killed child's stderr pipe may stay open, e.g. because a
+/// grandchild inherited it.
+const STDERR_GRACE: Duration = Duration::from_secs(1);
 
 /// The note a run without a usable binary carries.
 pub const SKIPPED: &str = "canary skipped: chef-client not found";
@@ -83,43 +96,83 @@ pub async fn run(binary: &str, targets: Vec<Target>, server_url: &str) -> Canary
             note: Some("canary skipped: the manifest lists no canary entries".to_string()),
         };
     }
-    let Some(binary) = find_binary(binary) else {
-        return Canary {
-            outcomes: Vec::new(),
-            note: Some(SKIPPED.to_string()),
-        };
+    let binary = match find_binary(binary) {
+        Ok(binary) => binary,
+        Err(note) => {
+            return Canary {
+                outcomes: Vec::new(),
+                note: Some(note),
+            }
+        }
     };
 
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENCY));
-    let mut tasks = JoinSet::new();
+    let mut tasks: JoinSet<Outcome> = JoinSet::new();
+    let mut nodes: HashMap<Id, String> = HashMap::new();
     for target in targets {
         let Ok(permit) = Arc::clone(&semaphore).acquire_owned().await else {
             break;
         };
         let binary = binary.clone();
         let server_url = server_url.to_string();
-        tasks.spawn(async move {
+        let node = target.node.clone();
+        let handle = tasks.spawn(async move {
             let _permit = permit;
-            converge(&binary, &target, &server_url).await
+            converge(&binary, &target, &server_url, CANARY_TIMEOUT).await
         });
+        nodes.insert(handle.id(), node);
     }
 
     let mut outcomes = Vec::new();
-    while let Some(finished) = tasks.join_next().await {
-        if let Ok(outcome) = finished {
-            outcomes.push(outcome);
+    while let Some(finished) = tasks.join_next_with_id().await {
+        match finished {
+            Ok((id, outcome)) => {
+                nodes.remove(&id);
+                outcomes.push(outcome);
+            }
+            // A panicked child task has no outcome of its own; name it after
+            // the target the task was spawned for.
+            Err(error) => outcomes.push(Outcome {
+                node: nodes
+                    .remove(&error.id())
+                    .unwrap_or_else(|| "canary-?".to_string()),
+                ok: false,
+                reason: "panicked".to_string(),
+                stderr: vec![error.to_string()],
+            }),
         }
     }
-    outcomes.sort_by(|left, right| left.node.cmp(&right.node));
+    order(&mut outcomes);
     Canary {
         outcomes,
         note: None,
     }
 }
 
+/// Sort by the numeric index, so `canary-2` precedes `canary-10`.
+fn order(outcomes: &mut [Outcome]) {
+    outcomes.sort_by(|left, right| {
+        index(&left.node)
+            .cmp(&index(&right.node))
+            .then_with(|| left.node.cmp(&right.node))
+    });
+}
+
+/// The numeric suffix of a `canary-<n>` name; non-numeric names sort last.
+fn index(node: &str) -> (u64, &str) {
+    let number = node
+        .rsplit_once('-')
+        .and_then(|(_, suffix)| suffix.parse().ok())
+        .unwrap_or(u64::MAX);
+    (number, node)
+}
+
 /// Converge one canary like a real `chef-client`: its node, its environment,
 /// its client key, the license flag accepted.
-async fn converge(binary: &Path, target: &Target, server_url: &str) -> Outcome {
+///
+/// The child is killed after `limit`; its stderr is drained in a separate task
+/// so a talkative child cannot block on a full pipe while we wait.
+async fn converge(binary: &Path, target: &Target, server_url: &str, limit: Duration) -> Outcome {
     let spawned = Command::new(binary)
         .arg("--node-name")
         .arg(&target.node)
@@ -147,15 +200,16 @@ async fn converge(binary: &Path, target: &Target, server_url: &str) -> Outcome {
             }
         }
     };
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stderr.take() {
-        // The pipe is drained before the wait, so a talkative child cannot
-        // block on a full buffer.
-        let _ = pipe.read_to_string(&mut stderr).await;
-    }
-    let status = match child.wait().await {
-        Ok(status) => status,
-        Err(error) => {
+    let reader = child.stderr.take().map(|mut pipe| {
+        tokio::spawn(async move {
+            let mut stderr = String::new();
+            let _ = pipe.read_to_string(&mut stderr).await;
+            stderr
+        })
+    });
+    let (status, timed_out) = match timeout(limit, child.wait()).await {
+        Ok(Ok(status)) => (Some(status), false),
+        Ok(Err(error)) => {
             return Outcome {
                 node: target.node.clone(),
                 ok: false,
@@ -163,21 +217,47 @@ async fn converge(binary: &Path, target: &Target, server_url: &str) -> Outcome {
                 stderr: Vec::new(),
             }
         }
+        Err(_) => {
+            // `kill` also reaps the child, so the reader reaches EOF.
+            let _ = child.kill().await;
+            (None, true)
+        }
     };
+    let stderr = match reader {
+        // A killed child's grandchild may still hold the pipe; do not block the
+        // run on it.
+        Some(reader) if timed_out => timeout(STDERR_GRACE, reader)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default(),
+        Some(reader) => reader.await.unwrap_or_default(),
+        None => String::new(),
+    };
+    let stderr = tail(&stderr, STDERR_TAIL);
 
+    if timed_out {
+        return Outcome {
+            node: target.node.clone(),
+            ok: false,
+            reason: "timeout".to_string(),
+            stderr,
+        };
+    }
+    let status = status.expect("a finished wait carries a status");
     if status.success() {
         return Outcome {
             node: target.node.clone(),
             ok: true,
             reason: String::new(),
-            stderr: Vec::new(),
+            stderr,
         };
     }
     Outcome {
         node: target.node.clone(),
         ok: false,
         reason: exit(status),
-        stderr: tail(&stderr, STDERR_TAIL),
+        stderr,
     }
 }
 
@@ -200,23 +280,40 @@ fn exit(status: ExitStatus) -> String {
     }
 }
 
-/// The binary as a path, or `None` when it is missing or not executable.
+/// The binary as a path, or the note explaining why it cannot run.
 ///
-/// A name with a slash is used as given; a bare name is looked up on `PATH`.
-fn find_binary(binary: &str) -> Option<PathBuf> {
-    let executable = |path: &Path| {
-        std::fs::metadata(path)
-            .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
+/// A name with a slash is used as given; a bare name is looked up on `PATH`. An
+/// existing file without the executable bit says so instead of passing for
+/// missing.
+fn find_binary(binary: &str) -> Result<PathBuf, String> {
+    let check = |path: &Path| -> Result<(), String> {
+        match std::fs::metadata(path) {
+            Ok(metadata) if !metadata.is_file() => Err(format!(
+                "canary skipped: chef-client is not a regular file: {}",
+                path.display()
+            )),
+            Ok(metadata) if metadata.permissions().mode() & 0o111 == 0 => Err(format!(
+                "canary skipped: chef-client is not executable: {}",
+                path.display()
+            )),
+            Ok(_) => Ok(()),
+            Err(_) => Err(SKIPPED.to_string()),
+        }
     };
     if binary.contains('/') {
         let path = PathBuf::from(binary);
-        return executable(&path).then_some(path);
+        check(&path)?;
+        return Ok(path);
     }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|directory| directory.join(binary))
-        .find(|candidate| executable(candidate))
+    let path = std::env::var_os("PATH").ok_or_else(|| SKIPPED.to_string())?;
+    let mut first = None;
+    for candidate in std::env::split_paths(&path).map(|directory| directory.join(binary)) {
+        match check(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(note) => first = first.or(Some(note)),
+        }
+    }
+    Err(first.unwrap_or_else(|| SKIPPED.to_string()))
 }
 
 #[cfg(test)]
@@ -247,9 +344,9 @@ mod tests {
             node: "canary-0".into(),
             ok: true,
             reason: String::new(),
-            stderr: Vec::new(),
+            stderr: vec!["a warning".into()],
         };
-        assert_eq!(ok.line(), "canary-0: ok");
+        assert_eq!(ok.line(), "canary-0: ok\n  a warning");
 
         let failed = Outcome {
             node: "canary-1".into(),
@@ -261,5 +358,90 @@ mod tests {
             failed.line(),
             "canary-1: failed (exit 1)\n  converge failed"
         );
+    }
+
+    #[test]
+    fn outcomes_order_by_the_numeric_index() {
+        let make = |node: &str| Outcome {
+            node: node.into(),
+            ok: true,
+            reason: String::new(),
+            stderr: Vec::new(),
+        };
+        let mut outcomes = vec![make("canary-10"), make("canary-2"), make("canary-1")];
+
+        order(&mut outcomes);
+
+        let nodes: Vec<&str> = outcomes
+            .iter()
+            .map(|outcome| outcome.node.as_str())
+            .collect();
+        assert_eq!(nodes, ["canary-1", "canary-2", "canary-10"]);
+    }
+
+    #[test]
+    fn a_missing_binary_and_a_file_without_the_executable_bit_differ() {
+        assert_eq!(
+            find_binary("/no/such/chef-client").expect_err("missing"),
+            SKIPPED
+        );
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let script = directory.path().join("chef-client");
+        std::fs::write(&script, "#!/bin/sh\n").expect("script writes");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644)).expect("mode");
+        let note = find_binary(&script.display().to_string()).expect_err("not executable");
+        assert!(note.contains("not executable"), "{note}");
+        assert!(note.contains("chef-client"), "{note}");
+    }
+
+    /// A script that runs `body` and is executable.
+    fn script(directory: &Path, body: &str) -> PathBuf {
+        let path = directory.join("chef-client");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("script writes");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        path
+    }
+
+    fn target(directory: &Path) -> Target {
+        Target {
+            node: "canary-0".into(),
+            key: directory.join("canary-0.pem"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_successful_child_still_contributes_its_stderr_tail() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let binary = script(directory.path(), "printf 'a warning\\n' >&2");
+
+        let outcome = converge(
+            &binary,
+            &target(directory.path()),
+            "http://127.0.0.1:1",
+            CANARY_TIMEOUT,
+        )
+        .await;
+
+        assert!(outcome.ok, "{outcome:?}");
+        assert_eq!(outcome.stderr, vec!["a warning"]);
+    }
+
+    #[tokio::test]
+    async fn a_hung_child_is_killed_and_reported_as_a_timeout() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let binary = script(directory.path(), "sleep 5");
+
+        let outcome = converge(
+            &binary,
+            &target(directory.path()),
+            "http://127.0.0.1:1",
+            Duration::from_millis(200),
+        )
+        .await;
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert_eq!(outcome.reason, "timeout");
+        assert_eq!(outcome.line(), "canary-0: failed (timeout)");
     }
 }

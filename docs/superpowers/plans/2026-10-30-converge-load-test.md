@@ -583,7 +583,7 @@ deterministic fixture, no network yet.
   one `ok`, one `failed` and exit `0` overall;
 - missing-binary test asserts the skip line and exit `0`.
 
-**Verify:** `cargo test -p microwave-load`
+**Verify:** `cargo test -p microwave-load -p microwave-load-bin`
 
 **Commit:** `feat(load): add a real chef-client canary`
 

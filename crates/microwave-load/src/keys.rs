@@ -138,11 +138,14 @@ pub fn write_manifest(manifest: &Path, actors: &[ActorKey]) -> Result<(), LoadEr
     Ok(())
 }
 
-/// One manifest line with the private key already read.
+/// One manifest line with its path and the private key already read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyFile {
     pub kind: KeyKind,
     pub name: String,
+    /// The path as the manifest spells it; a hand-written or moved manifest
+    /// need not live in [`key_dir`].
+    pub path: PathBuf,
     pub private_key: String,
 }
 
@@ -184,6 +187,7 @@ fn parse_manifest(text: &str) -> Result<Vec<KeyFile>, LoadError> {
         entries.push(KeyFile {
             kind,
             name: name.to_string(),
+            path: PathBuf::from(path),
             private_key: fs::read_to_string(path)?,
         });
     }
@@ -307,8 +311,27 @@ mod tests {
             .collect();
         assert_eq!(actual, expected);
         for (entry, actor) in read.iter().zip(&actors) {
+            let expected = key_dir(&manifest).join(format!("{}.pem", actor.entry.name));
+            assert_eq!(entry.path, expected);
             assert_eq!(entry.private_key, actor.private_key_pem);
         }
+    }
+
+    #[test]
+    fn a_key_outside_the_default_directory_is_read_from_the_manifest_path() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let elsewhere = directory.path().join("elsewhere");
+        fs::create_dir(&elsewhere).expect("key directory");
+        let key = elsewhere.join("canary.pem");
+        fs::write(&key, "private").expect("key writes");
+        let manifest = directory.path().join("load.keys");
+        fs::write(&manifest, format!("canary canary-0 {}\n", key.display()))
+            .expect("manifest writes");
+
+        let read = read_manifest(&manifest).expect("manifest reads");
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].path, key);
+        assert_eq!(read[0].private_key, "private");
     }
 
     #[test]
