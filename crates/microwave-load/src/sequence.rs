@@ -12,7 +12,7 @@ use crate::client::{NodeClient, Outcome};
 use crate::metrics::{Metrics, NodeRun, Sample};
 use chrono::{SecondsFormat, Utc};
 use microwave_objectstore::md5_hex;
-use reqwest::Method;
+use reqwest::{Method, StatusCode};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -69,6 +69,14 @@ impl Converge<'_> {
         started: chrono::DateTime<Utc>,
     ) -> Result<(), String> {
         let read = self.call(NODE_READ, Method::GET, node_path, None).await?;
+        if read.status != StatusCode::OK {
+            // Any other `2xx` is a success but not the node document the rest
+            // of the sequence needs, so it stops here with its own message.
+            return Err(format!(
+                "{NODE_READ} returned {}, expected 200",
+                read.status
+            ));
+        }
         let mut body: Value = serde_json::from_slice(&read.body)
             .map_err(|error| self.parse_failure(NODE_READ, &error.to_string()))?;
         let environment = body
@@ -108,8 +116,28 @@ impl Converge<'_> {
         self.call(NODE_WRITE, Method::PUT, node_path, Some(write))
             .await?;
 
-        let payload = serde_json::to_vec(&run_converge(node, iteration, started))
-            .map_err(|error| self.parse_failure(DATA_COLLECTOR, &error.to_string()))?;
+        // The upload runs before the report so the report can only claim
+        // success once the whole sequence, upload included, went through. A
+        // failed upload still reports, marked as such, and then fails the node.
+        let upload_failure = if upload {
+            self.upload_blob(base, node, iteration).await.err()
+        } else {
+            None
+        };
+
+        let status = if upload_failure.is_some() {
+            "failure"
+        } else {
+            "success"
+        };
+        let payload = serde_json::to_vec(&run_converge(
+            node,
+            iteration,
+            started,
+            status,
+            upload_failure.as_deref(),
+        ))
+        .map_err(|error| self.parse_failure(DATA_COLLECTOR, &error.to_string()))?;
         self.call(
             DATA_COLLECTOR,
             Method::POST,
@@ -118,8 +146,8 @@ impl Converge<'_> {
         )
         .await?;
 
-        if upload {
-            self.upload_blob(base, node, iteration).await?;
+        if let Some(failure) = upload_failure {
+            return Err(failure);
         }
         Ok(())
     }
@@ -214,15 +242,22 @@ impl Converge<'_> {
         }
     }
 
-    /// Record a `2xx` whose body could not be used as status class `0`.
+    /// Reclassify the request just recorded as status class `0` because its
+    /// `2xx` body could not be used.
+    ///
+    /// The request keeps its measured latency and is counted once: the parse
+    /// failure is that request's outcome, not a second sample.
     fn parse_failure(&mut self, endpoint: &'static str, detail: &str) -> String {
-        self.samples.push(Sample {
-            endpoint,
-            status: None,
-            retries: 0,
-            solver_503: 0,
-            latency: std::time::Duration::ZERO,
-        });
+        match self.samples.last_mut() {
+            Some(sample) if sample.endpoint == endpoint => sample.status = None,
+            _ => self.samples.push(Sample {
+                endpoint,
+                status: None,
+                retries: 0,
+                solver_503: 0,
+                latency: std::time::Duration::ZERO,
+            }),
+        }
         format!("{endpoint}: unparseable response ({detail})")
     }
 }
@@ -272,18 +307,31 @@ fn bump_iteration(body: &mut Value) -> Result<u64, String> {
 }
 
 /// The minimal `run_converge` payload the data collector accepts.
-fn run_converge(node: &str, iteration: u64, started: chrono::DateTime<Utc>) -> Value {
-    json!({
+///
+/// `failure` marks an upload error as its own `UploadError` class, so a failed
+/// upload is visible as such and not as a plain failed converge.
+fn run_converge(
+    node: &str,
+    iteration: u64,
+    started: chrono::DateTime<Utc>,
+    status: &str,
+    failure: Option<&str>,
+) -> Value {
+    let mut payload = json!({
         "message_type": "run_converge",
         "node_name": node,
         "run_id": format!("{node}-{iteration}"),
-        "status": "success",
+        "status": status,
         "start_time": started.to_rfc3339_opts(SecondsFormat::Millis, true),
         "end_time": Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
         "total_resource_count": 0,
         "updated_resource_count": 0,
         "resources": [],
-    })
+    });
+    if let Some(failure) = failure {
+        payload["error"] = json!({ "class": "UploadError", "message": failure });
+    }
+    payload
 }
 
 /// One node to converge, with the client that signs for it.
@@ -335,7 +383,7 @@ pub async fn run_all(config: &RunConfig, targets: Vec<Target>) -> Metrics {
         match finished {
             Ok(run) => metrics.record(run),
             // A panicked actor would otherwise vanish from the outcome counts.
-            Err(_) => metrics.failed += 1,
+            Err(_) => metrics.record_panic(),
         }
     }
     metrics
@@ -360,6 +408,8 @@ mod tests {
         method: String,
         path: String,
         accept: String,
+        content_type: String,
+        content_md5: String,
         body: String,
     }
 
@@ -378,11 +428,16 @@ mod tests {
         headers: HeaderMap,
         body: Bytes,
     ) -> Response {
-        let accept = headers
-            .get("accept")
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
+        let header = |name: &str| {
+            headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let accept = header("accept");
+        let content_type = header("content-type");
+        let content_md5 = header("content-md5");
         server
             .arrivals
             .lock()
@@ -392,6 +447,8 @@ mod tests {
             method: method.to_string(),
             path: uri.path().to_string(),
             accept,
+            content_type,
+            content_md5,
             body: String::from_utf8_lossy(&body).to_string(),
         });
 
@@ -510,10 +567,10 @@ mod tests {
                 "POST /organizations/load/environments/load-default/cookbook_versions",
                 "GET /bookshelf/abc",
                 "PUT /organizations/load/nodes/load-node-00000",
-                "POST /organizations/load/data-collector",
                 "POST /organizations/load/sandboxes",
                 "PUT /bookshelf/new",
                 "PUT /organizations/load/sandboxes/sandbox-1",
+                "POST /organizations/load/data-collector",
             ]
         );
 
@@ -540,6 +597,16 @@ mod tests {
             .expect("blob read");
         assert_eq!(blob.accept, "application/octet-stream");
 
+        let upload = calls
+            .iter()
+            .find(|call| call.path == "/bookshelf/new")
+            .expect("blob upload");
+        assert_eq!(upload.content_type, "application/x-binary");
+        assert_eq!(
+            upload.content_md5,
+            microwave_objectstore::md5_base64(b"load-node-00000 5\n")
+        );
+
         let report = calls
             .iter()
             .find(|call| call.path.ends_with("/data-collector"))
@@ -558,6 +625,8 @@ mod tests {
                 method: "GET".into(),
                 path: "/organizations/load/nodes/load-node-00000".into(),
                 accept: String::new(),
+                content_type: String::new(),
+                content_md5: String::new(),
                 body: String::new(),
             });
             (AxumStatus::FORBIDDEN, "nope").into_response()
@@ -592,7 +661,46 @@ mod tests {
         let run = converge(&client, "load", "load-node-00000", false).await;
 
         assert!(!run.completed);
-        assert!(run.samples.iter().any(|sample| sample.status.is_none()));
+        assert_eq!(run.samples.len(), 1, "the request is counted once");
+        assert_eq!(run.samples[0].status, None, "reclassified as class 0");
+        let mut metrics = Metrics::new(false);
+        metrics.record(run);
+        let endpoint = &metrics.endpoints[NODE_READ];
+        assert_eq!(endpoint.count, 1);
+        assert_eq!(endpoint.statuses.get(&0), Some(&1));
+        assert_eq!(endpoint.statuses.get(&200), None);
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn another_2xx_on_the_node_read_is_distinct_from_200() {
+        async fn accepted(State(server): State<Server>) -> Response {
+            server.calls.lock().expect("calls lock").push(Call {
+                method: "GET".into(),
+                path: "/organizations/load/nodes/load-node-00000".into(),
+                accept: String::new(),
+                content_type: String::new(),
+                content_md5: String::new(),
+                body: String::new(),
+            });
+            (AxumStatus::ACCEPTED, "later").into_response()
+        }
+
+        let (server, handle) = serve_router(empty_server(), |server| {
+            Router::new().fallback(accepted).with_state(server.clone())
+        })
+        .await;
+        let client = client(&server);
+
+        let run = converge(&client, "load", "load-node-00000", false).await;
+
+        assert!(!run.completed);
+        let failure = run.failure.as_deref().expect("failure recorded");
+        assert!(failure.contains("expected 200"), "{failure}");
+        assert!(failure.contains("202"), "{failure}");
+        assert_eq!(run.samples.len(), 1);
+        assert_eq!(run.samples[0].status, Some(202));
+        assert_eq!(calls(&server).len(), 1, "no request after the failure");
         handle.abort();
     }
 
@@ -601,9 +709,49 @@ mod tests {
             method: "GET".into(),
             path: "node".into(),
             accept: String::new(),
+            content_type: String::new(),
+            content_md5: String::new(),
             body: String::new(),
         });
         (AxumStatus::OK, "not json").into_response()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_upload_reports_failure_and_still_reaches_the_collector() {
+        async fn broken_upload() -> Response {
+            (AxumStatus::INTERNAL_SERVER_ERROR, "broken").into_response()
+        }
+
+        let (server, handle) = serve_router(empty_server(), |server| {
+            Router::new()
+                .route("/bookshelf/new", axum::routing::put(broken_upload))
+                .fallback(respond)
+                .with_state(server.clone())
+        })
+        .await;
+        let client = client(&server);
+
+        let run = converge(&client, "load", "load-node-00000", true).await;
+
+        assert!(!run.completed);
+        let failure = run.failure.as_deref().expect("failure recorded");
+        assert!(failure.contains(BLOB_WRITE), "{failure}");
+        let calls = calls(&server);
+        let report = calls
+            .iter()
+            .find(|call| call.path.ends_with("/data-collector"))
+            .expect("report after the failed upload");
+        let payload: Value = serde_json::from_str(&report.body).expect("report body");
+        assert_eq!(payload["status"], "failure");
+        assert_eq!(payload["error"]["class"], "UploadError");
+        assert!(
+            payload["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(BLOB_WRITE)),
+            "{}",
+            payload["error"]
+        );
+        handle.abort();
     }
 
     #[tokio::test]

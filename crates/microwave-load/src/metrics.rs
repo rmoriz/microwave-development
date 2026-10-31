@@ -8,6 +8,10 @@
 //! A request that produced no status (transport exhaustion, an unparseable
 //! body) is counted under the status class `0`, so it shows up in the table
 //! instead of vanishing into a separate error counter.
+//!
+//! A `2xx` whose body cannot be used reclassifies that one sample as class `0`
+//! rather than adding a second one: the request count stays the real request
+//! count and the response keeps its measured latency.
 
 use reqwest::StatusCode;
 use serde_json::Value;
@@ -114,12 +118,17 @@ pub fn percentile(sorted: &[u32], percent: u8) -> u32 {
     sorted[rank - 1]
 }
 
+/// How many failure details a run keeps; `failed` still counts them all.
+pub const MAX_FAILURES: usize = 20;
+
 /// A whole run: one [`Endpoint`] per request kind plus the node outcome counts.
 #[derive(Debug)]
 pub struct Metrics {
     pub endpoints: BTreeMap<&'static str, Endpoint>,
     pub completed: u64,
+    /// Every failed node, including the ones past [`MAX_FAILURES`].
     pub failed: u64,
+    failures: Vec<String>,
     pub pool_samples: Vec<Value>,
     /// Whether every driver request signed as the superuser.
     pub superuser: bool,
@@ -131,6 +140,7 @@ impl Metrics {
             endpoints: BTreeMap::new(),
             completed: 0,
             failed: 0,
+            failures: Vec::new(),
             pool_samples: Vec::new(),
             superuser,
         }
@@ -147,8 +157,26 @@ impl Metrics {
         if run.completed {
             self.completed += 1;
         } else {
-            self.failed += 1;
+            self.record_failure(run.failure);
         }
+    }
+
+    /// Count an actor that panicked without a [`NodeRun`].
+    pub fn record_panic(&mut self) {
+        self.record_failure(None);
+    }
+
+    fn record_failure(&mut self, failure: Option<String>) {
+        self.failed += 1;
+        if self.failures.len() < MAX_FAILURES {
+            self.failures
+                .push(failure.unwrap_or_else(|| "actor panicked".to_string()));
+        }
+    }
+
+    /// The first [`MAX_FAILURES`] failure details, in completion order.
+    pub fn failures(&self) -> &[String] {
+        &self.failures
     }
 
     /// Every endpoint with its percentile band, keyed like [`Self::endpoints`].
@@ -289,6 +317,28 @@ mod tests {
     }
 
     #[test]
+    fn failures_keep_the_first_twenty_and_still_count_every_node() {
+        let mut metrics = Metrics::new(false);
+        for index in 0..25 {
+            metrics.record(NodeRun::failed(vec![], format!("failure {index}")));
+        }
+
+        assert_eq!(metrics.failed, 25);
+        assert_eq!(metrics.failures().len(), MAX_FAILURES);
+        assert_eq!(metrics.failures()[0], "failure 0");
+        assert_eq!(metrics.failures()[MAX_FAILURES - 1], "failure 19");
+    }
+
+    #[test]
+    fn a_panicked_actor_is_a_counted_failure() {
+        let mut metrics = Metrics::new(false);
+        metrics.record_panic();
+
+        assert_eq!(metrics.failed, 1);
+        assert_eq!(metrics.failures(), ["actor panicked"]);
+    }
+
+    #[test]
     fn a_solver_503_is_counted_without_failing_the_node() {
         let mut metrics = Metrics::new(true);
         metrics.record(NodeRun {
@@ -305,19 +355,31 @@ mod tests {
         assert!(metrics.superuser);
     }
 
-    /// Serve `first` once, then `second` forever; count the calls.
+    /// Serve `first` once, then `second` forever; count the calls and their
+    /// (paused-clock) arrival times.
     async fn scripted(
         first: StatusCode,
         second: (StatusCode, &'static str),
-    ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+    ) -> (
+        String,
+        Arc<AtomicUsize>,
+        Arc<Mutex<Vec<tokio::time::Instant>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
         #[derive(Clone)]
         struct Script {
             first: StatusCode,
             second: (StatusCode, &'static str),
             calls: Arc<AtomicUsize>,
+            times: Arc<Mutex<Vec<tokio::time::Instant>>>,
         }
 
         async fn respond(State(script): State<Script>, headers: HeaderMap) -> Response {
+            script
+                .times
+                .lock()
+                .expect("times lock")
+                .push(tokio::time::Instant::now());
             let call = script.calls.fetch_add(1, Ordering::SeqCst);
             if call == 0 {
                 return (script.first, "").into_response();
@@ -329,10 +391,12 @@ mod tests {
         }
 
         let calls = Arc::new(AtomicUsize::new(0));
+        let times = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new().fallback(respond).with_state(Script {
             first,
             second,
             calls: Arc::clone(&calls),
+            times: Arc::clone(&times),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -341,26 +405,42 @@ mod tests {
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.expect("server runs");
         });
-        (url, calls, server)
+        (url, calls, times, server)
     }
 
-    #[tokio::test]
-    async fn the_pool_poller_tolerates_a_401_and_keeps_the_sample() {
-        let (url, calls, server) = scripted(
+    #[tokio::test(start_paused = true)]
+    async fn the_pool_poller_tolerates_a_401_and_keeps_polling() {
+        let (url, calls, times, server) = scripted(
             StatusCode::UNAUTHORIZED,
             (StatusCode::OK, r#"{"db_pool":{"size":3,"max":10}}"#),
         )
         .await;
-        let http = reqwest::Client::new();
         let credentials = ("stats".to_string(), "secret".to_string());
+        let poller = StatsPoller::start(reqwest::Client::new(), url, Some(credentials));
 
-        assert!(sample_pool(&http, &url, Some(&credentials)).await.is_none());
-        let pool = sample_pool(&http, &url, Some(&credentials))
-            .await
-            .expect("second poll answers");
-        assert_eq!(pool["max"], 10);
-        assert_eq!(pool["size"], 3);
+        // The first tick is immediate and answers `401`.
+        while calls.load(Ordering::SeqCst) < 1 {
+            tokio::task::yield_now().await;
+        }
+        assert!(poller.samples.lock().expect("samples lock").is_empty());
+
+        // The fixed cadence waits one second, then the poller keeps going.
+        tokio::time::advance(Duration::from_secs(1)).await;
+        while poller.samples.lock().expect("samples lock").is_empty() {
+            tokio::task::yield_now().await;
+        }
+
+        let samples = poller.finish();
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0]["max"], 10);
+        assert_eq!(samples[0]["size"], 3);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let times = times.lock().expect("times lock").clone();
+        assert!(
+            times[1] - times[0] >= Duration::from_secs(1),
+            "polls were {:?} apart",
+            times[1] - times[0]
+        );
         server.abort();
     }
 }

@@ -12,6 +12,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chrono::{SecondsFormat, Utc};
 use microwave_crypto::{sign_request, CanonicalRequest, SignVersion};
+use microwave_objectstore::md5_base64;
 use reqwest::{Method, RequestBuilder, StatusCode};
 
 /// Result of a request that survived (or used up) the retry budget.
@@ -60,7 +61,8 @@ impl NodeClient {
     }
 
     /// Send one request. A relative `path` starts with `/` and is signed; an
-    /// absolute URL such as a presigned `/bookshelf` URL is fetched unsigned.
+    /// absolute URL such as a presigned `/bookshelf` URL is fetched unsigned,
+    /// with the `content-md5` and `content-type` headers its signature binds.
     ///
     /// # Errors
     ///
@@ -114,14 +116,19 @@ impl NodeClient {
             .header("Accept", accept);
 
         if let Some(body) = body {
-            let content_type = if signed {
-                "application/json"
+            request = if signed {
+                request
+                    .header("Content-Type", "application/json")
+                    .body(body.to_vec())
             } else {
-                "application/octet-stream"
+                // The S3 presigner binds `content-md5` and
+                // `content-type: application/x-binary` into the signature, so
+                // an upload that omits either one is rejected.
+                request
+                    .header("Content-Type", "application/x-binary")
+                    .header("Content-MD5", md5_base64(body))
+                    .body(body.to_vec())
             };
-            request = request
-                .header("Content-Type", content_type)
-                .body(body.to_vec());
         }
         if signed {
             request = self.sign(request, &method, path, body.unwrap_or_default())?;
@@ -468,6 +475,52 @@ mod tests {
                 Method::GET,
                 &format!("{url}/bookshelf/blob?token=abc"),
                 None,
+            )
+            .await
+            .expect("request succeeds");
+
+        assert_eq!(outcome.status, StatusCode::OK);
+        assert_eq!(mock.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn presigned_puts_bind_content_md5_and_the_binary_content_type() {
+        async fn unsigned(State(calls): State<Arc<AtomicUsize>>, headers: HeaderMap) -> StatusCode {
+            calls.fetch_add(1, Ordering::SeqCst);
+            if headers.contains_key("x-ops-sign") {
+                return StatusCode::BAD_REQUEST;
+            }
+            let content_type = headers
+                .get("content-type")
+                .and_then(|value| value.to_str().ok());
+            if content_type != Some("application/x-binary") {
+                return StatusCode::BAD_REQUEST;
+            }
+            let content_md5 = headers
+                .get("content-md5")
+                .and_then(|value| value.to_str().ok());
+            if content_md5 != Some(md5_base64(b"blob").as_str()) {
+                return StatusCode::BAD_REQUEST;
+            }
+            StatusCode::OK
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/bookshelf/blob", any(unsigned))
+            .with_state(calls.clone());
+        let (url, server) = serve(app).await;
+        let mock = Mock {
+            url: url.clone(),
+            calls,
+            server,
+        };
+
+        let outcome = client(&mock)
+            .send(
+                Method::PUT,
+                &format!("{url}/bookshelf/blob?token=put"),
+                Some(b"blob".to_vec()),
             )
             .await
             .expect("request succeeds");

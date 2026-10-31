@@ -302,6 +302,15 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
         "completed: {}, failed: {}",
         metrics.completed, metrics.failed
     );
+    for failure in metrics.failures() {
+        println!("failed: {failure}");
+    }
+    if metrics.failed as usize > metrics.failures().len() {
+        println!(
+            "… {} more failures not listed",
+            metrics.failed as usize - metrics.failures().len()
+        );
+    }
     for (endpoint, summary) in metrics.summaries() {
         println!(
             "{endpoint}: n={} status={:?} p50={}us p95={}us p99={}us max={}us retries={} solver_503={}",
