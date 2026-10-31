@@ -2110,8 +2110,8 @@ id = "load-test-postgres-only"
 summary = "The load test stack always runs against PostgreSQL, so a report is only comparable to another run with the same fingerprint."
 area = "deployment"
 status = "verified"
-surfaces = [ { path = "docs/load-test.md", needle = "This stack always uses PostgreSQL." } ]
-verify = { kind = "grep", path = "docs/load-test.md", pattern = "This stack always uses PostgreSQL." }
+surfaces = [ { path = "docs/load-test.md", needle = "This stack always uses PostgreSQL and the local object store." } ]
+verify = { kind = "grep", path = "docs/load-test.md", pattern = "This stack always uses PostgreSQL and the local object store." }
 
 [[claim]]
 id = "load-test-no-gate"

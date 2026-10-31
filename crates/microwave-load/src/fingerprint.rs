@@ -13,8 +13,11 @@
 //! struct does not name lands verbatim in [`Fingerprint::wrapper`], so the
 //! wrapper can add facts without a code change. Write a colliding host fact
 //! beside the measured field (e.g. `host_cores` next to `cores`) when both
-//! must survive: in the Compose stack the measured `cores` is the container's
-//! view, not the host's.
+//! must survive: the measured `cores` is the `processor` count of
+//! `/proc/cpuinfo` as the container sees it. Docker does not namespace that
+//! file, so under Compose it is the host's core count; `host_cores` is the
+//! wrapper's evidence from outside the container. The allowed share is
+//! `cgroup_cpu_max`/`cgroup_memory_max` and `compose_limits`, not `cores`.
 //!
 //! Known keys: `cpu_model`, `cores`, `memory_total_bytes`, `kernel`,
 //! `out_filesystem`, `out_free_bytes`, `cgroup_cpu_max`, `cgroup_memory_max`,

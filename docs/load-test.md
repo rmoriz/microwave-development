@@ -36,7 +36,9 @@ A reading describes:
   PostgreSQL run with the same fingerprint.
 - **the local object store and the embedded search backend.** No S3 gateway and
   no OpenSearch cluster sits between the server and its data, so a remote
-  backend looks slower here than the stack can tell.
+  backend looks slower here than the stack can tell. The seed writes the blobs
+  into `--data-dir` directly, so an S3 object store would need its own upload
+  path; only the local store works today.
 - **a driver that imitates `chef-client`**, at a concurrency no real fleet of
   clients would produce from one binary. Only the canary runs the real one.
 
@@ -53,10 +55,12 @@ from a smoke profile is not comparable to a reference run.
 - `run.sh` clamps the CPU limits to the host's core count and rejects a
   non-integer pool or connection knob before anything is built.
 
-This stack always uses PostgreSQL. The seed writes rows and cookbook blobs
-straight into the throwaway database and the server's data volume, and the
-server config is [`docker-load/microwave/microwave.toml`](../docker-load/microwave/microwave.toml),
-the measured configuration and the file a bare-metal operator copies.
+This stack always uses PostgreSQL and the local object store. The seed writes
+rows and cookbook blobs straight into the throwaway database and `--data-dir`,
+and the server config is [`docker-load/microwave/microwave.toml`](../docker-load/microwave/microwave.toml),
+the measured configuration and the file a bare-metal operator copies. A copy
+needs edits: change `bind` away from the Compose service name and `data_dir`
+away from `/var/lib/microwave`.
 
 ### Stack knobs
 
@@ -141,13 +145,13 @@ through Compose yourself or calling the binary directly; `run` is the driver,
 | `--versions` | `seed` | `600` | Cookbook versions to create. |
 | `--targets` | `seed` | `5000` | Converge targets to create. |
 | `--shared-key` | `seed` | off | One keypair for every actor instead of one each: far less keygen, one instead of 5,000 distinct public keys. |
-| `--canary` | `seed`, `run` | `20` | Canary nodes to create; `0` runs none. |
+| `--canary` | `seed`, `run` | `20` | `seed`: canary nodes to create, `0` none. `run`: how many canary entries already in the manifest to converge, `0` none. |
 | `--out` | `run` | `.` | Report directory. |
 | `--concurrency` | `run` | `5000` | Concurrent converge sequences. |
 | `--ramp` | `run` | `0` | Seconds over which node starts are spread. |
 | `--chef-client` | `run` | `chef-client` | Binary the canary executes. |
 | `--upload` | `run` | off | Upload one blob per sequence through a presigned URL. |
-| `--stats-user`, `--stats-pass` | `run` | unset | Credentials for the `/_stats` pool poller. |
+| `--stats-user`, `--stats-pass` | `run` | unset | Credentials for the `/_stats` pool poller; give both or neither. |
 | `--superuser` | `run` | off | Sign every request as the manifest's superuser. |
 | `--fingerprint` | `run` | unset | Wrapper fingerprint JSON to merge under the measured facts. |
 | `--commit` | `run` | unset | Server commit printed into the report. |
@@ -168,9 +172,11 @@ really ran with, not the one the configuration asked for.
 
 The wrapper adds what the driver cannot see from inside its container:
 `host_cores`, `host_cpu_model`, `host_memory_total_bytes`, `host_kernel`,
-`compose_limits` and the `image_digests`. `cores` is the container's cgroup
-view, so read `host_cores` for the machine and `cgroup_cpu_max` /
-`cgroup_memory_max` for the share it was allowed.
+`compose_limits` and the `image_digests`. `cores` is the `processor` count of
+`/proc/cpuinfo` as the driver's container sees it. Docker does not namespace
+that file, so under Compose it is the host's core count; `host_cores` is the
+same fact gathered from outside the container. The allowed share is
+`cgroup_cpu_max` / `cgroup_memory_max` and `compose_limits`, not `cores`.
 
 `unknown` or a missing field means the probe was unavailable, not that the fact
 was zero. A malformed `--fingerprint` file stops the run with exit `3` instead
@@ -218,11 +224,13 @@ memory allotted to PostgreSQL and never in the same step as the pool size.
 
 ## The canary
 
-The seed creates canary nodes next to the targets. After the driver, the load
-container converges them with the real `chef-client`, at most four at a time
-and with a ten-minute timeout each. The report's canary section carries one
-`canary-<n>: ok|failed` line per node, with the stderr tail under a failure. A
-run without a `chef-client` binary or without canary entries says so instead.
+The seed creates canary nodes next to the targets. On `run`, `--canary` creates
+nothing; the seed already wrote the entries, and the flag only caps how many of
+them are converged. After the driver, the load container converges them with the
+real `chef-client`, at most four at a time and with a ten-minute timeout each.
+The report's canary section carries one `canary-<n>: ok|failed` line per node,
+with the stderr tail under a failure. A run without a `chef-client` binary or
+without canary entries says so instead.
 
 A canary failure is reported but never fails the run. That is the point: the
 driver is an imitation, and a green driver run next to a failing real converge
