@@ -303,17 +303,21 @@
   border-radius: var(--radius-lg);
   background: #000;
   box-shadow: 0 32px 90px rgba(0, 0, 0, 0.55);
-  aspect-ratio: 3 / 2;
+  /* Same ratio as the embed, so the box does not letterbox the video. */
+  aspect-ratio: 16 / 9;
 }
 
 .hero-video[hidden] {
   display: none;
 }
 
+.hero-video > * {
+  width: 100%;
+  height: 100%;
+}
+
 .hero-video iframe {
   display: block;
-  width: 100%;
-  aspect-ratio: 16 / 9;
   border: 0;
 }
 

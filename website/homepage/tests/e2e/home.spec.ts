@@ -184,6 +184,37 @@ test('the demo shows the whole recording on a phone in portrait', async ({ page 
   expect(fit.pageOverflow).toBeLessThanOrEqual(1);
 });
 
+test('the hero video fills its frame instead of letterboxing', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto(url());
+  const egg = page.locator('[data-hero-egg]');
+  for (let tap = 0; tap < 5; tap += 1) {
+    await egg.click();
+  }
+  const frame = page.locator('.hero-video iframe');
+  await expect(frame).toBeVisible();
+
+  const fit = await page.evaluate(() => {
+    const box = document.querySelector('[data-hero-video]')!;
+    const embed = box.querySelector('iframe')!;
+    const outer = box.getBoundingClientRect();
+    const inner = embed.getBoundingClientRect();
+    return {
+      height: Math.round(inner.height - outer.height),
+      width: Math.round(inner.width - outer.width),
+      ratio: inner.width / inner.height,
+      overflow: document.documentElement.scrollWidth - window.innerWidth,
+    };
+  });
+
+  // The 1px border aside, the embed has to cover the box: no bars above or
+  // below, and no crop.
+  expect(Math.abs(fit.height)).toBeLessThanOrEqual(3);
+  expect(Math.abs(fit.width)).toBeLessThanOrEqual(3);
+  expect(fit.ratio).toBeCloseTo(16 / 9, 1);
+  expect(fit.overflow).toBeLessThanOrEqual(1);
+});
+
 test('page emits no console errors', async ({ page }) => {
   const errors: string[] = [];
   page.on('console', (msg) => {
