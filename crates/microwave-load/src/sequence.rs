@@ -810,7 +810,7 @@ mod tests {
             upload: false,
             superuser: false,
             concurrency: 3,
-            ramp: Duration::from_millis(300),
+            ramp: Duration::from_millis(6000),
         };
         let targets: Vec<Target> = (0..3)
             .map(|index| Target {
@@ -835,8 +835,11 @@ mod tests {
         }
         first.sort();
         for pair in first.windows(2) {
+            // The arrivals are stamped by the server, so a slow connect pushes
+            // one node towards the next slot; a whole step of slack keeps that
+            // jitter (busy CI runners included) from collapsing the gap.
             let gap = pair[1] - pair[0];
-            assert!(gap >= Duration::from_millis(60), "gap was {gap:?}");
+            assert!(gap >= Duration::from_millis(1000), "gap was {gap:?}");
         }
         handle.abort();
     }

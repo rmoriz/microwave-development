@@ -32,6 +32,12 @@ pub const CANARY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// How long a killed child's stderr pipe may stay open, e.g. because a
 /// grandchild inherited it.
 const STDERR_GRACE: Duration = Duration::from_secs(1);
+/// `ETXTBSY`, the errno a spawn reports while another fork still holds the
+/// binary open for writing (Linux and macOS agree on 26).
+const ETXTBSY: i32 = 26;
+/// Retries for such a spawn; ten milliseconds apart the writer is gone, so
+/// the bound is generous.
+const SPAWN_ATTEMPTS: u32 = 20;
 
 /// The note a run without a usable binary carries.
 pub const SKIPPED: &str = "canary skipped: chef-client not found";
@@ -167,29 +173,52 @@ fn index(node: &str) -> (u64, &str) {
     (number, node)
 }
 
+/// Spawn the canary, retrying while the kernel reports the binary as busy.
+///
+/// `ETXTBSY` appears when another thread forked while the binary was still open
+/// for writing, so the fork holds a write descriptor over our exec. That happens
+/// while the fork's own exec is pending and clears within moments.
+async fn spawn_retrying<F>(mut spawn: F) -> std::io::Result<tokio::process::Child>
+where
+    F: FnMut() -> std::io::Result<tokio::process::Child>,
+{
+    let mut attempt = 0;
+    loop {
+        match spawn() {
+            Ok(child) => return Ok(child),
+            Err(error) if error.raw_os_error() == Some(ETXTBSY) && attempt < SPAWN_ATTEMPTS => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Converge one canary like a real `chef-client`: its node, its environment,
 /// its client key, the license flag accepted.
 ///
 /// The child is killed after `limit`; its stderr is drained in a separate task
 /// so a talkative child cannot block on a full pipe while we wait.
 async fn converge(binary: &Path, target: &Target, server_url: &str, limit: Duration) -> Outcome {
-    let spawned = Command::new(binary)
-        .arg("--node-name")
-        .arg(&target.node)
-        .arg("--environment")
-        .arg(CANARY_ENVIRONMENT)
-        .arg("--client_key")
-        .arg(&target.key)
-        .arg("--server")
-        .arg(server_url)
-        .arg("--chef-license")
-        .arg("accept")
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn();
-
-    let mut child = match spawned {
+    let mut spawn = || {
+        Command::new(binary)
+            .arg("--node-name")
+            .arg(&target.node)
+            .arg("--environment")
+            .arg(CANARY_ENVIRONMENT)
+            .arg("--client_key")
+            .arg(&target.key)
+            .arg("--server")
+            .arg(server_url)
+            .arg("--chef-license")
+            .arg("accept")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+    };
+    let mut child = match spawn_retrying(&mut spawn).await {
         Ok(child) => child,
         Err(error) => {
             return Outcome {
@@ -408,6 +437,30 @@ mod tests {
             node: "canary-0".into(),
             key: directory.join("canary-0.pem"),
         }
+    }
+
+    /// A busy text segment clears after a few tries; a different error does not.
+    #[tokio::test]
+    async fn a_busy_binary_is_retried_and_other_errors_surface() {
+        let mut busy_left = 2;
+        let mut spawn = || {
+            if busy_left > 0 {
+                busy_left -= 1;
+                Err(std::io::Error::from_raw_os_error(ETXTBSY))
+            } else {
+                Command::new("/bin/sh")
+                    .arg("-c")
+                    .arg("exit 0")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+            }
+        };
+        assert!(spawn_retrying(&mut spawn).await.is_ok());
+
+        let mut spawn = || Err::<tokio::process::Child, _>(std::io::Error::from_raw_os_error(2));
+        let error = spawn_retrying(&mut spawn).await.expect_err("missing");
+        assert_eq!(error.raw_os_error(), Some(2));
     }
 
     #[tokio::test]
