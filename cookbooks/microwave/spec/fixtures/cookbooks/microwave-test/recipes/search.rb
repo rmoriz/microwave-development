@@ -1,0 +1,1 @@
+microwave_opensearch 'default'

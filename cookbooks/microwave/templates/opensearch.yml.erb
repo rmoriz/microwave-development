@@ -1,0 +1,9 @@
+cluster.name: microwave
+node.name: <%= @hostname %>
+network.host: 127.0.0.1
+http.port: <%= @http_port %>
+discovery.type: single-node
+plugins.security.disabled: true
+path.data: /var/lib/opensearch
+path.logs: /var/log/opensearch
+bootstrap.memory_lock: false
