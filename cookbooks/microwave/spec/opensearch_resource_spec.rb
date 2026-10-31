@@ -1,6 +1,8 @@
 require_relative 'spec_helper'
 
 describe 'microwave_opensearch' do
+  include_context 'opensearch certificate guards'
+
   let(:chef_run) do
     ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_opensearch']) do |node|
       node.name('search.example.com')
@@ -10,8 +12,7 @@ describe 'microwave_opensearch' do
   end
 
   before do
-    stub_command(/openssl verify/).and_return(nil)
-    stub_command(/openssl x509 -in/).and_return(nil)
+    stub_certificate_guards
     stub_command(%r{test -d /usr/share/opensearch/plugins/opensearch-security}).and_return(nil)
 
     allow(::File).to receive(:symlink?).and_call_original
@@ -36,8 +37,9 @@ describe 'microwave_opensearch' do
       .with(pin: 'version 3.9.0', pin_priority: '600')
   end
 
-  it 'installs the pinned package' do
+  it 'installs the pinned package without asking for an admin password' do
     expect(chef_run).to install_apt_package('opensearch')
+      .with(environment: { 'DISABLE_SECURITY_PLUGIN' => 'true' })
   end
 
   it 'writes the single-node configuration on the internal port' do
@@ -48,8 +50,8 @@ describe 'microwave_opensearch' do
       http.port: 9210
       discovery.type: single-node
       plugins.security.disabled: true
-      path.data: /var/lib/opensearch
-      path.logs: /var/log/opensearch
+      path.data: /var/lib/opensearch/_data
+      path.logs: /var/log/opensearch/_logs
       bootstrap.memory_lock: false
     YML
   end
@@ -94,6 +96,8 @@ describe 'microwave_opensearch' do
   end
 
   it 'issues a CA and a search certificate named for the hostname' do
+    stub_certificate_guards(pair: false)
+
     expect(chef_run).to run_execute('microwave-generate-ca-key')
     expect(chef_run.execute('microwave-create-ca').command)
       .to include('-x509', '-days 3650', '-subj "/CN=microwave-ca"', '/etc/microwave/tls/ca.key',
@@ -109,9 +113,19 @@ describe 'microwave_opensearch' do
   end
 
   it 'keeps an existing certificate pair with a matching name' do
-    stub_command(/openssl verify/).and_return(true)
-
     expect(chef_run).not_to run_execute('microwave-create-service-certificate')
+  end
+
+  it 're-issues the certificate when the certificate and the key are not a pair' do
+    stub_certificate_guards(pair: false)
+
+    expect(chef_run).to run_execute('microwave-create-service-certificate')
+  end
+
+  it 're-issues the certificate when the SAN no longer names the hostname' do
+    stub_certificate_guards(san: false)
+
+    expect(chef_run).to run_execute('microwave-create-service-certificate')
   end
 
   it 'checks verify, the key pair and the SAN before keeping a certificate' do
@@ -176,10 +190,20 @@ describe 'microwave_opensearch' do
     expect(vhost).to include('ssl_certificate_key /etc/microwave/tls/search.key;')
     expect(vhost).to include('ssl_protocols TLSv1.2 TLSv1.3;')
     expect(vhost).to include('client_max_body_size 100m;')
+    expect(vhost).to include('proxy_read_timeout 300s;')
+    expect(vhost).to include('proxy_send_timeout 300s;')
+    expect(vhost).to include('access_log /var/log/nginx/microwave-opensearch.access.log;')
     expect(vhost).to include('proxy_pass http://127.0.0.1:9210;')
     expect(vhost).to include('proxy_set_header Host $host;')
     expect(vhost).to include('proxy_set_header X-Real-IP $remote_addr;')
     expect(vhost).to include('proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;')
+  end
+
+  it 'leaves the vhost open when no client network is set' do
+    vhost = rendered('/etc/nginx/sites-available/microwave-opensearch')
+
+    expect(vhost).not_to include('allow ')
+    expect(vhost).not_to include('deny all;')
   end
 
   it 'enables the vhost and drops the packaged default site' do
@@ -188,10 +212,12 @@ describe 'microwave_opensearch' do
     expect(chef_run).to delete_link('/etc/nginx/sites-enabled/default')
   end
 
-  it 'reloads nginx when the vhost or the link changes' do
+  it 'reloads nginx when the vhost, the link or the default site changes' do
     expect(chef_run.template('/etc/nginx/sites-available/microwave-opensearch'))
       .to notify('service[nginx]').to(:reload).delayed
     expect(chef_run.link('/etc/nginx/sites-enabled/microwave-opensearch'))
+      .to notify('service[nginx]').to(:reload).delayed
+    expect(chef_run.link('/etc/nginx/sites-enabled/default'))
       .to notify('service[nginx]').to(:reload).delayed
   end
 
@@ -207,6 +233,8 @@ describe 'microwave_opensearch' do
 end
 
 describe 'microwave_opensearch with a client network' do
+  include_context 'opensearch certificate guards'
+
   let(:chef_run) do
     ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_opensearch']) do |node|
       node.name('search.example.com')
@@ -217,25 +245,40 @@ describe 'microwave_opensearch with a client network' do
   end
 
   before do
-    stub_command(/openssl verify/).and_return(nil)
-    stub_command(/openssl x509 -in/).and_return(nil)
+    stub_certificate_guards
     stub_command(%r{test -d /usr/share/opensearch/plugins/opensearch-security}).and_return(nil)
 
     allow(::File).to receive(:symlink?).and_call_original
     allow(::File).to receive(:symlink?).with('/etc/nginx/sites-enabled/default').and_return(true)
   end
 
-  it 'binds the TLS listener to the hostname but keeps OpenSearch on loopback' do
-    vhost = ChefSpec::Renderer.new(chef_run, chef_run.template('/etc/nginx/sites-available/microwave-opensearch')).content
+  def rendered(path)
+    ChefSpec::Renderer.new(chef_run, chef_run.template(path)).content
+  end
+
+  it 'binds the TLS listener to the hostname and keeps loopback reachable' do
+    vhost = rendered('/etc/nginx/sites-available/microwave-opensearch')
 
     expect(vhost).to include('listen search.example.com:9200 ssl;')
+    expect(vhost).to include('listen 127.0.0.1:9200 ssl;')
     expect(vhost).to include('proxy_pass http://127.0.0.1:9210;')
     expect(chef_run).to render_file('/etc/opensearch/opensearch.yml')
       .with_content(/^network\.host: 127\.0\.0\.1$/)
   end
+
+  it 'allows only the client network and loopback, since security is off' do
+    vhost = rendered('/etc/nginx/sites-available/microwave-opensearch')
+
+    expect(vhost).to match(%r{^  allow 10\.0\.0\.0/8;$})
+    expect(vhost).to match(/^  allow 127\.0\.0\.1;$/)
+    expect(vhost).to match(/^  allow ::1;$/)
+    expect(vhost).to match(/^  deny all;$/)
+  end
 end
 
 describe 'microwave_opensearch with a custom heap' do
+  include_context 'opensearch certificate guards'
+
   let(:chef_run) do
     ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_opensearch']) do |node|
       node.automatic['fqdn'] = 'search.example.com'
@@ -245,8 +288,7 @@ describe 'microwave_opensearch with a custom heap' do
   end
 
   before do
-    stub_command(/openssl verify/).and_return(nil)
-    stub_command(/openssl x509 -in/).and_return(nil)
+    stub_certificate_guards
     stub_command(%r{test -d /usr/share/opensearch/plugins/opensearch-security}).and_return(nil)
 
     allow(::File).to receive(:symlink?).and_call_original
@@ -260,6 +302,8 @@ describe 'microwave_opensearch with a custom heap' do
 end
 
 describe 'microwave_opensearch without an FQDN' do
+  include_context 'opensearch certificate guards'
+
   let(:chef_run) do
     ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_opensearch']) do |node|
       node.automatic['fqdn'] = ''
@@ -269,8 +313,7 @@ describe 'microwave_opensearch without an FQDN' do
   end
 
   before do
-    stub_command(/openssl verify/).and_return(nil)
-    stub_command(/openssl x509 -in/).and_return(nil)
+    stub_certificate_guards
     stub_command(%r{test -d /usr/share/opensearch/plugins/opensearch-security}).and_return(nil)
 
     allow(::File).to receive(:symlink?).and_call_original

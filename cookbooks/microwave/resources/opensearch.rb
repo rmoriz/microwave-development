@@ -34,7 +34,11 @@ action :install do
     sensitive false
   end
 
-  apt_package 'opensearch'
+  # The packaged postinst asks for a demo admin password and aborts without one.
+  # The security plugin is deleted below anyway, so tell the postinst to skip it.
+  apt_package 'opensearch' do
+    environment('DISABLE_SECURITY_PLUGIN' => 'true')
+  end
 
   apt_package 'nginx'
 
@@ -215,6 +219,7 @@ action :install do
       port: proxy_port,
       upstream: http_port,
       hostname: new_resource.hostname,
+      client_network: new_resource.client_network,
       cert: cert,
       key: key
     )
@@ -231,5 +236,6 @@ action :install do
   link '/etc/nginx/sites-enabled/default' do
     action :delete
     only_if { ::File.symlink?('/etc/nginx/sites-enabled/default') }
+    notifies :reload, 'service[nginx]', :delayed
   end
 end

@@ -2,6 +2,10 @@
 # block is the only public way in, so the Microwave client speaks HTTPS on 9200.
 server {
   listen <%= @listen %>:<%= @port %> ssl;
+<% if @client_network -%>
+  # Keep local clients working on the split search node.
+  listen 127.0.0.1:<%= @port %> ssl;
+<% end -%>
   server_name <%= @hostname %>;
 
   ssl_certificate <%= @cert %>;
@@ -9,6 +13,19 @@ server {
   ssl_protocols TLSv1.2 TLSv1.3;
 
   client_max_body_size 100m;
+  proxy_read_timeout 300s;
+  proxy_send_timeout 300s;
+
+  access_log /var/log/nginx/microwave-opensearch.access.log;
+<% if @client_network -%>
+
+  # The security plugin is off, so nginx is the only thing enforcing the
+  # client network.
+  allow <%= @client_network %>;
+  allow 127.0.0.1;
+  allow ::1;
+  deny all;
+<% end -%>
 
   location / {
     proxy_pass http://127.0.0.1:<%= @upstream %>;
