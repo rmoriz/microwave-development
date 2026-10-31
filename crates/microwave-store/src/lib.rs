@@ -24,7 +24,8 @@ pub use authz::{Acl, AclEntry, Container, Group, GroupMembers, Permission};
 pub use backend::{
     ArtifactRepository, AuthzRepository, CookbookRepository, HealthRepository, IdentityRepository,
     KvRepository, MembershipRepository, MetadataStore, NewNodeRun, NodeRunFilter, OAuthRepository,
-    ObjectRepository, PolicyRepository, ReportRepository, SandboxRepository, SecretsRepository,
+    ObjectRepository, PolicyRepository, PoolStats, ReportRepository, SandboxRepository,
+    SecretsRepository,
 };
 pub use compression::{
     decode_serialized, decode_serialized_optional, encode_serialized, encode_serialized_optional,

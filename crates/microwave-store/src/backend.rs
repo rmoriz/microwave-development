@@ -872,6 +872,14 @@ pub trait KvRepository: Send + Sync {
     async fn set_maintenance_enabled(&self, enabled: bool) -> Result<(), StoreError>;
 }
 
+/// Live connection-pool counters, when the backend has a pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolStats {
+    pub idle: u32,
+    pub in_use: u32,
+    pub max: u32,
+}
+
 /// Lightweight metadata-backend liveness probe used by `GET /_status`.
 ///
 /// Implementations should issue a cheap query that exercises the connection
@@ -887,6 +895,12 @@ pub trait KvRepository: Send + Sync {
 pub trait HealthRepository: Send + Sync {
     async fn health_check(&self) -> Result<(), StoreError> {
         Ok(())
+    }
+
+    /// Pool occupancy for operator gauges. Backends without a pool return
+    /// `None`; the default keeps them from implementing anything.
+    async fn pool_stats(&self) -> Option<PoolStats> {
+        None
     }
 }
 

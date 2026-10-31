@@ -1,7 +1,7 @@
 //! Metadata database liveness probe used by `GET /_status`.
 
 use async_trait::async_trait;
-use microwave_store::{HealthRepository, StoreError};
+use microwave_store::{HealthRepository, PoolStats, StoreError};
 
 use crate::store::{db, PostgresStore};
 
@@ -19,5 +19,13 @@ impl HealthRepository for PostgresStore {
                 "PostgreSQL health probe returned unexpected value {value}"
             )))
         }
+    }
+
+    async fn pool_stats(&self) -> Option<PoolStats> {
+        let to_u32 = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
+        let max = self.pool().options().get_max_connections();
+        let idle = to_u32(self.pool().num_idle());
+        let in_use = self.pool().size().saturating_sub(idle);
+        Some(PoolStats { idle, in_use, max })
     }
 }
