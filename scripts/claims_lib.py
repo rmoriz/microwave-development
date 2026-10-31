@@ -19,6 +19,7 @@ AREAS = (
     "migration",
     "mail",
     "search",
+    "depsolver",
     "ha",
     "auth",
     "tooling",

@@ -939,6 +939,14 @@ surfaces = [
 verify = { kind = "grep", path = "website/homepage/src/data/site.ts", pattern = "AGPL-3.0" }
 
 [[claim]]
+id = "solver-inputs-stored-on-write"
+summary = "Cookbook dependencies and environment constraints are stored at write time; rows from older releases or restored snapshots are parsed until a write refreshes them."
+area = "depsolver"
+status = "verified"
+surfaces = [ { path = "docs/deployment.md", needle = "stored at write time" } ]
+verify = { kind = "grep", path = "docs/deployment.md", pattern = "stored at write time" }
+
+[[claim]]
 id = "hero-copy"
 summary = "The hero states the independent Rust API implementation and the client-compatibility badges."
 area = "website"

@@ -166,6 +166,12 @@ the server. Constraints (`=`, `>`, `<`, `>=`, `<=`, `~>`) are resolved with
 deterministic backtracking, environment constraints and role expansion, and
 upstream-shaped `412` failures when no version satisfies the graph.
 
+Cookbook dependencies and environment constraints are stored at write time, so
+a solve reads two columns instead of parsing a manifest or an environment body
+per candidate. Rows that predate the columns, and rows a snapshot restore left
+`NULL`, carry nothing there; the solver then parses the body exactly as before.
+Such rows keep solving, on the slower path, until a write refreshes them.
+
 | Setting | Details |
 |---|---|
 | `search.backend`<br/>`MW_SEARCH__BACKEND` | Default `embedded`. `embedded`, `opensearch`, `elasticsearch`. |
