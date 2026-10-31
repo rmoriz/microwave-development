@@ -1,4 +1,7 @@
 .kitchen/
+.bundle/
+vendor/bundle/
+coverage/
 Berksfile.lock
 spec/examples.txt
 Gemfile.lock

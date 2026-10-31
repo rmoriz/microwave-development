@@ -1,6 +1,8 @@
 name 'microwave'
 maintainer 'Roland Moriz'
 license 'AGPL-3.0'
+description 'Installs Microwave Server with PostgreSQL and OpenSearch on Debian 13'
+version '0.1.0'
 source_url 'https://github.com/rmoriz/microwave-development'
 issues_url 'https://github.com/rmoriz/microwave-development/issues'
 chef_version '>= 19.4.46', '< 20'
