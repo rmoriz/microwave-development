@@ -1,0 +1,4 @@
+.kitchen/
+Berksfile.lock
+spec/examples.txt
+Gemfile.lock

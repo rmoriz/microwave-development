@@ -1,0 +1,10 @@
+default['microwave']['bind'] = node['fqdn'].to_s.empty? ? node['hostname'] : node['fqdn']
+default['microwave']['public_url'] = nil
+default['microwave']['database_name'] = 'microwave'
+default['microwave']['database_user'] = 'microwave'
+default['microwave']['database_host'] = nil
+default['microwave']['database_port'] = 5432
+default['microwave']['search_host'] = nil
+default['microwave']['opensearch_heap'] = '1g'
+default['microwave']['client_network'] = nil
+default['microwave']['create_organization'] = false
