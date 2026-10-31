@@ -1731,6 +1731,28 @@ name = "microwave-depsolver"
 version = "0.1.0"
 
 [[package]]
+name = "microwave-load"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "microwave-crypto",
+ "microwave-objectstore",
+ "microwave-store",
+ "microwave-store-postgres",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "microwave-load-bin"
+version = "0.1.0"
+dependencies = [
+ "microwave-load",
+]
+
+[[package]]
 name = "microwave-mail"
 version = "0.1.0"
 dependencies = [

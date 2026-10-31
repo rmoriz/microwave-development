@@ -4,6 +4,7 @@ members = [
     "crates/microwave-config",
     "crates/microwave-crypto",
     "crates/microwave-depsolver",
+    "crates/microwave-load",
     "crates/microwave-store",
     "crates/microwave-store-postgres",
     "crates/microwave-authz",
@@ -16,6 +17,7 @@ members = [
     "crates/microwave-mail",
     "bin/microwave-server",
     "bin/microwave-ctl",
+    "bin/microwave-load",
     "bin/microwave-migrate",
 ]
 

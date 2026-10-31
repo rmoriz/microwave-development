@@ -1,0 +1,13 @@
+[package]
+name = "microwave-load-bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "microwave-load"
+path = "src/main.rs"
+
+[dependencies]
+microwave-load = { path = "../../crates/microwave-load" }
