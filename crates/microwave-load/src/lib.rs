@@ -298,8 +298,8 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
         )));
     }
 
-    let mut fingerprint = fingerprint(&args, &runtime)?;
-
+    // Targets before the fingerprint: a broken fixture must fail as a fixture
+    // (exit `2`), not as a diagnostic `3`.
     let mut targets = Vec::new();
     for entry in manifest
         .iter()
@@ -322,6 +322,8 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
             args.keys.display()
         )));
     }
+
+    let mut fingerprint = fingerprint(&args, &runtime)?;
 
     let credentials = match (args.stats_user.clone(), args.stats_pass.clone()) {
         (Some(user), Some(pass)) => Some((user, pass)),
@@ -348,7 +350,7 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
         "superuser": args.superuser,
         "canary_requested": args.canary,
         "chef_client": args.chef_client,
-        "commit": args.commit,
+        "commit": &fingerprint.server_commit,
     });
 
     let (mut metrics, pool_samples) = runtime.block_on(async {
@@ -417,9 +419,17 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
 }
 
 /// Refuse to start against a server that does not answer its liveness probe.
+///
+/// Bounded: a blackholed host, or one that accepts the connection and never
+/// answers, must end the run with exit `2` instead of hanging it.
 async fn reachable(http: &reqwest::Client, server_url: &str) -> Result<(), LoadError> {
     let url = format!("{}/_status", server_url.trim_end_matches('/'));
-    match http.get(&url).send().await {
+    match http
+        .get(&url)
+        .timeout(client::PREFLIGHT_TIMEOUT)
+        .send()
+        .await
+    {
         Ok(response) if response.status().is_success() => Ok(()),
         Ok(response) => Err(LoadError::Fixture(format!(
             "server {url} answered {}",
@@ -449,8 +459,8 @@ fn fingerprint(
             .map_err(|error| LoadError::Diagnostic(format!("fingerprint: {error}")))?;
         fingerprint.merge_under(&wrapper);
     }
-    if let Some(commit) = &args.commit {
-        fingerprint.server_commit = Some(commit.clone());
+    if let Some(commit) = non_empty(&args.commit) {
+        fingerprint.server_commit = Some(commit);
     }
     if let Some(url) = &args.postgres_url {
         runtime
@@ -458,6 +468,14 @@ fn fingerprint(
             .map_err(|error| LoadError::Diagnostic(format!("fingerprint: {error}")))?;
     }
     Ok(fingerprint)
+}
+
+/// An optional flag value that is `None` when the flag was given empty.
+fn non_empty(value: &Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 /// The server's pool size as the last poller sample saw it.
@@ -482,6 +500,13 @@ mod tests {
         ];
         assert_eq!(resolved_pool_size(&samples), Some(20));
         assert_eq!(resolved_pool_size(&[]), None);
+    }
+
+    #[test]
+    fn an_empty_commit_counts_as_absent() {
+        assert_eq!(non_empty(&None), None);
+        assert_eq!(non_empty(&Some(String::new())), None);
+        assert_eq!(non_empty(&Some("abc1234".into())), Some("abc1234".into()));
     }
 
     #[test]

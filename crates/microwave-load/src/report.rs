@@ -121,11 +121,12 @@ pub fn write(
     results: &Results,
 ) -> Result<PathBuf, LoadError> {
     fs::create_dir_all(out)?;
-    let stamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let now = Utc::now();
+    let stamp = now.format("%Y%m%dT%H%M%SZ").to_string();
     let markdown_path = out.join(format!("load-report-{stamp}.md"));
     let json_path = out.join(format!("load-report-{stamp}.json"));
     let report = Report {
-        generated_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        generated_at: now.to_rfc3339_opts(SecondsFormat::Secs, true),
         fingerprint: fingerprint.clone(),
         config: config.clone(),
         results: results.clone(),
@@ -500,7 +501,21 @@ mod tests {
                 .expect("name")
                 .to_string_lossy()
                 .into_owned();
-            assert!(name.starts_with("load-report-"), "{name}");
+            let stamp = name
+                .strip_prefix("load-report-")
+                .and_then(|rest| rest.strip_suffix(".md").or(rest.strip_suffix(".json")))
+                .expect("the report names carry the prefix");
+            assert!(is_utc_stamp(stamp), "{name}: stamp is not YYYYMMDDTHHMMSSZ");
         }
+    }
+
+    /// `YYYYMMDDTHHMMSSZ`.
+    fn is_utc_stamp(stamp: &str) -> bool {
+        let bytes = stamp.as_bytes();
+        bytes.len() == 16
+            && bytes[8] == b'T'
+            && bytes[15] == b'Z'
+            && bytes[..8].iter().all(u8::is_ascii_digit)
+            && bytes[9..15].iter().all(u8::is_ascii_digit)
     }
 }

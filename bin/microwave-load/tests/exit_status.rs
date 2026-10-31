@@ -5,6 +5,7 @@ use axum::http::{Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -81,6 +82,14 @@ fn closed_address() -> String {
     format!("http://{address}")
 }
 
+/// An address that accepts the TCP connection and never answers HTTP: the
+/// handshake completes, so only the preflight's own request timeout can end it.
+fn silent_address() -> (std::net::TcpListener, String) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
+    let address = listener.local_addr().expect("addr");
+    (listener, format!("http://{address}"))
+}
+
 const KEY: &str = include_str!("../../../crates/microwave-crypto/tests/fixtures/test_key.pem");
 
 fn manifest(directory: &Path) -> PathBuf {
@@ -135,8 +144,11 @@ async fn a_completed_run_exits_zero_and_writes_the_report() {
     let directory = tempfile::tempdir().expect("tempdir");
     let keys = manifest(directory.path());
     let out = directory.path().join("out");
+    let mut args = args(&url, &keys, &out);
+    // An empty `--commit` counts as absent.
+    args.extend(["--commit".to_string(), String::new()]);
 
-    let output = run(args(&url, &keys, &out)).await;
+    let output = run(args).await;
     server.abort();
 
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
@@ -165,6 +177,8 @@ async fn a_completed_run_exits_zero_and_writes_the_report() {
     let json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(json).expect("json reads")).expect("json parses");
     assert_eq!(json["fingerprint"]["pool_size"], 10);
+    assert!(json["fingerprint"]["server_commit"].is_null());
+    assert!(json["config"]["commit"].is_null());
     assert_eq!(json["results"]["completed"], 1);
 }
 
@@ -201,6 +215,33 @@ async fn an_unreachable_server_exits_two() {
         stderr(&output).contains("unreachable"),
         "{}",
         stderr(&output)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_silent_server_times_the_preflight_out_and_exits_two() {
+    // The listener stays bound and never accepts: connect succeeds, the answer
+    // never comes, so only the preflight's request timeout can end the run.
+    let (_listener, url) = silent_address();
+    let directory = tempfile::tempdir().expect("tempdir");
+    let keys = manifest(directory.path());
+    let out = directory.path().join("out");
+
+    let started = std::time::Instant::now();
+    let output = run(args(&url, &keys, &out)).await;
+    let elapsed = started.elapsed();
+
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("unreachable"),
+        "{}",
+        stderr(&output)
+    );
+    // A refusal is instant; reaching the timeout is what proves the bound.
+    let margin = std::time::Duration::from_millis(500);
+    assert!(
+        elapsed >= microwave_load::client::PREFLIGHT_TIMEOUT - margin,
+        "gave up after {elapsed:?}"
     );
 }
 
@@ -245,6 +286,66 @@ async fn a_malformed_fingerprint_exits_three() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unwritable_report_directory_exits_three() {
+    let (url, server) = serve().await;
+    let directory = tempfile::tempdir().expect("tempdir");
+    let keys = manifest(directory.path());
+    // The directory exists and stays readable, so the fingerprint passes and
+    // only the report write fails.
+    let out = directory.path().join("out");
+    std::fs::create_dir(&out).expect("out dir");
+    std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o555))
+        .expect("out goes read-only");
+
+    let output = run(args(&url, &keys, &out)).await;
+    server.abort();
+    std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o755))
+        .expect("out goes writable again");
+
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    assert!(stderr(&output).contains("report:"), "{}", stderr(&output));
+    assert_eq!(
+        std::fs::read_dir(&out).expect("out exists").count(),
+        0,
+        "nothing was written"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_emptied_fixture_exits_two_before_the_fingerprint_runs() {
+    let (url, server) = serve().await;
+    let directory = tempfile::tempdir().expect("tempdir");
+    // A manifest with no client entry, plus a fingerprint file that would fail:
+    // the fixture error must win, so it stays exit `2`.
+    let key = directory.path().join("client.pem");
+    std::fs::write(&key, KEY).expect("key writes");
+    let keys = directory.path().join("load.keys");
+    std::fs::write(
+        &keys,
+        format!("superuser load-superuser {}\n", key.display()),
+    )
+    .expect("manifest writes");
+    let fingerprint = directory.path().join("host-fingerprint.json");
+    std::fs::write(&fingerprint, "{not json").expect("broken file writes");
+    let out = directory.path().join("out");
+    let mut args = args(&url, &keys, &out);
+    args.extend([
+        "--fingerprint".to_string(),
+        fingerprint.display().to_string(),
+    ]);
+
+    let output = run(args).await;
+    server.abort();
+
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("no client entries"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_out_that_cannot_be_a_directory_exits_three() {
     let (url, server) = serve().await;
     let directory = tempfile::tempdir().expect("tempdir");
     let keys = manifest(directory.path());

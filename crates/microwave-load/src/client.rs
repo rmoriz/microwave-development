@@ -14,6 +14,18 @@ use chrono::{SecondsFormat, Utc};
 use microwave_crypto::{sign_request, CanonicalRequest, SignVersion};
 use microwave_objectstore::md5_base64;
 use reqwest::{Method, RequestBuilder, StatusCode};
+use std::time::Duration;
+
+/// How long a TCP connect may take before the host counts as gone.
+///
+/// A blackholed host never answers the SYN, so without this the preflight
+/// would hang instead of exiting `2`.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long the liveness preflight may wait for an answer.
+///
+/// Per request, not on the client: a converge request legitimately outlasts it.
+pub const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Result of a request that survived (or used up) the retry budget.
 #[derive(Debug)]
@@ -25,13 +37,15 @@ pub struct Outcome {
 }
 
 /// Build the one HTTP client of a whole run, with an idle pool that holds every
-/// concurrency slot.
+/// concurrency slot and a bounded connect, so a host that stops answering does
+/// not hang a slot forever.
 ///
 /// The pool size lives here so no call site can build its own unbounded client
 /// and silently drop the keep-alive reuse the measurement depends on.
 pub fn run_http(concurrency: usize) -> Result<reqwest::Client, LoadError> {
     reqwest::Client::builder()
         .pool_max_idle_per_host(concurrency)
+        .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .map_err(LoadError::transport)
 }

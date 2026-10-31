@@ -111,12 +111,13 @@ impl Fingerprint {
                 .await
                 .map_err(|error| error.to_string())?,
         );
-        self.postgres_max_connections = sqlx::query_scalar::<_, String>("SHOW max_connections")
+        let max_connections = sqlx::query_scalar::<_, String>("SHOW max_connections")
             .fetch_one(pool)
             .await
-            .map_err(|error| error.to_string())?
-            .parse()
-            .ok();
+            .map_err(|error| error.to_string())?;
+        if let Ok(max_connections) = max_connections.parse() {
+            self.postgres_max_connections = Some(max_connections);
+        }
         self.postgres_shared_buffers = Some(
             sqlx::query_scalar::<_, String>("SHOW shared_buffers")
                 .fetch_one(pool)
