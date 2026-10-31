@@ -103,6 +103,8 @@ services:
       MW_HTTP_PORT: "8000"
       # Overrides database.pool_size in the mounted configuration.
       MW_DATABASE__POOL_SIZE: ${MW_POOL_SIZE:-10}
+      # Overrides depsolver.max_concurrent in the mounted configuration.
+      MW_DEPSOLVER__MAX_CONCURRENT: ${MW_DEPSOLVER__MAX_CONCURRENT:-4}
       # Must match [stats] in the mounted configuration.
       MW_STATS__USERNAME: load
       MW_STATS__PASSWORD: load-stats

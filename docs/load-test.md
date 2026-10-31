@@ -62,7 +62,10 @@ the measured configuration and the file a bare-metal operator copies.
 
 | Knob | Default | Purpose |
 |---|---|---|
-| `MW_POOL_SIZE` | `10` | `database.pool_size` of the server. Must be an integer. |
+| `MW_DATABASE__POOL_SIZE` | `10` | `database.pool_size` of the server, interpolated from `MW_POOL_SIZE`. That one must be an integer; `run.sh` validates and fingerprints it. |
+| `MW_DEPSOLVER__MAX_CONCURRENT` | `4` | `depsolver.max_concurrent` of the server, the permit count behind the solver `503`s. |
+| `MW_STATS__USERNAME` | `load` | `/_stats` user; hardcoded in the compose file, must match `[stats]` in the mounted configuration. |
+| `MW_STATS__PASSWORD` | `load-stats` | `/_stats` password; hardcoded too, same rule. |
 | `MW_PG_MAX_CONNECTIONS` | `200` | PostgreSQL `max_connections`. Must be an integer. |
 | `MW_PG_SHARED_BUFFERS` | `256MB` | PostgreSQL `shared_buffers`. |
 | `MW_SERVER_CPUS` | `2` | CPU limit of the server container; clamped to the host's cores. |
@@ -82,8 +85,15 @@ the measured configuration and the file a bare-metal operator copies.
 `run.sh` sets the five `MW_SEED_*` values from the chosen profile and exports
 them, so an inherited value loses against the profile. Use them only when
 starting the services through Compose yourself. `MW_CONFIG`,
-`MW_HEALTHCHECK_HOST`, `MW_HTTP_PORT` and the `MW_STATS__*` pair are fixed in
-the compose file and must match the mounted configuration.
+`MW_HEALTHCHECK_HOST` and `MW_HTTP_PORT` are fixed in the compose file. The two
+`MW_STATS__*` values are hardcoded there as well and must match `[stats]` in the
+mounted configuration.
+
+The pool knob has two names. `run.sh` validates and fingerprints `MW_POOL_SIZE`
+and the compose file passes it on as `MW_DATABASE__POOL_SIZE`, which is what the
+server reads. Setting `MW_DATABASE__POOL_SIZE` alone changes nothing while
+`MW_POOL_SIZE` still supplies the interpolation, and leaves the fingerprint on
+the old value.
 
 The resolved pool size, the PostgreSQL settings, the Compose limits and the
 image digests are written into the fingerprint, so the report shows the values
@@ -103,9 +113,16 @@ failed run prints the seed and server logs first. The report is
 `docker-load/out/load-report-<UTC>.md` with a sibling `.json`; the timestamped
 name sorts in time order.
 
-Exit status is diagnostic: `0` for a finished run, also when nodes failed, `2`
-for an unreachable server or a broken fixture, `3` for a fingerprint or report
-failure.
+Exit status is diagnostic, and the two halves mean different things. Before the
+driver starts, `run.sh` itself fails with `1` when a service never becomes ready
+or when anything under `set -e` fails (build, `up`, a probe, `compose run`); a
+seed that exits non-zero passes its own code through the health wait. A usage
+error and a non-integer `MW_POOL_SIZE` or `MW_PG_MAX_CONNECTIONS` exit `2`. Only
+once the driver runs does the status describe the run: `0` for a finished run,
+also when nodes failed, `2` for an unreachable server or a broken fixture, `3`
+for a fingerprint or report failure. A `2` is ambiguous between a script check
+and a driver fixture error, so read the message: the script prints its own, and
+the driver's arrives after the seed and server logs.
 
 ### Driver flags
 
@@ -117,13 +134,13 @@ through Compose yourself or calling the binary directly; `run` is the driver,
 |---|---|---|---|
 | `--server-url` | `seed`, `run` | required | Base URL of the server. |
 | `--keys` | `seed`, `run` | required | Manifest written by the seed, read by the run. |
-| `--data-dir` | `seed` | required | Data directory, only used without `--postgres-url`. |
+| `--data-dir` | `seed` | required | Data directory. Receives the cookbook blobs in both modes and holds `microwave.db` without `--postgres-url`. |
 | `--postgres-url` | `seed`, `run` | unset | Seed into PostgreSQL; on `run`, measure the PostgreSQL facts. |
 | `--nodes` | `seed` | `20000` | Nodes to create. |
 | `--roles` | `seed` | `1000` | Roles to create. |
 | `--versions` | `seed` | `600` | Cookbook versions to create. |
 | `--targets` | `seed` | `5000` | Converge targets to create. |
-| `--shared-key` | `seed` | off | One keypair for every actor instead of one each. |
+| `--shared-key` | `seed` | off | One keypair for every actor instead of one each: far less keygen, one instead of 5,000 distinct public keys. |
 | `--canary` | `seed`, `run` | `20` | Canary nodes to create; `0` runs none. |
 | `--out` | `run` | `.` | Report directory. |
 | `--concurrency` | `run` | `5000` | Concurrent converge sequences. |
@@ -142,10 +159,12 @@ the first table. A latency without the machine that produced it is not
 comparable to anything, so the order is deliberate.
 
 Measured fields are `cpu_model`, `cores`, `memory_total_bytes`, `kernel`,
-`out_filesystem`, `out_free_bytes`, `cgroup_cpu_max`, `cgroup_memory_max`, the
-PostgreSQL version with `max_connections` and `shared_buffers`, `server_commit`
-and `pool_size`. `pool_size` is the last maximum the `/_stats` poller saw — the
-pool the server really ran with, not the one the configuration asked for.
+`out_filesystem`, `out_free_bytes`, `cgroup_cpu_max`, `cgroup_memory_max`,
+`postgres_version`, `postgres_max_connections`, `postgres_shared_buffers`,
+`server_commit` and `pool_size`. The report renders the PostgreSQL triple on one
+`postgres:` line, as the version with `max_connections` and `shared_buffers`.
+`pool_size` is the last maximum the `/_stats` poller saw — the pool the server
+really ran with, not the one the configuration asked for.
 
 The wrapper adds what the driver cannot see from inside its container:
 `host_cores`, `host_cpu_model`, `host_memory_total_bytes`, `host_kernel`,
@@ -169,8 +188,12 @@ identical. A second variable in the same step makes the difference
 unattributable. Compare the same endpoint's p50, p95 and p99, the failure
 counts and the `solver 503s` column, not a single aggregate.
 
-Do not compare across `--shared-key` modes: the key material and the signing
-cost differ.
+Do not compare across `--shared-key` modes. Signing costs the same either way:
+the driver parses the PEM and signs every request in both modes, and a signature
+costs the same whatever key it came from. The difference sits at the ends of the
+run instead — the seed spends minutes on 5,000 keypairs instead of one, and the
+server checks each request against 5,000 distinct public keys instead of a
+single shared one.
 
 ## Testing another pool size
 
@@ -230,9 +253,9 @@ the `solver 503` counted in its endpoint row and slower than a first-try answer.
 A non-zero `solver 503s` column is therefore normal at high concurrency and not a
 defect, as long as the retries recover it. A run that exhausts the budget stops
 that node at the solve and lands it in the failures. To reduce the noise, edit
-`docker-load/microwave/microwave.toml` or set
-`MW_DEPSOLVER__MAX_CONCURRENT` in the same step, and compare only against runs
-with the same value.
+`docker-load/microwave/microwave.toml` or set `MW_DEPSOLVER__MAX_CONCURRENT`
+(the knob above) in the same step, and compare only against runs with the same
+value.
 
 ## Where the evidence is
 
