@@ -59,7 +59,7 @@ if node['microwave']['create_organization']
 
   execute 'microwave_organization' do
     command <<~COMMAND
-      for i in $(seq 1 20); do curl -fsS #{status_url} && break; [ "$i" -lt 20 ] && sleep 3; done &&
+      for i in $(seq 1 20); do curl -fsS --max-time 5 #{status_url} && break; [ "$i" -lt 20 ] && sleep 3; done &&
       { #{ctl} user-list | grep -qx pivotal || #{ctl} user-create pivotal --email pivotal@example.com --admin -f /tmp/pivotal.pem ; } &&
       #{ctl} org-create demo --full-name 'Microwave Demo' --association-user pivotal -f /tmp/demo-validator.pem &&
       #{ctl} org-user-add demo pivotal

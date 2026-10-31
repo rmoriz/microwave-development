@@ -104,7 +104,7 @@ describe 'microwave::default with create_organization' do
 
     expect(command.split("\n").map(&:strip)).to eq(
       [
-        'for i in $(seq 1 20); do curl -fsS http://chef.example.com:8000/_status && break; ' \
+        'for i in $(seq 1 20); do curl -fsS --max-time 5 http://chef.example.com:8000/_status && break; ' \
         '[ "$i" -lt 20 ] && sleep 3; done &&',
         "{ #{ctl} user-list | grep -qx pivotal || " \
         "#{ctl} user-create pivotal --email pivotal@example.com --admin -f /tmp/pivotal.pem ; } &&",
@@ -117,20 +117,20 @@ describe 'microwave::default with create_organization' do
   it 'waits for the status endpoint inside the command, bounded and on the bind address' do
     command = chef_run.execute('microwave_organization').command
 
-    expect(command).to include("for i in $(seq 1 20); do curl -fsS #{status_url} && break")
+    expect(command).to include("for i in $(seq 1 20); do curl -fsS --max-time 5 #{status_url} && break")
     expect(command).to include('[ "$i" -lt 20 ] && sleep 3; done &&')
     expect(command).to include(status_url)
-    expect(command).to start_with('for i in $(seq 1 20); do curl -fsS http://chef.example.com:8000/_status')
+    expect(command).to start_with('for i in $(seq 1 20); do curl -fsS --max-time 5 http://chef.example.com:8000/_status')
   end
 
   it 'follows a non-default bind in the status URL' do
     run = runner do |node|
-      node.automatic['fqdn'] = 'other.example.com'
+      node.normal['microwave']['bind'] = 'other.example.com'
       node.normal['microwave']['create_organization'] = true
     end.converge('microwave-test::all_in_one')
 
     expect(run.execute('microwave_organization').command)
-      .to include('curl -fsS http://other.example.com:8000/_status')
+      .to include('curl -fsS --max-time 5 http://other.example.com:8000/_status')
   end
 
   it 'installs curl before the execute, because the package does not ship it' do
