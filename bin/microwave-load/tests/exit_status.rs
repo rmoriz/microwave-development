@@ -260,6 +260,26 @@ async fn a_missing_fixture_exits_two() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn half_a_stats_credential_pair_exits_two() {
+    let (url, server) = serve().await;
+    let directory = tempfile::tempdir().expect("tempdir");
+    let keys = manifest(directory.path());
+    let out = directory.path().join("out");
+    let mut args = args(&url, &keys, &out);
+    args.extend(["--stats-user".to_string(), "load".to_string()]);
+
+    let output = run(args).await;
+    server.abort();
+
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("--stats-user") && stderr(&output).contains("--stats-pass"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_malformed_fingerprint_exits_three() {
     let (url, server) = serve().await;
     let directory = tempfile::tempdir().expect("tempdir");

@@ -27,6 +27,13 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Per request, not on the client: a converge request legitimately outlasts it.
 pub const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long one request may take before it counts as a transport error.
+///
+/// Above a legitimate solve even with solver-queueing, yet bounded: a peer that
+/// accepts the connection and never answers turns into a retried transport
+/// error instead of parking a concurrency permit forever.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Result of a request that survived (or used up) the retry budget.
 #[derive(Debug)]
 pub struct Outcome {
@@ -37,15 +44,17 @@ pub struct Outcome {
 }
 
 /// Build the one HTTP client of a whole run, with an idle pool that holds every
-/// concurrency slot and a bounded connect, so a host that stops answering does
-/// not hang a slot forever.
+/// concurrency slot, a bounded connect and a bounded request, so a host that
+/// stops answering does not hang a slot forever.
 ///
-/// The pool size lives here so no call site can build its own unbounded client
-/// and silently drop the keep-alive reuse the measurement depends on.
+/// The pool size and the timeouts live here so no call site can build its own
+/// unbounded client and silently drop the keep-alive reuse the measurement
+/// depends on.
 pub fn run_http(concurrency: usize) -> Result<reqwest::Client, LoadError> {
     reqwest::Client::builder()
         .pool_max_idle_per_host(concurrency)
         .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(REQUEST_TIMEOUT)
         .build()
         .map_err(LoadError::transport)
 }
@@ -623,5 +632,35 @@ mod tests {
         ));
         // Five backoffs of at least 80 % of 200, 400, 800, 1600 and 3200ms.
         assert!(started.elapsed() >= std::time::Duration::from_millis(4_960));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_server_times_each_attempt_out_and_fails_the_node() {
+        // The listener stays bound and never serves: the TCP connect succeeds,
+        // so only the request timeout can end each attempt.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener binds");
+        let url = format!("http://{}", listener.local_addr().expect("addr"));
+        let client = NodeClient::new(
+            run_http(1).expect("client builds"),
+            url,
+            "load-client-00000".to_string(),
+            PRIVATE_KEY.to_string(),
+        );
+
+        let error = client
+            .send(Method::GET, "/organizations/load/nodes/n1", None)
+            .await
+            .expect_err("the peer never answers");
+
+        assert!(matches!(
+            error,
+            LoadError::Transport {
+                retries: RetryCount(retry::MAX_RETRIES),
+                solver_503: SolverOverloaded(0),
+                ..
+            }
+        ));
     }
 }

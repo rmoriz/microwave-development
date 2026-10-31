@@ -150,9 +150,32 @@ fn seed_refuses_a_populated_store() {
     seed(seed_args(directory.path())).expect("first seed runs");
 
     // The store is checked before keygen, so a doomed re-seed must leave the
-    // manifest alone instead of pairing old database keys with new PEMs.
+    // manifest and every private key alone instead of pairing old database
+    // keys with new PEMs.
     let manifest = directory.path().join("keys.json");
     std::fs::write(&manifest, "marker manifest\n").expect("marker writes");
+    std::fs::write(
+        directory.path().join("keys.json.d/marker.pem"),
+        "marker key\n",
+    )
+    .expect("marker key writes");
+    let key_files = || {
+        let mut names: Vec<String> = std::fs::read_dir(directory.path().join("keys.json.d"))
+            .expect("key directory reads")
+            .map(|entry| {
+                entry
+                    .expect("key entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        names
+    };
+    let before = key_files();
+    assert!(before.iter().any(|name| name == "marker.pem"));
+    assert!(before.len() > 1, "the seed wrote keypairs: {before:?}");
 
     let error = seed(seed_args(directory.path())).expect_err("second seed fails");
     let message = error.to_string();
@@ -162,5 +185,15 @@ fn seed_refuses_a_populated_store() {
         std::fs::read_to_string(&manifest).expect("manifest reads"),
         "marker manifest\n",
         "the refused seed leaves the manifest untouched"
+    );
+    assert_eq!(
+        key_files(),
+        before,
+        "the refused seed leaves every PEM untouched"
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("keys.json.d/marker.pem"))
+            .expect("marker key reads"),
+        "marker key\n"
     );
 }

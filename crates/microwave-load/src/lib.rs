@@ -177,11 +177,6 @@ pub fn seed(args: SeedArgs) -> Result<(), LoadError> {
                 let (fixture, books, actors) = prepare(&args, sizes)?;
                 write_books(&args.data_dir, &books)?;
                 store.import_snapshot(&fixture.snapshot).await?;
-                for (id, constraints) in constrained(&fixture) {
-                    store
-                        .set_environment_constraints(&id, Some(constraints))
-                        .await?;
-                }
                 Ok::<_, LoadError>(actors)
             })?
         }
@@ -192,9 +187,6 @@ pub fn seed(args: SeedArgs) -> Result<(), LoadError> {
             let (fixture, books, actors) = prepare(&args, sizes)?;
             write_books(&args.data_dir, &books)?;
             store.import_snapshot(&fixture.snapshot)?;
-            for (id, constraints) in constrained(&fixture) {
-                store.set_environment_constraints(&id, Some(constraints))?;
-            }
             actors
         }
     };
@@ -245,25 +237,6 @@ fn write_books(data_dir: &Path, books: &[BookBlob]) -> Result<(), LoadError> {
         store.put(ORG_ID, &book.checksum, &book.data)?;
     }
     Ok(())
-}
-
-/// `(environment id, derived constraint JSON)` for every environment whose body
-/// carries `cookbook_versions`.
-///
-/// `import_snapshot` writes no `cookbook_constraints`, so without this every
-/// solve parses the environment body instead of reading the column.
-fn constrained(fixture: &Fixture) -> Vec<(String, String)> {
-    fixture
-        .snapshot
-        .environments
-        .iter()
-        .filter_map(|environment| {
-            let constraints = microwave_store::environment_constraints(
-                environment.serialized_object.as_deref()?,
-            )?;
-            Some((environment.id.clone(), constraints))
-        })
-        .collect()
 }
 
 fn target(args: &SeedArgs) -> String {
@@ -324,12 +297,10 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
         )));
     }
 
+    let credentials = stats_credentials(args.stats_user.clone(), args.stats_pass.clone())?;
+
     let mut fingerprint = fingerprint(&args, &runtime)?;
 
-    let credentials = match (args.stats_user.clone(), args.stats_pass.clone()) {
-        (Some(user), Some(pass)) => Some((user, pass)),
-        _ => None,
-    };
     let config = sequence::RunConfig {
         org: ORG_NAME.to_string(),
         upload: args.upload,
@@ -503,6 +474,23 @@ fn fingerprint(
     Ok(fingerprint)
 }
 
+/// The `--stats-user`/`--stats-pass` pair, or `None` when neither was given.
+///
+/// Half a pair silently disables the pool poller, which would drop `pool_size`
+/// from the fingerprint, so it is a fixture error instead.
+fn stats_credentials(
+    user: Option<String>,
+    pass: Option<String>,
+) -> Result<Option<(String, String)>, LoadError> {
+    match (user, pass) {
+        (Some(user), Some(pass)) => Ok(Some((user, pass))),
+        (None, None) => Ok(None),
+        (Some(_), None) | (None, Some(_)) => Err(LoadError::Fixture(
+            "--stats-user and --stats-pass must be given together".into(),
+        )),
+    }
+}
+
 /// An optional flag value that is `None` when the flag was given empty.
 fn non_empty(value: &Option<String>) -> Option<String> {
     value
@@ -540,6 +528,27 @@ mod tests {
         assert_eq!(non_empty(&None), None);
         assert_eq!(non_empty(&Some(String::new())), None);
         assert_eq!(non_empty(&Some("abc1234".into())), Some("abc1234".into()));
+    }
+
+    #[test]
+    fn half_a_stats_credential_pair_is_a_fixture_error() {
+        assert_eq!(
+            stats_credentials(Some("load".into()), Some("load-stats".into())).unwrap(),
+            Some(("load".into(), "load-stats".into()))
+        );
+        assert_eq!(stats_credentials(None, None).unwrap(), None);
+        for (user, pass) in [
+            (Some("load".into()), None),
+            (None, Some("load-stats".into())),
+        ] {
+            let error = stats_credentials(user, pass).expect_err("half a pair");
+            assert!(
+                matches!(error, LoadError::Fixture(ref message)
+                    if message.contains("--stats-user") && message.contains("--stats-pass")),
+                "{error:?}"
+            );
+            assert_eq!(error.status(), ExitStatus::Unavailable);
+        }
     }
 
     #[test]
