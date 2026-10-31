@@ -6,14 +6,19 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+base64.workspace = true
+chrono.workspace = true
 clap.workspace = true
 microwave-crypto = { path = "../microwave-crypto" }
 microwave-objectstore = { path = "../microwave-objectstore" }
 microwave-store = { path = "../microwave-store" }
 microwave-store-postgres = { path = "../microwave-store-postgres" }
+reqwest.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

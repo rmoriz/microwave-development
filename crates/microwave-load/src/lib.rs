@@ -6,12 +6,16 @@
 //! dispatch and the seed pipeline; the HTTP driver lives in later modules.
 
 mod cli;
+pub mod client;
 mod fixture;
 pub mod keys;
+pub mod retry;
 
 pub use cli::{Cli, Command, RunArgs, SeedArgs};
+pub use client::{NodeClient, Outcome};
 pub use fixture::{BookBlob, Fixture, KeyEntry, KeyKind, Sizes, ORG_ID, ORG_NAME, SUPERUSER};
 pub use keys::ActorKey;
+pub use retry::{RetryCount, SolverOverloaded};
 
 use clap::Parser;
 use microwave_objectstore::{LocalObjectStore, ObjectStore};
@@ -34,6 +38,8 @@ pub enum LoadError {
     Io(#[from] std::io::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("transport: {0}")]
+    Transport(#[from] reqwest::Error),
 }
 
 /// Parse process arguments and dispatch.

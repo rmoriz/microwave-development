@@ -1734,11 +1734,15 @@ version = "0.1.0"
 name = "microwave-load"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "chrono",
  "clap",
  "microwave-crypto",
  "microwave-objectstore",
  "microwave-store",
  "microwave-store-postgres",
+ "reqwest",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
