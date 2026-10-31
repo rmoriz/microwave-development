@@ -47,8 +47,22 @@ MW_SERVER_CPUS=$(clamp_cpus "${MW_SERVER_CPUS:-2}")
 MW_LOAD_CPUS=$(clamp_cpus "${MW_LOAD_CPUS:-4}")
 export MW_SERVER_CPUS MW_LOAD_CPUS
 
+# The fingerprint carries these as JSON numbers, so reject anything else before
+# the stack is built instead of writing a fingerprint the driver cannot read.
+require_int() {
+    case "$2" in
+        ''|*[!0-9]*) echo "$1 must be a positive integer, got '$2'" >&2; exit 2 ;;
+    esac
+}
+pg_max_connections=${MW_PG_MAX_CONNECTIONS:-200}
+pool_size=${MW_POOL_SIZE:-10}
+require_int MW_PG_MAX_CONNECTIONS "$pg_max_connections"
+require_int MW_POOL_SIZE "$pool_size"
+
 compose() { docker compose --profile "$profile" "$@"; }
 
+# ./keys and ./out are bind-mounted at /keys and /out, so `--out /out` writes
+# the report into this directory and the printed host path is the same file.
 # A previous run's manifest is replaced by the seed; stale reports only pile up.
 rm -rf keys out
 mkdir -p keys out
@@ -79,7 +93,15 @@ compose build
 # fixed fixture ids would collide with the populated database.
 compose up -d postgres seed microwave
 
+# Wait until `service` is ready. `--health` requires its probe to report
+# `healthy` (postgres, microwave); without it a running container is enough, and
+# for the one-shot seed a clean exit. `limit` bounds the wait in seconds.
 wait_for() {
+    local health=0
+    if [ "$1" = "--health" ]; then
+        health=1
+        shift
+    fi
     local service=$1 limit=$2 id status
     for _ in $(seq 1 "$limit"); do
         # `ps` alone only lists running containers; the completed one-shot seed
@@ -94,8 +116,9 @@ wait_for() {
                 return "$code"
             fi
             if [ "$status" = "running" ]; then
+                [ "$health" -eq 0 ] && return 0
                 status=$(docker inspect --format '{{.State.Health.Status}}' "$id" 2>/dev/null || true)
-                case "$status" in healthy|running|"") return 0 ;; esac
+                [ "$status" = "healthy" ] && return 0
             fi
         fi
         sleep 1
@@ -105,8 +128,9 @@ wait_for() {
 }
 
 # The reference seed generates one keypair per target, so give it an hour.
+wait_for --health postgres 120
 wait_for seed 3600
-wait_for microwave 120
+wait_for --health microwave 120
 
 # The facts the driver cannot measure from inside its container: the host, the
 # image digests and the resolved Compose limits.
@@ -142,9 +166,9 @@ done
     printf '  "host_cpu_model": "%s",\n' "$(printf '%s' "$model" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
     printf '  "host_memory_total_bytes": %s,\n' "$memory"
     printf '  "host_kernel": "%s",\n' "$(printf '%s' "$kernel" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
-    printf '  "postgres_max_connections": %s,\n' "${MW_PG_MAX_CONNECTIONS:-200}"
+    printf '  "postgres_max_connections": %s,\n' "$pg_max_connections"
     printf '  "postgres_shared_buffers": "%s",\n' "${MW_PG_SHARED_BUFFERS:-256MB}"
-    printf '  "pool_size": %s,\n' "${MW_POOL_SIZE:-10}"
+    printf '  "pool_size": %s,\n' "$pool_size"
     printf '  "compose_limits": {\n'
     printf '    "server_cpus": "%s",\n' "${MW_SERVER_CPUS:-2}"
     printf '    "server_mem": "%s",\n' "${MW_SERVER_MEM:-4g}"
