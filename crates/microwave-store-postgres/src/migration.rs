@@ -136,13 +136,7 @@ impl PostgresStore {
             self.compression(),
         )
         .await?;
-        import_named_objects(
-            &mut transaction,
-            "environments",
-            &snapshot.environments,
-            self.compression(),
-        )
-        .await?;
+        import_environments(&mut transaction, snapshot, self.compression()).await?;
         import_named_objects(
             &mut transaction,
             "data_bags",
@@ -690,14 +684,7 @@ async fn collect_cookbook_versions(
     .iter()
     .map(|row| {
         let serialized_object = serialized(row, 12)?;
-        let stored_deps = opt_text(row, 9)?;
-        let meta_deps = match stored_deps {
-            Some(deps) if !deps.is_empty() && deps != "{}" => Some(deps),
-            _ => serialized_object
-                .as_deref()
-                .and_then(microwave_store::cookbook_dependencies),
-        };
-        Ok(CookbookVersionRow {
+        let row = CookbookVersionRow {
             id: text(row, 0)?,
             cookbook_id: integer(row, 1)?,
             org_id: text(row, 2)?,
@@ -707,13 +694,17 @@ async fn collect_cookbook_versions(
             patch: integer(row, 6)?,
             frozen: boolean(row, 7)?,
             meta_attributes: opt_text(row, 8)?,
-            meta_deps,
+            meta_deps: opt_text(row, 9)?,
             meta_long_desc: opt_text(row, 10)?,
             metadata: opt_text(row, 11)?,
             serialized_object,
             last_updated_by: text(row, 13)?,
             created_at: text(row, 14)?,
             updated_at: text(row, 15)?,
+        };
+        Ok(CookbookVersionRow {
+            meta_deps: derived_meta_deps(&row),
+            ..row
         })
     })
     .collect()
@@ -1550,6 +1541,54 @@ async fn import_named_objects(
     Ok(())
 }
 
+/// Upsert an environment and derive its `cookbook_constraints` from the body.
+///
+/// The generic named-object import writes no such column, and the body is the
+/// only place the constraints survive a snapshot, so the import has to derive
+/// them the same way it derives `meta_deps` for cookbook versions.
+async fn import_environments(
+    transaction: &mut PgTransaction<'_>,
+    snapshot: &StoreSnapshot,
+    compression: Compression,
+) -> Result<(), StoreError> {
+    for row in &snapshot.environments {
+        let serialized_object =
+            encode_serialized_optional(row.serialized_object.as_deref(), compression)?;
+        let constraints = row
+            .serialized_object
+            .as_deref()
+            .and_then(microwave_store::environment_constraints);
+        sqlx::query(
+            "INSERT INTO environments
+             (id, authz_id, org_id, name, serialized_object, cookbook_constraints,
+              last_updated_by, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (id) DO UPDATE SET
+                 authz_id = EXCLUDED.authz_id,
+                 org_id = EXCLUDED.org_id,
+                 name = EXCLUDED.name,
+                 serialized_object = EXCLUDED.serialized_object,
+                 cookbook_constraints = EXCLUDED.cookbook_constraints,
+                 last_updated_by = EXCLUDED.last_updated_by,
+                 created_at = EXCLUDED.created_at,
+                 updated_at = EXCLUDED.updated_at",
+        )
+        .bind(&row.id)
+        .bind(&row.authz_id)
+        .bind(&row.org_id)
+        .bind(&row.name)
+        .bind(serialized_object.as_deref())
+        .bind(constraints.as_deref())
+        .bind(&row.last_updated_by)
+        .bind(&row.created_at)
+        .bind(&row.updated_at)
+        .execute(&mut **transaction)
+        .await
+        .map_err(db)?;
+    }
+    Ok(())
+}
+
 async fn import_data_bag_items(
     transaction: &mut PgTransaction<'_>,
     snapshot: &StoreSnapshot,
@@ -1686,6 +1725,18 @@ async fn import_cookbooks(
     Ok(())
 }
 
+/// The row's stored dependencies, or a derivation from its manifest when the
+/// stored value is absent, empty or the old `{}` placeholder.
+fn derived_meta_deps(row: &CookbookVersionRow) -> Option<String> {
+    match row.meta_deps.as_deref() {
+        Some(deps) if !deps.is_empty() && deps != "{}" => row.meta_deps.clone(),
+        _ => row
+            .serialized_object
+            .as_deref()
+            .and_then(microwave_store::cookbook_dependencies),
+    }
+}
+
 async fn import_cookbook_versions(
     transaction: &mut PgTransaction<'_>,
     snapshot: &StoreSnapshot,
@@ -1694,6 +1745,7 @@ async fn import_cookbook_versions(
     for row in &snapshot.cookbook_versions {
         let serialized_object =
             encode_serialized_optional(row.serialized_object.as_deref(), compression)?;
+        let meta_deps = derived_meta_deps(row);
         sqlx::query(
             "INSERT INTO cookbook_versions
              (id, cookbook_id, org_id, name, major, minor, patch, frozen,
@@ -1726,7 +1778,7 @@ async fn import_cookbook_versions(
         .bind(row.patch)
         .bind(row.frozen)
         .bind(row.meta_attributes.as_deref())
-        .bind(row.meta_deps.as_deref())
+        .bind(meta_deps.as_deref())
         .bind(row.meta_long_desc.as_deref())
         .bind(row.metadata.as_deref())
         .bind(serialized_object.as_deref())

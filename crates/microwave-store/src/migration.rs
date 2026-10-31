@@ -1191,16 +1191,7 @@ fn decode_snapshot_serialized(snapshot: &mut StoreSnapshot) -> Result<(), StoreE
     }
     for row in &mut snapshot.cookbook_versions {
         decode_optional(&mut row.serialized_object)?;
-        if row
-            .meta_deps
-            .as_deref()
-            .is_none_or(|deps| deps.is_empty() || deps == "{}")
-        {
-            row.meta_deps = row
-                .serialized_object
-                .as_deref()
-                .and_then(crate::cookbook_dependencies);
-        }
+        row.meta_deps = derived_meta_deps(row);
     }
     for row in &mut snapshot.cookbook_artifact_versions {
         decode_optional(&mut row.serialized_object)?;
@@ -1212,6 +1203,18 @@ fn decode_snapshot_serialized(snapshot: &mut StoreSnapshot) -> Result<(), StoreE
         decode_optional(&mut row.serialized_object)?;
     }
     Ok(())
+}
+
+/// The row's stored dependencies, or a derivation from its manifest when the
+/// stored value is absent, empty or the old `{}` placeholder.
+fn derived_meta_deps(row: &CookbookVersionRow) -> Option<String> {
+    match row.meta_deps.as_deref() {
+        Some(deps) if !deps.is_empty() && deps != "{}" => row.meta_deps.clone(),
+        _ => row
+            .serialized_object
+            .as_deref()
+            .and_then(crate::cookbook_dependencies),
+    }
 }
 
 fn decode_optional(value: &mut Option<String>) -> Result<(), StoreError> {
@@ -1553,7 +1556,7 @@ fn import_all(
         upsert_named_object(transaction, "roles", row, compression)?;
     }
     for row in &snapshot.environments {
-        upsert_named_object(transaction, "environments", row, compression)?;
+        upsert_environment(transaction, row, compression)?;
     }
     for row in &snapshot.data_bags {
         upsert_named_object(transaction, "data_bags", row, compression)?;
@@ -1652,6 +1655,7 @@ fn import_all(
     }
 
     for row in &snapshot.cookbook_versions {
+        let meta_deps = derived_meta_deps(row);
         transaction.execute(
             "INSERT INTO cookbook_versions
              (id, cookbook_id, org_id, name, major, minor, patch, frozen,
@@ -1684,7 +1688,7 @@ fn import_all(
                 row.patch,
                 row.frozen as i64,
                 row.meta_attributes,
-                row.meta_deps,
+                meta_deps,
                 row.meta_long_desc,
                 row.metadata,
                 encode_serialized_optional(row.serialized_object.as_deref(), compression)?,
@@ -1989,6 +1993,49 @@ fn import_all(
         )?;
     }
 
+    Ok(())
+}
+
+/// Upsert an environment and derive its `cookbook_constraints` from the body.
+///
+/// The generic named-object upsert writes no such column, and the body is the
+/// only place the constraints survive a snapshot, so the import has to derive
+/// them the same way it derives `meta_deps` for cookbook versions.
+fn upsert_environment(
+    transaction: &Transaction<'_>,
+    row: &NamedObjectRow,
+    compression: Compression,
+) -> Result<(), StoreError> {
+    let constraints = row
+        .serialized_object
+        .as_deref()
+        .and_then(crate::environment_constraints);
+    transaction.execute(
+        "INSERT INTO environments
+         (id, authz_id, org_id, name, serialized_object, cookbook_constraints,
+          last_updated_by, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(id) DO UPDATE SET
+             authz_id = excluded.authz_id,
+             org_id = excluded.org_id,
+             name = excluded.name,
+             serialized_object = excluded.serialized_object,
+             cookbook_constraints = excluded.cookbook_constraints,
+             last_updated_by = excluded.last_updated_by,
+             created_at = excluded.created_at,
+             updated_at = excluded.updated_at",
+        params![
+            row.id,
+            row.authz_id,
+            row.org_id,
+            row.name,
+            encode_serialized_optional(row.serialized_object.as_deref(), compression)?,
+            constraints,
+            row.last_updated_by,
+            row.created_at,
+            row.updated_at
+        ],
+    )?;
     Ok(())
 }
 

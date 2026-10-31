@@ -331,6 +331,53 @@ fn legacy_plain_snapshots_import_into_a_compressed_store() {
 }
 
 #[test]
+fn import_derives_missing_meta_deps_and_environment_constraints() {
+    let source_dir = TempDir::new().unwrap();
+    let source = SqliteStore::open(&database(&source_dir)).unwrap();
+    let (org_id, _) = seed(&source);
+    let mut snapshot = source.export_snapshot().unwrap();
+
+    let version = snapshot
+        .cookbook_versions
+        .iter_mut()
+        .find(|version| version.name == "apt")
+        .expect("seeded cookbook version");
+    version.serialized_object = Some(
+        r#"{"name":"apt","version":"1.0.0","metadata":{"dependencies":{"nginx":">= 0.0.0"}}}"#
+            .to_string(),
+    );
+    version.meta_deps = None;
+
+    let environment = snapshot
+        .environments
+        .iter_mut()
+        .find(|environment| environment.name == "prod")
+        .expect("seeded environment");
+    environment.serialized_object =
+        Some(r#"{"name":"prod","cookbook_versions":{"nginx":"~> 1.0"}}"#.to_string());
+
+    let target = SqliteStore::open_in_memory().unwrap();
+    target.import_snapshot(&snapshot).unwrap();
+
+    let version = target
+        .find_cookbook_version(&org_id, "apt", "1.0.0")
+        .unwrap()
+        .expect("imported version");
+    assert_eq!(
+        version.meta_deps.as_deref(),
+        Some(r#"{"nginx":">= 0.0.0"}"#)
+    );
+    let environment = target
+        .find_environment(&org_id, "prod")
+        .unwrap()
+        .expect("imported environment");
+    assert_eq!(
+        environment.cookbook_constraints.as_deref(),
+        Some(r#"{"nginx":"~> 1.0"}"#)
+    );
+}
+
+#[test]
 fn encode_none_is_plain_and_decodes_like_legacy() {
     let encoded = encode_serialized(NODE_BODY, Compression::None).unwrap();
     assert_eq!(encoded, NODE_BODY);

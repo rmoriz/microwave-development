@@ -593,6 +593,91 @@ async fn imports_snapshot_with_compression_none() {
 }
 
 #[tokio::test]
+async fn import_derives_missing_meta_deps_and_environment_constraints() {
+    let Some(url) = test_url() else {
+        eprintln!(
+            "SKIP: MICROWAVE_TEST_POSTGRES_URL is not set; start a disposable \
+             PostgreSQL with scripts/run-postgres-tests.sh"
+        );
+        return;
+    };
+    let store = PostgresStore::connect(&url)
+        .await
+        .expect("connect to configured PostgreSQL");
+    let suffix = suffix();
+    let org = store
+        .create_org(&format!("derived-org-{suffix}"), "Derived Org")
+        .await
+        .unwrap();
+    let creator = store.create_actor().await.unwrap();
+    for container in ["cookbooks", "environments"] {
+        store
+            .create_container_for_org(&org.id, container)
+            .await
+            .unwrap();
+    }
+    let cookbook = format!("derived-cookbook-{suffix}");
+    let environment = format!("derived-environment-{suffix}");
+    store
+        .create_cookbook_version(
+            &org.id,
+            &cookbook,
+            "1.0.0",
+            r#"{"name":"derived","metadata":{"dependencies":{"nginx":">= 0.0.0"}}}"#,
+            &[],
+            false,
+            &creator,
+        )
+        .await
+        .unwrap();
+    store
+        .create_environment(
+            &org.id,
+            &environment,
+            r#"{"name":"derived","cookbook_versions":{"nginx":"~> 1.0"}}"#,
+            &creator,
+        )
+        .await
+        .unwrap();
+
+    let mut snapshot = store.export_snapshot().await.unwrap();
+    snapshot
+        .cookbook_versions
+        .iter_mut()
+        .find(|version| version.name == cookbook)
+        .expect("seeded cookbook version")
+        .meta_deps = None;
+
+    let (scratch_name, scratch_url) = create_scratch_database(&url, &suffix).await;
+    let target = PostgresStore::connect(&scratch_url)
+        .await
+        .expect("connect to derived snapshot target");
+    target.import_snapshot(&snapshot).await.unwrap();
+
+    let version = target
+        .find_cookbook_version(&org.id, &cookbook, "1.0.0")
+        .await
+        .unwrap()
+        .expect("imported version");
+    assert_eq!(
+        version.meta_deps.as_deref(),
+        Some(r#"{"nginx":">= 0.0.0"}"#)
+    );
+    let environment = target
+        .find_environment(&org.id, &environment)
+        .await
+        .unwrap()
+        .expect("imported environment");
+    assert_eq!(
+        environment.cookbook_constraints.as_deref(),
+        Some(r#"{"nginx":"~> 1.0"}"#)
+    );
+
+    drop(target);
+    drop_scratch_database(&url, &scratch_name).await;
+}
+
+#[tokio::test]
 async fn migration_adds_the_environment_constraints_column() {
     let Some(url) = test_url() else {
         eprintln!(
