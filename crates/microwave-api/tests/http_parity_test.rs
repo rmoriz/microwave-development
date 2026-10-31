@@ -861,6 +861,10 @@ fn is_hex_id(text: &str) -> bool {
 
 /// Parse Prometheus text into metric-name/value pairs, masking only the
 /// counter/gauge values. Metric names and label sets stay comparable.
+///
+/// The pool gauges are skipped: only the PostgreSQL backend has a pool, so the
+/// backends legitimately differ here. Their shape is pinned by the unit tests in
+/// `lib.rs`; [`scenario_ops`] asserts whether they appear at all.
 fn prometheus_metrics(text: &str) -> Value {
     let mut metrics = Map::new();
     for line in text.lines() {
@@ -871,6 +875,9 @@ fn prometheus_metrics(text: &str) -> Value {
         let Some((name, _value)) = line.rsplit_once(' ') else {
             continue;
         };
+        if name.starts_with("microwave_server_db_pool_") {
+            continue;
+        }
         metrics.insert(name.to_string(), json!("<number>"));
     }
     Value::Object(metrics)
@@ -4099,8 +4106,12 @@ async fn scenario_ops(h: &Harness) -> Vec<Step> {
             "pivotal",
         )
         .await
-        .expect_ok()
-        .map_text(prometheus_metrics);
+        .expect_ok();
+    let pool_gauges = step
+        .body_text()
+        .contains("microwave_server_db_pool_connections{state=\"idle\"}");
+    assert_eq!(pool_gauges, h.cleanup_guard.postgres_url.is_some());
+    let step = step.map_text(prometheus_metrics);
     assert!(step.json()["microwave_server_nodes"].is_string());
     assert!(step.json()["microwave_server_requests_total"].is_string());
     steps.push(step);
