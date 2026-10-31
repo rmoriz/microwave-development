@@ -30,6 +30,9 @@ impl PostgresStore {
 
     /// Connect to PostgreSQL, apply the unified schema, and use an explicit
     /// serialized-object compression mode for new writes.
+    ///
+    /// Opens the pool with [`DEFAULT_POOL_SIZE`]; use
+    /// [`PostgresStore::connect_with_compression_and_pool`] to size it.
     pub async fn connect_with_compression(
         database_url: &str,
         compression: Compression,
@@ -66,6 +69,9 @@ impl PostgresStore {
 
     /// Connect without applying the schema and use an explicit compression
     /// mode for any subsequent writes.
+    ///
+    /// Opens the pool with [`DEFAULT_POOL_SIZE`]; use
+    /// [`PostgresStore::connect_existing_with_compression_and_pool`] to size it.
     pub async fn connect_existing_with_compression(
         database_url: &str,
         compression: Compression,

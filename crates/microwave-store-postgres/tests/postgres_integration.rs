@@ -40,11 +40,12 @@ async fn postgres_health_check_runs_select_one_and_reports_closed_pools() {
 
 #[tokio::test]
 async fn pool_stats_reports_the_configured_maximum() {
-    let Some(url) = test_url() else {
-        eprintln!("SKIP: MICROWAVE_TEST_POSTGRES_URL is not set");
+    // `test_store` also skips without a database and applies the schema once;
+    // the stores below only exist to be opened with an explicit pool size.
+    let Some(_) = test_store().await else {
         return;
     };
-    ensure_postgres_schema(&url);
+    let url = test_url().expect("test URL is present when test_store succeeds");
     let store = PostgresStore::connect_with_compression_and_pool(&url, Compression::default(), 3)
         .await
         .expect("connect with pool size 3");
@@ -57,11 +58,10 @@ async fn pool_stats_reports_the_configured_maximum() {
 
 #[tokio::test]
 async fn connect_with_compression_still_uses_ten() {
-    let Some(url) = test_url() else {
-        eprintln!("SKIP: MICROWAVE_TEST_POSTGRES_URL is not set");
+    let Some(_) = test_store().await else {
         return;
     };
-    ensure_postgres_schema(&url);
+    let url = test_url().expect("test URL is present when test_store succeeds");
     let store = PostgresStore::connect_with_compression(&url, Compression::default())
         .await
         .expect("connect with the default pool size");
