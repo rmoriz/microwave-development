@@ -95,10 +95,18 @@ impl Context {
                 )?)
             }
             DatabaseDriver::Postgres if migrate => Arc::new(runtime.block_on(
-                PostgresStore::connect_with_compression(&self.database_url, compression),
+                PostgresStore::connect_with_compression_and_pool(
+                    &self.database_url,
+                    compression,
+                    self.config.database.pool_size,
+                ),
             )?),
             DatabaseDriver::Postgres => Arc::new(runtime.block_on(
-                PostgresStore::connect_existing_with_compression(&self.database_url, compression),
+                PostgresStore::connect_existing_with_compression_and_pool(
+                    &self.database_url,
+                    compression,
+                    self.config.database.pool_size,
+                ),
             )?),
         };
         Ok(StoreHandle { store, runtime })

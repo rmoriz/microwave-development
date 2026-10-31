@@ -38,6 +38,40 @@ async fn postgres_health_check_runs_select_one_and_reports_closed_pools() {
     );
 }
 
+#[tokio::test]
+async fn pool_stats_reports_the_configured_maximum() {
+    let Some(url) = test_url() else {
+        eprintln!("SKIP: MICROWAVE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    ensure_postgres_schema(&url);
+    let store = PostgresStore::connect_with_compression_and_pool(&url, Compression::default(), 3)
+        .await
+        .expect("connect with pool size 3");
+    let stats = store
+        .pool_stats()
+        .await
+        .expect("PostgreSQL exposes pool stats");
+    assert_eq!(stats.max, 3);
+}
+
+#[tokio::test]
+async fn connect_with_compression_still_uses_ten() {
+    let Some(url) = test_url() else {
+        eprintln!("SKIP: MICROWAVE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    ensure_postgres_schema(&url);
+    let store = PostgresStore::connect_with_compression(&url, Compression::default())
+        .await
+        .expect("connect with the default pool size");
+    let stats = store
+        .pool_stats()
+        .await
+        .expect("PostgreSQL exposes pool stats");
+    assert_eq!(stats.max, 10);
+}
+
 fn test_url() -> Option<String> {
     std::env::var("MICROWAVE_TEST_POSTGRES_URL")
         .ok()

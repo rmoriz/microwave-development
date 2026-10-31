@@ -569,13 +569,15 @@
 }
 
 .mcp-demo {
-  margin-top: 40px;
+  max-width: 640px;
+  margin: 40px auto 0;
 }
 
 .mcp-demo-stage {
   position: relative;
   overflow: hidden;
-  aspect-ratio: 80 / 26;
+  max-width: 640px;
+  aspect-ratio: 4 / 3;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #010d52;
@@ -632,6 +634,7 @@
   .mcp-demo-stage {
     overflow-x: auto;
     aspect-ratio: auto;
+    max-width: none;
     height: 260px;
   }
 

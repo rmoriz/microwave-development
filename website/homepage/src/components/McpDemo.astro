@@ -39,7 +39,7 @@ const cast = withBase('/demo/mcp-agent.cast');
           button.remove();
           const player = create(source, stage, {
             cols: 80,
-            rows: 26,
+            rows: narrow ? 26 : 30,
             autoplay: true,
             fit: narrow ? 'none' : 'width',
             idleTimeLimit: 1,

@@ -23,6 +23,10 @@
 //! flags are independent. The live crawler signs every request with
 //! `microwave_crypto::sign_request` and writes the same snapshot envelope as
 //! a local export.
+//!
+//! The migrator does not take `database.pool_size`; its PostgreSQL connections
+//! keep the store's default pool size because snapshot traffic is a single
+//! sequential stream.
 
 use chrono::{SecondsFormat, Utc};
 pub use microwave_store::Compression;

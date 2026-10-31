@@ -9,6 +9,9 @@ use uuid::Uuid;
 /// idempotent DDL cannot race on PostgreSQL's catalog.
 const MIGRATION_ADVISORY_LOCK: i64 = 0x6d69_6372_6f77_6176;
 
+/// Pool size used by the compatibility constructors that do not take one.
+const DEFAULT_POOL_SIZE: usize = 10;
+
 /// A PostgreSQL-backed metadata store.
 ///
 /// The store owns a `sqlx::PgPool`; cloning is cheap and every repository
@@ -31,8 +34,18 @@ impl PostgresStore {
         database_url: &str,
         compression: Compression,
     ) -> Result<Self, StoreError> {
+        Self::connect_with_compression_and_pool(database_url, compression, DEFAULT_POOL_SIZE).await
+    }
+
+    /// Connect to PostgreSQL, apply the unified schema, and use an explicit
+    /// compression mode and connection-pool size.
+    pub async fn connect_with_compression_and_pool(
+        database_url: &str,
+        compression: Compression,
+        pool_size: usize,
+    ) -> Result<Self, StoreError> {
         let pool = PgPoolOptions::new()
-            .max_connections(10)
+            .max_connections(pool_cap(pool_size))
             .connect(database_url)
             .await
             .map_err(db)?;
@@ -57,8 +70,23 @@ impl PostgresStore {
         database_url: &str,
         compression: Compression,
     ) -> Result<Self, StoreError> {
+        Self::connect_existing_with_compression_and_pool(
+            database_url,
+            compression,
+            DEFAULT_POOL_SIZE,
+        )
+        .await
+    }
+
+    /// Connect without applying the schema and use an explicit compression
+    /// mode and connection-pool size.
+    pub async fn connect_existing_with_compression_and_pool(
+        database_url: &str,
+        compression: Compression,
+        pool_size: usize,
+    ) -> Result<Self, StoreError> {
         let pool = PgPoolOptions::new()
-            .max_connections(10)
+            .max_connections(pool_cap(pool_size))
             .connect(database_url)
             .await
             .map_err(db)?;
@@ -121,6 +149,12 @@ impl PostgresStore {
             .map(|row| row.try_get::<String, _>(0).map_err(db))
             .collect()
     }
+}
+
+/// Clamp a configured pool size into `u32`; absurd sizes saturate instead of
+/// panicking at startup. Configuration already rejects `0`.
+fn pool_cap(pool_size: usize) -> u32 {
+    u32::try_from(pool_size).unwrap_or(u32::MAX)
 }
 
 pub(crate) fn db(error: sqlx::Error) -> StoreError {

@@ -121,12 +121,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .into());
                         }
                         let store = Arc::new(
-                            microwave_store_postgres::PostgresStore::connect_with_compression(
-                                &database_url,
-                                compression,
-                            )
-                            .await?,
-                        );
+                        microwave_store_postgres::PostgresStore::connect_with_compression_and_pool(
+                            &database_url,
+                            compression,
+                            config.database.pool_size,
+                        )
+                        .await?,
+                    );
                         (store, None)
                     }
                 };
