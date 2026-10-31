@@ -68,6 +68,16 @@ schemars = "1"
 rmcp = { version = "3.8", features = ["transport-streamable-http-server"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }
 
+# Local dev and test builds carry no debug info and keep no incremental state:
+# DWARF is most of an rlib (four fifths in the biggest one) and incremental
+# snapshots add gigabytes on top. Backtraces lose file and line numbers and
+# lldb cannot step, and an edit rebuilds its crate from scratch instead of
+# incrementally; release builds are unaffected. `CARGO_PROFILE_DEV_DEBUG=2
+# cargo build` restores line numbers for one session.
+[profile.dev]
+debug = 0
+incremental = false
+
 # Release binaries ship in tarballs, the Debian package and the container image,
 # where debug symbols are dead weight: stripping alone takes roughly a fifth off
 # each binary. Thin LTO recovers most of the cross-crate inlining a single
