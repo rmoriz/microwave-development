@@ -25,6 +25,7 @@ impl CookbookRepository for PostgresStore {
         let timestamp = now();
         let version_id = new_id();
         let serialized_object = encode_serialized(manifest, self.compression())?;
+        let meta_deps = microwave_store::cookbook_dependencies(manifest);
         let mut transaction = self.pool().begin().await.map_err(db)?;
 
         let existing: Option<(i64, String)> =
@@ -59,7 +60,7 @@ impl CookbookRepository for PostgresStore {
              (id, cookbook_id, org_id, name, major, minor, patch, frozen,
               meta_attributes, meta_deps, meta_long_desc, metadata, serialized_object,
               last_updated_by, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, '{}', NULL, NULL, $9, $10, $11, $11)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, NULL, NULL, $10, $11, $12, $12)",
         )
         .bind(&version_id)
         .bind(cookbook_id)
@@ -69,6 +70,7 @@ impl CookbookRepository for PostgresStore {
         .bind(minor)
         .bind(patch)
         .bind(frozen)
+        .bind(&meta_deps)
         .bind(&serialized_object)
         .bind(creator_authz_id)
         .bind(&timestamp)
@@ -101,6 +103,7 @@ impl CookbookRepository for PostgresStore {
             name: name.into(),
             version: version.into(),
             manifest: manifest.into(),
+            meta_deps,
             checksums: checksums.to_vec(),
             authz_id,
             frozen,
@@ -118,7 +121,7 @@ impl CookbookRepository for PostgresStore {
         let (major, minor, patch) = parse_version(version)?;
         let row = sqlx::query(
             "SELECT cv.id, cv.name, cv.serialized_object, cv.created_at, cv.updated_at,
-                    c.authz_id, cv.major, cv.minor, cv.patch, cv.frozen
+                    c.authz_id, cv.major, cv.minor, cv.patch, cv.frozen, cv.meta_deps
              FROM cookbook_versions cv
              JOIN cookbooks c ON c.id = cv.cookbook_id
              WHERE cv.org_id = $1 AND cv.name = $2
@@ -147,6 +150,7 @@ impl CookbookRepository for PostgresStore {
                 row.try_get(8).map_err(db)?,
             ),
             manifest,
+            meta_deps: row.try_get(10).map_err(db)?,
             checksums,
             authz_id: row.try_get(5).map_err(db)?,
             frozen: row.try_get(9).map_err(db)?,
@@ -161,7 +165,7 @@ impl CookbookRepository for PostgresStore {
     ) -> Result<Vec<StoredCookbookVersion>, StoreError> {
         let rows = sqlx::query(
             "SELECT cv.id, cv.name, cv.serialized_object, cv.created_at, cv.updated_at,
-                    c.authz_id, cv.major, cv.minor, cv.patch, cv.frozen
+                    c.authz_id, cv.major, cv.minor, cv.patch, cv.frozen, cv.meta_deps
              FROM cookbook_versions cv
              JOIN cookbooks c ON c.id = cv.cookbook_id
              WHERE cv.org_id = $1
@@ -187,6 +191,7 @@ impl CookbookRepository for PostgresStore {
                     row.try_get(8).map_err(db)?,
                 ),
                 manifest,
+                meta_deps: row.try_get(10).map_err(db)?,
                 checksums,
                 authz_id: row.try_get(5).map_err(db)?,
                 frozen: row.try_get(9).map_err(db)?,
@@ -211,6 +216,7 @@ impl CookbookRepository for PostgresStore {
         let (major, minor, patch) = parse_version(version)?;
         let timestamp = now();
         let serialized_object = encode_serialized(manifest, self.compression())?;
+        let meta_deps = microwave_store::cookbook_dependencies(manifest);
         let mut transaction = self.pool().begin().await.map_err(db)?;
 
         let row = sqlx::query(
@@ -244,7 +250,8 @@ impl CookbookRepository for PostgresStore {
 
         sqlx::query(
             "UPDATE cookbook_versions
-             SET serialized_object = $2, frozen = $3, updated_at = $4, last_updated_by = $5
+             SET serialized_object = $2, frozen = $3, updated_at = $4, last_updated_by = $5,
+                 meta_deps = $6
              WHERE id = $1",
         )
         .bind(&version_id)
@@ -252,6 +259,7 @@ impl CookbookRepository for PostgresStore {
         .bind(frozen)
         .bind(&timestamp)
         .bind(updater_authz_id)
+        .bind(&meta_deps)
         .execute(&mut *transaction)
         .await
         .map_err(db)?;
@@ -289,6 +297,7 @@ impl CookbookRepository for PostgresStore {
                 name: name.into(),
                 version: format_version(major, minor, patch),
                 manifest: manifest.into(),
+                meta_deps,
                 checksums: checksums.to_vec(),
                 frozen,
                 authz_id,
@@ -309,7 +318,7 @@ impl CookbookRepository for PostgresStore {
         let mut transaction = self.pool().begin().await.map_err(db)?;
         let row = sqlx::query(
             "SELECT cv.id, cv.cookbook_id, c.authz_id, cv.serialized_object,
-                    cv.created_at, cv.frozen
+                    cv.created_at, cv.frozen, cv.meta_deps
              FROM cookbook_versions cv
              JOIN cookbooks c ON c.id = cv.cookbook_id
              WHERE cv.org_id = $1 AND cv.name = $2
@@ -331,6 +340,7 @@ impl CookbookRepository for PostgresStore {
         let manifest = decode_serialized(&manifest)?;
         let created_at: String = row.try_get(4).map_err(db)?;
         let frozen: bool = row.try_get(5).map_err(db)?;
+        let meta_deps: Option<String> = row.try_get(6).map_err(db)?;
 
         let checksums: Vec<String> = sqlx::query_scalar(
             "SELECT checksum FROM cookbook_version_checksums
@@ -374,6 +384,7 @@ impl CookbookRepository for PostgresStore {
                 name: name.into(),
                 version: format_version(major, minor, patch),
                 manifest,
+                meta_deps,
                 checksums,
                 frozen,
                 authz_id,

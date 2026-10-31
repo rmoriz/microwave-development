@@ -6,6 +6,7 @@ mod backend;
 mod backend_sqlite;
 mod compression;
 mod cookbooks;
+mod derivations;
 mod identity;
 mod kv;
 mod maintenance;
@@ -32,6 +33,7 @@ pub use compression::{
     Compression, COMPRESSED_PREFIX, MAX_DECOMPRESSED_BYTES,
 };
 pub use cookbooks::{parse_version, StoredCookbookVersion};
+pub use derivations::cookbook_dependencies;
 pub use identity::{ActorKey, ActorType, Client, Org, Principal, User, UserPatch, UserProfile};
 pub use maintenance::MAINTENANCE_KV_KEY;
 pub use membership::Invitation;

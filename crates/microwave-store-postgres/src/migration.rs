@@ -689,6 +689,14 @@ async fn collect_cookbook_versions(
     .await?
     .iter()
     .map(|row| {
+        let serialized_object = serialized(row, 12)?;
+        let stored_deps = opt_text(row, 9)?;
+        let meta_deps = match stored_deps {
+            Some(deps) if !deps.is_empty() && deps != "{}" => Some(deps),
+            _ => serialized_object
+                .as_deref()
+                .and_then(microwave_store::cookbook_dependencies),
+        };
         Ok(CookbookVersionRow {
             id: text(row, 0)?,
             cookbook_id: integer(row, 1)?,
@@ -699,10 +707,10 @@ async fn collect_cookbook_versions(
             patch: integer(row, 6)?,
             frozen: boolean(row, 7)?,
             meta_attributes: opt_text(row, 8)?,
-            meta_deps: opt_text(row, 9)?,
+            meta_deps,
             meta_long_desc: opt_text(row, 10)?,
             metadata: opt_text(row, 11)?,
-            serialized_object: serialized(row, 12)?,
+            serialized_object,
             last_updated_by: text(row, 13)?,
             created_at: text(row, 14)?,
             updated_at: text(row, 15)?,

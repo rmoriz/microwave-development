@@ -3,12 +3,20 @@ mod support;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
+use microwave_api::AppState;
 use microwave_crypto::SignVersion;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
 async fn setup() -> Router {
-    let app = support::app(support::state_with_pivotal());
+    setup_with_state().await.0
+}
+
+/// Like [`setup`], but also returns the state so tests can tamper with the
+/// stored rows directly.
+async fn setup_with_state() -> (Router, AppState) {
+    let state = support::state_with_pivotal();
+    let app = support::app(state.clone());
     let response = app
         .clone()
         .oneshot(support::signed_request(
@@ -21,7 +29,7 @@ async fn setup() -> Router {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
-    app
+    (app, state)
 }
 
 async fn put_manifest(app: &Router, name: &str, version: &str, manifest: &Value) {
@@ -211,6 +219,66 @@ async fn resolves_dependencies_and_attaches_presigned_urls() {
     let url = body["app"]["all_files"][0]["url"].as_str().unwrap();
     assert!(url.contains("/bookshelf/organizations/"));
     assert!(url.contains("/checksums/"));
+}
+
+#[tokio::test]
+async fn solves_environment_constraints_with_stored_dependencies() {
+    let app = setup().await;
+    put_cookbook(&app, "app", "1.0.0", json!({ "lib": "~> 1.0" })).await;
+    put_cookbook(&app, "lib", "1.4.0", json!({})).await;
+    put_cookbook(&app, "lib", "2.0.0", json!({})).await;
+    create_environment(&app, "pinned", json!({ "app": "= 1.0.0" })).await;
+
+    // The environment pins `app`; only the dependency stored on write keeps
+    // the solver from taking the newest `lib`.
+    let (status, body) = solve(&app, "pinned", json!(["app"])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["app"]["version"], "1.0.0");
+    assert_eq!(body["lib"]["version"], "1.4.0");
+}
+
+#[tokio::test]
+async fn prefers_stored_dependencies_over_the_manifest() {
+    let (app, state) = setup_with_state().await;
+    put_cookbook(&app, "app", "1.0.0", json!({})).await;
+    put_cookbook(&app, "lib", "1.4.0", json!({})).await;
+    put_cookbook(&app, "lib", "2.0.0", json!({})).await;
+    state
+        .sqlite()
+        .lock_connection_for_test()
+        .execute(
+            "UPDATE cookbook_versions SET meta_deps = ?1 WHERE name = 'app'",
+            [r#"{"lib":"~> 1.0"}"#],
+        )
+        .unwrap();
+
+    // The manifest carries no dependency at all; only the stored column does.
+    let (status, body) = solve(&app, "_default", json!(["app"])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["app"]["version"], "1.0.0");
+    assert_eq!(body["lib"]["version"], "1.4.0");
+}
+
+#[tokio::test]
+async fn falls_back_to_the_manifest_for_legacy_rows() {
+    let (app, state) = setup_with_state().await;
+    put_cookbook(&app, "app", "1.0.0", json!({ "lib": "~> 1.0" })).await;
+    put_cookbook(&app, "lib", "1.4.0", json!({})).await;
+    put_cookbook(&app, "lib", "2.0.0", json!({})).await;
+    state
+        .sqlite()
+        .lock_connection_for_test()
+        .execute(
+            "UPDATE cookbook_versions SET meta_deps = '{}' WHERE name = 'app'",
+            [],
+        )
+        .unwrap();
+
+    // Rows written before the column carried dependencies still solve.
+    let (status, body) = solve(&app, "_default", json!(["app"])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["app"]["version"], "1.0.0");
+    assert_eq!(body["lib"]["version"], "1.4.0");
 }
 
 #[tokio::test]

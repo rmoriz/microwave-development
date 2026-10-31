@@ -1191,6 +1191,16 @@ fn decode_snapshot_serialized(snapshot: &mut StoreSnapshot) -> Result<(), StoreE
     }
     for row in &mut snapshot.cookbook_versions {
         decode_optional(&mut row.serialized_object)?;
+        if row
+            .meta_deps
+            .as_deref()
+            .is_none_or(|deps| deps.is_empty() || deps == "{}")
+        {
+            row.meta_deps = row
+                .serialized_object
+                .as_deref()
+                .and_then(crate::cookbook_dependencies);
+        }
     }
     for row in &mut snapshot.cookbook_artifact_versions {
         decode_optional(&mut row.serialized_object)?;

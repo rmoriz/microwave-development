@@ -1473,6 +1473,7 @@ mod suite {
         assert!(is_32_hex(&version.authz_id));
         assert!(version.frozen);
         assert_eq!(version.checksums, checksums);
+        assert!(version.meta_deps.is_none());
         assert_eq!(
             store
                 .find_cookbook_version(&org.id, &cookbook_name, "1.0.0")
@@ -1503,8 +1504,10 @@ mod suite {
             Err(StoreError::Conflict(_))
         ));
 
-        let updated_manifest =
-            format!(r#"{{"name":"{cookbook_name}","version":"1.0.0","description":"updated"}}"#);
+        let updated_manifest = format!(
+            r#"{{"name":"{cookbook_name}","version":"1.0.0","description":"updated",
+                "metadata":{{"dependencies":{{"nginx":">= 0.0.0"}}}}}}"#
+        );
         let (updated, purged) = store
             .update_cookbook_version(
                 &org.id,
@@ -1518,20 +1521,25 @@ mod suite {
             .await
             .expect("update cookbook version");
         assert_eq!(updated.manifest, updated_manifest);
+        assert_eq!(
+            updated.meta_deps.as_deref(),
+            Some(r#"{"nginx":">= 0.0.0"}"#)
+        );
         assert!(updated.frozen);
         assert!(purged.is_empty());
-        assert_eq!(
-            store
-                .find_cookbook_version(&org.id, &cookbook_name, "1.0.0")
-                .await
-                .unwrap()
-                .unwrap()
-                .manifest,
-            updated_manifest
-        );
+        let found = store
+            .find_cookbook_version(&org.id, &cookbook_name, "1.0.0")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.manifest, updated_manifest);
+        assert_eq!(found.meta_deps.as_deref(), Some(r#"{"nginx":">= 0.0.0"}"#));
 
         // A second version that keeps sharing the first checksum.
-        let second_manifest = format!(r#"{{"name":"{cookbook_name}","version":"2.0.0"}}"#);
+        let second_manifest = format!(
+            r#"{{"name":"{cookbook_name}","version":"2.0.0",
+                "metadata":{{"dependencies":{{"nghttp2":"~> 1.0"}}}}}}"#
+        );
         let second_version = store
             .create_cookbook_version(
                 &org.id,
@@ -1544,6 +1552,10 @@ mod suite {
             )
             .await
             .expect("create second cookbook version");
+        assert_eq!(
+            second_version.meta_deps.as_deref(),
+            Some(r#"{"nghttp2":"~> 1.0"}"#)
+        );
         assert_eq!(
             store
                 .find_cookbook_version(&org.id, &cookbook_name, "2.0.0")

@@ -176,22 +176,46 @@ fn strip_minimal_metadata(manifest: &mut Value) {
     }
 }
 
+fn stored_dependencies(
+    stored: &StoredCookbookVersion,
+) -> Result<Vec<(String, Constraint)>, ApiError> {
+    if let Some(meta_deps) = stored.meta_deps.as_deref() {
+        if !meta_deps.is_empty() && meta_deps != "{}" {
+            let map: BTreeMap<String, Value> =
+                serde_json::from_str(meta_deps).map_err(|_| ApiError::internal())?;
+            if !map.is_empty() {
+                let mut dependencies = Vec::with_capacity(map.len());
+                for (name, value) in map {
+                    let text = value.as_str().ok_or_else(ApiError::internal)?;
+                    let constraint = Constraint::parse(text).map_err(|_| ApiError::internal())?;
+                    dependencies.push((name, constraint));
+                }
+                return Ok(dependencies);
+            }
+        }
+    }
+
+    let manifest: Value =
+        serde_json::from_str(&stored.manifest).map_err(|_| ApiError::internal())?;
+    let Some(object) = manifest
+        .pointer("/metadata/dependencies")
+        .and_then(Value::as_object)
+    else {
+        return Ok(Vec::new());
+    };
+    let mut dependencies = Vec::with_capacity(object.len());
+    for (name, value) in object {
+        let text = value.as_str().ok_or_else(ApiError::internal)?;
+        let constraint = Constraint::parse(text).map_err(|_| ApiError::internal())?;
+        dependencies.push((name.clone(), constraint));
+    }
+    Ok(dependencies)
+}
+
 fn cookbook_world(versions: &[StoredCookbookVersion]) -> Result<World, ApiError> {
     let mut world = World::new();
     for stored in versions {
-        let manifest: Value =
-            serde_json::from_str(&stored.manifest).map_err(|_| ApiError::internal())?;
-        let mut dependencies = Vec::new();
-        if let Some(object) = manifest
-            .pointer("/metadata/dependencies")
-            .and_then(Value::as_object)
-        {
-            for (name, value) in object {
-                let text = value.as_str().ok_or_else(ApiError::internal)?;
-                let constraint = Constraint::parse(text).map_err(|_| ApiError::internal())?;
-                dependencies.push((name.clone(), constraint));
-            }
-        }
+        let dependencies = stored_dependencies(stored)?;
         let version = Version::parse(&stored.version).map_err(|_| ApiError::internal())?;
         world.insert(stored.name.clone(), version, dependencies);
     }

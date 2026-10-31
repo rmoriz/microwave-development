@@ -10,6 +10,7 @@ pub struct StoredCookbookVersion {
     pub name: String,
     pub version: String,
     pub manifest: String,
+    pub meta_deps: Option<String>,
     pub checksums: Vec<String>,
     pub frozen: bool,
     pub authz_id: String,
@@ -33,6 +34,7 @@ impl SqliteStore {
         let timestamp = now();
         let version_id = new_id();
         let serialized_object = encode_serialized(manifest, self.compression())?;
+        let meta_deps = crate::cookbook_dependencies(manifest);
         let mut connection = self.connection();
         let tx = connection.transaction()?;
 
@@ -62,7 +64,7 @@ impl SqliteStore {
              (id, cookbook_id, org_id, name, major, minor, patch, frozen,
               meta_attributes, meta_deps, meta_long_desc, metadata, serialized_object,
               last_updated_by, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, '{}', NULL, NULL, ?9, ?10, ?11, ?11)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, NULL, NULL, ?10, ?11, ?12, ?12)",
             params![
                 version_id,
                 cookbook_id,
@@ -72,6 +74,7 @@ impl SqliteStore {
                 minor,
                 patch,
                 i64::from(frozen),
+                meta_deps,
                 serialized_object,
                 creator_authz_id,
                 timestamp
@@ -92,6 +95,7 @@ impl SqliteStore {
             name: name.into(),
             version: format_version(major, minor, patch),
             manifest: manifest.into(),
+            meta_deps,
             checksums: checksums.to_vec(),
             frozen,
             authz_id,
@@ -119,6 +123,7 @@ impl SqliteStore {
         let (major, minor, patch) = parse_version(version)?;
         let timestamp = now();
         let serialized_object = encode_serialized(manifest, self.compression())?;
+        let meta_deps = crate::cookbook_dependencies(manifest);
         let mut connection = self.connection();
         let tx = connection.transaction()?;
 
@@ -143,14 +148,15 @@ impl SqliteStore {
         tx.execute(
             "UPDATE cookbook_versions
              SET serialized_object = ?2, frozen = ?3, updated_at = ?4,
-                 last_updated_by = ?5
+                 last_updated_by = ?5, meta_deps = ?6
              WHERE id = ?1",
             params![
                 version_id,
                 serialized_object,
                 i64::from(frozen),
                 timestamp,
-                updater_authz_id
+                updater_authz_id,
+                meta_deps
             ],
         )?;
         tx.execute(
@@ -172,6 +178,7 @@ impl SqliteStore {
                 name: name.into(),
                 version: format_version(major, minor, patch),
                 manifest: manifest.into(),
+                meta_deps,
                 checksums: checksums.to_vec(),
                 frozen,
                 authz_id,
@@ -193,7 +200,7 @@ impl SqliteStore {
         let row = connection
             .query_row(
                 "SELECT cv.id, cv.name, cv.serialized_object, cv.created_at, cv.updated_at,
-                        c.authz_id, cv.major, cv.minor, cv.patch, cv.frozen
+                        c.authz_id, cv.major, cv.minor, cv.patch, cv.frozen, cv.meta_deps
                  FROM cookbook_versions cv
                  JOIN cookbooks c ON c.id = cv.cookbook_id
                  WHERE cv.org_id = ?1 AND cv.name = ?2
@@ -211,6 +218,7 @@ impl SqliteStore {
                         row.get::<_, i64>(7)?,
                         row.get::<_, i64>(8)?,
                         row.get::<_, i64>(9)?,
+                        row.get::<_, Option<String>>(10)?,
                     ))
                 },
             )
@@ -227,6 +235,7 @@ impl SqliteStore {
             minor,
             patch,
             frozen,
+            meta_deps,
         )) = row
         else {
             return Ok(None);
@@ -238,6 +247,7 @@ impl SqliteStore {
             name,
             version: format_version(major, minor, patch),
             manifest,
+            meta_deps,
             checksums,
             frozen: frozen != 0,
             authz_id,
@@ -253,7 +263,7 @@ impl SqliteStore {
         let connection = self.connection();
         let mut statement = connection.prepare(
             "SELECT cv.id, cv.name, cv.serialized_object, cv.created_at, cv.updated_at,
-                    c.authz_id, cv.major, cv.minor, cv.patch, cv.frozen
+                    c.authz_id, cv.major, cv.minor, cv.patch, cv.frozen, cv.meta_deps
              FROM cookbook_versions cv
              JOIN cookbooks c ON c.id = cv.cookbook_id
              WHERE cv.org_id = ?1
@@ -271,14 +281,26 @@ impl SqliteStore {
                 row.get::<_, i64>(7)?,
                 row.get::<_, i64>(8)?,
                 row.get::<_, i64>(9)?,
+                row.get::<_, Option<String>>(10)?,
             ))
         })?;
 
         let mut versions = Vec::new();
         let checksums_by_version = all_version_checksums(&connection, org_id)?;
         for row in rows {
-            let (id, name, manifest, created_at, updated_at, authz_id, major, minor, patch, frozen) =
-                row?;
+            let (
+                id,
+                name,
+                manifest,
+                created_at,
+                updated_at,
+                authz_id,
+                major,
+                minor,
+                patch,
+                frozen,
+                meta_deps,
+            ) = row?;
             let manifest = decode_serialized(&manifest)?;
             let checksums = checksums_by_version.get(&id).cloned().unwrap_or_default();
             versions.push(StoredCookbookVersion {
@@ -286,6 +308,7 @@ impl SqliteStore {
                 name,
                 version: format_version(major, minor, patch),
                 manifest,
+                meta_deps,
                 checksums,
                 frozen: frozen != 0,
                 authz_id,
@@ -309,28 +332,47 @@ impl SqliteStore {
         let (major, minor, patch) = parse_version(version)?;
         let mut connection = self.connection();
         let tx = connection.transaction()?;
-        let row: Option<(String, i64, String, String, String, i64)> = tx
+        struct DeletedVersion {
+            id: String,
+            cookbook_id: i64,
+            authz_id: String,
+            manifest: String,
+            created_at: String,
+            frozen: bool,
+            meta_deps: Option<String>,
+        }
+        let row: Option<DeletedVersion> = tx
             .query_row(
                 "SELECT cv.id, cv.cookbook_id, c.authz_id, cv.serialized_object,
-                        cv.created_at, cv.frozen
+                        cv.created_at, cv.frozen, cv.meta_deps
                  FROM cookbook_versions cv
                  JOIN cookbooks c ON c.id = cv.cookbook_id
                  WHERE cv.org_id = ?1 AND cv.name = ?2
                    AND cv.major = ?3 AND cv.minor = ?4 AND cv.patch = ?5",
                 params![org_id, name, major, minor, patch],
                 |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                    ))
+                    Ok(DeletedVersion {
+                        id: row.get(0)?,
+                        cookbook_id: row.get(1)?,
+                        authz_id: row.get(2)?,
+                        manifest: row.get(3)?,
+                        created_at: row.get(4)?,
+                        frozen: row.get::<_, i64>(5)? != 0,
+                        meta_deps: row.get(6)?,
+                    })
                 },
             )
             .optional()?;
-        let Some((version_id, cookbook_id, authz_id, manifest, created_at, frozen)) = row else {
+        let Some(DeletedVersion {
+            id: version_id,
+            cookbook_id,
+            authz_id,
+            manifest,
+            created_at,
+            frozen,
+            meta_deps,
+        }) = row
+        else {
             return Err(StoreError::NotFound(format!(
                 "cookbook version {name} {version}"
             )));
@@ -360,8 +402,9 @@ impl SqliteStore {
                 name: name.into(),
                 version: format_version(major, minor, patch),
                 manifest,
+                meta_deps,
                 checksums,
-                frozen: frozen != 0,
+                frozen,
                 authz_id,
                 created_at: created_at.clone(),
                 updated_at: created_at,
@@ -529,4 +572,39 @@ pub fn parse_version(version: &str) -> Result<(i64, i64, i64), StoreError> {
 
 fn format_version(major: i64, minor: i64, patch: i64) -> String {
     format!("{major}.{minor}.{patch}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Rows written before `meta_deps` carried dependencies keep their `'{}'`
+    /// placeholder; the solver falls back to the manifest for those.
+    #[test]
+    fn legacy_rows_keep_placeholder_dependencies() {
+        let store = SqliteStore::open_in_memory().expect("open store");
+        let org = store
+            .create_org("deps-org", "Deps Org")
+            .expect("create org");
+        let creator = store.create_actor().expect("create actor");
+        store
+            .create_container_for_org_with_acl(&org.id, "cookbooks", &creator)
+            .expect("create container");
+        let manifest =
+            r#"{"name":"app","version":"1.0.0","metadata":{"dependencies":{"nginx":">= 0.0.0"}}}"#;
+        store
+            .create_cookbook_version(&org.id, "app", "1.0.0", manifest, &[], false, &creator)
+            .expect("create version");
+        store
+            .connection()
+            .execute("UPDATE cookbook_versions SET meta_deps = '{}'", [])
+            .expect("age row");
+
+        let found = store
+            .find_cookbook_version(&org.id, "app", "1.0.0")
+            .expect("find version")
+            .expect("version exists");
+        assert_eq!(found.meta_deps.as_deref(), Some("{}"));
+        assert_eq!(found.manifest, manifest);
+    }
 }
