@@ -69,7 +69,8 @@ describe 'microwave_postgresql' do
     expect(chef_run.execute('microwave-create-service-certificate').command)
       .to include('-subj "/CN=db.example.com"',
                   '-addext "subjectAltName=DNS:db.example.com,IP:127.0.0.1"',
-                  '-copy_extensions copy', '-days 825',
+                  '-copy_extensions copy', '-extfile /etc/microwave/tls/backend.cnf',
+                  '-extensions ext', '-days 825',
                   '/etc/microwave/tls/db.key', '/etc/microwave/tls/db.crt')
   end
 
@@ -92,7 +93,32 @@ describe 'microwave_postgresql' do
     expect(guard).to include(
       'openssl x509 -in /etc/microwave/tls/db.crt -noout -ext subjectAltName'
     )
-    expect(guard).to include('grep -q "DNS:db.example.com"')
+    expect(guard).to include('grep -qE "DNS:db\.example\.com(,|$)"')
+  end
+
+  it 're-issues the certificate when the key no longer exists' do
+    guard = chef_run.execute('microwave-create-service-certificate').not_if.first.command
+
+    expect(guard).to start_with('test -f /etc/microwave/tls/db.key && test -f /etc/microwave/tls/db.crt')
+  end
+
+  it 're-issues the certificate when the key does not belong to it' do
+    guard = chef_run.execute('microwave-create-service-certificate').not_if.first.command
+
+    expect(guard).to include(
+      '[ "$(openssl x509 -in /etc/microwave/tls/db.crt -pubkey -noout)" = ' \
+      '"$(openssl pkey -in /etc/microwave/tls/db.key -pubout)" ]'
+    )
+  end
+
+  it 're-issues the CA when the certificate and the key belong to different pairs' do
+    guard = chef_run.execute('microwave-create-ca').not_if.first.command
+
+    expect(guard).to start_with('test -f /etc/microwave/tls/ca.key && test -f /etc/microwave/tls/ca.crt')
+    expect(guard).to include(
+      '[ "$(openssl x509 -in /etc/microwave/tls/ca.crt -pubkey -noout)" = ' \
+      '"$(openssl pkey -in /etc/microwave/tls/ca.key -pubout)" ]'
+    )
   end
 
   it 'owns the key material root or postgres and keeps it 0640' do
@@ -101,7 +127,7 @@ describe 'microwave_postgresql' do
     expect(chef_run).to create_file('/etc/microwave/tls/db.key')
       .with(owner: 'postgres', group: 'postgres', mode: '0640')
     expect(chef_run).to create_file('/etc/microwave/tls/db.crt')
-      .with(owner: 'postgres', group: 'postgres', mode: '0644')
+      .with(owner: 'postgres', group: 'postgres', mode: '0640')
   end
 
   it 'marks the password and the certificate change sensitive' do
@@ -117,6 +143,7 @@ describe 'microwave_postgresql' do
       .with_content(/^ssl = on$/)
       .with_content(%r{^ssl_cert_file = '/etc/microwave/tls/db\.crt'$})
       .with_content(%r{^ssl_key_file = '/etc/microwave/tls/db\.key'$})
+      .with_content(%r{^ssl_ca_file = '/etc/microwave/tls/ca\.crt'$})
       .with_content(/^listen_addresses = '127\.0\.0\.1'$/)
       .with_content(/^port = 5432$/)
       .with_content(/^password_encryption = 'scram-sha-256'$/)
@@ -136,19 +163,41 @@ describe 'microwave_postgresql' do
   it 'creates the role guarded by its absence' do
     role = chef_run.execute('microwave-create-role')
 
-    expect(role.command).to eq("psql -c \"CREATE ROLE microwave LOGIN PASSWORD '#{password}'\"")
+    expect(role.command).to eq("psql -p 5432 -c \"CREATE ROLE \\\"microwave\\\" LOGIN PASSWORD '#{password}'\"")
     expect(role.not_if.first.command)
-      .to eq("psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='microwave'\" | grep -q 1")
+      .to eq("psql -p 5432 -tAc \"SELECT 1 FROM pg_roles WHERE rolname='microwave'\" | grep -q 1")
     expect(role.user).to eq('postgres')
+  end
+
+  it 'grants the role no cluster privileges beyond login' do
+    command = chef_run.execute('microwave-create-role').command
+
+    expect(command).to include('LOGIN', 'PASSWORD')
+    expect(command).not_to include('SUPERUSER', 'CREATEDB', 'CREATEROLE')
   end
 
   it 'creates the database owned by the role, guarded by its absence' do
     database = chef_run.execute('microwave-create-database')
 
-    expect(database.command).to eq('psql -c "CREATE DATABASE microwave OWNER microwave"')
+    expect(database.command).to eq('psql -p 5432 -c "CREATE DATABASE \\"microwave\\" OWNER \\"microwave\\""')
     expect(database.not_if.first.command)
-      .to eq("psql -tAc \"SELECT 1 FROM pg_database WHERE datname='microwave'\" | grep -q 1")
+      .to eq("psql -p 5432 -tAc \"SELECT 1 FROM pg_database WHERE datname='microwave'\" | grep -q 1")
     expect(database.user).to eq('postgres')
+  end
+
+  it 'rotates through ALTER ROLE, guarded by the role and failing loudly' do
+    alter = chef_run.execute('microwave-alter-role-password')
+
+    expect(alter.command).to eq("psql -p 5432 -c \"ALTER ROLE \\\"microwave\\\" LOGIN PASSWORD '#{password}'\"")
+    expect(alter.only_if.first.command)
+      .to eq("psql -p 5432 -tAc \"SELECT 1 FROM pg_roles WHERE rolname='microwave'\" | grep -q 1")
+    expect(alter.ignore_failure).to be(false)
+  end
+
+  it 'restarts the server after a rotation so it picks up the new password' do
+    expect(chef_run.file('/etc/microwave/db.password'))
+      .to notify('service[microwave-server]').delayed
+    expect(chef_run.service('microwave-server').action).to eq([:nothing])
   end
 
   it 'starts the service before it touches the role or the database' do
@@ -206,5 +255,95 @@ describe 'microwave_postgresql with a client network' do
   it 'opens the listener' do
     expect(chef_run).to render_file('/etc/postgresql/19/main/conf.d/microwave.conf')
       .with_content(/^listen_addresses = '\*'$/)
+  end
+end
+
+describe 'microwave_postgresql on a custom port' do
+  let(:chef_run) do
+    ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_postgresql']) do |node|
+      node.name('db.example.com')
+      node.automatic['fqdn'] = 'db.example.com'
+      node.automatic['kernel']['machine'] = 'x86_64'
+      node.normal['microwave']['database_port'] = 5433
+    end.converge('microwave-test::database')
+  end
+
+  before do
+    stub_command(/SELECT 1 FROM pg_roles/).and_return(nil)
+    stub_command(/SELECT 1 FROM pg_database/).and_return(nil)
+    stub_command(/openssl verify/).and_return(nil)
+    stub_command(/openssl x509 -in/).and_return(nil)
+
+    allow(::File).to receive(:read).and_call_original
+    allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return('a' * 32)
+  end
+
+  it 'routes every psql call through the port' do
+    expect(chef_run.execute('microwave-create-role').command).to start_with('psql -p 5433 -c')
+    expect(chef_run.execute('microwave-create-role').not_if.first.command).to start_with('psql -p 5433 -tAc')
+    expect(chef_run.execute('microwave-alter-role-password').command).to start_with('psql -p 5433 -c')
+    expect(chef_run.execute('microwave-alter-role-password').only_if.first.command).to start_with('psql -p 5433 -tAc')
+    expect(chef_run.execute('microwave-create-database').command).to start_with('psql -p 5433 -c')
+    expect(chef_run.execute('microwave-create-database').not_if.first.command).to start_with('psql -p 5433 -tAc')
+  end
+
+  it 'listens on the port' do
+    expect(chef_run).to render_file('/etc/postgresql/19/main/conf.d/microwave.conf')
+      .with_content(/^port = 5433$/)
+  end
+end
+
+describe 'microwave_postgresql without an FQDN' do
+  let(:chef_run) do
+    ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_postgresql']) do |node|
+      node.automatic['fqdn'] = ''
+      node.automatic['hostname'] = 'db-short'
+      node.automatic['kernel']['machine'] = 'x86_64'
+    end.converge('microwave-test::database')
+  end
+
+  before do
+    stub_command(/SELECT 1 FROM pg_roles/).and_return(nil)
+    stub_command(/SELECT 1 FROM pg_database/).and_return(nil)
+    stub_command(/openssl verify/).and_return(nil)
+    stub_command(/openssl x509 -in/).and_return(nil)
+
+    allow(::File).to receive(:read).and_call_original
+    allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return('a' * 32)
+  end
+
+  it 'names the certificate after the hostname' do
+    expect(chef_run.execute('microwave-create-service-certificate').command)
+      .to include('-subj "/CN=db-short"', 'DNS:db-short,IP:127.0.0.1')
+  end
+end
+
+describe 'microwave_postgresql with client CAs' do
+  let(:chef_run) do
+    ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_postgresql']) do |node|
+      node.name('db.example.com')
+      node.automatic['fqdn'] = 'db.example.com'
+      node.automatic['kernel']['machine'] = 'x86_64'
+    end.converge('microwave-test::database_ca_certs')
+  end
+
+  before do
+    stub_command(/SELECT 1 FROM pg_roles/).and_return(nil)
+    stub_command(/SELECT 1 FROM pg_database/).and_return(nil)
+    stub_command(/openssl verify/).and_return(nil)
+    stub_command(/openssl x509 -in/).and_return(nil)
+
+    allow(::File).to receive(:read).and_call_original
+    allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return('a' * 32)
+  end
+
+  it 'writes the client CA bundle 0640 root:postgres' do
+    expect(chef_run).to create_file('/etc/microwave/tls/client-ca.crt')
+      .with(owner: 'root', group: 'postgres', mode: '0640', content: "CA-PEM\n")
+  end
+
+  it 'verifies clients against the bundle' do
+    expect(chef_run).to render_file('/etc/postgresql/19/main/conf.d/microwave.conf')
+      .with_content(%r{^ssl_ca_file = '/etc/microwave/tls/client-ca\.crt'$})
   end
 end

@@ -13,3 +13,11 @@ recipes only wrap them.
 
 Debian 13 only. The cookbook needs Chef Infra Client 19.4.46 or newer, below
 20.
+
+## Properties
+
+`microwave_postgresql` and `microwave_server` take `ca_certs`, a list of
+PEM-encoded CA certificates. The server installs them into the system trust
+store. The database renders them into the `ssl_ca_file` bundle it uses to
+verify client certificates and falls back to the generated CA when the list is
+empty.

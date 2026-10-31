@@ -4,12 +4,13 @@ unified_mode true
 
 description 'Installs PostgreSQL 19 with the Microwave role, database and TLS material'
 
-property :hostname, String, default: lazy { node['fqdn'] }
-property :port, Integer, default: 5432
+property :hostname, String, default: lazy { node['fqdn'].empty? ? node['hostname'] : node['fqdn'] }
+property :port, Integer, default: lazy { node['microwave']['database_port'] }
 property :database, String, default: lazy { node['microwave']['database_name'] }
 property :user, String, default: lazy { node['microwave']['database_user'] }
 property :client_network, [String, nil], default: lazy { node['microwave']['client_network'] }
-property :ca_certs, Array, default: []
+property :ca_certs, Array, default: [],
+                           description: 'PEM CA bundle PostgreSQL uses to verify client certificates'
 
 action :install do
   ca_key = Microwave::TLS.ca_key
@@ -18,6 +19,7 @@ action :install do
   cert = Microwave::TLS.cert('db')
   csr = ::File.join(Microwave::TLS.ca_dir, 'db.csr')
   cnf = ::File.join(Microwave::TLS.ca_dir, 'backend.cnf')
+  ca_bundle = ::File.join(Microwave::TLS.ca_dir, 'client-ca.crt')
   data_dir = '/etc/postgresql/19/main'
 
   apt_repository 'pgdg' do
@@ -61,7 +63,10 @@ action :install do
   execute 'microwave-create-ca' do
     command "openssl req -new -x509 -key #{ca_key} -out #{ca_cert} -days 3650 -subj \"/CN=microwave-ca\""
     sensitive false
-    not_if { ::File.exist?(ca_key) && ::File.exist?(ca_cert) }
+    not_if <<~GUARD
+      test -f #{ca_key} && test -f #{ca_cert} &&
+      [ "$(openssl x509 -in #{ca_cert} -pubkey -noout)" = "$(openssl pkey -in #{ca_key} -pubout)" ]
+    GUARD
     notifies :restart, 'service[postgresql]', :delayed
   end
 
@@ -107,11 +112,15 @@ action :install do
       openssl req -new -key #{key} -out #{csr} -subj "/CN=#{new_resource.hostname}" \
         -addext "subjectAltName=DNS:#{new_resource.hostname},IP:127.0.0.1" &&
       openssl x509 -req -in #{csr} -CA #{ca_cert} -CAkey #{ca_key} -CAcreateserial \
-        -out #{cert} -days 825 -copy_extensions copy -extfile #{cnf}
+        -out #{cert} -days 825 -copy_extensions copy -extfile #{cnf} -extensions ext
     CMD
     sensitive false
-    not_if "openssl verify -CAfile #{ca_cert} #{cert} >/dev/null 2>&1 && " \
-           "openssl x509 -in #{cert} -noout -ext subjectAltName 2>/dev/null | grep -q \"DNS:#{new_resource.hostname}\""
+    not_if <<~GUARD
+      test -f #{key} && test -f #{cert} &&
+      openssl verify -CAfile #{ca_cert} #{cert} >/dev/null 2>&1 &&
+      [ "$(openssl x509 -in #{cert} -pubkey -noout)" = "$(openssl pkey -in #{key} -pubout)" ] &&
+      openssl x509 -in #{cert} -noout -ext subjectAltName 2>/dev/null | grep -qE "DNS:#{Regexp.escape(new_resource.hostname)}(,|$)"
+    GUARD
     notifies :restart, 'service[postgresql]', :delayed
   end
 
@@ -125,7 +134,7 @@ action :install do
   file cert do
     owner 'postgres'
     group 'postgres'
-    mode '0644'
+    mode '0640'
     sensitive false
   end
 
@@ -136,6 +145,7 @@ action :install do
     mode '0640'
     sensitive true
     notifies :run, 'execute[microwave-alter-role-password]', :immediately
+    notifies :restart, 'service[microwave-server]', :delayed
     action :create_if_missing
   end
 
@@ -143,6 +153,16 @@ action :install do
     owner 'root'
     group 'root'
     mode '0755'
+  end
+
+  file ca_bundle do
+    content lazy { "#{new_resource.ca_certs.join("\n")}\n" }
+    owner 'root'
+    group 'postgres'
+    mode '0640'
+    sensitive false
+    only_if { new_resource.ca_certs.any? }
+    notifies :restart, 'service[postgresql]', :delayed
   end
 
   template ::File.join(data_dir, 'conf.d', 'microwave.conf') do
@@ -155,6 +175,7 @@ action :install do
     variables(
       cert: cert,
       key: key,
+      ca_file: new_resource.ca_certs.empty? ? ca_cert : ca_bundle,
       listen: new_resource.client_network ? '*' : '127.0.0.1',
       port: new_resource.port
     )
@@ -180,28 +201,38 @@ action :install do
     action %i(enable start)
   end
 
+  # Delayed restart target for a rotation. On a database-only node the server
+  # unit is absent, so the restart is guarded instead of failing the converge.
+  service 'microwave-server' do
+    action :nothing
+    only_if do
+      ['/etc/systemd/system/microwave-server.service',
+       '/lib/systemd/system/microwave-server.service'].any? { |path| ::File.exist?(path) }
+    end
+  end
+
   execute 'microwave-create-role' do
-    command lazy { "psql -c \"CREATE ROLE #{new_resource.user} LOGIN PASSWORD '#{::File.read('/etc/microwave/db.password').strip}'\"" }
+    command lazy { "psql -p #{new_resource.port} -c \"CREATE ROLE \\\"#{new_resource.user}\\\" LOGIN PASSWORD '#{::File.read('/etc/microwave/db.password').strip}'\"" }
     user 'postgres'
     group 'postgres'
     sensitive true
-    not_if "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='#{new_resource.user}'\" | grep -q 1"
+    not_if "psql -p #{new_resource.port} -tAc \"SELECT 1 FROM pg_roles WHERE rolname='#{new_resource.user}'\" | grep -q 1"
   end
 
   execute 'microwave-alter-role-password' do
-    command lazy { "psql -c \"ALTER ROLE #{new_resource.user} LOGIN PASSWORD '#{::File.read('/etc/microwave/db.password').strip}'\"" }
+    command lazy { "psql -p #{new_resource.port} -c \"ALTER ROLE \\\"#{new_resource.user}\\\" LOGIN PASSWORD '#{::File.read('/etc/microwave/db.password').strip}'\"" }
     user 'postgres'
     group 'postgres'
     sensitive true
     action :nothing
-    only_if "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='#{new_resource.user}'\" | grep -q 1"
+    only_if "psql -p #{new_resource.port} -tAc \"SELECT 1 FROM pg_roles WHERE rolname='#{new_resource.user}'\" | grep -q 1"
   end
 
   execute 'microwave-create-database' do
-    command "psql -c \"CREATE DATABASE #{new_resource.database} OWNER #{new_resource.user}\""
+    command "psql -p #{new_resource.port} -c \"CREATE DATABASE \\\"#{new_resource.database}\\\" OWNER \\\"#{new_resource.user}\\\"\""
     user 'postgres'
     group 'postgres'
     sensitive false
-    not_if "psql -tAc \"SELECT 1 FROM pg_database WHERE datname='#{new_resource.database}'\" | grep -q 1"
+    not_if "psql -p #{new_resource.port} -tAc \"SELECT 1 FROM pg_database WHERE datname='#{new_resource.database}'\" | grep -q 1"
   end
 end
