@@ -28,9 +28,6 @@ FROM debian:trixie-slim
 
 ARG CINC_VERSION=19
 
-# UID the server runs as; the seed hands the data volume back to it.
-ARG UID=10001
-
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # curl: presigned /bookshelf uploads and the omnitruck download.

@@ -74,6 +74,7 @@ away from `/var/lib/microwave`.
 | `MW_PG_SHARED_BUFFERS` | `256MB` | PostgreSQL `shared_buffers`. |
 | `MW_SERVER_CPUS` | `2` | CPU limit of the server container; clamped to the host's cores. |
 | `MW_SERVER_MEM` | `4g` | Memory limit of the server container. |
+| `MW_SERVER_UID` | `10001` | UID/GID the server image user gets and the seed hands the data volume back to. Must match the server image's user. |
 | `MW_LOAD_CPUS` | `4` | CPU limit of the driver container; clamped to the host's cores. |
 | `MW_LOAD_MEM` | `4g` | Memory limit of the driver container. |
 | `MW_LOAD_PORT` | `18081` | Host port the server's `8000` is published on. |
