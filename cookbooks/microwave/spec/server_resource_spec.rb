@@ -289,6 +289,20 @@ describe 'microwave_server object store' do
     expect { broken_run }.to raise_error(/object_store_endpoint/)
   end
 
+  # The property defaults read the attributes, so a false has to survive the
+  # `nil?` guard instead of being swallowed by a `|| true`.
+  it 'keeps a false path style from the attribute' do
+    run = ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_server']) do |node|
+      node.name('chef.example.com')
+      node.automatic['fqdn'] = 'chef.example.com'
+      node.automatic['kernel']['machine'] = 'x86_64'
+      node.normal['microwave']['object_store_endpoint'] = 'https://garage.example.com:3900'
+      node.normal['microwave']['object_store_path_style'] = false
+    end.converge('microwave-test::server')
+
+    expect(run.microwave_server('default').object_store_path_style).to be(false)
+  end
+
   # A truncated publish leaves an empty file on the split node; the server would
   # start and fail every S3 call with an opaque 403.
   it 'raises naming a key file that is only whitespace' do

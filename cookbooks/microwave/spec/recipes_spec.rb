@@ -133,6 +133,19 @@ describe 'microwave::default object store' do
 
     expect(run.microwave_server('default').object_store_endpoint).to eq('https://s3.wrapper.example.com:9000')
   end
+
+  it 'passes the operator bucket and region to the store and the server alike' do
+    run = runner do |n|
+      n.normal['microwave']['object_store_backend'] = 'garage'
+      n.normal['microwave']['garage_bucket'] = 'wrapper-books'
+      n.normal['microwave']['object_store_region'] = 'eu-west-1'
+    end.converge('microwave::default')
+
+    expect(run.microwave_garage('default').bucket).to eq('wrapper-books')
+    expect(run.microwave_server('default').object_store_bucket).to eq('wrapper-books')
+    expect(run.microwave_garage('default').region).to eq('eu-west-1')
+    expect(run.microwave_server('default').object_store_region).to eq('eu-west-1')
+  end
 end
 
 describe 'microwave::default with create_organization' do

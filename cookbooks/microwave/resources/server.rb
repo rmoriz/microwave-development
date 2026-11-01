@@ -9,12 +9,15 @@ property :public_url, String
 property :version, String, default: 'latest', regex: /\A(latest|\d+\.\d+\.\d+)\z/
 property :ca_certs, Array, default: []
 # The attributes are wired by the recipes; the fallbacks keep the resource
-# usable on its own and match the attribute defaults.
-property :object_store_backend, String, default: lazy { node['microwave'].fetch('object_store_backend', 'local') }, equal_to: %w(local s3 garage)
-property :object_store_bucket, String, default: lazy { node['microwave'].fetch('object_store_bucket', 'chef-cookbooks') }
+# usable on its own and match the attribute defaults. The reads go through
+# `node['microwave'][key]`, not `.fetch` on the mash: `[]` resolves a lazy
+# attribute, `fetch` hands the raw evaluator to the property validation.
+property :object_store_backend, String, default: lazy { node['microwave']['object_store_backend'] || 'local' }, equal_to: %w(local s3 garage)
+property :object_store_bucket, String, default: lazy { node['microwave']['object_store_bucket'] || 'chef-cookbooks' }
 property :object_store_endpoint, String
-property :object_store_region, String, default: lazy { node['microwave'].fetch('object_store_region', 'garage') }
-property :object_store_path_style, [true, false], default: lazy { node['microwave'].fetch('object_store_path_style', true) }
+property :object_store_region, String, default: lazy { node['microwave']['object_store_region'] || 'garage' }
+property :object_store_path_style, [true, false],
+         default: lazy { node['microwave']['object_store_path_style'].nil? || node['microwave']['object_store_path_style'] }
 property :object_store_access_key_file, String
 property :object_store_secret_key_file, String
 

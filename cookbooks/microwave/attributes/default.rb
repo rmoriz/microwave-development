@@ -22,10 +22,10 @@ default['microwave']['garage_digests'] = {
   'x86_64' => '2ff667286217cd73ebcb1c03af993822365000441dfe31a80cb64c5189a9dea8',
   'aarch64' => '69b6040cef428b993500c17dd0d0c1240acf2f3f667b9b05ceba4b9660db4e8c',
 }
-# The store and the server share this bucket name; `garage_bucket` keeps its
-# value alongside it.
+# `garage_bucket` is the operator-facing knob; the store and the server read the
+# shared name, which follows it unless the wrapper sets `object_store_bucket`.
 default['microwave']['object_store_backend'] = 'local'
-default['microwave']['object_store_bucket'] = 'chef-cookbooks'
+default['microwave']['object_store_bucket'] = lazy { node['microwave']['garage_bucket'] }
 default['microwave']['object_store_region'] = 'garage'
 default['microwave']['object_store_endpoint'] = nil
 default['microwave']['object_store_host'] = nil

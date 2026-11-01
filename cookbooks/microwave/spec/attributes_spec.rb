@@ -51,10 +51,18 @@ describe 'microwave attributes' do
     expect(node.dig('microwave', 'object_store_host')).to be_nil
   end
 
-  it 'shares one bucket name between the store and the server' do
+  it 'derives the shared bucket name from the garage attribute' do
     node = node_for('microwave.example')
+    node.normal['microwave']['garage_bucket'] = 'wrapper-bucket'
 
-    expect(node.dig('microwave', 'object_store_bucket')).to eq('chef-cookbooks')
-    expect(node.dig('microwave', 'object_store_bucket')).to eq(node.dig('microwave', 'garage_bucket'))
+    expect(node.dig('microwave', 'object_store_bucket')).to eq('wrapper-bucket')
+  end
+
+  it 'lets an explicit object store bucket win over the garage attribute' do
+    node = node_for('microwave.example')
+    node.normal['microwave']['garage_bucket'] = 'wrapper-bucket'
+    node.normal['microwave']['object_store_bucket'] = 'explicit-bucket'
+
+    expect(node.dig('microwave', 'object_store_bucket')).to eq('explicit-bucket')
   end
 end
