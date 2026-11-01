@@ -510,9 +510,12 @@ not_if do
   next false if id.empty?
   system("#{garage} -c #{config} layout show 2>/dev/null | grep -q #{id[0, 16]}")
 end
-# apply: enact the staged version once
-command "#{garage} -c #{config} layout apply --version 1"
-not_if { system("#{garage} -c #{config} layout show 2>/dev/null | grep -qE '^Current cluster layout version: [1-9]'") }
+# apply: enact the staged version once; the pending version is the current one
+# plus one, read in the shell
+command "#{garage} -c #{config} layout apply --version " \
+  "$(($(#{garage} -c #{config} layout show 2>/dev/null | " \
+  "sed -n 's/^Current cluster layout version: \\([0-9]*\\)$/\\1/p') + 1))"
+not_if { !system("#{garage} -c #{config} layout show 2>/dev/null | grep -q '==== STAGED ROLE CHANGES ===='") }
 # create the bucket
 command "#{garage} -c #{config} bucket create #{bucket.dump}"
 not_if { system("#{garage} -c #{config} bucket info #{bucket.dump} >/dev/null 2>&1") }
