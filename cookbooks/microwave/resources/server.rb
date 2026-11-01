@@ -8,6 +8,15 @@ property :bind, String, default: lazy { node['microwave']['bind'] }
 property :public_url, String
 property :version, String, default: 'latest', regex: /\A(latest|\d+\.\d+\.\d+)\z/
 property :ca_certs, Array, default: []
+# The attributes are wired by the recipes; the fallbacks keep the resource
+# usable on its own and match the attribute defaults.
+property :object_store_backend, String, default: lazy { node['microwave'].fetch('object_store_backend', 'local') }, equal_to: %w(local s3 garage)
+property :object_store_bucket, String, default: lazy { node['microwave'].fetch('object_store_bucket', 'chef-cookbooks') }
+property :object_store_endpoint, String
+property :object_store_region, String, default: lazy { node['microwave'].fetch('object_store_region', 'garage') }
+property :object_store_path_style, [true, false], default: lazy { node['microwave'].fetch('object_store_path_style', true) }
+property :object_store_access_key_file, String
+property :object_store_secret_key_file, String
 
 action :install do
   # The URLs are optional so `:disable` and `:enable` work without them. An
@@ -15,6 +24,42 @@ action :install do
   # network.
   raise 'database_url is required to install the server' if new_resource.database_url.to_s.empty?
   raise 'search_url is required to install the server' if new_resource.search_url.to_s.empty?
+
+  # The local backend needs nothing else. A remote one needs every connection
+  # detail and both keys before the release lookup reaches the network. The
+  # keys are read here, so a local install neither touches the files nor fails
+  # when they are absent.
+  object_store = {
+    backend: new_resource.object_store_backend,
+    bucket: new_resource.object_store_bucket,
+    endpoint: new_resource.object_store_endpoint,
+    region: new_resource.object_store_region,
+    path_style: new_resource.object_store_path_style,
+  }
+
+  unless object_store[:backend] == 'local'
+    # The key file properties follow the naming of the values they carry.
+    object_store[:access_key_file] = new_resource.object_store_access_key_file
+    object_store[:secret_key_file] = new_resource.object_store_secret_key_file
+
+    { endpoint: object_store[:endpoint],
+      bucket: object_store[:bucket],
+      region: object_store[:region],
+      access_key_file: object_store[:access_key_file],
+      secret_key_file: object_store[:secret_key_file] }.each do |name, value|
+      raise "object_store_#{name} is required for the #{object_store[:backend]} backend" if value.to_s.empty?
+    end
+
+    { access_key: object_store[:access_key_file],
+      secret_key: object_store[:secret_key_file] }.each do |name, path|
+      object_store[name] =
+        begin
+          ::File.read(path).strip
+        rescue SystemCallError => e
+          raise "object_store_#{name}_file #{path} is not readable: #{e.message}"
+        end
+    end
+  end
 
   release = Microwave::Release.asset(version: new_resource.version, arch: node['kernel']['machine'])
   package_path = ::File.join('/var/cache/microwave', release[:name])
@@ -81,7 +126,8 @@ action :install do
       bind: new_resource.bind,
       public_url: new_resource.public_url,
       database_url: new_resource.database_url,
-      search_url: new_resource.search_url
+      search_url: new_resource.search_url,
+      object_store: object_store
     )
     notifies :restart, 'service[microwave-server]', :delayed
   end

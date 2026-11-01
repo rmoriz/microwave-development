@@ -9,7 +9,15 @@ public_url = "<%= toml.(@public_url) %>"
 data_dir = "/var/lib/microwave"
 
 [object_store]
-backend = "local"
+backend = "<%= toml.(@object_store[:backend]) %>"
+<% unless @object_store[:backend] == 'local' -%>
+bucket = "<%= toml.(@object_store[:bucket]) %>"
+endpoint = "<%= toml.(@object_store[:endpoint]) %>"
+region = "<%= toml.(@object_store[:region]) %>"
+path_style = <%= @object_store[:path_style] ? 'true' : 'false' %>
+access_key = "<%= toml.(@object_store[:access_key]) %>"
+secret_key = "<%= toml.(@object_store[:secret_key]) %>"
+<% end -%>
 
 [database]
 driver = "postgres"

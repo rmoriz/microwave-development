@@ -235,3 +235,68 @@ describe 'microwave_server switching' do
     end.to raise_error(/database_url/)
   end
 end
+
+describe 'microwave_server object store' do
+  include_context 'release api'
+
+  let(:chef_run) { object_store_run('server') }
+  let(:garage_run) { object_store_run('server_garage') }
+  let(:s3_run) { object_store_run('server_s3') }
+  let(:broken_run) { object_store_run('server_garage_broken') }
+
+  def object_store_run(recipe)
+    allow(::File).to receive(:read).and_call_original
+    allow(::File).to receive(:read).with('/etc/microwave/garage.access_key').and_return("ACCESS\n")
+    allow(::File).to receive(:read).with('/etc/microwave/garage.secret_key').and_return("SECRET\n")
+    ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_server']) do |node|
+      node.name('chef.example.com')
+      node.automatic['fqdn'] = 'chef.example.com'
+      node.automatic['kernel']['machine'] = 'x86_64'
+    end.converge("microwave-test::#{recipe}")
+  end
+
+  it 'keeps the local backend when nothing is set' do
+    expect(chef_run).to render_file('/etc/microwave/microwave.toml')
+      .with_content(/^\[object_store\]\nbackend = "local"$/)
+  end
+
+  # The key files belong to the garage resource and are absent on a local node.
+  it 'does not read the key files for the local backend' do
+    chef_run
+    expect(::File).not_to have_received(:read).with('/etc/microwave/garage.access_key')
+    expect(::File).not_to have_received(:read).with('/etc/microwave/garage.secret_key')
+  end
+
+  it 'renders the garage backend with keys read from the files' do
+    expect(garage_run).to render_file('/etc/microwave/microwave.toml').with_content(<<~TOML)
+      [object_store]
+      backend = "garage"
+      bucket = "chef-cookbooks"
+      endpoint = "https://garage.example.com:3900"
+      region = "garage"
+      path_style = true
+      access_key = "ACCESS"
+      secret_key = "SECRET"
+    TOML
+  end
+
+  it 'renders the s3 backend with path style off' do
+    expect(s3_run).to render_file('/etc/microwave/microwave.toml')
+      .with_content(/^backend = "s3"$/).with_content(/^path_style = false$/)
+  end
+
+  it 'raises when a non-local backend has no endpoint' do
+    expect { broken_run }.to raise_error(/object_store_endpoint/)
+  end
+
+  it 'raises naming a key file it cannot read' do
+    allow(::File).to receive(:read).and_call_original
+    allow(::File).to receive(:read).with('/etc/microwave/garage.access_key').and_raise(Errno::ENOENT)
+    expect do
+      ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_server']) do |node|
+        node.name('chef.example.com')
+        node.automatic['kernel']['machine'] = 'x86_64'
+      end.converge('microwave-test::server_garage')
+    end.to raise_error(%r{object_store_access_key_file /etc/microwave/garage\.access_key})
+  end
+end
