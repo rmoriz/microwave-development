@@ -13,6 +13,18 @@ action :install do
   release = Microwave::Release.asset(version: new_resource.version, arch: node['kernel']['machine'])
   package_path = ::File.join('/var/cache/microwave', release[:name])
 
+  # dpkg installs the .deb without resolving its declared dependencies, so the
+  # package has to be there first. A node that runs no backend package (the
+  # split layout) has nothing else pulling logrotate in, and no apt index that
+  # knows it either; the index is refreshed only while it cannot.
+  # `apt_update` would report an update on every converge and break the
+  # idempotency check, hence the guarded execute.
+  execute 'apt-get update' do # cookstyle:disable Chef/Modernize/ExecuteAptUpdate
+    not_if 'apt-cache show logrotate >/dev/null 2>&1'
+  end
+
+  apt_package 'logrotate'
+
   directory '/var/cache/microwave' do
     owner 'root'
     group 'root'

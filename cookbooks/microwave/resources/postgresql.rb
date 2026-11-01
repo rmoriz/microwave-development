@@ -22,11 +22,30 @@ action :install do
   ca_bundle = ::File.join(Microwave::TLS.ca_dir, 'client-ca.crt')
   data_dir = '/etc/postgresql/19/main'
 
+  # The keyring is a plain shipped file rather than an `apt_repository` key:
+  # the resource would copy it into the chef cache, which is empty on the next
+  # run, and re-import it every converge. apt 3 reads the armored file directly
+  # through signed-by, so nothing in this block changes between runs.
+  directory '/etc/apt/keyrings' do
+    owner 'root'
+    group 'root'
+    mode '0755'
+  end
+
+  cookbook_file '/etc/apt/keyrings/pgdg.asc' do
+    source 'pgdg.asc'
+    cookbook 'microwave'
+    owner 'root'
+    group 'root'
+    mode '0644'
+    sensitive false
+  end
+
   apt_repository 'pgdg' do
     uri 'https://apt.postgresql.org/pub/repos/apt'
     distribution 'trixie-pgdg'
     components %w(main 19)
-    key 'https://www.postgresql.org/media/keys/ACCC4CF8.asc'
+    signed_by '/etc/apt/keyrings/pgdg.asc'
     sensitive false
   end
 
@@ -70,16 +89,19 @@ action :install do
     notifies :restart, 'service[postgresql]', :delayed
   end
 
+  # The CA material is shared by both backend resources, so it belongs to root
+  # rather than either service group; otherwise the two runs of the pair keep
+  # flipping the group and every converge reports a change.
   file ca_key do
     owner 'root'
-    group 'postgres'
+    group 'root'
     mode '0640'
     sensitive true
   end
 
   file ca_cert do
     owner 'root'
-    group 'postgres'
+    group 'root'
     mode '0644'
     sensitive false
   end
@@ -93,7 +115,8 @@ action :install do
   file key do
     owner 'postgres'
     group 'postgres'
-    mode '0640'
+    # PostgreSQL refuses a server key the database user owns with group access.
+    mode '0600'
     sensitive true
   end
 
@@ -101,7 +124,7 @@ action :install do
     source 'backend-cert.cnf.erb'
     cookbook 'microwave'
     owner 'root'
-    group 'postgres'
+    group 'root'
     mode '0644'
     sensitive false
     variables(hostname: new_resource.hostname)

@@ -25,12 +25,14 @@ describe 'microwave_postgresql' do
     ChefSpec::Renderer.new(chef_run, chef_run.template(path)).content
   end
 
-  it 'adds the PGDG repository with its key' do
+  it 'adds the PGDG repository signed by the shipped keyring' do
+    expect(chef_run).to create_cookbook_file('/etc/apt/keyrings/pgdg.asc')
+      .with(source: 'pgdg.asc', cookbook: 'microwave', mode: '0644')
     expect(chef_run).to add_apt_repository('pgdg').with(
       uri: 'https://apt.postgresql.org/pub/repos/apt',
       distribution: 'trixie-pgdg',
       components: %w(main 19),
-      key: ['https://www.postgresql.org/media/keys/ACCC4CF8.asc']
+      signed_by: '/etc/apt/keyrings/pgdg.asc'
     )
   end
 
@@ -121,11 +123,13 @@ describe 'microwave_postgresql' do
     )
   end
 
-  it 'owns the key material root or postgres and keeps it 0640' do
+  it 'owns the key material root or postgres and keeps it tight' do
+    # The CA is shared with the search resource, so it stays with root.
     expect(chef_run).to create_file('/etc/microwave/tls/ca.key')
-      .with(owner: 'root', group: 'postgres', mode: '0640')
+      .with(owner: 'root', group: 'root', mode: '0640')
+    # postgres prefers 0600 for a key the database user owns.
     expect(chef_run).to create_file('/etc/microwave/tls/db.key')
-      .with(owner: 'postgres', group: 'postgres', mode: '0640')
+      .with(owner: 'postgres', group: 'postgres', mode: '0600')
     expect(chef_run).to create_file('/etc/microwave/tls/db.crt')
       .with(owner: 'postgres', group: 'postgres', mode: '0640')
   end
@@ -155,8 +159,9 @@ describe 'microwave_postgresql' do
       local all all peer
       hostssl all all 127.0.0.1/32 scram-sha-256
       hostssl all all ::1/128 scram-sha-256
-      replication local all peer
-      replication hostssl all all 127.0.0.1/32 scram-sha-256
+      local replication all peer
+      hostssl replication all 127.0.0.1/32 scram-sha-256
+      hostssl replication all ::1/128 scram-sha-256
     HBA
   end
 

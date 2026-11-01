@@ -26,7 +26,7 @@ describe 'microwave::default' do
 
   it 'converges the database, the search engine and the server in that order' do
     expect(chef_run.resource_collection.map { |r| r.resource_name.to_s })
-      .to eq(%w(microwave_postgresql microwave_opensearch microwave_server))
+      .to eq(%w(microwave_postgresql microwave_opensearch microwave_server directory))
   end
 
   it 'points the server at the loopback backends over TLS' do
@@ -35,7 +35,7 @@ describe 'microwave::default' do
     expect(server.database_url)
       .to eq('postgres://microwave:s3cret@127.0.0.1:5432/microwave?sslmode=require')
     expect(server.search_url).to eq('https://127.0.0.1:9200')
-    expect(server.bind).to eq('chef.example.com:8000')
+    expect(server.bind).to eq('192.0.2.10:8000')
     expect(server.ca_certs).to eq(['CA-PEM'])
   end
 
@@ -97,14 +97,14 @@ describe 'microwave::default with create_organization' do
   end
 
   let(:ctl) { 'chef-server-ctl --config /etc/microwave/microwave.toml' }
-  let(:status_url) { 'http://chef.example.com:8000/_status' }
+  let(:status_url) { 'http://192.0.2.10:8000/_status' }
 
   it 'creates the admin only when it is missing, then the organization and the membership' do
     command = chef_run.execute('microwave_organization').command
 
     expect(command.split("\n").map(&:strip)).to eq(
       [
-        'for i in $(seq 1 20); do curl -fsS --max-time 5 http://chef.example.com:8000/_status && break; ' \
+        'for i in $(seq 1 20); do curl -fsS --max-time 5 http://192.0.2.10:8000/_status && break; ' \
         '[ "$i" -lt 20 ] && sleep 3; done &&',
         "{ #{ctl} user-list | grep -qx pivotal || " \
         "#{ctl} user-create pivotal --email pivotal@example.com --admin -f /tmp/pivotal.pem ; } &&",
@@ -120,7 +120,7 @@ describe 'microwave::default with create_organization' do
     expect(command).to include("for i in $(seq 1 20); do curl -fsS --max-time 5 #{status_url} && break")
     expect(command).to include('[ "$i" -lt 20 ] && sleep 3; done &&')
     expect(command).to include(status_url)
-    expect(command).to start_with('for i in $(seq 1 20); do curl -fsS --max-time 5 http://chef.example.com:8000/_status')
+    expect(command).to start_with('for i in $(seq 1 20); do curl -fsS --max-time 5 http://192.0.2.10:8000/_status')
   end
 
   it 'follows a non-default bind in the status URL' do
@@ -130,7 +130,7 @@ describe 'microwave::default with create_organization' do
     end.converge('microwave-test::all_in_one')
 
     expect(run.execute('microwave_organization').command)
-      .to include('curl -fsS --max-time 5 http://other.example.com:8000/_status')
+      .to include('curl -fsS --max-time 5 http://192.0.2.11:8000/_status')
   end
 
   it 'installs curl before the execute, because the package does not ship it' do
@@ -248,8 +248,14 @@ describe 'microwave::server' do
     end.converge('microwave-test::server_recipe')
   end
 
-  it 'declares the server and nothing else' do
-    expect(chef_run.resource_collection.map { |r| r.resource_name.to_s }).to eq(['microwave_server'])
+  it 'declares the server, its config directory and nothing else' do
+    expect(chef_run.resource_collection.map { |r| r.resource_name.to_s })
+      .to eq(%w(microwave_server directory))
+  end
+
+  it 'widens /etc/microwave so the backend users can read the TLS material' do
+    expect(chef_run).to create_directory('/etc/microwave')
+      .with(owner: 'root', group: 'root', mode: '0755')
   end
 
   it 'builds the URLs from the host and port attributes' do
@@ -258,6 +264,79 @@ describe 'microwave::server' do
     expect(server.database_url)
       .to eq('postgres://microwave:s3cret@db.example.com:6432/microwave?sslmode=require')
     expect(server.search_url).to eq('https://search.example.com:9200')
+  end
+end
+
+describe 'microwave::server listener address' do
+  before do
+    stub_backend_material
+    allow(Resolv).to receive(:getaddress).and_raise(SocketError)
+  end
+
+  let(:bind) do
+    runner do |node|
+      node.normal['microwave']['database_host'] = 'db.example.com'
+      node.normal['microwave']['search_host'] = 'search.example.com'
+      node.automatic['ipaddress'] = '198.51.100.7'
+    end.converge('microwave-test::server_recipe').microwave_server('default').bind
+  end
+
+  it 'falls back to the primary address when the client-facing name does not resolve' do
+    expect(bind).to eq('198.51.100.7:8000')
+  end
+
+  it 'brackets an IPv6 address, which check-config would otherwise misread' do
+    allow(Resolv).to receive(:getaddress).and_return('2001:db8::5')
+
+    expect(bind).to eq('[2001:db8::5]:8000')
+  end
+end
+
+describe 'microwave::server with backend material from files' do
+  before do
+    allow(::File).to receive(:read).and_call_original
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:read).with('/mnt/backend/db.password').and_return("remote-secret\n")
+    allow(::File).to receive(:read).with('/mnt/backend/ca.crt').and_return('REMOTE-CA')
+    allow(::File).to receive(:exist?).with('/mnt/backend/ca.crt').and_return(true)
+    allow(::File).to receive(:exist?).with(Microwave::TLS.ca_cert).and_return(false)
+  end
+
+  let(:chef_run) do
+    runner do |node|
+      node.normal['microwave']['database_host'] = 'db.example.com'
+      node.normal['microwave']['search_host'] = 'search.example.com'
+      node.normal['microwave']['database_password_file'] = '/mnt/backend/db.password'
+      node.normal['microwave']['ca_cert_file'] = '/mnt/backend/ca.crt'
+    end.converge('microwave-test::server_recipe')
+  end
+
+  it 'reads the password from the configured password file' do
+    expect(chef_run.microwave_server('default').database_url)
+      .to eq('postgres://microwave:remote-secret@db.example.com:5432/microwave?sslmode=require')
+  end
+
+  it 'trusts the CA from the configured CA file instead of the local one' do
+    expect(chef_run.microwave_server('default').ca_certs).to eq(['REMOTE-CA'])
+  end
+end
+
+describe 'microwave::server with a CA file that is not there yet' do
+  before do
+    stub_backend_material
+    allow(::File).to receive(:exist?).with('/mnt/backend/ca.crt').and_return(false)
+  end
+
+  let(:chef_run) do
+    runner do |node|
+      node.normal['microwave']['database_host'] = 'db.example.com'
+      node.normal['microwave']['search_host'] = 'search.example.com'
+      node.normal['microwave']['ca_cert_file'] = '/mnt/backend/ca.crt'
+    end.converge('microwave-test::server_recipe')
+  end
+
+  it 'falls back to the local CA' do
+    expect(chef_run.microwave_server('default').ca_certs).to eq(['CA-PEM'])
   end
 end
 

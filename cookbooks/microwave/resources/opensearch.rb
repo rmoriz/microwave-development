@@ -20,11 +20,32 @@ action :install do
   csr = ::File.join(Microwave::TLS.ca_dir, 'search.csr')
   cnf = ::File.join(Microwave::TLS.ca_dir, 'backend.cnf')
 
+  # The key published under /publickeys is stale: it does not carry the subkey
+  # that signs the 3.x repository, so apt's sequoia verifier rejects the
+  # InRelease. The file shipped here is exactly the signing certificate,
+  # fingerprint 530B46D4B4C3E62A4CD6E7A04E9275EE6BA2427F. It is installed as a
+  # keyring file and referenced with signed-by instead of going through the
+  # `key` property, which would re-import it from the cache every run.
+  directory '/etc/apt/keyrings' do
+    owner 'root'
+    group 'root'
+    mode '0755'
+  end
+
+  cookbook_file '/etc/apt/keyrings/opensearch.asc' do
+    source 'opensearch.asc'
+    cookbook 'microwave'
+    owner 'root'
+    group 'root'
+    mode '0644'
+    sensitive false
+  end
+
   apt_repository 'opensearch' do
     uri 'https://artifacts.opensearch.org/releases/bundle/opensearch/3.x/apt'
     distribution 'stable'
     components %w(main)
-    key 'https://artifacts.opensearch.org/publickeys/opensearch.pgp'
+    signed_by '/etc/apt/keyrings/opensearch.asc'
     sensitive false
   end
 
@@ -34,13 +55,23 @@ action :install do
     sensitive false
   end
 
-  # The packaged postinst asks for a demo admin password and aborts without one.
-  # The security plugin is deleted below anyway, so tell the postinst to skip it.
+  # The packaged postinst runs the security demo installer, which wants an admin
+  # password and aborts without one. The plugin is deleted below and the config
+  # is rendered from our template, so skip both steps. The environment is set on
+  # both packages: apt may defer the configure of a half-installed package to
+  # the next install and run the postinst from that process instead.
+  packaged_env = {
+    'DISABLE_INSTALL_DEMO_CONFIG' => 'true',
+    'DISABLE_SECURITY_PLUGIN' => 'true',
+  }
+
   apt_package 'opensearch' do
-    environment('DISABLE_SECURITY_PLUGIN' => 'true')
+    environment packaged_env
   end
 
-  apt_package 'nginx'
+  apt_package 'nginx' do
+    environment packaged_env
+  end
 
   directory '/etc/microwave' do
     owner 'root'
@@ -88,16 +119,19 @@ action :install do
     notifies :restart, 'service[opensearch]', :delayed
   end
 
+  # The CA material is shared by both backend resources, so it belongs to root
+  # rather than either service group; otherwise the two runs of the pair keep
+  # flipping the group and every converge reports a change.
   file ca_key do
     owner 'root'
-    group 'opensearch'
+    group 'root'
     mode '0640'
     sensitive true
   end
 
   file ca_cert do
     owner 'root'
-    group 'opensearch'
+    group 'root'
     mode '0644'
     sensitive false
   end
@@ -119,7 +153,7 @@ action :install do
     source 'backend-cert.cnf.erb'
     cookbook 'microwave'
     owner 'root'
-    group 'opensearch'
+    group 'root'
     mode '0644'
     sensitive false
     variables(hostname: new_resource.hostname)
@@ -198,7 +232,28 @@ action :install do
     notifies :restart, 'service[opensearch]', :delayed
   end
 
+  # The packaged init script creates the pid directory itself; start-stop-daemon
+  # does not, so create it before the direct start below.
+  directory '/var/run/opensearch' do
+    owner 'opensearch'
+    group 'opensearch'
+    mode '0755'
+    not_if { ::File.exist?('/run/systemd/system') }
+  end
+
   service 'opensearch' do
+    # The packaged sysv init script aborts under `set -e`: `pidofproc` returns 3
+    # while the pid file does not exist yet, so a systemd-less container can
+    # never start through it. Start the daemon directly there; systemd hosts
+    # keep their unit.
+    unless ::File.exist?('/run/systemd/system')
+      start_command 'env OPENSEARCH_PATH_CONF=/etc/opensearch ' \
+                    '/usr/sbin/start-stop-daemon --start --quiet ' \
+                    '--pidfile /var/run/opensearch/opensearch.pid ' \
+                    '--chdir /usr/share/opensearch --chuid opensearch ' \
+                    '--exec /usr/share/opensearch/bin/opensearch -- ' \
+                    '-d -p /var/run/opensearch/opensearch.pid'
+    end
     action %i(enable start)
   end
 

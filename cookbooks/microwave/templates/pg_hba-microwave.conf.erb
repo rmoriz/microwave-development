@@ -2,8 +2,9 @@ local all postgres peer
 local all all peer
 hostssl all all 127.0.0.1/32 scram-sha-256
 hostssl all all ::1/128 scram-sha-256
-replication local all peer
-replication hostssl all all 127.0.0.1/32 scram-sha-256
+local replication all peer
+hostssl replication all 127.0.0.1/32 scram-sha-256
+hostssl replication all ::1/128 scram-sha-256
 <% if @client_network -%>
 hostssl <%= @database %> <%= @user %> <%= @client_network %> scram-sha-256
 <% end -%>

@@ -29,6 +29,20 @@ describe 'microwave_server' do
       .with(options: ['--force-confold'])
   end
 
+  it 'installs the declared package dependency dpkg would not resolve' do
+    resources = chef_run.resource_collection.map(&:name)
+    update = resources.index('apt-get update')
+    package = resources.index('logrotate')
+    dpkg = resources.index('/var/cache/microwave/microwave-server_0.1.0_amd64.deb')
+
+    # The index refresh is guard-only, so it does not converge on every run.
+    expect(chef_run.execute('apt-get update').not_if.map(&:command))
+      .to eq(['apt-cache show logrotate >/dev/null 2>&1'])
+    expect(chef_run).to install_apt_package('logrotate')
+    expect(update).to be < package
+    expect(package).to be < dpkg
+  end
+
   it 'renders the data directory, the URLs and the bind hostname' do
     expect(chef_run).to render_file('/etc/microwave/microwave.toml')
       .with_content(%r{^data_dir = "/var/lib/microwave"$})

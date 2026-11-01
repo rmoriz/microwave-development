@@ -1,31 +1,52 @@
 # The server alone. A wrapper sets node['microwave']['database_host'] and
 # node['microwave']['search_host']; the backend material is either handed in as
-# attributes or read from the files the database resource wrote locally.
+# attributes or read from files. The password comes from
+# node['microwave']['database_password_file'], which defaults to the file the
+# database resource writes on a single node. The CA comes from
+# node['microwave']['ca_certs'] or node['microwave']['ca_cert_file']; without
+# either, the local CA the database wrote is trusted.
 
 database_host = node['microwave']['database_host']
 search_host = node['microwave']['search_host']
+password_file = node['microwave']['database_password_file']
+ca_cert_file = node['microwave']['ca_cert_file']
 
 raise "microwave::server needs node['microwave']['database_host']" if database_host.to_s.empty?
 raise "microwave::server needs node['microwave']['search_host']" if search_host.to_s.empty?
 
+# The bind doubles as the fallback base the served and the presigned URLs are
+# built from, so it is resolved to a literal address before the resource runs
+# and a name never reaches those URLs. This is the recipe-side half of the pair:
+# `microwave-ctl check-config` resolves a name itself, for hand-written configs,
+# so both paths end at an address. `Resolv.getaddress` returns the first address
+# the resolver hands back, in its order, and that one is used as is; the node's
+# primary address is only the fallback when the name does not resolve at all.
+require 'resolv'
+listen_address = begin
+  Resolv.getaddress(node['microwave']['bind'])
+                 rescue StandardError
+                   node['ipaddress'].to_s.empty? ? '0.0.0.0' : node['ipaddress']
+end
+listen = "#{listen_address.include?(':') ? "[#{listen_address}]" : listen_address}:8000"
+
 microwave_server 'default' do
-  bind "#{node['microwave']['bind']}:8000"
+  bind listen
   public_url node['microwave']['public_url'] unless node['microwave']['public_url'].to_s.empty?
 
   database_url lazy {
     password = node['microwave']['database_password']
     if password.to_s.empty?
       password = begin
-                   ::File.read('/etc/microwave/db.password').strip
+                   ::File.read(password_file).strip
                  rescue Errno::ENOENT, Errno::EACCES
                    raise "microwave::server needs node['microwave']['database_password'] " \
-                         'or a readable /etc/microwave/db.password'
+                         "or a readable #{password_file}"
                  end
     end
 
     if password.to_s.empty?
       raise "microwave::server needs node['microwave']['database_password'] " \
-            'or a non-empty /etc/microwave/db.password'
+            "or a non-empty #{password_file}"
     end
 
     "postgres://#{node['microwave']['database_user']}:#{password}@#{node['microwave']['database_host']}:" \
@@ -37,12 +58,24 @@ microwave_server 'default' do
   ca_certs lazy {
     if node['microwave']['ca_certs'].any?
       node['microwave']['ca_certs']
+    elsif ca_cert_file && ::File.exist?(ca_cert_file)
+      [::File.read(ca_cert_file)]
     elsif ::File.exist?(Microwave::TLS.ca_cert)
       [::File.read(Microwave::TLS.ca_cert)]
     else
       []
     end
   }
+end
+
+# The package creates /etc/microwave as 0750 root:microwave. PostgreSQL and
+# OpenSearch run as their own users and read the TLS material below it, so the
+# directory is widened for every topology. Managing it here keeps the backend
+# resources from flipping it back on the next run.
+directory '/etc/microwave' do
+  owner 'root'
+  group 'root'
+  mode '0755'
 end
 
 # The deployment proof: one admin, one organization, one membership. The CLI
@@ -53,7 +86,7 @@ end
 # instead of tripping over the user that already exists.
 if node['microwave']['create_organization']
   ctl = 'chef-server-ctl --config /etc/microwave/microwave.toml'
-  status_url = "http://#{node['microwave']['bind']}:8000/_status"
+  status_url = "http://#{listen}/_status"
 
   apt_package 'curl' # the readiness probe below needs it, the package does not ship it
 

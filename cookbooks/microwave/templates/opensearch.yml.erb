@@ -3,7 +3,12 @@ node.name: <%= @hostname %>
 network.host: 127.0.0.1
 http.port: <%= @http_port %>
 discovery.type: single-node
-plugins.security.disabled: true
+# No `plugins.security.disabled`: the resource deletes the security plugin
+# directory, and with the plugin gone the key is unknown to OpenSearch, so it
+# would only warn. The proxy in front is the only access control.
 path.data: /var/lib/opensearch/_data
 path.logs: /var/log/opensearch/_logs
 bootstrap.memory_lock: false
+# cgroup memory limits are unreadable under systemd, so size the buffer
+# absolutely instead of by a percentage of a total we cannot read.
+indices.memory.native_index_buffer_size: 256mb

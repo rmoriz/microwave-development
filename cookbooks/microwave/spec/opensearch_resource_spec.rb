@@ -23,12 +23,16 @@ describe 'microwave_opensearch' do
     ChefSpec::Renderer.new(chef_run, chef_run.template(path)).content
   end
 
-  it 'adds the OpenSearch 3.x repository with the artifacts key' do
+  it 'adds the OpenSearch 3.x repository signed by the shipped keyring' do
+    # The key file at artifacts.opensearch.org is stale and apt's sequoia
+    # verifier rejects the InRelease, so the signing certificate is shipped.
+    expect(chef_run).to create_cookbook_file('/etc/apt/keyrings/opensearch.asc')
+      .with(source: 'opensearch.asc', cookbook: 'microwave', mode: '0644')
     expect(chef_run).to add_apt_repository('opensearch').with(
       uri: 'https://artifacts.opensearch.org/releases/bundle/opensearch/3.x/apt',
       distribution: 'stable',
       components: %w(main),
-      key: ['https://artifacts.opensearch.org/publickeys/opensearch.pgp']
+      signed_by: '/etc/apt/keyrings/opensearch.asc'
     )
   end
 
@@ -38,8 +42,12 @@ describe 'microwave_opensearch' do
   end
 
   it 'installs the pinned package without asking for an admin password' do
-    expect(chef_run).to install_apt_package('opensearch')
-      .with(environment: { 'DISABLE_SECURITY_PLUGIN' => 'true' })
+    expect(chef_run).to install_apt_package('opensearch').with(
+      environment: {
+        'DISABLE_INSTALL_DEMO_CONFIG' => 'true',
+        'DISABLE_SECURITY_PLUGIN' => 'true',
+      }
+    )
   end
 
   it 'writes the single-node configuration on the internal port' do
@@ -49,11 +57,20 @@ describe 'microwave_opensearch' do
       network.host: 127.0.0.1
       http.port: 9210
       discovery.type: single-node
-      plugins.security.disabled: true
+      # No `plugins.security.disabled`: the resource deletes the security plugin
+      # directory, and with the plugin gone the key is unknown to OpenSearch, so it
+      # would only warn. The proxy in front is the only access control.
       path.data: /var/lib/opensearch/_data
       path.logs: /var/log/opensearch/_logs
       bootstrap.memory_lock: false
+      # cgroup memory limits are unreadable under systemd, so size the buffer
+      # absolutely instead of by a percentage of a total we cannot read.
+      indices.memory.native_index_buffer_size: 256mb
     YML
+  end
+
+  it 'drops plugins.security.disabled, which is unknown once the plugin is gone' do
+    expect(rendered('/etc/opensearch/opensearch.yml')).not_to match(/^plugins\.security/)
   end
 
   it 'trusts nginx to terminate TLS, so OpenSearch itself stays plain' do
@@ -151,8 +168,9 @@ describe 'microwave_opensearch' do
   end
 
   it 'owns the key material root or opensearch and keeps it 0640' do
+    # The CA is shared with the database resource, so it stays with root.
     expect(chef_run).to create_file('/etc/microwave/tls/ca.key')
-      .with(owner: 'root', group: 'opensearch', mode: '0640')
+      .with(owner: 'root', group: 'root', mode: '0640')
     expect(chef_run).to create_file('/etc/microwave/tls/search.key')
       .with(owner: 'opensearch', group: 'opensearch', mode: '0640')
     expect(chef_run).to create_file('/etc/microwave/tls/search.crt')
@@ -162,7 +180,7 @@ describe 'microwave_opensearch' do
   it 'declares the shared SAN extension file like the database does' do
     expect(chef_run).to create_template('/etc/microwave/tls/backend.cnf')
       .with(source: 'backend-cert.cnf.erb', cookbook: 'microwave',
-            owner: 'root', group: 'opensearch', mode: '0644')
+            owner: 'root', group: 'root', mode: '0644')
     expect(rendered('/etc/microwave/tls/backend.cnf'))
       .to include('subjectAltName = DNS:search.example.com,IP:127.0.0.1')
   end
@@ -180,7 +198,12 @@ describe 'microwave_opensearch' do
   end
 
   it 'installs nginx and terminates TLS on the public port' do
-    expect(chef_run).to install_apt_package('nginx')
+    expect(chef_run).to install_apt_package('nginx').with(
+      environment: {
+        'DISABLE_INSTALL_DEMO_CONFIG' => 'true',
+        'DISABLE_SECURITY_PLUGIN' => 'true',
+      }
+    )
 
     vhost = rendered('/etc/nginx/sites-available/microwave-opensearch')
 
@@ -229,6 +252,18 @@ describe 'microwave_opensearch' do
 
     names = chef_run.resource_collection.map(&:to_s)
     expect(names.index('service[opensearch]')).to be < names.index('service[nginx]')
+  end
+
+  # Without systemd the packaged init script cannot start the daemon, so the
+  # resource starts it itself and has to provide the pid directory.
+  it 'starts OpenSearch directly when systemd is absent' do
+    expect(chef_run).to create_directory('/var/run/opensearch')
+      .with(owner: 'opensearch', group: 'opensearch', mode: '0755')
+
+    command = chef_run.service('opensearch').start_command
+    expect(command).to include('start-stop-daemon')
+    expect(command).to include('--chuid opensearch')
+    expect(command).to include('OPENSEARCH_PATH_CONF=/etc/opensearch')
   end
 end
 
