@@ -123,11 +123,21 @@ if node['microwave']['create_organization']
       ready=0
       for i in $(seq 1 20); do
         curl -fsS --max-time 5 #{status_url} >/dev/null && { ready=1; break; }
+        # A search unit that died after its restart wait does not come back on
+        # its own; one restart in the middle of the budget recovers it. The unit
+        # only exists on an all-in-one node, so a split server skips the branch.
+        if [ "$i" -eq 10 ] && systemctl cat opensearch.service >/dev/null 2>&1 &&
+          ! systemctl is-active --quiet opensearch.service; then
+          systemctl restart opensearch.service && sleep 10
+        fi
         sleep 3
       done
-      # The last body names the failing upstream; the retry budget alone would
-      # only say that the endpoint answered 500.
-      if [ "$ready" -ne 1 ]; then curl -sS --max-time 5 #{status_url}; exit 1; fi
+      # The last body names the failing upstream; the journal tail below names
+      # why the search node stayed away. The retry budget alone says neither.
+      if [ "$ready" -ne 1 ]; then
+        journalctl -u opensearch.service -n 20 --no-pager 2>/dev/null
+        curl -sS --max-time 5 #{status_url}; exit 1
+      fi
       { #{ctl} user-list | grep -qx pivotal || #{ctl} user-create pivotal --email pivotal@example.com --admin -f /var/lib/microwave/pivotal.pem ; } &&
       #{ctl} org-create demo --full-name 'Microwave Demo' --association-user pivotal -f /tmp/demo-validator.pem &&
       #{ctl} org-user-add demo pivotal

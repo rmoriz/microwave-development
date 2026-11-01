@@ -189,11 +189,21 @@ describe 'microwave::default with create_organization' do
         'ready=0',
         'for i in $(seq 1 20); do',
         'curl -fsS --max-time 5 http://192.0.2.10:8000/_status >/dev/null && { ready=1; break; }',
+        '# A search unit that died after its restart wait does not come back on',
+        '# its own; one restart in the middle of the budget recovers it. The unit',
+        '# only exists on an all-in-one node, so a split server skips the branch.',
+        'if [ "$i" -eq 10 ] && systemctl cat opensearch.service >/dev/null 2>&1 &&',
+        '! systemctl is-active --quiet opensearch.service; then',
+        'systemctl restart opensearch.service && sleep 10',
+        'fi',
         'sleep 3',
         'done',
-        '# The last body names the failing upstream; the retry budget alone would',
-        '# only say that the endpoint answered 500.',
-        'if [ "$ready" -ne 1 ]; then curl -sS --max-time 5 http://192.0.2.10:8000/_status; exit 1; fi',
+        '# The last body names the failing upstream; the journal tail below names',
+        '# why the search node stayed away. The retry budget alone says neither.',
+        'if [ "$ready" -ne 1 ]; then',
+        'journalctl -u opensearch.service -n 20 --no-pager 2>/dev/null',
+        'curl -sS --max-time 5 http://192.0.2.10:8000/_status; exit 1',
+        'fi',
         "{ #{ctl} user-list | grep -qx pivotal || " \
         "#{ctl} user-create pivotal --email pivotal@example.com --admin -f /var/lib/microwave/pivotal.pem ; } &&",
         "#{ctl} org-create demo --full-name 'Microwave Demo' --association-user pivotal -f /tmp/demo-validator.pem &&",
@@ -206,8 +216,17 @@ describe 'microwave::default with create_organization' do
     command = chef_run.execute('microwave_organization').command
 
     expect(command).to include("curl -fsS --max-time 5 #{status_url} >/dev/null && { ready=1; break; }")
-    expect(command).to include('if [ "$ready" -ne 1 ]; then curl -sS --max-time 5 ' + status_url)
+    expect(command).to include('if [ "$ready" -ne 1 ]; then')
+    expect(command).to include('curl -sS --max-time 5 ' + status_url)
     expect(command).to start_with('ready=0')
+  end
+
+  it 'restarts a dead search unit once in the budget and dumps its journal on failure' do
+    command = chef_run.execute('microwave_organization').command
+
+    expect(command).to include('[ "$i" -eq 10 ] && systemctl cat opensearch.service')
+    expect(command).to include('systemctl restart opensearch.service && sleep 10')
+    expect(command).to include('journalctl -u opensearch.service -n 20 --no-pager 2>/dev/null')
   end
 
   it 'follows a non-default bind in the status URL' do
