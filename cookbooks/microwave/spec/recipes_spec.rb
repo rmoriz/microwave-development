@@ -7,6 +7,10 @@ def stub_backend_material(password: 's3cret', ca: 'CA-PEM')
   allow(::File).to receive(:read).and_call_original
   allow(::File).to receive(:exist?).and_call_original
   allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return("#{password}\n")
+  allow(::File).to receive(:read).with('/etc/microwave/garage.access_key').and_return("AKIAEXAMPLE\n")
+  allow(::File).to receive(:read).with('/etc/microwave/garage.secret_key').and_return("SECRETKEY\n")
+  allow(::File).to receive(:exist?).with('/etc/microwave/garage.access_key').and_return(true)
+  allow(::File).to receive(:exist?).with('/etc/microwave/garage.secret_key').and_return(true)
   allow(::File).to receive(:read).with(Microwave::TLS.ca_cert).and_return(ca)
   allow(::File).to receive(:exist?).with(Microwave::TLS.ca_cert).and_return(true)
 end
@@ -83,6 +87,54 @@ describe 'microwave::default under a wrapper with its own backend hosts' do
   end
 end
 
+describe 'microwave::default object store' do
+  before { stub_backend_material }
+
+  it 'runs no garage resource and keeps the local backend by default' do
+    run = runner.converge('microwave::default')
+
+    expect(run.resource_collection.map { |r| r.resource_name.to_s }).not_to include('microwave_garage')
+    expect(run.microwave_server('default').object_store_backend).to eq('local')
+    expect(run.microwave_server('default').object_store_endpoint).to be_nil
+  end
+
+  it 'includes garage before the server and points at loopback when asked' do
+    run = runner { |n| n.normal['microwave']['object_store_backend'] = 'garage' }.converge('microwave::default')
+    names = run.resource_collection.map { |r| r.resource_name.to_s }
+    expect(names.index('microwave_garage')).to be < names.index('microwave_server')
+    expect(run.microwave_server('default').object_store_endpoint).to eq('https://127.0.0.1:3900')
+  end
+
+  it 'names the store node and keeps its endpoint when a wrapper sets them' do
+    run = runner do |n|
+      n.normal['microwave']['object_store_backend'] = 'garage'
+      n.normal['microwave']['client_network'] = '10.0.0.0/24'
+      n.normal['microwave']['object_store_host'] = 'store.wrapper.example.com'
+    end.converge('microwave::default')
+
+    expect(run.microwave_server('default').object_store_endpoint)
+      .to eq('https://store.wrapper.example.com:3900')
+  end
+
+  it 'uses the bind as the store host on a client network without one' do
+    run = runner do |n|
+      n.normal['microwave']['object_store_backend'] = 'garage'
+      n.normal['microwave']['client_network'] = '10.0.0.0/24'
+    end.converge('microwave::default')
+
+    expect(run.microwave_server('default').object_store_endpoint).to eq('https://chef.example.com:3900')
+  end
+
+  it 'keeps an endpoint the wrapper set itself' do
+    run = runner do |n|
+      n.normal['microwave']['object_store_backend'] = 'garage'
+      n.normal['microwave']['object_store_endpoint'] = 'https://s3.wrapper.example.com:9000'
+    end.converge('microwave::default')
+
+    expect(run.microwave_server('default').object_store_endpoint).to eq('https://s3.wrapper.example.com:9000')
+  end
+end
+
 describe 'microwave::default with create_organization' do
   before do
     stub_backend_material
@@ -143,15 +195,26 @@ describe 'microwave::default with create_organization' do
   end
 
   it 'converges only once the organization is absent' do
-    expect(chef_run.execute('microwave_organization').not_if.map(&:command))
-      .to eq(["#{ctl} org-list | grep -qx demo"])
+    expect(chef_run.execute('microwave_organization').not_if.last.command)
+      .to eq("#{ctl} org-list | grep -qx demo")
   end
 
-  it 'keeps the missing organization as the only guard' do
+  it 'keeps the marker and the missing organization as the only guards, marker first' do
     organization = chef_run.execute('microwave_organization')
 
     expect(organization.only_if).to be_empty
-    expect(organization.not_if.size).to eq(1)
+    expect(organization.not_if.size).to eq(2)
+    expect(organization.not_if.first.command).to be_nil
+    expect(organization.not_if.first.block).not_to be_nil
+  end
+
+  it 'skips the whole step on a disabled node without waiting for the status endpoint' do
+    allow(::File).to receive(:exist?)
+      .with('/etc/microwave/disabled/microwave-server').and_return(true)
+
+    organization = chef_run.execute('microwave_organization')
+
+    expect(organization.not_if.first.block.call).to be(true)
   end
 
   it 'retries the command itself, with retries behind it' do
@@ -208,7 +271,7 @@ describe 'microwave::default with create_organization when only demo2 exists' do
   end
 
   it 'does not mistake demo2 for the demo organization' do
-    guard = chef_run.execute('microwave_organization').not_if.first.command
+    guard = chef_run.execute('microwave_organization').not_if.last.command
 
     # run the real guard against an org list that only carries demo2
     `ORG_LIST=demo2 #{guard} > /dev/null 2>&1`
@@ -218,7 +281,7 @@ describe 'microwave::default with create_organization when only demo2 exists' do
   end
 
   it 'skips the execute when the org list carries demo' do
-    guard = chef_run.execute('microwave_organization').not_if.first.command
+    guard = chef_run.execute('microwave_organization').not_if.last.command
 
     # positive control: the same guard must now succeed, which makes not_if skip
     `ORG_LIST=demo #{guard} > /dev/null 2>&1`

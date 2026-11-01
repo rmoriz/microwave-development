@@ -53,6 +53,14 @@ microwave_server 'default' do
   bind listen
   public_url node['microwave']['public_url'] unless node['microwave']['public_url'].to_s.empty?
 
+  object_store_backend node['microwave']['object_store_backend']
+  object_store_bucket node['microwave']['object_store_bucket']
+  object_store_endpoint node['microwave']['object_store_endpoint']
+  object_store_region node['microwave']['object_store_region']
+  object_store_path_style node['microwave']['object_store_path_style']
+  object_store_access_key_file node['microwave']['object_store_access_key_file']
+  object_store_secret_key_file node['microwave']['object_store_secret_key_file']
+
   database_url lazy {
     password = node['microwave']['database_password']
     if password.to_s.empty?
@@ -119,6 +127,9 @@ if node['microwave']['create_organization']
     COMMAND
     retries 3
     retry_delay 3
+    # The block guard is first so Chef short-circuits the list: a node disabled
+    # by microwave::disable never waits for the status endpoint.
+    not_if { Microwave::Disabled.marked?('microwave-server') }
     not_if "#{ctl} org-list | grep -qx demo"
   end
 end

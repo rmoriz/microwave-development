@@ -2,6 +2,6 @@
 
 microwave_garage 'default' do
   capacity node['microwave']['garage_capacity']
-  bucket node['microwave']['garage_bucket']
+  bucket node['microwave']['object_store_bucket']
   client_network node['microwave']['client_network']
 end

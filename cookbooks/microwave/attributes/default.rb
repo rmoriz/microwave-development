@@ -22,5 +22,15 @@ default['microwave']['garage_digests'] = {
   'x86_64' => '2ff667286217cd73ebcb1c03af993822365000441dfe31a80cb64c5189a9dea8',
   'aarch64' => '69b6040cef428b993500c17dd0d0c1240acf2f3f667b9b05ceba4b9660db4e8c',
 }
+# The store and the server share this bucket name; `garage_bucket` keeps its
+# value alongside it.
+default['microwave']['object_store_backend'] = 'local'
+default['microwave']['object_store_bucket'] = 'chef-cookbooks'
+default['microwave']['object_store_region'] = 'garage'
+default['microwave']['object_store_endpoint'] = nil
+default['microwave']['object_store_host'] = nil
+default['microwave']['object_store_path_style'] = true
+default['microwave']['object_store_access_key_file'] = '/etc/microwave/garage.access_key'
+default['microwave']['object_store_secret_key_file'] = '/etc/microwave/garage.secret_key'
 default['microwave']['client_network'] = nil
 default['microwave']['create_organization'] = false
