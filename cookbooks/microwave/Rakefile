@@ -2,6 +2,14 @@ require 'rspec/core/rake_task'
 
 RSpec::Core::RakeTask.new(:spec)
 
+# Without `DOCKER_HOST`, dokken falls back to tcp://127.0.0.1:2375. Docker
+# Desktop on macOS only ships a per-user socket, so use it instead of making
+# every caller export DOCKER_HOST. CI has /var/run/docker.sock and is unaffected.
+if ENV['DOCKER_HOST'].to_s.empty? && !File.socket?('/var/run/docker.sock')
+  desktop_socket = File.join(ENV['HOME'].to_s, '.docker/run/docker.sock')
+  ENV['DOCKER_HOST'] = "unix://#{desktop_socket}" if File.socket?(desktop_socket)
+end
+
 # The kitchen suites. Both need a docker daemon; the log is kept next to the
 # fixtures (git-ignored) because Test Kitchen truncates `.kitchen/logs` on every
 # invocation, so the captured console is the only durable record of a run.
