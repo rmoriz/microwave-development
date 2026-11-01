@@ -11,12 +11,19 @@ include_recipe 'microwave::search'
 # The garage include stays after the backends and before the server, which
 # reads the endpoint fill below.
 if node['microwave']['object_store_backend'] == 'garage'
-  # The endpoint lands in presigned URLs and has to match the certificate SAN.
-  # A single node reaches the store on loopback; a split wrapper names the
-  # store node in object_store_host or sets object_store_endpoint itself.
+  # The endpoint lands in presigned URLs, so it has to match both the
+  # certificate SAN and the vhost listener. Both use the resource's hostname
+  # (FQDN, else hostname) and 127.0.0.1, not the server bind. A client network
+  # adds the store's name; a split wrapper names the store node in
+  # object_store_host or sets object_store_endpoint itself.
   if node['microwave']['object_store_endpoint'].to_s.empty?
     store_host = node['microwave']['object_store_host'].to_s
-    store_host = node['microwave']['client_network'] ? node['microwave']['bind'] : '127.0.0.1' if store_host.empty?
+    if store_host.empty?
+      store_host = '127.0.0.1'
+      # cookstyle:disable Chef/RedundantCode/OhaiAttributeToString
+      store_host = node['fqdn'].to_s.empty? ? node['hostname'] : node['fqdn'] if node['microwave']['client_network']
+      # cookstyle:enable Chef/RedundantCode/OhaiAttributeToString
+    end
     node.default['microwave']['object_store_endpoint'] = "https://#{store_host}:3900"
   end
   include_recipe 'microwave::garage'

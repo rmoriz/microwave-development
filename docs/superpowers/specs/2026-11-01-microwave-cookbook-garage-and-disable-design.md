@@ -12,7 +12,9 @@ all-in-one or split, with TLS on every backend hop. Two gaps remain:
 1. **No object store off the server host.** The template hardcodes
    `[object_store] backend = "local"`, and local `/bookshelf` URLs are built
    from `server.bind` (`docs/deployment.md`, "The local object store caveat"),
-   so a split deployment serves presigned URLs nobody outside the node can use.
+   so a split deployment serves presigned URLs nobody outside the node can use;
+   the cookbook's Garage endpoint therefore follows the certificate name, not
+   `server.bind`.
    Garage is already a first-class backend in the server
    (`ObjectStoreBackend::Garage`, `microwave-config/src/config.rs:317`) and
    `packaging/` carries an evaluation-only compose profile for it. The cookbook
@@ -167,7 +169,9 @@ Properties: `hostname` (as in the other resources), `port` (default 3900),
    /usr/local/bin/garage -c /etc/garage.toml server`, `Restart=on-failure`,
    `TimeoutStopSec`, `GARAGE_LOG_TO_JOURNALD=1`, `StateDirectory` omitted in
    favour of the directories above, no `ProtectSystem`/`ReadWritePaths` that
-   would fight them.
+   would fight them. On a node without an init the service resource starts the
+   daemon directly through `libraries/direct_service.rb`, which OpenSearch
+   shares.
 8. The TLS block as in `postgresql.rb`/`opensearch.rb`: CA key/cert, key
    `Microwave::TLS.key('garage')`, CSR, SAN `DNS:<hostname>,IP:127.0.0.1`,
    certificate, `backend-cert.cnf`. Key `0600` `garage:garage`, cert `0640`.

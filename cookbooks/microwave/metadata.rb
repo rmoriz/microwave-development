@@ -1,7 +1,7 @@
 name 'microwave'
 maintainer 'Roland Moriz'
 license 'AGPL-3.0'
-description 'Installs Microwave Server with PostgreSQL and OpenSearch on Debian 13'
+description 'Installs Microwave Server with PostgreSQL, OpenSearch and Garage on Debian 13'
 version '0.1.0'
 source_url 'https://github.com/rmoriz/microwave-development'
 issues_url 'https://github.com/rmoriz/microwave-development/issues'
@@ -10,7 +10,7 @@ supports 'debian', '>= 13.0'
 
 # Cookstyle calls the `recipe` declarations redundant, but they are read by
 # `knife cookbook metadata` and by spec/metadata_spec.rb; the README documents
-# the same four recipes for humans. Keep both.
+# the same seven recipes for humans. Keep both.
 # cookstyle:disable Chef/RedundantCode/RecipeMetadata
 recipe 'microwave::default', 'Server and backends on one node'
 recipe 'microwave::server', 'Server, configuration and service only'

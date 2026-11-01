@@ -12,7 +12,7 @@ property :port, Integer, default: 3900
 property :capacity, String, default: lazy { node['microwave']['garage_capacity'] }
 property :bucket, String, default: 'chef-cookbooks'
 property :region, String, default: 'garage'
-property :client_network, [String, nil]
+property :client_network, [String, nil], default: lazy { node['microwave']['client_network'] }
 property :version, String, default: lazy { node['microwave']['garage_version'] }, regex: /\A\d+\.\d+\.\d+\z/
 
 action :install do
@@ -362,9 +362,11 @@ action :install do
     not_if { Microwave::Disabled.marked?('garage') }
   end
 
-  # `layout show` prints the node id truncated to the first 16 hex characters,
-  # so the guard greps that prefix instead of the full key. Matching anywhere in
-  # the output also covers a change that is already staged.
+  # `layout show` prints the node id truncated to the first 16 hex characters
+  # and the capacity humanised (`1G` becomes `953.7 MiB`), so the guard matches
+  # the node's own rows and compares the capacity in bytes with rounding slack.
+  # A changed capacity stages again; a row that already carries it — current or
+  # already staged — is left alone.
   execute 'microwave-garage-layout-assign' do
     command lazy { "#{garage} -c #{config} layout assign -z dc1 -c #{new_resource.capacity} #{node_id.call}" }
     user 'garage'
@@ -373,7 +375,24 @@ action :install do
     not_if { Microwave::Disabled.marked?('garage') }
     not_if do
       id = node_id.call
-      !id.empty? && system("#{garage} -c #{config} layout show 2>/dev/null | grep -q #{id[0, 16]}")
+      next false if id.empty?
+
+      match = new_resource.capacity.match(/\A([\d.]+)\s*([KMGTP]?)(i?B?)\z/i)
+      next false if match.nil?
+
+      amount, prefix, binary = match.captures
+      power = prefix.empty? ? 0 : 'KMGTP'.index(prefix.upcase) + 1
+      wanted = amount.to_f * (binary.downcase == 'ib' ? 1024 : 1000)**power
+      units = { 'B' => 1, 'KiB' => 1024, 'MiB' => 1024**2, 'GiB' => 1024**3, 'TiB' => 1024**4 }
+
+      `#{garage} -c #{config} layout show 2>/dev/null`.lines.any? do |line|
+        fields = line.split
+        next false unless fields.first == id[0, 16]
+
+        fields.each_cons(2).any? do |number, unit|
+          units.key?(unit) && (number.to_f * units[unit] - wanted).abs <= wanted * 0.001
+        end
+      end
     end
   end
 

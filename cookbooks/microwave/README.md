@@ -193,10 +193,10 @@ pick up.
 | `node['microwave']['database_password']` | `nil` | Literal password; wins over the file. Prefer the file on a shared attributes source. |
 | `node['microwave']['database_password_file']` | `/etc/microwave/db.password` | Read for the password when `database_password` is unset or empty. |
 | `node['microwave']['ca_certs']` | `[]` | PEM CAs handed to the server resource and installed into the trust store. |
-| `node['microwave']['ca_cert_file']` | `nil` | File to read one CA from when `ca_certs` is empty; the local generated CA is the last fallback. |
+| `node['microwave']['ca_cert_file']` | `nil` | File to read the CA bundle from when `ca_certs` is empty; the local generated CA is the last fallback. |
 | `node['microwave']['search_host']` | `nil` | Search node; the URL is `https://<host>:9200`. |
 | `node['microwave']['opensearch_heap']` | `'1g'` | OpenSearch heap. |
-| `node['microwave']['client_network']` | `nil` | CIDR that opens every backend. |
+| `node['microwave']['client_network']` | `nil` | CIDR that opens the database and search backends and narrows the already-open Garage proxy. |
 | `node['microwave']['create_organization']` | `false` | Creates the `pivotal` admin, the organization `demo` and its membership, and waits for `/_status` first. The server writes the superuser key to `<data_dir>/pivotal.pem`. |
 | `node['microwave']['garage_version']` | `'2.5.0'` | Garage release the resource installs. |
 | `node['microwave']['garage_capacity']` | `'1G'` | Capacity the node gets in the Garage layout. |
@@ -230,8 +230,9 @@ node.default['microwave']['create_organization'] = true
 include_recipe 'microwave::default'
 ```
 
-Backends only listen on loopback in this layout; the server dials
-`127.0.0.1`.
+PostgreSQL and OpenSearch only listen on loopback in this layout; the server
+dials `127.0.0.1`. The Garage proxy also listens on the node name and accepts
+any source there until `client_network` narrows it.
 
 ### Split
 

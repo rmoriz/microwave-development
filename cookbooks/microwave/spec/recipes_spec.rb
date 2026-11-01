@@ -99,7 +99,11 @@ describe 'microwave::default object store' do
   end
 
   it 'includes garage before the server and points at loopback when asked' do
-    run = runner { |n| n.normal['microwave']['object_store_backend'] = 'garage' }.converge('microwave::default')
+    run = runner do |n|
+      n.normal['microwave']['object_store_backend'] = 'garage'
+      # The bind is not what the certificate and the vhost use.
+      n.normal['microwave']['bind'] = '0.0.0.0'
+    end.converge('microwave::default')
     names = run.resource_collection.map { |r| r.resource_name.to_s }
     expect(names.index('microwave_garage')).to be < names.index('microwave_server')
     expect(run.microwave_server('default').object_store_endpoint).to eq('https://127.0.0.1:3900')
@@ -116,13 +120,26 @@ describe 'microwave::default object store' do
       .to eq('https://store.wrapper.example.com:3900')
   end
 
-  it 'uses the bind as the store host on a client network without one' do
+  it 'uses the certificate name, not the bind, as the store host on a client network' do
     run = runner do |n|
       n.normal['microwave']['object_store_backend'] = 'garage'
       n.normal['microwave']['client_network'] = '10.0.0.0/24'
+      n.normal['microwave']['bind'] = '10.0.0.10'
     end.converge('microwave::default')
 
     expect(run.microwave_server('default').object_store_endpoint).to eq('https://chef.example.com:3900')
+  end
+
+  it 'falls back to the hostname when the FQDN is empty' do
+    run = ChefSpec::SoloRunner.new(platform: 'debian', version: '13') do |node|
+      node.name('chef-node')
+      node.automatic['fqdn'] = ''
+      node.automatic['hostname'] = 'chef-node'
+      node.normal['microwave']['object_store_backend'] = 'garage'
+      node.normal['microwave']['client_network'] = '10.0.0.0/24'
+    end.converge('microwave::default')
+
+    expect(run.microwave_server('default').object_store_endpoint).to eq('https://chef-node:3900')
   end
 
   it 'keeps an endpoint the wrapper set itself' do

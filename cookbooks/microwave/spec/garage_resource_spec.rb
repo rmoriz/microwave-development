@@ -12,7 +12,10 @@ describe 'microwave_garage' do
   # The admin reads answer per command: `node id -q` returns the key, `layout
   # show` the table. Both are backticks, the guards shell out through `system`.
   let(:node_id) { 'aa11bb22cc33' }
-  let(:layout_show) { "==== CURRENT CLUSTER LAYOUT ====\n#{node_id}  []  dc1  1G\n" }
+  # The shape Garage really prints: a truncated id and a humanised capacity.
+  let(:layout_show) do
+    "==== CURRENT CLUSTER LAYOUT ====\n#{node_id}  []  dc1  953.7 MiB  953.7 MiB (100.0%)\n"
+  end
 
   before do
     # The state guards shell out through `system`, not `stub_command`, and the
@@ -29,7 +32,11 @@ describe 'microwave_garage' do
     allow(::File).to receive(:read).with('/etc/microwave/garage.access_key').and_return("AKIAEXAMPLE\n")
     allow(::File).to receive(:read).with('/etc/microwave/garage.secret_key').and_return("SECRETKEY\n")
     allow_any_instance_of(Chef::Provider).to receive(:`) do |*args|
-      args.last.to_s.include?('node id') ? "#{node_id}@127.0.0.1:3901\n" : layout_show
+      args.last.to_s.include?('node id') ? "#{node_id}@127.0.0.1:3901\n" : ''
+    end
+    # The assign guard reads `layout show` from the resource, not the provider.
+    allow_any_instance_of(Chef::Resource::Execute).to receive(:`) do |_resource, command|
+      command.to_s.include?('layout show') ? layout_show : ''
     end
 
     allow(::File).to receive(:symlink?).and_call_original
@@ -51,6 +58,25 @@ describe 'microwave_garage' do
       node.automatic['fqdn'] = 'garage.example.com'
       node.automatic['kernel']['machine'] = 'x86_64'
     end.converge('microwave-test::garage')
+  end
+
+  # A converge at another capacity.
+  def converge_at(capacity)
+    ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_garage']) do |node|
+      node.name('garage.example.com')
+      node.automatic['fqdn'] = 'garage.example.com'
+      node.automatic['kernel']['machine'] = 'x86_64'
+      node.normal['microwave']['garage_capacity'] = capacity
+    end.converge('microwave-test::garage')
+  end
+
+  # The assign guard reads the layout table; serve it with the capacity asked
+  # for, so the examples below can vary the table and the capacity separately.
+  def assign_guard(capacity, layout = nil)
+    allow_any_instance_of(Chef::Resource::Execute).to receive(:`) do |_resource, command|
+      command.to_s.include?('layout show') ? (layout || layout_show) : ''
+    end
+    converge_at(capacity).execute('microwave-garage-layout-assign')
   end
 
   it 'creates the service accounts and keeps the data directories tight' do
@@ -281,12 +307,35 @@ describe 'microwave_garage' do
   end
 
   it 'stages the only node with the configured capacity' do
-    assign = chef_run.execute('microwave-garage-layout-assign')
+    assign = assign_guard('1G')
 
     expect(assign.command)
       .to eq('/usr/local/bin/garage -c /etc/garage.toml layout assign -z dc1 -c 1G aa11bb22cc33')
     expect(assign.not_if.size).to eq(2)
     expect(assign.not_if.first.block.call).to be(false)
+    # The layout row already carries the configured capacity, humanised as
+    # `953.7 MiB`.
+    expect(assign.not_if.last.block.call).to be(true)
+  end
+
+  it 'stages again when the capacity changed' do
+    assign = assign_guard('2G')
+
+    expect(assign.command).to end_with(' -c 2G aa11bb22cc33')
+    expect(assign.not_if.last.block.call).to be(false)
+  end
+
+  it 'leaves an already staged capacity alone' do
+    layout = layout_show.sub("\n", "\n==== STAGED ROLE CHANGES ====\n#{node_id}  []  dc1  1907.3 MiB  1907.3 MiB (100.0%)\n")
+    assign = assign_guard('2G', layout)
+
+    expect(assign.not_if.last.block.call).to be(true)
+  end
+
+  it 'does not mistake a larger capacity for the configured one' do
+    layout = layout_show.sub('953.7 MiB  953.7 MiB', '10.2 GiB  10.2 GiB')
+    assign = assign_guard('1G', layout)
+
     expect(assign.not_if.last.block.call).to be(false)
   end
 
@@ -307,18 +356,11 @@ describe 'microwave_garage' do
   context 'with a full node key' do
     let(:node_id) { '580a5f67a86de67f0123456789abcdef0123456789abcdef0123456789abcdef' }
 
-    it 'greps the truncated id the layout table prints' do
-      commands = []
-      allow_any_instance_of(Chef::Resource::Execute).to receive(:system) do |command|
-        commands << command.to_s
-        false
-      end
-
-      assign = chef_run.execute('microwave-garage-layout-assign')
-      assign.not_if.last.block.call
+    it 'matches the truncated id the layout table prints' do
+      assign = assign_guard('1G', "==== CURRENT CLUSTER LAYOUT ====\n580a5f67a86de67f  []  dc1  953.7 MiB  953.7 MiB (100.0%)\n")
 
       expect(assign.command).to end_with(" #{node_id}")
-      expect(commands.grep(/layout show/)).to all(end_with('grep -q 580a5f67a86de67f'))
+      expect(assign.not_if.last.block.call).to be(true)
     end
   end
 

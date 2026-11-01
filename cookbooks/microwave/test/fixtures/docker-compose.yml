@@ -1,9 +1,10 @@
 # The three backend nodes of the split suite. test/hooks builds, starts and tears
 # the stack down; the cookbooks are mounted read-only and the shared directory
 # is writable so the nodes can publish their password, CA and key material to the
-# host. The apt archive cache is a host directory, so the 1.1 GB OpenSearch deb,
-# the PostgreSQL packages and the Garage binary are fetched once instead of on
-# every run.
+# host. The apt archive cache is a host directory, so the 1.1 GB OpenSearch deb
+# and the PostgreSQL packages are fetched once instead of on every run; the
+# Garage binary is a `remote_file` into `/usr/local/bin` and is downloaded again
+# on every provision.
 name: microwave-test
 
 x-node: &node

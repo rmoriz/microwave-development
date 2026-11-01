@@ -495,7 +495,22 @@ not_if { system("#{garage} -c #{config} status >/dev/null 2>&1") }
 command "#{garage} -c #{config} layout assign -z dc1 -c #{capacity} #{node_id}"
 not_if do
   id = `#{garage} -c #{config} node id -q 2>/dev/null`.split('@').first.to_s
-  !id.empty? && system("#{garage} -c #{config} layout show 2>/dev/null | grep -q #{id}")
+  next false if id.empty?
+  # only the node's own rows count; the capacity is printed humanised
+  # (`1G` becomes `953.7 MiB`), so compare it in bytes with rounding slack
+  match = capacity.match(/\A([\d.]+)\s*([KMGTP]?)(i?B?)\z/i)
+  next false if match.nil?
+  amount, prefix, binary = match.captures
+  power = prefix.empty? ? 0 : 'KMGTP'.index(prefix.upcase) + 1
+  wanted = amount.to_f * (binary.downcase == 'ib' ? 1024 : 1000)**power
+  units = { 'B' => 1, 'KiB' => 1024, 'MiB' => 1024**2, 'GiB' => 1024**3, 'TiB' => 1024**4 }
+  `#{garage} -c #{config} layout show 2>/dev/null`.lines.any? do |line|
+    fields = line.split
+    next false unless fields.first == id[0, 16]
+    fields.each_cons(2).any? do |number, unit|
+      units.key?(unit) && (number.to_f * units[unit] - wanted).abs <= wanted * 0.001
+    end
+  end
 end
 # apply: enact the staged version once
 command "#{garage} -c #{config} layout apply --version 1"
@@ -685,12 +700,21 @@ Attributes: `object_store_backend 'local'`, `object_store_bucket 'chef-cookbooks
 
 ```ruby
 if node['microwave']['object_store_backend'] == 'garage'
-  store_host = node['microwave']['object_store_host'].to_s
-  store_host = node['microwave']['client_network'] ? node['microwave']['bind'] : '127.0.0.1' if store_host.empty?
-  node.default['microwave']['object_store_endpoint'] ||= "https://#{store_host}:3900"
+  if node['microwave']['object_store_endpoint'].to_s.empty?
+    store_host = node['microwave']['object_store_host'].to_s
+    if store_host.empty?
+      store_host = '127.0.0.1'
+      store_host = node['fqdn'].to_s.empty? ? node['hostname'] : node['fqdn'] if node['microwave']['client_network']
+    end
+    node.default['microwave']['object_store_endpoint'] = "https://#{store_host}:3900"
+  end
   include_recipe 'microwave::garage'
 end
 ```
+
+The endpoint follows the certificate name (the resource `hostname`: FQDN, else
+hostname) plus `127.0.0.1`, not `server.bind`, because the SAN and the vhost
+listener are built from that name.
 
 The include must come after `microwave::search` and before the server. `recipes/server.rb` passes all seven properties; `recipes/garage.rb` passes `capacity`, `bucket` and `client_network`.
 
@@ -728,7 +752,7 @@ Add `garage` to `docker-compose.yml` like the other nodes, hostname `garage.micr
 
 `pre_converge.sh`, in the existing shapes:
 
-- `digest()` and `both_running()` cover `garage` too, and `ready()` additionally requires `-s fixtures/shared/garage.s3` and a successful `$compose exec -T garage curl -sS --cacert /mnt/shared/garage-ca.crt -o /dev/null -w '%{http_code}' https://garage.microwave.test:3900/` equal to `403`.
+- `digest()` and `both_running()` cover `garage` too, and `ready()` additionally requires `-s fixtures/shared/garage.s3` and a successful `$compose exec -T garage curl -sS --cacert /mnt/shared/garage-ca.crt https://garage.microwave.test:3900/ >/dev/null`. No `-f`: the unsigned root GET answers `403` by design, and any answer, `403` included, proves the proxy is up.
 - the cache-permission loop is `for service in db search garage`.
 - `ca.crt` is built from `db-ca.crt`, `search-ca.crt` and `garage-ca.crt`.
 - publish `garage-vhost.conf` (`$compose exec -T garage cat /etc/nginx/sites-available/microwave-garage`) next to the existing `search-vhost.conf`; the recipe already writes `garage-bucket.txt` into the shared directory, and `chmod 0644` covers both through the existing glob.
