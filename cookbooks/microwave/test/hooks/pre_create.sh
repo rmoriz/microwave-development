@@ -12,6 +12,9 @@ mkdir -p fixtures/shared fixtures/logs
 # write into it, hence 0777 (the sandbox user is not the owner).
 mkdir -p fixtures/cache/apt/archives/partial
 chmod 0777 fixtures/cache/apt/archives fixtures/cache/apt/archives/partial
+# apt leaves the lock file as root:root 0640; kitchen copies the cookbook tree
+# and the runner can neither read nor chmod it, but it can unlink it here.
+rm -f fixtures/cache/apt/archives/lock
 
 if ! docker network inspect microwave-test >/dev/null 2>&1; then
   docker network create --subnet 172.28.0.0/16 microwave-test >/dev/null

@@ -121,6 +121,12 @@ $compose exec -T db stat -c '%a' /etc/microwave/db.password \
 # runner itself cannot chmod them; the mode stays wide enough for the node to
 # read what the probes publish.
 $compose exec -T db sh -c 'chmod 0644 /mnt/shared/*'
+
+# apt leaves its lock file behind as root:root 0640. Kitchen copies the cookbook
+# tree for the sandbox and cannot read it, and the runner cannot chmod a file it
+# does not own, but it can unlink it in the 0777 directory.
+rm -f fixtures/cache/apt/archives/lock
+
 if [ "$provision" -eq 1 ]; then
   digest > "$marker"
   chmod 0644 "$marker"
