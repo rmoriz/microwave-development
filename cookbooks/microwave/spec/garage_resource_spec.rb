@@ -153,6 +153,10 @@ describe 'microwave_garage' do
   end
 
   it 'installs nginx and declares a marker-guarded reload target' do
+    # A minimal container has no package lists, so the lists come first.
+    expect(chef_run).to periodic_apt_update('nginx')
+    names = chef_run.resource_collection.map(&:to_s)
+    expect(names.index('apt_update[nginx]')).to be < names.index('apt_package[nginx]')
     expect(chef_run).to install_apt_package('nginx')
     expect(chef_run).to enable_service('nginx')
     expect(chef_run).to start_service('nginx')

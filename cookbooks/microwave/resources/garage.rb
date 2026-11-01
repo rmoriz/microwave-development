@@ -259,6 +259,11 @@ action :install do
 
   # A garage-only node and the all-in-one node both need the proxy, so the
   # resource installs it itself instead of borrowing another backend's package.
+  # A minimal container ships no package lists, so refresh them first; the
+  # periodic action is a no-op while the lists are younger than a day, which
+  # keeps a second converge change-free.
+  apt_update 'nginx'
+
   apt_package 'nginx'
 
   template vhost do
