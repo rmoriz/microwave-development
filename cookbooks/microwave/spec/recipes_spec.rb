@@ -290,6 +290,37 @@ describe 'microwave::server listener address' do
 
     expect(bind).to eq('[2001:db8::5]:8000')
   end
+
+  # Stock Debian maps the hostname to 127.0.1.1, so the default bind would
+  # otherwise leave the served and presigned URLs loopback-only.
+  it 'prefers the primary address when the name resolves to loopback' do
+    allow(Resolv).to receive(:getaddress).and_return('127.0.1.1')
+
+    expect(bind).to eq('198.51.100.7:8000')
+  end
+
+  it 'prefers the primary address for an IPv6 loopback result as well' do
+    allow(Resolv).to receive(:getaddress).and_return('::1')
+
+    expect(bind).to eq('198.51.100.7:8000')
+  end
+
+  it 'keeps a resolved address that is reachable' do
+    allow(Resolv).to receive(:getaddress).and_return('203.0.113.9')
+
+    expect(bind).to eq('203.0.113.9:8000')
+  end
+
+  it 'falls back to all interfaces when neither the name nor a primary address resolves' do
+    allow(Resolv).to receive(:getaddress).and_return('127.0.1.1')
+    run = runner do |node|
+      node.normal['microwave']['database_host'] = 'db.example.com'
+      node.normal['microwave']['search_host'] = 'search.example.com'
+      node.automatic['ipaddress'] = ''
+    end.converge('microwave-test::server_recipe')
+
+    expect(run.microwave_server('default').bind).to eq('0.0.0.0:8000')
+  end
 end
 
 describe 'microwave::server with backend material from files' do

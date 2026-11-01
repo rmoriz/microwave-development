@@ -19,13 +19,23 @@ raise "microwave::server needs node['microwave']['search_host']" if search_host.
 # and a name never reaches those URLs. This is the recipe-side half of the pair:
 # `microwave-ctl check-config` resolves a name itself, for hand-written configs,
 # so both paths end at an address. `Resolv.getaddress` returns the first address
-# the resolver hands back, in its order, and that one is used as is; the node's
-# primary address is only the fallback when the name does not resolve at all.
+# the resolver hands back, in its order, and that one is used as is.
+#
+# A loopback result is not good enough for the served URLs: stock Debian maps
+# the hostname to 127.0.1.1 in /etc/hosts, so resolving the default bind would
+# leave the listener loopback-only. Prefer the node's primary address whenever
+# the name resolves to loopback or does not resolve at all. A host that is
+# reachable from outside wants an explicit name that resolves to its public
+# address, or `public_url`.
+require 'ipaddr'
 require 'resolv'
+primary_address = node['ipaddress'].to_s
+primary_address = '0.0.0.0' if primary_address.empty?
 listen_address = begin
-  Resolv.getaddress(node['microwave']['bind'])
+  resolved = Resolv.getaddress(node['microwave']['bind'])
+  IPAddr.new(resolved).loopback? ? primary_address : resolved
                  rescue StandardError
-                   node['ipaddress'].to_s.empty? ? '0.0.0.0' : node['ipaddress']
+                   primary_address
 end
 listen = "#{listen_address.include?(':') ? "[#{listen_address}]" : listen_address}:8000"
 
