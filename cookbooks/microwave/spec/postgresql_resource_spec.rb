@@ -16,6 +16,7 @@ describe 'microwave_postgresql' do
     stub_command(/SELECT 1 FROM pg_database/).and_return(nil)
     stub_command(/openssl verify/).and_return(nil)
     stub_command(/openssl x509 -in/).and_return(nil)
+    stub_command('test -s /etc/microwave/db.password').and_return(true)
 
     allow(::File).to receive(:read).and_call_original
     allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return("#{password}\n")
@@ -45,14 +46,25 @@ describe 'microwave_postgresql' do
     expect(chef_run).to install_apt_package('postgresql-19')
   end
 
-  it 'writes a 32 character password once, 0640 root:microwave' do
-    expect(chef_run).to create_file_if_missing('/etc/microwave/db.password')
+  it 'writes a 32 character password, 0640 root:microwave' do
+    stub_command('test -s /etc/microwave/db.password').and_return(false)
+
+    expect(chef_run).to create_file('/etc/microwave/db.password')
       .with(owner: 'root', group: 'microwave', mode: '0640')
     expect(chef_run.file('/etc/microwave/db.password').content).to match(/\A[0-9a-f]{32}\n\z/)
   end
 
-  it 'never rewrites an existing password file' do
-    expect(chef_run.file('/etc/microwave/db.password').action).to eq([:create_if_missing])
+  it 'leaves a password file that has content alone' do
+    expect(chef_run.file('/etc/microwave/db.password').action).to eq([:create])
+    expect(chef_run.file('/etc/microwave/db.password').not_if.map(&:command))
+      .to eq(['test -s /etc/microwave/db.password'])
+  end
+
+  it 'rewrites an existing but empty file, which would set an empty role password' do
+    stub_command('test -s /etc/microwave/db.password').and_return(false)
+    allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return('')
+
+    expect(chef_run).to create_file('/etc/microwave/db.password')
   end
 
   it 'rotates the role password only when the file was just written' do
@@ -245,6 +257,7 @@ describe 'microwave_postgresql with a client network' do
     stub_command(/SELECT 1 FROM pg_database/).and_return(nil)
     stub_command(/openssl verify/).and_return(nil)
     stub_command(/openssl x509 -in/).and_return(nil)
+    stub_command('test -s /etc/microwave/db.password').and_return(true)
 
     allow(::File).to receive(:read).and_call_original
     allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return('a' * 32)
@@ -278,6 +291,7 @@ describe 'microwave_postgresql on a custom port' do
     stub_command(/SELECT 1 FROM pg_database/).and_return(nil)
     stub_command(/openssl verify/).and_return(nil)
     stub_command(/openssl x509 -in/).and_return(nil)
+    stub_command('test -s /etc/microwave/db.password').and_return(true)
 
     allow(::File).to receive(:read).and_call_original
     allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return('a' * 32)
@@ -312,6 +326,7 @@ describe 'microwave_postgresql without an FQDN' do
     stub_command(/SELECT 1 FROM pg_database/).and_return(nil)
     stub_command(/openssl verify/).and_return(nil)
     stub_command(/openssl x509 -in/).and_return(nil)
+    stub_command('test -s /etc/microwave/db.password').and_return(true)
 
     allow(::File).to receive(:read).and_call_original
     allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return('a' * 32)
@@ -337,6 +352,7 @@ describe 'microwave_postgresql with client CAs' do
     stub_command(/SELECT 1 FROM pg_database/).and_return(nil)
     stub_command(/openssl verify/).and_return(nil)
     stub_command(/openssl x509 -in/).and_return(nil)
+    stub_command('test -s /etc/microwave/db.password').and_return(true)
 
     allow(::File).to receive(:read).and_call_original
     allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return('a' * 32)

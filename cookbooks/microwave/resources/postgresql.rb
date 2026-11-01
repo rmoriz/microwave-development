@@ -172,7 +172,9 @@ action :install do
     sensitive true
     notifies :run, 'execute[microwave-alter-role-password]', :immediately
     notifies :restart, 'service[microwave-server]', :delayed
-    action :create_if_missing
+    # An existing but empty file would set an empty role password, so only a
+    # file with content counts as already written.
+    not_if 'test -s /etc/microwave/db.password'
   end
 
   directory ::File.join(data_dir, 'conf.d') do
