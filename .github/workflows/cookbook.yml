@@ -13,6 +13,18 @@ on:
     paths:
       - 'cookbooks/**'
       - '.github/workflows/cookbook.yml'
+  # Re-run one suite on demand, for example after a flaky docker or network
+  # failure, without paying for both again.
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Kitchen suite to run
+        type: choice
+        options:
+          - both
+          - all-in-one
+          - split
+        default: both
 
 permissions:
   contents: read
@@ -43,19 +55,33 @@ jobs:
       - run: bundle exec cookstyle --fail-level refactor
       - run: bundle exec rspec
 
+  # The matrix is built here because a job-level `if` cannot read it: a manual
+  # dispatch names one suite, every other event gets both.
+  select:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - id: select
+        env:
+          SUITE: ${{ inputs.suite }}
+        run: |
+          case "$SUITE" in
+            all-in-one|split)
+              printf 'matrix={"include":[{"suite":"%s","task":"kitchen:%s"}]}\n' "$SUITE" "${SUITE//-/_}" ;;
+            *)
+              echo 'matrix={"include":[{"suite":"all-in-one","task":"kitchen:all_in_one"},{"suite":"split","task":"kitchen:split"}]}' ;;
+          esac >> "$GITHUB_OUTPUT"
+
   kitchen:
+    needs: select
     runs-on: ubuntu-latest
     # Cold runs install PostgreSQL and a 1.1 GB OpenSearch deb per backend;
     # the cache below only saves the download.
     timeout-minutes: 90
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - suite: all-in-one
-            task: kitchen:all_in_one
-          - suite: split
-            task: kitchen:split
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     defaults:
       run:
         working-directory: cookbooks/microwave
