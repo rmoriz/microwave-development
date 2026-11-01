@@ -169,8 +169,14 @@ describe 'microwave::default with create_organization' do
 
     expect(command.split("\n").map(&:strip)).to eq(
       [
-        'for i in $(seq 1 20); do curl -fsS --max-time 5 http://192.0.2.10:8000/_status && break; ' \
-        '[ "$i" -lt 20 ] && sleep 3; done &&',
+        'ready=0',
+        'for i in $(seq 1 20); do',
+        'curl -fsS --max-time 5 http://192.0.2.10:8000/_status >/dev/null && { ready=1; break; }',
+        'sleep 3',
+        'done',
+        '# The last body names the failing upstream; the retry budget alone would',
+        '# only say that the endpoint answered 500.',
+        'if [ "$ready" -ne 1 ]; then curl -sS --max-time 5 http://192.0.2.10:8000/_status; exit 1; fi',
         "{ #{ctl} user-list | grep -qx pivotal || " \
         "#{ctl} user-create pivotal --email pivotal@example.com --admin -f /var/lib/microwave/pivotal.pem ; } &&",
         "#{ctl} org-create demo --full-name 'Microwave Demo' --association-user pivotal -f /tmp/demo-validator.pem &&",
@@ -182,10 +188,9 @@ describe 'microwave::default with create_organization' do
   it 'waits for the status endpoint inside the command, bounded and on the bind address' do
     command = chef_run.execute('microwave_organization').command
 
-    expect(command).to include("for i in $(seq 1 20); do curl -fsS --max-time 5 #{status_url} && break")
-    expect(command).to include('[ "$i" -lt 20 ] && sleep 3; done &&')
-    expect(command).to include(status_url)
-    expect(command).to start_with('for i in $(seq 1 20); do curl -fsS --max-time 5 http://192.0.2.10:8000/_status')
+    expect(command).to include("curl -fsS --max-time 5 #{status_url} >/dev/null && { ready=1; break; }")
+    expect(command).to include('if [ "$ready" -ne 1 ]; then curl -sS --max-time 5 ' + status_url)
+    expect(command).to start_with('ready=0')
   end
 
   it 'follows a non-default bind in the status URL' do
