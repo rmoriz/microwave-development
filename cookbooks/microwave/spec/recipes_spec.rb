@@ -311,6 +311,42 @@ describe 'microwave::server listener address' do
     expect(bind).to eq('203.0.113.9:8000')
   end
 
+  # A literal loopback bind is deliberate, for example in front of a local TLS
+  # proxy, so it must not be swapped for the primary address.
+  it 'keeps a literal 127.0.0.1 bind verbatim' do
+    run = runner do |node|
+      node.normal['microwave']['database_host'] = 'db.example.com'
+      node.normal['microwave']['search_host'] = 'search.example.com'
+      node.normal['microwave']['bind'] = '127.0.0.1'
+      node.automatic['ipaddress'] = '198.51.100.7'
+    end.converge('microwave-test::server_recipe')
+
+    expect(Resolv).not_to receive(:getaddress)
+    expect(run.microwave_server('default').bind).to eq('127.0.0.1:8000')
+  end
+
+  it 'keeps a literal ::1 bind verbatim and brackets it' do
+    run = runner do |node|
+      node.normal['microwave']['database_host'] = 'db.example.com'
+      node.normal['microwave']['search_host'] = 'search.example.com'
+      node.normal['microwave']['bind'] = '::1'
+      node.automatic['ipaddress'] = '198.51.100.7'
+    end.converge('microwave-test::server_recipe')
+
+    expect(run.microwave_server('default').bind).to eq('[::1]:8000')
+  end
+
+  it 'keeps a literal wildcard bind verbatim' do
+    run = runner do |node|
+      node.normal['microwave']['database_host'] = 'db.example.com'
+      node.normal['microwave']['search_host'] = 'search.example.com'
+      node.normal['microwave']['bind'] = '0.0.0.0'
+      node.automatic['ipaddress'] = '198.51.100.7'
+    end.converge('microwave-test::server_recipe')
+
+    expect(run.microwave_server('default').bind).to eq('0.0.0.0:8000')
+  end
+
   it 'falls back to all interfaces when neither the name nor a primary address resolves' do
     allow(Resolv).to receive(:getaddress).and_return('127.0.1.1')
     run = runner do |node|

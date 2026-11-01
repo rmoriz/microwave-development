@@ -60,6 +60,11 @@ not leave the listener loopback-only. A host that is reachable from elsewhere
 still wants an explicit name that resolves to a reachable address, or a
 `public_url` when the public base differs from the bind.
 
+A literal address is written as given, loopback included: `bind = '127.0.0.1'`
+stays loopback-only on purpose, which is the shape for a local TLS proxy in
+front. `0.0.0.0` is the reachable-but-loopback-inclusive option when no name
+resolves to the address you want.
+
 The resource also renders
 `/etc/systemd/system/microwave-server.service.d/ordering.conf` (`After=` and
 `Wants=` both backends) and enables and starts the service. The server unit
@@ -112,7 +117,7 @@ rest are defaults the resources pick up.
 
 | Attribute | Default | Purpose |
 |---|---|---|
-| `node['microwave']['bind']` | node FQDN, else hostname | Address or name the server binds; the recipe resolves it, prefers the primary address over a loopback result, and appends `:8000`. |
+| `node['microwave']['bind']` | node FQDN, else hostname | Address or name the server binds; the recipe resolves a name, prefers the primary address over a loopback result, keeps a literal address as given, and appends `:8000`. |
 | `node['microwave']['public_url']` | `nil` | `server.public_url` when set; the explicit way to publish a reachable base without changing the bind. |
 | `node['microwave']['database_name']` | `'microwave'` | Database and the name in the connection URL. |
 | `node['microwave']['database_user']` | `'microwave'` | Role and the name in the connection URL. |
