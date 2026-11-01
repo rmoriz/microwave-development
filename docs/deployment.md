@@ -650,10 +650,11 @@ image intentionally has no `ENTRYPOINT`.
 ## 5. Chef cookbook
 
 [`cookbooks/microwave`](../cookbooks/microwave/README.md) installs the packaged
-server, PostgreSQL 19 and OpenSearch 3.9 on Debian 13 nodes with Chef Infra
-Client 19.4.46 to below 20. It covers the host steps of this guide — package,
-`/etc/microwave/microwave.toml`, systemd unit — for hosts under a Chef run
-list, and adds packaged backends with generated, cookbook-signed TLS on top.
+server, PostgreSQL 19 and OpenSearch 3.9 on Debian 13 nodes — Debian 13 only —
+with Chef Infra Client 19.4.46 to below 20. It covers the host steps of this
+guide — package, `/etc/microwave/microwave.toml`, systemd unit — for hosts under
+a Chef run list, and adds packaged backends with generated, cookbook-signed TLS
+on top.
 
 Both intended topologies are exercised by Kitchen:
 

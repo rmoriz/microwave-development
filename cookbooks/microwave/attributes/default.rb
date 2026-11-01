@@ -1,4 +1,9 @@
-default['microwave']['bind'] = node['fqdn'].empty? ? node['hostname'] : node['fqdn']
+# `node['fqdn']` is nil on a bare Chef::Node (the attribute spec pins that), so
+# the `to_s` is there for the nil case; cookstyle sees an attribute that is
+# already a string.
+# cookstyle:disable Chef/RedundantCode/OhaiAttributeToString
+default['microwave']['bind'] = node['fqdn'].to_s.empty? ? node['hostname'] : node['fqdn']
+# cookstyle:enable Chef/RedundantCode/OhaiAttributeToString
 default['microwave']['public_url'] = nil
 default['microwave']['database_name'] = 'microwave'
 default['microwave']['database_user'] = 'microwave'

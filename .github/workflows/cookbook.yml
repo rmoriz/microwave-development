@@ -40,7 +40,7 @@ jobs:
         with:
           ruby-version: "3.3"
           bundler-cache: true
-      - run: bundle exec cookstyle
+      - run: bundle exec cookstyle --fail-level refactor
       - run: bundle exec rspec
 
   kitchen:
@@ -69,11 +69,12 @@ jobs:
       - name: Docker
         run: docker compose version
       # The suite caches downloaded debs on the host; the key follows the
-      # fixture files, so a changed node image or stack starts over.
+      # fixture files and the suite, because keys are immutable and both jobs
+      # would otherwise overwrite each other's entry.
       - uses: actions/cache@v4
         with:
           path: cookbooks/microwave/test/fixtures/cache
-          key: kitchen-apt-${{ hashFiles('cookbooks/microwave/test/fixtures/docker-compose.yml', 'cookbooks/microwave/test/fixtures/node/Dockerfile') }}
+          key: kitchen-apt-${{ matrix.suite }}-${{ hashFiles('cookbooks/microwave/test/fixtures/docker-compose.yml', 'cookbooks/microwave/test/fixtures/node/Dockerfile') }}
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
@@ -83,7 +84,7 @@ jobs:
       - name: Kitchen suite ${{ matrix.suite }}
         run: bundle exec rake ${{ matrix.task }}
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: failure() || cancelled()
         with:
           name: kitchen-logs-${{ matrix.suite }}
           path: cookbooks/microwave/test/fixtures/logs

@@ -17,6 +17,10 @@ describe 'microwave attributes' do
     expect(node_for('').dig('microwave', 'bind')).to eq('kitchen-node')
   end
 
+  it 'falls back to the hostname when the fqdn is unset' do
+    expect(node_for(nil).dig('microwave', 'bind')).to eq('kitchen-node')
+  end
+
   it 'reads the database password from the local file by default' do
     expect(node_for('microwave.example').dig('microwave', 'database_password_file'))
       .to eq('/etc/microwave/db.password')

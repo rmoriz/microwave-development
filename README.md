@@ -69,7 +69,7 @@ promise.
 | `X-Ops-Sign` signing — 1.0/1.1/1.3 canonicalization, RSA verification, key reassembly | [`docs/pedant-report.md`](docs/pedant-report.md) |
 | Both metadata backends — SQLite and PostgreSQL behind one store contract | [`crates/microwave-store/tests/dual_backend.rs`](crates/microwave-store/tests/dual_backend.rs) |
 | Operations CLI `microwave-ctl` — user/org administration, key rotation, backup/restore, reindex, diagnostics | [`TODO.md`](TODO.md) |
-| Migration — snapshot import and `knife ec backup` import | [`docs/deployment.md`](docs/deployment.md#10-migration-from-a-legacy-server) |
+| Migration — snapshot import and `knife ec backup` import | [`docs/deployment.md`](docs/deployment.md#11-migration-from-a-legacy-server) |
 | MCP endpoint — `experimental`, off by default, writes off with `writes = false` | [`docs/mcp.md`](docs/mcp.md) |
 
 `/validate/*` and `_identifiers` are internal upstream APIs; the API surface, the authorization
