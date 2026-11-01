@@ -232,10 +232,17 @@ describe 'microwave_garage' do
     expect(chef_run).to enable_service('garage')
     expect(chef_run).to start_service('garage')
     expect(chef_run.service('garage').not_if.first.block.call).to be(false)
-    # The CLI refuses to work while a restart has the pidfile away, and the
-    # provisioning steps call it right after this resource.
+    # A restart drops the pidfile, and the provisioning steps call the CLI
+    # right after this resource, so the restart notifies an unguarded wait.
     expect(chef_run.service('garage'))
-      .to notify('execute[microwave-garage-wait]').to(:run).delayed
+      .to notify('execute[microwave-garage-restart-wait]').to(:run).delayed
+
+    restart_wait = chef_run.execute('microwave-garage-restart-wait')
+    expect(restart_wait.command).to eq(chef_run.execute('microwave-garage-wait').command)
+    expect(restart_wait.not_if.map(&:command)).to eq([nil])
+    expect(restart_wait.action).to eq([:nothing])
+    expect(chef_run.resource_collection.map(&:to_s).index('execute[microwave-garage-wait]'))
+      .to be < chef_run.resource_collection.map(&:to_s).index('execute[microwave-garage-restart-wait]')
 
     names = chef_run.resource_collection.map(&:to_s)
     expect(names.index('service[garage]')).to be < names.index('execute[microwave-garage-wait]')

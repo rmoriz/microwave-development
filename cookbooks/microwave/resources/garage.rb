@@ -308,9 +308,9 @@ action :install do
     # Garage ships no init script, so a container without systemd cannot enable
     # or start it through sysvinit: update-rc.d aborts on the missing script.
     # The daemon is started directly there; a host with systemd keeps its unit.
-    # The wait is repeated after a restart: the CLI refuses to work while the
-    # pidfile is gone, and the steps below call it right after this resource.
-    notifies :run, 'execute[microwave-garage-wait]', :delayed
+    # The restart returns before the CLI can work again, so it is followed by a
+    # wait of its own; the steps below call the CLI right after this resource.
+    notifies :run, 'execute[microwave-garage-restart-wait]', :delayed
     if Microwave::DirectService.systemd?
       action %i(enable start)
     else
@@ -348,6 +348,18 @@ action :install do
     group 'garage'
     not_if { Microwave::Disabled.marked?('garage') }
     not_if { system("#{garage} -c #{config} status >/dev/null 2>&1") }
+  end
+
+  # Reached only through the notification above: a restart drops the pidfile,
+  # so this one waits without an up-guard that could race the old process.
+  execute 'microwave-garage-restart-wait' do
+    # Declared here but only run through the notification, so it never changes a
+    # converged run.
+    action :nothing
+    command lazy { "for i in $(seq 60); do #{garage} -c #{config} status >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1" }
+    user 'garage'
+    group 'garage'
+    not_if { Microwave::Disabled.marked?('garage') }
   end
 
   # `layout show` prints the node id truncated to the first 16 hex characters,

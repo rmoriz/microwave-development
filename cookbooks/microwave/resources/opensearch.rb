@@ -293,6 +293,9 @@ action :install do
     # while the pid file does not exist yet, so a systemd-less container can
     # neither start nor stop through it. Drive the daemon directly there; a host
     # with systemd keeps its unit.
+    # The restart returns before the engine serves again, so it has to be
+    # followed by a wait of its own; the status step comes right after.
+    notifies :run, 'execute[microwave-opensearch-restart-wait]', :delayed
     if Microwave::DirectService.systemd?
       action %i(enable start)
     else
@@ -315,12 +318,20 @@ action :install do
   # restart only ever hits a serving node, and the self-notification repeats the
   # probe after that restart.
   execute 'microwave-opensearch-wait' do
-    command 'for i in $(seq 90); do ' \
-            "curl -fsS --max-time 5 http://127.0.0.1:#{http_port}/ >/dev/null && exit 0; " \
-            'sleep 2; done; exit 1'
+    command Microwave::DirectService.wait_command(http_port)
     not_if { Microwave::Disabled.marked?('opensearch') }
-    not_if "curl -fsS --max-time 5 http://127.0.0.1:#{http_port}/ >/dev/null 2>&1"
-    notifies :run, 'execute[microwave-opensearch-wait]', :delayed
+    not_if Microwave::DirectService.up_command(http_port)
+  end
+
+  # Reached only through the notification above, so it is never the reason a
+  # converged run changes and needs no up-guard: right after a restart the old
+  # process may still answer for a moment, which would skip the wait.
+  execute 'microwave-opensearch-restart-wait' do
+    # Declared here but only run through the notification, so it never changes a
+    # converged run.
+    action :nothing
+    command Microwave::DirectService.wait_command(http_port)
+    not_if { Microwave::Disabled.marked?('opensearch') }
   end
 
   # The proxy is shared by both backends, so it carries its own marker: the
@@ -405,6 +416,7 @@ action :enable do
   end
 
   service 'opensearch' do
+    # The enable start is followed by the wait declared below.
     if Microwave::DirectService.systemd?
       action %i(enable start)
     else
@@ -419,6 +431,12 @@ action :enable do
       )
       action :start
     end
+    only_if { Microwave::Disabled.unit?('opensearch') }
+  end
+
+  execute 'microwave-opensearch-wait' do
+    command Microwave::DirectService.wait_command(9210)
+    not_if Microwave::DirectService.up_command(9210)
     only_if { Microwave::Disabled.unit?('opensearch') }
   end
 end

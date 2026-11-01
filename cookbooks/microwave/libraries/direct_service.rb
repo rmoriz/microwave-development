@@ -11,6 +11,16 @@ module Microwave
     # Fills in the command attributes of a service resource. `background` makes
     # start-stop-daemon daemonize a program that does not do it itself; a
     # program that daemonizes keeps writing its own pidfile through `args`.
+    # Guards and the bounded wait for the plain HTTP port of a backend; both
+    # live here so the two places that declare the wait cannot drift.
+    def self.up_command(port)
+      "curl -fsS --max-time 5 http://127.0.0.1:#{port}/ >/dev/null 2>&1"
+    end
+
+    def self.wait_command(port)
+      "for i in $(seq 150); do #{up_command(port)} && exit 0; sleep 2; done; exit 1"
+    end
+
     def self.commands(resource, pidfile:, exec:, chuid:, chdir: '/', args: '', env: nil, background: false)
       start = +''
       start << "env #{env} " if env

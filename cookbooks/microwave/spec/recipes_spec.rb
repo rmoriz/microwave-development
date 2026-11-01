@@ -594,6 +594,12 @@ describe 'microwave::enable' do
                         .converge('microwave::enable')
   end
 
+  before do
+    # The search resource probes the engine after the start; a re-enabled node
+    # is stopped, so the probe runs.
+    stub_command(%r{curl -fsS --max-time 5 http://127\.0\.0\.1:9210/}).and_return(false)
+  end
+
   it 'starts nginx first and the server last' do
     expect(chef_run.resource_collection.select { |r| r.resource_name == :service }.map(&:name))
       .to eq(%w(nginx garage postgresql opensearch microwave-server))
