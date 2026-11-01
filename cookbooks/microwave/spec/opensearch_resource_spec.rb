@@ -112,6 +112,18 @@ describe 'microwave_opensearch' do
       .to notify('service[opensearch]').delayed
   end
 
+  it 'raises the locked memory limit on the OpenSearch unit, which maps it' do
+    path = '/etc/systemd/system/opensearch.service.d/memlock.conf'
+
+    expect(chef_run).to create_directory('/etc/systemd/system/opensearch.service.d')
+      .with(owner: 'root', group: 'root', mode: '0755')
+    expect(chef_run).to create_template(path).with(owner: 'root', group: 'root', mode: '0644')
+    expect(rendered(path)).to include('LimitMEMLOCK=infinity')
+    expect(chef_run.template(path)).to notify('execute[systemctl daemon-reload]').immediately
+    expect(chef_run.template(path)).to notify('service[opensearch]').delayed
+    expect(chef_run.execute('systemctl daemon-reload')).to do_nothing
+  end
+
   it 'issues a CA and a search certificate named for the hostname' do
     stub_certificate_guards(pair: false)
 

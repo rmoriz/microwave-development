@@ -3,4 +3,6 @@ After=postgresql.service opensearch.service
 Wants=postgresql.service opensearch.service
 
 [Service]
+# The server process maps the index buffers it reads; OpenSearch has the same
+# limit in its own unit drop-in.
 LimitMEMLOCK=infinity

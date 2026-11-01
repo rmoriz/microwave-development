@@ -218,6 +218,31 @@ action :install do
     notifies :restart, 'service[opensearch]', :delayed
   end
 
+  # The engine maps its JNA and index buffers, so the unit raises the locked
+  # memory limit; without it the mapping can be capped by the default.
+  directory '/etc/systemd/system/opensearch.service.d' do
+    owner 'root'
+    group 'root'
+    mode '0755'
+  end
+
+  template '/etc/systemd/system/opensearch.service.d/memlock.conf' do
+    source 'opensearch.service.d/memlock.conf.erb'
+    cookbook 'microwave'
+    owner 'root'
+    group 'root'
+    mode '0644'
+    notifies :run, 'execute[systemctl daemon-reload]', :immediately
+    notifies :restart, 'service[opensearch]', :delayed
+  end
+
+  execute 'systemctl daemon-reload' do
+    action :nothing
+    # A container without systemd starts the daemon directly; calling systemctl
+    # there would fail even though the drop-in file was written.
+    only_if { ::File.exist?('/run/systemd/system') }
+  end
+
   # Microwave's OpenSearch client sends no credentials, so the security plugin
   # has to stay off. Deleting it keeps an upgraded package from pulling a demo
   # configuration back in.

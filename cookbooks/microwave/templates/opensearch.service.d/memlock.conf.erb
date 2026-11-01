@@ -1,0 +1,4 @@
+[Service]
+# OpenSearch maps its JNA and index buffers; a capped locked-memory limit can
+# abort the mapping. The server unit carries the same limit.
+LimitMEMLOCK=infinity

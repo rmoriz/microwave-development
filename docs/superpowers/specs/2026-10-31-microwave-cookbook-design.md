@@ -131,8 +131,9 @@ publishing, pedant runs, backup automation.
   the system store and enables the service; the two backend resources own
   their packages, certificates, configuration and services, and open their
   listener for the client network when one is set.
-- A systemd drop-in orders the unit after `postgresql.service` and
-  `opensearch.service` and raises `LimitMEMLOCK`; a `sysctl` resource sets
+- A systemd drop-in orders the server unit after `postgresql.service` and
+  `opensearch.service`; both units get a `LimitMEMLOCK` drop-in, because the
+  process that maps locked memory is OpenSearch; a `sysctl` resource sets
   `vm.max_map_count`.
 - The database password is generated once and persisted to
   `/etc/microwave/db.password` (`0640 root:microwave`). The file wins; if the
