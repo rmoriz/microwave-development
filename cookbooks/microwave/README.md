@@ -37,6 +37,11 @@ tag to carry a `.deb` for the node's machine (`amd64`/`arm64`) plus a matching
 `.sha256`; a draft release is rejected, so pin a published version instead. A
 `GITHUB_TOKEN` in the environment lifts the anonymous API rate limit.
 
+`latest` asks the `releases/latest` endpoint on every converge, so a rate limit
+or an API outage fails the run. Pinning `version` is the escape hatch: it asks
+the release's tag endpoint directly, so a `latest` that appears broken cannot
+hold it back.
+
 ### `microwave_server`
 
 | Property | Type | Default | Details |
@@ -48,10 +53,18 @@ tag to carry a `.deb` for the node's machine (`amd64`/`arm64`) plus a matching
 | `version` | String | `'latest'` | `latest` or `x.y.z`, nothing else. |
 | `ca_certs` | Array | `[]` | PEM CAs written to `/usr/local/share/ca-certificates` and installed with `update-ca-certificates`. |
 
+A `bind` name is resolved before it is written. When the name resolves to a
+loopback address — stock Debian maps the hostname to `127.0.1.1` in
+`/etc/hosts` — the node's primary address is used instead, so the default does
+not leave the listener loopback-only. A host that is reachable from elsewhere
+still wants an explicit name that resolves to a reachable address, or a
+`public_url` when the public base differs from the bind.
+
 The resource also renders
 `/etc/systemd/system/microwave-server.service.d/ordering.conf` (`After=` and
-`Wants=` both backends, `LimitMEMLOCK=infinity`) and enables and starts the
-service.
+`Wants=` both backends) and enables and starts the service. The server unit
+keeps `LimitMEMLOCK=infinity`; `microwave_opensearch` adds the same limit to the
+OpenSearch unit, which is the process that maps locked memory.
 
 ### `microwave_postgresql`
 
@@ -99,8 +112,8 @@ rest are defaults the resources pick up.
 
 | Attribute | Default | Purpose |
 |---|---|---|
-| `node['microwave']['bind']` | node FQDN, else hostname | Address or name the server binds; the recipe resolves it and appends `:8000`. |
-| `node['microwave']['public_url']` | `nil` | `server.public_url` when set. |
+| `node['microwave']['bind']` | node FQDN, else hostname | Address or name the server binds; the recipe resolves it, prefers the primary address over a loopback result, and appends `:8000`. |
+| `node['microwave']['public_url']` | `nil` | `server.public_url` when set; the explicit way to publish a reachable base without changing the bind. |
 | `node['microwave']['database_name']` | `'microwave'` | Database and the name in the connection URL. |
 | `node['microwave']['database_user']` | `'microwave'` | Role and the name in the connection URL. |
 | `node['microwave']['database_host']` | `nil` | Database node; `microwave::default` defaults it to `127.0.0.1`. |
@@ -165,8 +178,8 @@ A server-only wrapper must therefore carry the backend password and CA itself.
 
 Each node issues its own CA (`/etc/microwave/tls/ca.crt`, ten years) and the
 service certificate it signs (825 days, node name and `127.0.0.1` as SANs). Only
-the CA key signs; the private keys are `0600`/`0640` and owned by the service
-user.
+the CA key signs; the service keys are `0600`/`0640` and owned by the service
+user, while the CA key is `0640 root:root` because both backends share it.
 
 Two gaps remain by design:
 
