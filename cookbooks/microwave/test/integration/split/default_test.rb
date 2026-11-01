@@ -1,8 +1,8 @@
 require_relative '../helpers'
 
-# The split layout: only the server runs on this node, the database and the
-# search engine are the two containers of the fixture stack. The node is
-# registered as kitchen-split, so the knife assertions use that name.
+# The split layout: only the server runs on this node, the database, the search
+# engine and the object store are the three containers of the fixture stack. The
+# node is registered as kitchen-split, so the knife assertions use that name.
 control 'microwave split services' do
   mw = Microwave.new(inspec)
 
@@ -17,6 +17,10 @@ control 'microwave split services' do
   end
 
   describe service('opensearch') do
+    it { should_not be_running }
+  end
+
+  describe service('garage') do
     it { should_not be_running }
   end
 
@@ -46,6 +50,8 @@ control 'microwave split wiring' do
     its('group') { should eq 'microwave' }
     its('content') { should include '@db.microwave.test:5432/microwave?sslmode=require' }
     its('content') { should include 'https://search.microwave.test:9200' }
+    its('content') { should include 'backend = "garage"' }
+    its('content') { should include 'https://garage.microwave.test:3900' }
   end
 
   # The split password and the CA bundle came in over the fixture mount. The
@@ -66,11 +72,11 @@ control 'microwave split wiring' do
   end
 
   describe 'the trusted backend CAs' do
-    it 'installs both certificates' do
+    it 'installs every certificate' do
       files = inspec
               .command('cat /usr/local/share/ca-certificates/microwave-backend-*.crt 2>/dev/null')
               .stdout
-      expect(files.scan('BEGIN CERTIFICATE').size).to eq 2
+      expect(files.scan('BEGIN CERTIFICATE').size).to eq 3
     end
   end
 
@@ -95,6 +101,32 @@ control 'microwave split wiring' do
   describe file('/mnt/backend/search-vhost.conf') do
     its('content') { should include 'listen search.microwave.test:9200 ssl;' }
     its('content') { should include 'allow 172.28.0.0/16;' }
+  end
+
+  describe file('/mnt/backend/garage-ca.crt') do
+    it { should exist }
+  end
+
+  # The store node's vhost, published the same way as the search one; the HTTPS
+  # probe below proves this node gets through it.
+  describe file('/mnt/backend/garage-vhost.conf') do
+    its('content') { should include 'listen garage.microwave.test:3900 ssl;' }
+    its('content') { should include 'allow 172.28.0.0/16;' }
+  end
+
+  # The bucket the server writes cookbooks to is granted to the key the server
+  # signs with, so the grant is read back instead of assumed from the recipe.
+  describe file('/mnt/backend/garage-bucket.txt') do
+    key = mw.read('/mnt/backend/garage.access_key').strip
+
+    its('content') { should include 'RWO' }
+    its('content') { should include key }
+  end
+
+  describe 'garage over TLS' do
+    code = mw.object_store_health('garage.microwave.test', '/mnt/backend/ca.crt')
+
+    it('answers over the remote hop') { expect(code).to match(/\A(200|403)\z/) }
   end
 end
 
@@ -133,6 +165,12 @@ control 'microwave split organizations and clients' do
       said = (result.stdout.to_s + result.stderr.to_s).strip[0, 2000]
       expect(result.exit_status).to eq(0), "cinc-client said: #{said}"
       expect(mw.knife('node', 'show', 'probe').stdout).to include('kitchen_probe')
+
+      # The cookbook went to the object store, not to a local file, so a download
+      # through the API is what proves the book survived the round trip.
+      expect(mw.knife('cookbook', 'download', 'kitchen_probe', '0.1.0', '--force',
+                      '-d', '/tmp/kitchen-download').exit_status).to eq(0)
+      expect(inspec.file('/tmp/kitchen-download/kitchen_probe-0.1.0/recipes/default.rb')).to exist
     end
   end
 end

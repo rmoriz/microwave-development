@@ -1,4 +1,4 @@
-# Probes shared by both suites. InSpec runs on the workstation and reaches the
+# Probes shared by the suites. InSpec runs on the workstation and reaches the
 # kitchen node through the docker backend, so every probe shells out on the node
 # and every control asserts only what these helpers return.
 require 'json'
@@ -36,6 +36,23 @@ class Microwave
 
   def opensearch_health(host, ca)
     @backend.command("curl -sS --cacert #{ca} https://#{host}:9200/_cluster/health").stdout
+  end
+
+  # An unsigned GET on the store root answers 403 once TLS and routing work, so
+  # anything but 000 proves the hop; the status code is returned to the caller.
+  def object_store_health(host, ca)
+    @backend.command(
+      "curl -sS -o /dev/null -w '%{http_code}' --cacert #{ca} https://#{host}:3900/"
+    ).stdout.strip
+  end
+
+  # The admin CLI needs the config file; the node is local to the verifier.
+  def garage(*args)
+    @backend.command("garage -c /etc/garage.toml #{args.join(' ')}")
+  end
+
+  def read(path)
+    @backend.command("cat #{path}").stdout
   end
 
   # A remote connection over a freshly trusted CA and a just-installed client can
@@ -199,5 +216,15 @@ class Microwave
       cinc-client --config /etc/chef/client.rb --node-name probe \
         --json-attributes /tmp/probe.json
     SH
+  end
+
+  # Converges one of the cookbook's own recipes on the node, with the suite's
+  # node attributes. The disable suite uses it for microwave::disable and
+  # microwave::enable.
+  def converge(recipe)
+    @backend.command(
+      'CHEF_LICENSE=accept-no-persist cinc-client -z -c /tmp/kitchen/client.rb ' \
+      "-j /tmp/kitchen/dna.json -o '#{recipe}'"
+    )
   end
 end

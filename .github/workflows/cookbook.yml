@@ -14,7 +14,7 @@ on:
       - 'cookbooks/**'
       - '.github/workflows/cookbook.yml'
   # Re-run one suite on demand, for example after a flaky docker or network
-  # failure, without paying for both again.
+  # failure, without paying for the others again.
   workflow_dispatch:
     inputs:
       suite:
@@ -24,6 +24,7 @@ on:
           - both
           - all-in-one
           - split
+          - disable
         default: both
 
 permissions:
@@ -56,7 +57,7 @@ jobs:
       - run: bundle exec rspec
 
   # The matrix is built here because a job-level `if` cannot read it: a manual
-  # dispatch names one suite, every other event gets both.
+  # dispatch names one suite, every other event gets all three.
   select:
     runs-on: ubuntu-latest
     outputs:
@@ -67,17 +68,17 @@ jobs:
           SUITE: ${{ inputs.suite }}
         run: |
           case "$SUITE" in
-            all-in-one|split)
+            all-in-one|split|disable)
               printf 'matrix={"include":[{"suite":"%s","task":"kitchen:%s"}]}\n' "$SUITE" "${SUITE//-/_}" ;;
             *)
-              echo 'matrix={"include":[{"suite":"all-in-one","task":"kitchen:all_in_one"},{"suite":"split","task":"kitchen:split"}]}' ;;
+              echo 'matrix={"include":[{"suite":"all-in-one","task":"kitchen:all_in_one"},{"suite":"split","task":"kitchen:split"},{"suite":"disable","task":"kitchen:disable"}]}' ;;
           esac >> "$GITHUB_OUTPUT"
 
   kitchen:
     needs: select
     runs-on: ubuntu-latest
-    # Cold runs install PostgreSQL and a 1.1 GB OpenSearch deb per backend;
-    # the cache below only saves the download.
+    # Cold runs install PostgreSQL, a 1.1 GB OpenSearch deb and the Garage binary
+    # per backend; the cache below only saves the download.
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -95,7 +96,7 @@ jobs:
       - name: Docker
         run: docker compose version
       # The suite caches downloaded debs on the host; the key follows the
-      # fixture files and the suite, because keys are immutable and both jobs
+      # fixture files and the suite, because keys are immutable and all jobs
       # would otherwise overwrite each other's entry.
       - uses: actions/cache@v4
         with:

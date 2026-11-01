@@ -20,7 +20,7 @@ Run the suite for the area you touched, not the whole workspace by default.
 | `docs/mcp.md` only | the same; it checks the guide file |
 | `crates/**`, `bin/**`, `Cargo.toml` | `cargo test --workspace` |
 | `packaging/**`, `scripts/*deb*` | `scripts/build-deb.sh && scripts/test-deb.sh` |
-| `cookbooks/**` | `cd cookbooks/microwave && bundle exec rspec`, then `bundle exec rake kitchen:all_in_one` and `kitchen:split` for resource, recipe or fixture changes |
+| `cookbooks/**` | `cd cookbooks/microwave && bundle exec rspec`, then `bundle exec rake kitchen:all_in_one`, `kitchen:split` and `kitchen:disable` for resource, recipe or fixture changes |
 | Rust + website together | both |
 
 `npm test` runs `astro check`, the built-HTML content tests, and Playwright

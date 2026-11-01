@@ -10,9 +10,9 @@ if ENV['DOCKER_HOST'].to_s.empty? && !File.socket?('/var/run/docker.sock')
   ENV['DOCKER_HOST'] = "unix://#{desktop_socket}" if File.socket?(desktop_socket)
 end
 
-# The kitchen suites. Both need a docker daemon; the log is kept next to the
-# fixtures (git-ignored) because Test Kitchen truncates `.kitchen/logs` on every
-# invocation, so the captured console is the only durable record of a run.
+# The kitchen suites. All of them need a docker daemon; the log is kept next to
+# the fixtures (git-ignored) because Test Kitchen truncates `.kitchen/logs` on
+# every invocation, so the captured console is the only durable record of a run.
 namespace :kitchen do
   logs = File.join(__dir__, 'test/fixtures/logs')
 
@@ -33,9 +33,14 @@ namespace :kitchen do
   task :split do
     sh('bash', '-o', 'pipefail', '-c', kitchen_command(:split, logs))
   end
+
+  desc 'Run the disable kitchen suite'
+  task :disable do
+    sh('bash', '-o', 'pipefail', '-c', kitchen_command(:disable, logs))
+  end
 end
 
-desc 'Run both kitchen suites'
-task kitchen: %w(kitchen:all_in_one kitchen:split)
+desc 'Run all kitchen suites'
+task kitchen: %w(kitchen:all_in_one kitchen:split kitchen:disable)
 
 task default: :spec

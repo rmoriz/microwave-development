@@ -1,6 +1,7 @@
 ---
-# Two topologies, both real: all-in-one on a single node and the split layout
-# against two containerised backends. The sysctl resource writes /proc/sys and
+# Three topologies, all real: all-in-one on a single node, the split layout
+# against three containerised backends, and the disable suite that switches an
+# all-in-one node off and back on. The sysctl resource writes /proc/sys and
 # the service resources drive systemd, so the node is privileged and boots
 # systemd as PID 1.
 driver:
@@ -79,6 +80,7 @@ suites:
       microwave:
         bind: kitchen-all-in-one
         create_organization: true
+        object_store_backend: garage
     lifecycle:
       pre_create:
         - local: test/hooks/pre_create.sh
@@ -115,11 +117,41 @@ suites:
         database_password_file: /mnt/backend/db.password
         ca_cert_file: /mnt/backend/ca.crt
         client_network: 172.28.0.0/16
+        object_store_backend: garage
+        object_store_endpoint: https://garage.microwave.test:3900
+        object_store_access_key_file: /mnt/backend/garage.access_key
+        object_store_secret_key_file: /mnt/backend/garage.secret_key
     lifecycle:
       pre_create:
         - local: test/hooks/pre_create.sh
       pre_converge:
         - *cache_permission
         - local: test/hooks/pre_converge.sh
+      post_destroy:
+        - local: test/hooks/post_destroy.sh
+
+  # The disable suite proves the switch is sticky: `microwave::disable` stops
+  # and disables every unit, a later `microwave::default` converge leaves them
+  # down, and only `microwave::enable` brings the node back.
+  - name: disable
+    driver:
+      hostname: kitchen-disable
+    provisioner:
+      enforce_idempotency: true
+      # enforce_idempotency alone only attaches the fail-if-update handler to the
+      # single run, so it needs a second converge to be told apart.
+      multiple_converge: 2
+    run_list:
+      - recipe[microwave::default]
+    attributes:
+      microwave:
+        bind: kitchen-disable
+        create_organization: true
+        object_store_backend: garage
+    lifecycle:
+      pre_create:
+        - local: test/hooks/pre_create.sh
+      pre_converge:
+        - *cache_permission
       post_destroy:
         - local: test/hooks/post_destroy.sh

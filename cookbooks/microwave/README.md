@@ -214,13 +214,14 @@ bundle install                             # once
 bundle exec rspec                          # ChefSpec, no docker needed
 bundle exec cookstyle                      # lint
 bundle exec rake kitchen:all_in_one        # one node, every resource
-bundle exec rake kitchen:split             # server node against two backends
+bundle exec rake kitchen:split             # server node against three backends
+bundle exec rake kitchen:disable           # switch off, data survives, switch on
 ```
 
 The kitchen suites need a docker daemon and a `DOCKER_HOST` that reaches it.
-Both capture their console into `test/fixtures/logs/kitchen-<suite>.log`;
+They capture their console into `test/fixtures/logs/kitchen-<suite>.log`;
 `.kitchen/logs` is truncated by every kitchen invocation and is not a record.
-Both suites enable `enforce_idempotency` and converge twice. The bundled
+All three suites enable `enforce_idempotency` and converge twice. The bundled
 verifier is Chef InSpec, which needs `CHEF_LICENSE=accept-no-persist` (the rake
 tasks set it).
 
@@ -229,7 +230,7 @@ inputs. `kitchen converge split` on an unchanged, healthy stack therefore skips
 the rebuild and converges nothing; `kitchen test split` starts with a destroy,
 whose `post_destroy` deletes the marker, so a test always provisions once.
 
-CI runs `bundle exec rspec` and `bundle exec cookstyle` plus both suites in
+CI runs `bundle exec rspec` and `bundle exec cookstyle` plus all three suites in
 `.github/workflows/cookbook.yml`, for pull requests and `main` pushes that
 touch `cookbooks/**`.
 
@@ -237,7 +238,7 @@ touch `cookbooks/**`.
 
 The apt archives are cached in `test/fixtures/cache/apt/archives` and survive
 runs, because the OpenSearch deb alone is 1.1 GB. The cache is not pruned; it
-currently holds roughly 950 MB (158 archives) after runs of both suites and
+currently holds roughly 950 MB (158 archives) after runs of the suites and
 grows with every package version. Deleting the directory is always safe; CI
 keys an `actions/cache` entry on the fixture files.
 

@@ -10,3 +10,12 @@ file '/mnt/shared/search-ca.crt' do
   group 'root'
   mode '0644'
 end
+
+# The last resource, so the file appears only once this node's converge is done.
+# The garage node's healthcheck waits for it.
+file '/mnt/shared/search.converged' do
+  content 'done'
+  owner 'root'
+  group 'root'
+  mode '0644'
+end

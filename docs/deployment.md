@@ -656,16 +656,19 @@ guide — package, `/etc/microwave/microwave.toml`, systemd unit — for hosts u
 a Chef run list, and adds packaged backends with generated, cookbook-signed TLS
 on top.
 
-Both intended topologies are exercised by Kitchen:
+The intended topologies are exercised by Kitchen:
 
-- **All-in-one** (`microwave::default`): server and both backends on one node,
+- **All-in-one** (`microwave::default`): server and all backends on one node,
   the backends on loopback.
-- **Split** (`microwave::server` next to `microwave::database` and
-  `microwave::search`): one node per role, the backends opened to a client
-  network.
+- **Split** (`microwave::server` next to `microwave::database`,
+  `microwave::search` and `microwave::garage`): one node per role, the backends
+  opened to a client network.
+- **Disable** (`microwave::default`, then `microwave::disable`): every unit stops
+  and stays down over a later default converge, the data survives, and only
+  `microwave::enable` brings the node back.
 
 The cookbook README lists the resources, properties and attributes and how to
-run the specs and both suites.
+run the specs and the suites.
 
 Two limits are carried over from it: the cookbook renders no `[server.tls]`
 block, so the listener stays plain HTTP and client TLS belongs in a proxy in

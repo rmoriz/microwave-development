@@ -1,8 +1,9 @@
-# The two backend nodes of the split suite. test/hooks builds, starts and tears
+# The three backend nodes of the split suite. test/hooks builds, starts and tears
 # the stack down; the cookbooks are mounted read-only and the shared directory
-# is writable so the nodes can publish their password and CA to the host. The
-# apt archive cache is a host directory, so the 1.1 GB OpenSearch deb and the
-# PostgreSQL packages are downloaded once instead of on every run.
+# is writable so the nodes can publish their password, CA and key material to the
+# host. The apt archive cache is a host directory, so the 1.1 GB OpenSearch deb,
+# the PostgreSQL packages and the Garage binary are fetched once instead of on
+# every run.
 name: microwave-test
 
 x-node: &node
@@ -59,10 +60,46 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # The chain continues with the search node: it waits for the marker file the
+    # database node writes last, and the garage node waits for the search one's.
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /mnt/shared/search.converged && curl -fsS --cacert /mnt/shared/search-ca.crt https://search.microwave.test:9200/_cluster/health | grep -Eq '\"status\":\"(green|yellow)\"'"]
+      interval: 5s
+      timeout: 5s
+      retries: 240
+      start_period: 10s
     command:
       - bash
       - -c
       - cinc-client -z -c /tmp/kitchen/client.rb -o 'microwave-test::search_node' --json-attributes /tmp/kitchen/attrs.json && exec sleep infinity
+
+  garage:
+    <<: *node
+    hostname: garage.microwave.test
+    volumes:
+      - ../..:/tmp/kitchen/cookbooks/microwave:ro
+      - ./cookbooks/microwave-test:/tmp/kitchen/cookbooks/microwave-test:ro
+      - ./attrs.json:/tmp/kitchen/attrs.json:ro
+      - ./node/client.rb:/tmp/kitchen/client.rb:ro
+      - ./shared:/mnt/shared
+      - ./cache/apt/archives:/var/cache/apt/archives:rw
+    networks:
+      microwave-test:
+        aliases:
+          - garage.microwave.test
+    depends_on:
+      search:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /mnt/shared/garage.s3 && curl -sS --cacert /mnt/shared/garage-ca.crt https://garage.microwave.test:3900/ -o /dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 240
+      start_period: 10s
+    command:
+      - bash
+      - -c
+      - cinc-client -z -c /tmp/kitchen/client.rb -o 'microwave-test::garage_node' --json-attributes /tmp/kitchen/attrs.json && exec sleep infinity
 
 networks:
   microwave-test:
