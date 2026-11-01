@@ -232,11 +232,16 @@ action :install do
     owner 'root'
     group 'root'
     mode '0644'
-    notifies :run, 'execute[systemctl daemon-reload]', :immediately
+    notifies :run, 'execute[systemctl daemon-reload opensearch]', :immediately
     notifies :restart, 'service[opensearch]', :delayed
   end
 
-  execute 'systemctl daemon-reload' do
+  # The name carries the unit, the command does not: `systemctl daemon-reload`
+  # takes no operand. In the all-in-one layout the server resource declares its
+  # own reload, and two clones under one name would let Chef pick either copy
+  # and drop the other's attributes and notification.
+  execute 'systemctl daemon-reload opensearch' do
+    command 'systemctl daemon-reload'
     action :nothing
     # A container without systemd starts the daemon directly; calling systemctl
     # there would fail even though the drop-in file was written.

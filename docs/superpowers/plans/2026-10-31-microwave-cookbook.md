@@ -253,8 +253,8 @@ Behavior: for `version == 'latest'`, GET `https://api.github.com/repos/rmoriz/mi
 6. For each entry of `ca_certs`, a `file` `/usr/local/share/ca-certificates/microwave-backend-<index>.crt` with content, `notifies :run, 'execute[update-ca-certificates]', :delayed`.
 7. `execute 'update-ca-certificates'` with `action :nothing`.
 8. `template '/etc/microwave/microwave.toml'` (owner root, group microwave, mode 0640) with the variables, `notifies :restart, 'service[microwave-server]', :delayed`.
-9. `directory '/etc/systemd/system/microwave-server.service.d'` (root, 0755) and `template '/etc/systemd/system/microwave-server.service.d/ordering.conf'`, notifying `execute[systemctl daemon-reload]`.
-10. `execute 'systemctl daemon-reload'` with `action :nothing`.
+9. `directory '/etc/systemd/system/microwave-server.service.d'` (root, 0755) and `template '/etc/systemd/system/microwave-server.service.d/ordering.conf'`, notifying `execute[systemctl daemon-reload server]`.
+10. `execute 'systemctl daemon-reload server'` with `action :nothing` and the `/run/systemd/system` guard (the OpenSearch resource declares its own `execute[systemctl daemon-reload opensearch]` under the same guard, so the all-in-one clones never share a name).
 11. `service 'microwave-server'` with `action [:enable, :start]`.
 
 The drop-in:

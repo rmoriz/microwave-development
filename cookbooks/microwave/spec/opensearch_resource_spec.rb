@@ -119,9 +119,21 @@ describe 'microwave_opensearch' do
       .with(owner: 'root', group: 'root', mode: '0755')
     expect(chef_run).to create_template(path).with(owner: 'root', group: 'root', mode: '0644')
     expect(rendered(path)).to include('LimitMEMLOCK=infinity')
-    expect(chef_run.template(path)).to notify('execute[systemctl daemon-reload]').immediately
+    expect(chef_run.template(path)).to notify('execute[systemctl daemon-reload opensearch]').immediately
     expect(chef_run.template(path)).to notify('service[opensearch]').delayed
-    expect(chef_run.execute('systemctl daemon-reload')).to do_nothing
+    expect(chef_run.execute('systemctl daemon-reload opensearch')).to do_nothing
+  end
+
+  # The all-in-one layout clones both resources, so the reload name carries the
+  # unit and the notification stays unambiguous.
+  it 'names its daemon-reload after the unit and guards it on systemd' do
+    reloads = chef_run.resource_collection.select { |r| r.name.to_s.start_with?('systemctl daemon-reload') }
+
+    # `systemctl daemon-reload` takes no unit operand, so the bare command stays
+    # while the resource name pins the copy.
+    expect(reloads.map(&:name)).to eq(['systemctl daemon-reload opensearch'])
+    expect(reloads.first.command).to eq('systemctl daemon-reload')
+    expect(reloads.first.only_if.first.block).to be_a(Proc)
   end
 
   it 'issues a CA and a search certificate named for the hostname' do
