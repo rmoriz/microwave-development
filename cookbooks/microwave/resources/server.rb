@@ -52,9 +52,14 @@ action :install do
 
     { access_key: object_store[:access_key_file],
       secret_key: object_store[:secret_key_file] }.each do |name, path|
+      # A truncated key file passes a mere readability check and then fails
+      # every S3 call with an opaque 403, so a blank value is rejected here too.
       object_store[name] =
         begin
-          ::File.read(path).strip
+          value = ::File.read(path).strip
+          raise "object_store_#{name}_file #{path} is empty" if value.empty?
+
+          value
         rescue SystemCallError => e
           raise "object_store_#{name}_file #{path} is not readable: #{e.message}"
         end

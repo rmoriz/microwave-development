@@ -244,10 +244,10 @@ describe 'microwave_server object store' do
   let(:s3_run) { object_store_run('server_s3') }
   let(:broken_run) { object_store_run('server_garage_broken') }
 
-  def object_store_run(recipe)
+  def object_store_run(recipe, access_key: "ACCESS\n", secret_key: "SECRET\n")
     allow(::File).to receive(:read).and_call_original
-    allow(::File).to receive(:read).with('/etc/microwave/garage.access_key').and_return("ACCESS\n")
-    allow(::File).to receive(:read).with('/etc/microwave/garage.secret_key').and_return("SECRET\n")
+    allow(::File).to receive(:read).with('/etc/microwave/garage.access_key').and_return(access_key)
+    allow(::File).to receive(:read).with('/etc/microwave/garage.secret_key').and_return(secret_key)
     ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_server']) do |node|
       node.name('chef.example.com')
       node.automatic['fqdn'] = 'chef.example.com'
@@ -287,6 +287,19 @@ describe 'microwave_server object store' do
 
   it 'raises when a non-local backend has no endpoint' do
     expect { broken_run }.to raise_error(/object_store_endpoint/)
+  end
+
+  # A truncated publish leaves an empty file on the split node; the server would
+  # start and fail every S3 call with an opaque 403.
+  it 'raises naming a key file that is only whitespace' do
+    expect { object_store_run('server_garage', access_key: " \n") }
+      .to raise_error(%r{object_store_access_key_file /etc/microwave/garage\.access_key is empty\z})
+  end
+
+  it 'escapes quotes and backslashes in a key' do
+    expect(object_store_run('server_garage', secret_key: "a\"b\\c\n"))
+      .to render_file('/etc/microwave/microwave.toml')
+      .with_content('secret_key = "a\"b\\\\c"')
   end
 
   it 'raises naming a key file it cannot read' do
