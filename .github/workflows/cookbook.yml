@@ -1,0 +1,91 @@
+name: cookbook
+
+# The cookbook is its own deliverable with its own Gemfile and its own
+# toolchain, so it gets its own workflow: a Rust or website change must not pay
+# for a Kitchen run, and a cookbook change must not wait for either.
+on:
+  pull_request:
+    paths:
+      - 'cookbooks/**'
+      - '.github/workflows/cookbook.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'cookbooks/**'
+      - '.github/workflows/cookbook.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cookbook-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  specs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: cookbooks/microwave
+    env:
+      # setup-ruby keys its bundler cache on the Gemfile it resolves, not on a
+      # working directory, so the Gemfile is named for it here. The path is
+      # absolute because every `run` step below starts in the cookbook
+      # directory and a relative value would resolve twice.
+      BUNDLE_GEMFILE: ${{ github.workspace }}/cookbooks/microwave/Gemfile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+      - run: bundle exec cookstyle
+      - run: bundle exec rspec
+
+  kitchen:
+    runs-on: ubuntu-latest
+    # Cold runs install PostgreSQL and a 1.1 GB OpenSearch deb per backend;
+    # the cache below only saves the download.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: all-in-one
+            task: kitchen:all_in_one
+          - suite: split
+            task: kitchen:split
+    defaults:
+      run:
+        working-directory: cookbooks/microwave
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/cookbooks/microwave/Gemfile
+      # The bundled verifier is Chef InSpec, not Cinc Auditor, and it refuses to
+      # run without an accepted license. The rake tasks set it as well.
+      CHEF_LICENSE: accept-no-persist
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker
+        run: docker compose version
+      # The suite caches downloaded debs on the host; the key follows the
+      # fixture files, so a changed node image or stack starts over.
+      - uses: actions/cache@v4
+        with:
+          path: cookbooks/microwave/test/fixtures/cache
+          key: kitchen-apt-${{ hashFiles('cookbooks/microwave/test/fixtures/docker-compose.yml', 'cookbooks/microwave/test/fixtures/node/Dockerfile') }}
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+      # The rake task captures the console to test/fixtures/logs because Test
+      # Kitchen truncates .kitchen/logs on every invocation.
+      - name: Kitchen suite ${{ matrix.suite }}
+        run: bundle exec rake ${{ matrix.task }}
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: kitchen-logs-${{ matrix.suite }}
+          path: cookbooks/microwave/test/fixtures/logs
+          if-no-files-found: ignore
+          retention-days: 14

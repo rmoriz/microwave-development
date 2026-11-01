@@ -8,7 +8,12 @@ issues_url 'https://github.com/rmoriz/microwave-development/issues'
 chef_version '>= 19.4.46', '< 20'
 supports 'debian', '>= 13.0'
 
+# Cookstyle calls the `recipe` declarations redundant, but they are read by
+# `knife cookbook metadata` and by spec/metadata_spec.rb; the README documents
+# the same four recipes for humans. Keep both.
+# cookstyle:disable Chef/RedundantCode/RecipeMetadata
 recipe 'microwave::default', 'Server and backends on one node'
 recipe 'microwave::server', 'Server, configuration and service only'
 recipe 'microwave::database', 'PostgreSQL 19, its role and its database'
 recipe 'microwave::search', 'OpenSearch 3.9 with a bounded heap'
+# cookstyle:enable Chef/RedundantCode/RecipeMetadata

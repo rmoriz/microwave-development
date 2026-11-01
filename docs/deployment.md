@@ -25,16 +25,17 @@ For the current implementation gaps see
 2. [Configuration](#2-configuration)
 3. [Single-node install](#3-single-node-install)
 4. [Docker](#4-docker)
-5. [Docker Compose](#5-docker-compose)
-6. [systemd](#6-systemd)
-7. [External backends (OpenSearch, S3/Garage)](#7-external-backends-opensearch-s3garage)
-8. [HA layout](#8-ha-layout)
-9. [Backup and restore](#9-backup-and-restore)
-10. [Migration from a legacy server](#10-migration-from-a-legacy-server)
-11. [Health, status, and logs](#11-health-status-and-logs)
-12. [Maintenance caveats](#12-maintenance-caveats)
-13. [Upgrades and rollback](#13-upgrades-and-rollback)
-14. [Troubleshooting](#14-troubleshooting)
+5. [Chef cookbook](#5-chef-cookbook)
+6. [Docker Compose](#6-docker-compose)
+7. [systemd](#7-systemd)
+8. [External backends (OpenSearch, S3/Garage)](#8-external-backends-opensearch-s3garage)
+9. [HA layout](#9-ha-layout)
+10. [Backup and restore](#10-backup-and-restore)
+11. [Migration from a legacy server](#11-migration-from-a-legacy-server)
+12. [Health, status, and logs](#12-health-status-and-logs)
+13. [Maintenance caveats](#13-maintenance-caveats)
+14. [Upgrades and rollback](#14-upgrades-and-rollback)
+15. [Troubleshooting](#15-troubleshooting)
 
 ## 1. Artifacts and layout
 
@@ -146,7 +147,7 @@ behaviour.
 
 The data directory and the metadata backend. Both backends are supported by
 the server, `microwave-ctl`, and `microwave-migrate`; see
-[Backup and restore](#9-backup-and-restore) for what the directory holds.
+[Backup and restore](#10-backup-and-restore) for what the directory holds.
 SQLite remains the default and the only backend with an in-process database
 file.
 
@@ -646,7 +647,36 @@ the latest stable `rust:1-*` image.
 `docker compose exec` runs the command *instead of* `CMD`, which is why the
 image intentionally has no `ENTRYPOINT`.
 
-## 5. Docker Compose
+## 5. Chef cookbook
+
+[`cookbooks/microwave`](../cookbooks/microwave/README.md) installs the packaged
+server, PostgreSQL 19 and OpenSearch 3.9 on Debian 13 nodes with Chef Infra
+Client 19.4.46 to below 20. It covers the host steps of this guide — package,
+`/etc/microwave/microwave.toml`, systemd unit — for hosts under a Chef run
+list, and adds packaged backends with generated, cookbook-signed TLS on top.
+
+Both intended topologies are exercised by Kitchen:
+
+- **All-in-one** (`microwave::default`): server and both backends on one node,
+  the backends on loopback.
+- **Split** (`microwave::server` next to `microwave::database` and
+  `microwave::search`): one node per role, the backends opened to a client
+  network.
+
+The cookbook README lists the resources, properties and attributes and how to
+run the specs and both suites.
+
+Two limits are carried over from it: the cookbook renders no `[server.tls]`
+block, so the listener stays plain HTTP and client TLS belongs in a proxy in
+front ([TLS listener](#tls-listener)); and the database URL it renders uses
+`sslmode=require`, which encrypts without verifying the peer certificate, so
+only the OpenSearch HTTPS connection is checked against the cookbook CA. MCP is
+unaffected by the cookbook — it renders no `[mcp]` block, so the endpoint stays
+off until it is configured, and it stays experimental with writes on by default
+(`writes = false` turns them off), as described in
+[MCP endpoint](#mcp-endpoint-experimental).
+
+## 6. Docker Compose
 
 [`docker-compose.yml`](../docker-compose.yml) is the default embedded profile:
 SQLite, in-process search, local `/bookshelf`, and a named `microwave-data`
@@ -702,9 +732,9 @@ S3/MinIO and point the `MW_OBJECT_STORE__*` variables at it; no bootstrap
 container is then needed.
 
 The compose profile is not a multi-replica HA setup. Do not scale the
-`microwave` service while it uses SQLite. See [HA layout](#8-ha-layout).
+`microwave` service while it uses SQLite. See [HA layout](#9-ha-layout).
 
-## 6. systemd
+## 7. systemd
 
 The unit is [`packaging/systemd/microwave-server.service`](../packaging/systemd/microwave-server.service).
 
@@ -793,7 +823,7 @@ Environment=MW_AUTH__SKEW_SECONDS=1200
 Environment=RUST_LOG=info,microwave_api=debug
 ```
 
-## 7. External backends (OpenSearch, S3/Garage)
+## 8. External backends (OpenSearch, S3/Garage)
 
 ### Search
 
@@ -895,7 +925,7 @@ single host this is harmless; behind NAT, a proxy, or for remote
 
 This is a server limitation, not a configuration mistake.
 
-## 8. HA layout
+## 9. HA layout
 
 ### What is supported today
 
@@ -982,7 +1012,7 @@ Design notes that already hold:
 Until the PostgreSQL topology is load-tested, prefer vertical capacity,
 `pg_dump` backups, and a warm standby over active/active.
 
-## 9. Backup and restore
+## 10. Backup and restore
 
 Two complementary mechanisms exist.
 
@@ -1430,7 +1460,7 @@ new destination (an existing backup cannot be extended), and pass
 the path for a cross-installation migration that also carries metadata
 secrets.
 
-## 10. Migration from a legacy server
+## 11. Migration from a legacy server
 
 **Current state:** the live crawler is implemented. `microwave-migrate
 from-api` reads a legacy Chef Infra Server through its read-only HTTP API and
@@ -1714,7 +1744,7 @@ authoritative, move one organization at a time, and keep the legacy server
 read-only until the new one is verified. For large or S3/Garage-backed
 deployments, the same parallel-run approach applies.
 
-## 11. Health, status, and logs
+## 12. Health, status, and logs
 
 ### Endpoints
 
@@ -1939,7 +1969,7 @@ instead. `backup`/`restore` use
 `VACUUM INTO`
 for SQLite and `pg_dump`/`pg_restore` for PostgreSQL, in directory or tar
 format. `microwave-migrate` exports and imports both backends; see
-[Backup and restore](#9-backup-and-restore).
+[Backup and restore](#10-backup-and-restore).
 
 ### Logs
 
@@ -1970,7 +2000,7 @@ crash-safe, but still drain traffic at the load balancer before stopping or
 restarting. `SIGHUP` remains the TLS reload signal and does not shut down the
 server.
 
-## 12. Maintenance caveats
+## 13. Maintenance caveats
 
 - **Maintenance mode rejects API traffic.** `microwave-ctl maintenance on`
   persists `maintenance:enabled` in the `kvpair` table. While it is set, the
@@ -2015,7 +2045,7 @@ server.
 - **Clock skew.** Widening `auth.skew_seconds` weakens replay protection;
   fix NTP first.
 
-## 13. Upgrades and rollback
+## 14. Upgrades and rollback
 
 1. Take a backup (`microwave-ctl backup --include-private-keys`) or copy
    `pivotal.pem` with your own key backup procedure.
@@ -2033,7 +2063,7 @@ Migrations are forward-only: there is no down-migration path. Keep the
 pre-upgrade backup until the new version has been verified. Downgrading
 requires restoring that backup.
 
-## 14. Troubleshooting
+## 15. Troubleshooting
 
 | Symptom | Likely cause / fix |
 |---|---|

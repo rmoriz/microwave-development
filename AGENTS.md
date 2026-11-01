@@ -20,6 +20,7 @@ Run the suite for the area you touched, not the whole workspace by default.
 | `docs/mcp.md` only | the same; it checks the guide file |
 | `crates/**`, `bin/**`, `Cargo.toml` | `cargo test --workspace` |
 | `packaging/**`, `scripts/*deb*` | `scripts/build-deb.sh && scripts/test-deb.sh` |
+| `cookbooks/**` | `cd cookbooks/microwave && bundle exec rspec`, then `bundle exec rake kitchen:all_in_one` and `kitchen:split` for resource, recipe or fixture changes |
 | Rust + website together | both |
 
 `npm test` runs `astro check`, the built-HTML content tests, and Playwright
@@ -88,6 +89,14 @@ committing Rust. The homepage has no linter beyond `astro check`.
   down through it, never with ad-hoc `docker build`, and always
   `down -v --rmi local`; `run.sh` ends on that, so no container, volume or
   locally built image survives a run.
+
+## cookbook (kitchen) notes
+
+- `cookbooks/microwave/test/fixtures/docker-compose.yml` owns the kitchen
+  backend stack. Build and tear it down through that file, never with ad-hoc
+  `docker build`; `post_destroy` ends on `down -v --rmi local`, so no container,
+  volume or locally built node image survives a suite. The apt cache and the
+  captured kitchen logs are the only leftovers, both git-ignored.
 
 ## Committing
 

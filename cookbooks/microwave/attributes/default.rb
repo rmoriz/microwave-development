@@ -1,4 +1,4 @@
-default['microwave']['bind'] = node['fqdn'].to_s.empty? ? node['hostname'] : node['fqdn']
+default['microwave']['bind'] = node['fqdn'].empty? ? node['hostname'] : node['fqdn']
 default['microwave']['public_url'] = nil
 default['microwave']['database_name'] = 'microwave'
 default['microwave']['database_user'] = 'microwave'
