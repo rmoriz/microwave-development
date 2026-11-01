@@ -1,4 +1,4 @@
-<% toml = ->(value) { value.to_s.gsub('\\') { '\\\\' }.gsub('"') { '\\"' } } -%>
+<% toml = ->(value) { value.to_s.gsub('\\') { '\\\\' }.gsub('"') { '\\"' }.gsub("\n") { '\\n' }.gsub("\t") { '\\t' }.gsub("\r") { '\\r' } } -%>
 [server]
 bind = "<%= toml.(@bind) %>"
 <% if @public_url -%>

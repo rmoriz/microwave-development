@@ -134,6 +134,11 @@ describe 'microwave_server with strings that need TOML escaping' do
       .with_content('bind = "a\"b\\\\c:8000"')
       .with_content('url = "postgres://microwave:gen\"erated@db.example.com:5432/microwave"')
   end
+
+  it 'escapes the control characters a TOML string cannot carry raw' do
+    expect(chef_run).to render_file('/etc/microwave/microwave.toml')
+      .with_content('public_url = "https://microwave.example.com/a\\tb\\nc\\rd"')
+  end
 end
 
 describe 'microwave_server with an incomplete release' do
