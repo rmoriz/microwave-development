@@ -2,12 +2,13 @@
 
 Installs and configures
 [Microwave Server](https://github.com/rmoriz/microwave-development), its
-PostgreSQL database and its OpenSearch backend from packages on Debian 13
-(`trixie`).
+PostgreSQL database, its OpenSearch backend and its Garage object store on
+Debian 13 (`trixie`). The first three come from packages; Garage is a pinned
+static binary.
 
-The cookbook is resource-oriented: `microwave_server`, `microwave_postgresql`
-and `microwave_opensearch` compose on one node or spread over several, and the
-recipes only wrap them.
+The cookbook is resource-oriented: `microwave_server`, `microwave_postgresql`,
+`microwave_opensearch` and `microwave_garage` compose on one node or spread
+over several, and the recipes only wrap them.
 
 Microwave's MCP endpoint is experimental. This cookbook renders no `[mcp]`
 block, so MCP stays off until you add one; once it is on, its writes are on by
@@ -18,18 +19,20 @@ default and only switch off with `writes = false`. See
 
 Debian 13 only. The cookbook needs Chef Infra Client 19.4.46 or newer, below
 20. The backend services are systemd units; on a node without
-`/run/systemd/system` the OpenSearch resource starts the daemon directly
-instead.
+`/run/systemd/system` the OpenSearch and Garage resources start their daemon
+directly instead.
 
 ## Resources
 
-All three resources carry one `:install` action; there is no remove action.
+All four resources carry `:install`, plus `:enable` and `:disable` for the
+[service switches](#the-service-switches); there is no remove action.
 
 | Resource | Installs | Manages |
 |---|---|---|
 | `microwave_server` | The `microwave-server` `.deb` of a GitHub release, checksum-pinned to the release's published `.sha256`; `logrotate` | `/etc/microwave/microwave.toml` (mode `0640`, `root:microwave`), the systemd ordering drop-in, the `microwave-server` service, the backend CAs in the system trust store, and the demo organization when asked; the server writes the superuser key into its data directory |
 | `microwave_postgresql` | PostgreSQL 19 from the PGDG repository (pinned), the `microwave` system group without login | A cookbook-generated CA and the `db` service certificate, `/etc/microwave/db.password`, `conf.d/microwave.conf` (TLS on), `pg_hba.conf`, the application role and its database |
 | `microwave_opensearch` | OpenSearch 3.9.0 (pinned) and nginx | `/etc/opensearch/opensearch.yml` on loopback port 9210, the JVM heap, the `vm.max_map_count` sysctl, and the nginx TLS proxy on port 9200 |
+| `microwave_garage` | The pinned Garage static binary from the official release URL, and nginx | `/etc/garage.toml` (mode `0640`, `root:garage`), the `/etc/microwave/garage.*` secret files, the `garage` unit, the nginx TLS proxy on `3900`, the certificate pair, and the layout, bucket and key provisioning |
 
 The server package comes from `rmoriz/microwave-development` releases.
 `version: 'latest'` asks the GitHub API for the newest release and requires its
@@ -67,9 +70,9 @@ resolves to the address you want.
 
 The resource also renders
 `/etc/systemd/system/microwave-server.service.d/ordering.conf` (`After=` and
-`Wants=` both backends) and enables and starts the service. The server unit
-keeps `LimitMEMLOCK=infinity`; `microwave_opensearch` adds the same limit to the
-OpenSearch unit, which is the process that maps locked memory.
+`Wants=` the database and search units) and enables and starts the service. The
+server unit keeps `LimitMEMLOCK=infinity`; `microwave_opensearch` adds the same
+limit to the OpenSearch unit, which is the process that maps locked memory.
 
 ### `microwave_postgresql`
 
@@ -100,20 +103,83 @@ removed — Microwave's client sends no credentials — so the nginx proxy on
 `9200` is the only way in and the only access control: on loopback without
 `client_network`, on the node's name with it, and then behind an allow list.
 
+### `microwave_garage`
+
+| Property | Type | Default | Details |
+|---|---|---|---|
+| `hostname` | String | node FQDN, else hostname | Certificate name and SAN, nginx `server_name`. |
+| `port` | Integer | `3900` | nginx listener port. |
+| `capacity` | String | `node['microwave']['garage_capacity']` | Capacity the node gets in the layout. |
+| `bucket` | String | `'chef-cookbooks'` | Bucket the resource creates and grants to the key. |
+| `region` | String | `'garage'` | `s3_region` in the rendered configuration. |
+| `client_network` | String | `node['microwave']['client_network']` | CIDR the proxy allows in addition to loopback. |
+| `version` | String | `node['microwave']['garage_version']` | Release to install, `x.y.z` only. |
+
+Garage is one static binary, so there is no package and no container, and no
+source build. The resource downloads the binary from the official release URL,
+pinned by `version`, and verifies it with the digest the architecture carries
+in `node['microwave']['garage_digests']` (`x86_64` or `aarch64`) through
+`remote_file`. An architecture without a recorded digest raises instead of
+downloading unverified.
+
+The engine itself only listens on `127.0.0.1:3910`; nginx terminates TLS on
+`3900` and is the only way in — on the node's name with `client_network`, and
+then behind an allow list. The resource installs nginx itself rather than
+borrowing another backend's package, because either backend may be the only
+proxy on a node.
+
+The certificate SAN is the node name plus `127.0.0.1`. The endpoint is handed
+to clients inside presigned URLs, so it has to be reachable from those clients
+and appear in the SAN.
+
+The S3 key pair is generated once into `/etc/microwave/garage.access_key` and
+`/etc/microwave/garage.secret_key` (mode `0640`, `root:microwave`, because the
+server reads it), imported with `garage key import … --yes`, and granted `RWO`
+on the bucket; the bucket is created before the key is granted. The two engine
+secrets `/etc/microwave/garage.rpc_secret` and `.admin_token` are `0600`
+`garage:garage`, because the engine rejects every secret file that carries a
+group or other bit. The four files are written once and left alone by their
+guard; a second converge provisions nothing again.
+
+`replication_factor = 1` is rendered: one node, for evaluation and small
+installations. Multi-node clusters, extra zones and a higher factor are not
+supported here and stay out of band.
+
+Nodes installed with a cookbook before 0.1.1 carry the two engine secret files
+as `0640 root:garage`. The `not_if` guards leave existing files alone, so an
+upgrade alone does not touch them and Garage refuses to start. Fix it before
+the first start after the upgrade, on such a node only:
+
+```sh
+chown garage:garage /etc/microwave/garage.rpc_secret /etc/microwave/garage.admin_token
+chmod 0600 /etc/microwave/garage.rpc_secret /etc/microwave/garage.admin_token
+```
+
+A new node needs nothing.
+
+Both digests were recorded from the release artifact for `2.5.0`; upstream
+publishes no checksum next to the binaries. On a version bump, record them
+again per architecture with `curl -fsSL <release-url> | shasum -a 256` and put
+them into `node['microwave']['garage_digests']`.
+
 ## Recipes
 
 | Recipe | Contents |
 |---|---|
-| `microwave::default` | All three resources on one node. Backend hosts default to `127.0.0.1` unless a wrapper set them. |
+| `microwave::default` | All four resources on one node, garage only when `object_store_backend` is `garage`. Backend hosts default to `127.0.0.1` unless a wrapper set them. |
 | `microwave::server` | The server only, pointed at `database_host` and `search_host`. |
 | `microwave::database` | PostgreSQL only. |
 | `microwave::search` | OpenSearch only. |
+| `microwave::garage` | Garage only, for a node a wrapper points the server at. |
+| `microwave::disable` | Stops and disables every unit, the server first and nginx last. |
+| `microwave::enable` | The inverse: nginx first, the server last. |
 
 ## Attributes
 
 The server recipe reads `bind`, `database_host`, `search_host`, the password
-settings, `ca_certs`/`ca_cert_file`, `public_url` and `create_organization`; the
-rest are defaults the resources pick up.
+settings, the `object_store_*` settings, `ca_certs`/`ca_cert_file`,
+`public_url` and `create_organization`; the rest are defaults the resources
+pick up.
 
 | Attribute | Default | Purpose |
 |---|---|---|
@@ -129,8 +195,20 @@ rest are defaults the resources pick up.
 | `node['microwave']['ca_cert_file']` | `nil` | File to read one CA from when `ca_certs` is empty; the local generated CA is the last fallback. |
 | `node['microwave']['search_host']` | `nil` | Search node; the URL is `https://<host>:9200`. |
 | `node['microwave']['opensearch_heap']` | `'1g'` | OpenSearch heap. |
-| `node['microwave']['client_network']` | `nil` | CIDR that opens both backends. |
+| `node['microwave']['client_network']` | `nil` | CIDR that opens every backend. |
 | `node['microwave']['create_organization']` | `false` | Creates the `pivotal` admin, the organization `demo` and its membership, and waits for `/_status` first. The server writes the superuser key to `<data_dir>/pivotal.pem`. |
+| `node['microwave']['garage_version']` | `'2.5.0'` | Garage release the resource installs. |
+| `node['microwave']['garage_capacity']` | `'1G'` | Capacity the node gets in the Garage layout. |
+| `node['microwave']['garage_bucket']` | `'chef-cookbooks'` | Bucket the resource creates. `object_store_bucket` follows it, so a wrapper that sets only this name changes the bucket the store and the server share. |
+| `node['microwave']['garage_digests']` | map | SHA-256 of the release binary per architecture, keyed `x86_64` and `aarch64`. |
+| `node['microwave']['object_store_backend']` | `'local'` | `local`, `s3` or `garage`; `microwave::default` composes garage only for `garage`. |
+| `node['microwave']['object_store_bucket']` | follows `garage_bucket` | `[object_store] bucket`, shared by the store and the server. |
+| `node['microwave']['object_store_region']` | `'garage'` | `[object_store] region`; must match the gateway region. |
+| `node['microwave']['object_store_endpoint']` | `nil` | `[object_store] endpoint`; `microwave::default` fills it for the local garage when unset. |
+| `node['microwave']['object_store_host']` | `nil` | Store node `microwave::default` builds the endpoint from when it is unset. |
+| `node['microwave']['object_store_path_style']` | `true` | `[object_store] path_style`. |
+| `node['microwave']['object_store_access_key_file']` | `/etc/microwave/garage.access_key` | Read into `[object_store] access_key`. |
+| `node['microwave']['object_store_secret_key_file']` | `/etc/microwave/garage.secret_key` | Read into `[object_store] secret_key`. |
 
 The `pivotal` key has no attribute of its own. The server writes it on first
 start to `<data_dir>/pivotal.pem`, mode `0600` and owned by the service user;
@@ -156,9 +234,9 @@ Backends only listen on loopback in this layout; the server dials
 
 ### Split
 
-A database node, a search node and a server node. Both backends get the client
-network; the database node also publishes its password and CA, and the server
-node reads them:
+A database node, a search node, a store node and a server node. Every backend
+gets the client network; the database node also publishes its password and CA,
+and the server node reads them and the store's key pair and CA:
 
 ```ruby
 # database node
@@ -173,25 +251,58 @@ include_recipe 'microwave::search'
 ```
 
 ```ruby
+# store node
+node.default['microwave']['client_network'] = '10.0.0.0/24'
+include_recipe 'microwave::garage'
+```
+
+```ruby
 # server node
 node.default['microwave']['bind'] = '10.0.0.10'
 node.default['microwave']['database_host'] = 'db.example.com'
 node.default['microwave']['search_host'] = 'search.example.com'
 node.default['microwave']['database_password_file'] = '/etc/chef/db.password'
 node.default['microwave']['ca_cert_file'] = '/etc/chef/ca.crt'
+node.default['microwave']['object_store_backend'] = 'garage'
+node.default['microwave']['object_store_endpoint'] = 'https://store.example.com:3900'
+node.default['microwave']['object_store_access_key_file'] = '/etc/chef/garage.access_key'
+node.default['microwave']['object_store_secret_key_file'] = '/etc/chef/garage.secret_key'
 include_recipe 'microwave::server'
 ```
+
+`object_store_endpoint` lands in the presigned URLs, so it must be the address
+clients reach the store at, and the store certificate has to cover that host.
+On an all-in-one node `microwave::default` fills the endpoint from
+`object_store_host` when it is not given — `object_store_host` names the store
+node; without it the bind, or loopback without a `client_network`.
 
 `microwave::server` raises without a database host and a search host, and
 without a password it can read from `database_password` or the password file.
 A server-only wrapper must therefore carry the backend password and CA itself.
+
+### The service switches
+
+`:disable` is exactly `stop` plus `disable` and a marker file under
+`/etc/microwave/disabled/<unit>`: no `mask`, no package removal, no data
+deletion. The unit names are `microwave-server`, `postgresql`, `opensearch`,
+`garage` and `nginx`.
+
+The marker is what makes the switch stick. While it exists, every later
+`microwave::default` converge skips the `enable`/`start` of its unit, so the
+service stays down instead of waking up on the next run. Only `:enable` or
+`microwave::enable` removes it.
+
+`microwave::disable` disables the server first and nginx last, so the node stops
+answering before the backends go. `microwave::enable` is the inverse and starts
+nginx first. A single resource's `:enable` never starts nginx — nginx is shared
+by both proxies, so `microwave::enable` belongs on the same node.
 
 ## TLS and the `sslmode=require` limit
 
 Each node issues its own CA (`/etc/microwave/tls/ca.crt`, ten years) and the
 service certificate it signs (825 days, node name and `127.0.0.1` as SANs). Only
 the CA key signs; the service keys are `0600`/`0640` and owned by the service
-user, while the CA key is `0640 root:root` because both backends share it.
+user, while the CA key is `0640 root:root` because every backend shares it.
 
 Two gaps remain by design:
 
@@ -206,6 +317,12 @@ Two gaps remain by design:
 
 Installing the CA into the system trust store makes the OpenSearch HTTPS
 connection verify. That connection is the one the CA has to cover.
+
+The S3 hop verifies the same way: the server checks the store certificate
+against the system trust store, so the store's CA has to reach `ca_certs` or
+`ca_cert_file` on the server node. The garage certificate is a separate pair
+from the database and search ones, but all three are signed by the node's own
+CA, so one CA file covers every backend hop.
 
 ## Tests
 

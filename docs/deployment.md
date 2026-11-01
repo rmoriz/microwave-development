@@ -186,7 +186,7 @@ Such rows keep solving, on the slower path, until a write refreshes them.
 
 Backends, credentials, and the reachability caveat are in
 [Object store](#object-store); the local backend has its own
-[caveat](#the-local-object-store-caveat).
+[caveat](#the-object-store-caveat).
 
 | Setting | Details |
 |---|---|
@@ -914,7 +914,7 @@ secret_key = "..."
 - Deleting a cookbook garbage-collects unreferenced checksums; with a shared
   bucket, ensure no other writer is using the same prefix.
 
-### The local object store caveat
+### The object store caveat
 
 With `backend = "local"`, presigned `/bookshelf` URLs are built from
 `server.bind` (for example `http://0.0.0.0:8000/bookshelf/...`). They are not
@@ -928,6 +928,17 @@ single host this is harmless; behind NAT, a proxy, or for remote
   proxy).
 
 This is a server limitation, not a configuration mistake.
+
+For the second option the cookbook carries `microwave_garage`: it installs
+Garage behind an nginx TLS proxy on port `3900`. That resource is one node with
+`replication_factor = 1`, meant for evaluation and small installations; a real
+cluster stays out of band and is then a plain `s3` endpoint you point the
+server at. The reachability rule is the same and strict: the endpoint is the
+host inside every presigned URL, so it must be the address the `chef-client`
+nodes use, and the store certificate SAN has to carry that host. The resource
+provisions the layout, the bucket and one key pair, but it does not copy
+anything: migrating existing `/bookshelf` objects into the bucket is an
+operator step. The object keys are identical, so the copy is a straight move.
 
 ## 9. HA layout
 
