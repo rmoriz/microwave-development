@@ -1,3 +1,5 @@
+require 'yaml'
+
 require_relative 'spec_helper'
 
 describe 'microwave metadata' do
@@ -19,6 +21,24 @@ describe 'microwave metadata' do
     expect(requirement).to be_satisfied_by(Gem::Version.new('19.9.0'))
     expect(requirement).not_to be_satisfied_by(Gem::Version.new('19.4.45'))
     expect(requirement).not_to be_satisfied_by(Gem::Version.new('20.0.0'))
+  end
+
+  # ChefSpec is pinned to an older client than the kitchen nodes so the verifier
+  # needs no licence key; this keeps the two from drifting apart silently.
+  describe 'the kitchen client' do
+    let(:kitchen) do
+      YAML.safe_load(File.read(File.expand_path('../.kitchen.yml', __dir__)), aliases: true)
+    end
+    let(:product_version) { kitchen.dig('provisioner', 'product_version') }
+
+    it 'satisfies the metadata chef_version requirement' do
+      expect(metadata.chef_versions.first.requirement)
+        .to be_satisfied_by(Gem::Version.new(product_version))
+    end
+
+    it 'is at least the declared floor of 19.4.46' do
+      expect(Gem::Version.new(product_version)).to be >= Gem::Version.new('19.4.46')
+    end
   end
 
   it 'declares the recipes and the source' do
