@@ -261,7 +261,6 @@ action :install do
     mode '0644'
     sensitive false
     variables(
-      listen: new_resource.hostname,
       port: new_resource.port,
       upstream: s3_port,
       hostname: new_resource.hostname,

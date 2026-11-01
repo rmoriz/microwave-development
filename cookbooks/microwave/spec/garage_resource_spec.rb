@@ -157,6 +157,8 @@ describe 'microwave_garage' do
     vhost = rendered('/etc/nginx/sites-available/microwave-garage')
 
     expect(vhost).to include('listen garage.example.com:3900 ssl;')
+    # Loopback is how the server on this node reaches the store.
+    expect(vhost).to include('listen 127.0.0.1:3900 ssl;')
     expect(vhost).to include('server_name garage.example.com;')
     expect(vhost).to include('ssl_certificate /etc/microwave/tls/garage.crt;')
     expect(vhost).to include('ssl_certificate_key /etc/microwave/tls/garage.key;')
@@ -164,7 +166,9 @@ describe 'microwave_garage' do
     expect(vhost).to include('proxy_request_buffering off;')
     expect(vhost).to include('access_log /var/log/nginx/microwave-garage.access.log;')
     expect(vhost).to include('proxy_pass http://127.0.0.1:3910;')
-    expect(vhost).to include('proxy_set_header Host $host;')
+    expect(vhost).to include('proxy_set_header Host $http_host;')
+    # $host would drop the port the signature covers.
+    expect(vhost).not_to match(/Host \$host;/)
     expect(vhost).to include('proxy_set_header X-Real-IP $remote_addr;')
     expect(vhost).to include('proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;')
     expect(vhost).not_to include('allow ')
