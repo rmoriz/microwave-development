@@ -18,7 +18,7 @@
 - `:disable` is exactly `stop` + `disable` + marker file; no `mask`, no package removal, no data deletion. `:enable` is marker delete + `enable` + `start`.
 - Marks live in `/etc/microwave/disabled/<unit>`; while one exists, `:install` skips the unit's enable/start and a delayed restart must not wake it.
 - Existing installs without object-store attributes keep `backend = "local"`.
-- Secrets are one file under `/etc/microwave`, `0640 root:microwave`, written only while missing (`grep -qs "[^[:space:]]"` guard style). The garage key files are `0640 root:microwave`; `rpc_secret_file` and `admin_token_file` are `0640 root:garage`.
+- Secrets are one file under `/etc/microwave`, written only while missing (`grep -qs "[^[:space:]]"` guard style). The garage key files are `0640 root:microwave`; `rpc_secret_file` and `admin_token_file` are `0600 garage:garage`, because Garage refuses any secret file with a group or other bit (`mode & 0o077 != 0`, "world-readable, expected 0600").
 - MCP stays `experimental`, writes on by default, English copy, no invented metrics.
 - `README.md` of the cookbook and `docs/deployment.md` stay traceable to the repository or `docs/mcp.md`.
 - Every converge must be idempotent: second runs report 0 changed resources in all suites. `post_destroy` ends on `docker compose ... down -v --rmi local`.
@@ -434,7 +434,7 @@ Create `spec/garage_resource_spec.rb` with a fixture recipe `spec/fixtures/cookb
 - creates the `microwave` and `garage` system groups, the `garage` user, and `/var/lib/garage/{meta,data}` as `0700 garage:garage`;
 - downloads `https://garagehq.deuxfleurs.fr/_releases/v2.5.0/x86_64-unknown-linux-musl/garage` to `/usr/local/bin/garage` with the `x86_64` digest and mode `0755`;
 - writes `/etc/garage.toml` `0640 root:garage` containing `replication_factor = 1`, `db_engine = "sqlite"`, `api_bind_addr = "127.0.0.1:3910"`, `public_endpoint = "https://garage.example.com:3900"`, `public_endpoint_path_style = true`, and no literal `rpc_secret =`;
-- writes the rpc secret, admin token, access key and secret key as `0640`, the first two `root:garage`, the latter two `root:microwave`;
+- writes the rpc secret and admin token `0600 garage:garage` (Garage rejects group/other bits on secret files) and the access/secret key `0640 root:microwave`;
 - issues a certificate with SAN `DNS:garage.example.com,IP:127.0.0.1`, key `0600 garage:garage`;
 - installs `nginx` and declares a marker-guarded reload target for it;
 - renders the nginx site with `listen garage.example.com:3900 ssl;`, `client_max_body_size 0;`, `proxy_request_buffering off;` and `proxy_pass http://127.0.0.1:3910;`;

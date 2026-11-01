@@ -151,7 +151,11 @@ Properties: `hostname` (as in the other resources), `port` (default 3900),
 4. `remote_file /usr/local/bin/garage` with the arch URL and digest, `0755`,
    notifies the unit restart.
 5. `/etc/microwave/garage.rpc_secret` and `/etc/microwave/garage.admin_token`
-   from `SecureRandom.hex(32)`, `0640 root:garage`, written only while missing.
+   from `SecureRandom.hex(32)`, `0600 garage:garage`, written only while
+   missing. Garage rejects any secret file with a group or other bit
+   (`mode & 0o077 != 0` → "world-readable, expected 0600"), so `0640` cannot be
+   used and the owner has to be the engine user. The S3 key pair stays
+   `0640 root:microwave` because the server reads it.
 6. `/etc/garage.toml` (`0640 root:garage`) from a template: `replication_factor
    = 1`, `db_engine = "sqlite"`, meta/data dirs, `rpc_bind_addr [::]:3901`,
    `rpc_public_addr <hostname>:3901`, `rpc_secret_file`, `[s3_api]`
