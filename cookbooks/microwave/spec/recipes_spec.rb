@@ -107,7 +107,7 @@ describe 'microwave::default with create_organization' do
         'for i in $(seq 1 20); do curl -fsS --max-time 5 http://192.0.2.10:8000/_status && break; ' \
         '[ "$i" -lt 20 ] && sleep 3; done &&',
         "{ #{ctl} user-list | grep -qx pivotal || " \
-        "#{ctl} user-create pivotal --email pivotal@example.com --admin -f /tmp/pivotal.pem ; } &&",
+        "#{ctl} user-create pivotal --email pivotal@example.com --admin -f /var/lib/microwave/pivotal.pem ; } &&",
         "#{ctl} org-create demo --full-name 'Microwave Demo' --association-user pivotal -f /tmp/demo-validator.pem &&",
         "#{ctl} org-user-add demo pivotal",
       ]

@@ -9,6 +9,8 @@ class Microwave
   KNIFE_CONFIG = '/tmp/knife.rb'.freeze
   CONFIG = '/etc/microwave/microwave.toml'.freeze
   CTL = 'chef-server-ctl --config /etc/microwave/microwave.toml'.freeze
+  PIVOTAL_KEY = '/var/lib/microwave/pivotal.pem'.freeze
+  LEGACY_PIVOTAL_KEY = '/tmp/pivotal.pem'.freeze
 
   def initialize(backend)
     @backend = backend
@@ -127,12 +129,20 @@ class Microwave
     @knife_path ||= wait_for_knife(30)
   end
 
+  # The recipe writes the superuser key into the server's data directory. An
+  # earlier converge kept it in /tmp, so fall back to that when it is missing.
+  def pivotal_key
+    return PIVOTAL_KEY if @backend.command("test -f #{PIVOTAL_KEY}").exit_status.zero?
+
+    PIVOTAL_KEY if @backend.command("test -f #{LEGACY_PIVOTAL_KEY}").exit_status.zero?
+  end
+
   def write_knife_config
     @backend.command(<<~SH)
       cat > #{KNIFE_CONFIG} <<'EOF'
       chef_server_url '#{base_url}/organizations/demo'
       node_name 'pivotal'
-      client_key '/var/lib/microwave/pivotal.pem'
+      client_key '#{pivotal_key || PIVOTAL_KEY}'
       ssl_verify_mode :verify_none
       EOF
       chmod 0600 #{KNIFE_CONFIG}
