@@ -185,7 +185,7 @@ git commit -m "feat(cookbook): add the backend TLS path helper"
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
-- Produces: resource `microwave_server` with properties `database_url` (String, required), `search_url` (String, required), `bind` (String, default `node['microwave']['bind']`), `public_url` (String), `version` (String, default `'latest'`, regex `\A(latest|\d+\.\d+\.\d+)\z`), `ca_certs` (Array, default `[]`); `Microwave::Release.asset(version:, arch:)` returning `{ url:, sha256: }`, which raises `Microwave::Release::Missing` with the release tag and the missing asset name.
+- Produces: resource `microwave_server` with properties `database_url` (String, required), `search_url` (String, required), `bind` (String, default `node['microwave']['bind']`), `public_url` (String), `version` (String, default `'latest'`, regex `\A(latest|\d+\.\d+\.\d+)\z`), `ca_certs` (Array, default `[]`); `Microwave::Release.asset(version:, arch:)` returning `{ name:, url:, sha256: }`, which raises `Microwave::Release::Missing` with the release tag and the missing asset name.
 
 - [ ] **Step 1: Write the failing specs** in `spec/server_resource_spec.rb`
 
