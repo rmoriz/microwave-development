@@ -249,11 +249,15 @@ action :install do
     not_if { Microwave::Disabled.marked?('microwave-server') }
   end
 
+  # The marker has to short-circuit before the psql probe below: a stopped
+  # cluster cannot answer it. `only_if` runs before `not_if`, and the marker
+  # guard is declared first.
   execute 'microwave-create-role' do
     command lazy { "psql -p #{new_resource.port} -c \"CREATE ROLE \\\"#{new_resource.user}\\\" LOGIN PASSWORD '#{::File.read('/etc/microwave/db.password').strip}'\"" }
     user 'postgres'
     group 'postgres'
     sensitive true
+    only_if { !Microwave::Disabled.marked?('postgresql') } # cookstyle:disable Chef/Style/NegatingOnlyIf
     not_if "psql -p #{new_resource.port} -tAc \"SELECT 1 FROM pg_roles WHERE rolname='#{new_resource.user}'\" | grep -q 1"
   end
 
@@ -263,6 +267,7 @@ action :install do
     group 'postgres'
     sensitive true
     action :nothing
+    only_if { !Microwave::Disabled.marked?('postgresql') } # cookstyle:disable Chef/Style/NegatingOnlyIf
     only_if "psql -p #{new_resource.port} -tAc \"SELECT 1 FROM pg_roles WHERE rolname='#{new_resource.user}'\" | grep -q 1"
   end
 
@@ -271,6 +276,7 @@ action :install do
     user 'postgres'
     group 'postgres'
     sensitive false
+    only_if { !Microwave::Disabled.marked?('postgresql') } # cookstyle:disable Chef/Style/NegatingOnlyIf
     not_if "psql -p #{new_resource.port} -tAc \"SELECT 1 FROM pg_database WHERE datname='#{new_resource.database}'\" | grep -q 1"
   end
 end

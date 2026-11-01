@@ -235,7 +235,7 @@ describe 'microwave_postgresql' do
     alter = chef_run.execute('microwave-alter-role-password')
 
     expect(alter.command).to eq("psql -p 5432 -c \"ALTER ROLE \\\"microwave\\\" LOGIN PASSWORD '#{password}'\"")
-    expect(alter.only_if.first.command)
+    expect(alter.only_if.last.command)
       .to eq("psql -p 5432 -tAc \"SELECT 1 FROM pg_roles WHERE rolname='microwave'\" | grep -q 1")
     expect(alter.ignore_failure).to be(false)
   end
@@ -330,7 +330,7 @@ describe 'microwave_postgresql on a custom port' do
     expect(chef_run.execute('microwave-create-role').command).to start_with('psql -p 5433 -c')
     expect(chef_run.execute('microwave-create-role').not_if.first.command).to start_with('psql -p 5433 -tAc')
     expect(chef_run.execute('microwave-alter-role-password').command).to start_with('psql -p 5433 -c')
-    expect(chef_run.execute('microwave-alter-role-password').only_if.first.command).to start_with('psql -p 5433 -tAc')
+    expect(chef_run.execute('microwave-alter-role-password').only_if.last.command).to start_with('psql -p 5433 -tAc')
     expect(chef_run.execute('microwave-create-database').command).to start_with('psql -p 5433 -c')
     expect(chef_run.execute('microwave-create-database').not_if.first.command).to start_with('psql -p 5433 -tAc')
   end
@@ -443,6 +443,63 @@ describe 'microwave_postgresql switching' do
       node.automatic['fqdn'] = 'db.example.com'
       node.automatic['kernel']['machine'] = 'x86_64'
     end.converge('microwave-test::database').service('postgresql').not_if.first.block
+
+    expect(guard.call).to be(true)
+  end
+end
+
+describe 'microwave_postgresql switching on a stopped cluster' do
+  before do
+    stub_command(/SELECT 1 FROM pg_roles/).and_return(nil)
+    stub_command(/SELECT 1 FROM pg_database/).and_return(nil)
+    stub_command(/openssl verify/).and_return(nil)
+    stub_command(/openssl x509 -in/).and_return(nil)
+    stub_command('grep -qs "[^[:space:]]" /etc/microwave/db.password').and_return(true)
+
+    allow(::File).to receive(:read).and_call_original
+    allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return("#{'a' * 32}\n")
+    allow(::File).to receive(:exist?).and_call_original
+  end
+
+  let(:chef_run) do
+    allow(::File).to receive(:exist?).with('/etc/microwave/disabled/postgresql').and_return(true)
+    allow(::File).to receive(:exist?).with('/lib/systemd/system/postgresql.service').and_return(true)
+
+    ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_postgresql']) do |node|
+      node.name('db.example.com')
+      node.automatic['fqdn'] = 'db.example.com'
+      node.automatic['kernel']['machine'] = 'x86_64'
+    end.converge('microwave-test::database')
+  end
+
+  it 'does not run the role or database work against a stopped cluster' do
+    %w(microwave-create-role microwave-alter-role-password microwave-create-database).each do |name|
+      expect(chef_run.execute(name).only_if.first.block).to be_kind_of(Proc)
+      expect(chef_run).not_to run_execute(name)
+    end
+  end
+end
+
+describe 'microwave_postgresql with a disabled server' do
+  before do
+    stub_command(/SELECT 1 FROM pg_roles/).and_return(nil)
+    stub_command(/SELECT 1 FROM pg_database/).and_return(nil)
+    stub_command(/openssl verify/).and_return(nil)
+    stub_command(/openssl x509 -in/).and_return(nil)
+    stub_command('grep -qs "[^[:space:]]" /etc/microwave/db.password').and_return(true)
+
+    allow(::File).to receive(:read).and_call_original
+    allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return("#{'a' * 32}\n")
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/etc/microwave/disabled/microwave-server').and_return(true)
+  end
+
+  it 'does not restart the marked server from the database resource' do
+    guard = ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_postgresql']) do |node|
+      node.name('db.example.com')
+      node.automatic['fqdn'] = 'db.example.com'
+      node.automatic['kernel']['machine'] = 'x86_64'
+    end.converge('microwave-test::database').service('microwave-server').not_if.first.block
 
     expect(guard.call).to be(true)
   end
