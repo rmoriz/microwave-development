@@ -6,14 +6,15 @@ FROM debian:13
 ARG CINC_VERSION=19.4.46
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl gnupg openssl procps \
+ && apt-get install -y --no-install-recommends ca-certificates curl openssl procps \
+ # No gnupg: both apt repositories are pinned with `signed-by` keyring files, so
+ # nothing asks a keyserver.
  # The base image's docker-clean hook wipes /var/cache/apt/archives after every
  # run; that directory is a persistent host mount here, so drop the hook and
  # keep the downloaded packages.
  && rm -f /etc/apt/apt.conf.d/docker-clean \
  && printf 'APT::Keep-Downloaded-Packages "true";\nBinary::apt::APT::Keep-Downloaded-Packages "true";\n' \
       > /etc/apt/apt.conf.d/99keep-packages \
- && install -d -m 0700 /root/.gnupg \
  && curl -fsSLo /tmp/cinc.deb \
       "https://packages.cinc.sh/files/stable/cinc/${CINC_VERSION}/debian/13/cinc_${CINC_VERSION}-1_$(dpkg --print-architecture).deb" \
  && dpkg -i /tmp/cinc.deb \
