@@ -33,7 +33,7 @@ execute 'garage bucket info' do
 end
 
 # The last resource, so the file appears only once this node's converge is done.
-# The server node's healthcheck chain waits for it.
+# pre_converge waits for it before the server node starts.
 file '/mnt/shared/garage.s3' do
   content 'done'
   owner 'root'

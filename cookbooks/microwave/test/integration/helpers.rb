@@ -220,11 +220,12 @@ class Microwave
 
   # Converges one of the cookbook's own recipes on the node, with the suite's
   # node attributes. The disable suite uses it for microwave::disable and
-  # microwave::enable.
+  # microwave::enable. `/opt/kitchen` is the dokken provisioner's root_path, where
+  # it leaves client.rb and dna.json on the node.
   def converge(recipe)
     @backend.command(
-      'CHEF_LICENSE=accept-no-persist cinc-client -z -c /tmp/kitchen/client.rb ' \
-      "-j /tmp/kitchen/dna.json -o '#{recipe}'"
+      'CHEF_LICENSE=accept-no-persist cinc-client -z -c /opt/kitchen/client.rb ' \
+      "-j /opt/kitchen/dna.json -o '#{recipe}'"
     )
   end
 end

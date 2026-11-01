@@ -4,6 +4,10 @@ require_relative '../helpers'
 # data outlives it, a later `microwave::default` converge leaves the node down,
 # and `microwave::enable` brings the services, the stored cookbook and the status
 # endpoint back. The node is registered as kitchen-disable.
+#
+# InSpec evaluates a control body while collecting the file, before any of its
+# tests run, so every phase's converge and data read sits in an `it`: the tests
+# run in registration order, which is the order the phases need.
 control 'microwave disable setup' do
   mw = Microwave.new(inspec)
 
@@ -17,27 +21,29 @@ control 'microwave disable setup' do
     expect(upload.exit_status).to eq 0
   end
   it 'writes marker data into the database' do
+    # Repeatable, so a verify on a node that was not recreated still leaves
+    # exactly one row behind.
     result = mw.psql('127.0.0.1', '/etc/microwave/db.password',
-                     sql: 'CREATE TABLE disable_probe (id int); INSERT INTO disable_probe VALUES (1)')
+                     sql: 'CREATE TABLE IF NOT EXISTS disable_probe (id int); ' \
+                          'TRUNCATE disable_probe; INSERT INTO disable_probe VALUES (1)')
     expect(result.exit_status).to eq 0, "psql said: #{result.stderr.to_s.strip}"
   end
 end
 
 control 'microwave disable stops everything' do
   mw = Microwave.new(inspec)
-  result = mw.converge('microwave::disable')
 
-  it('converges') { expect(result.exit_status).to eq(0), (result.stdout.to_s + result.stderr.to_s)[-2000..] }
+  it('converges') { expect(mw.converge('microwave::disable').exit_status).to eq(0) }
 
   %w(microwave-server opensearch postgresql garage nginx).each do |unit|
     describe service(unit) do
       it { should_not be_running }
       it { should_not be_enabled }
-    end
 
-    describe "the unit file state of #{unit}" do
-      it('is disabled') do
-        expect(inspec.command("systemctl show -p UnitFileState --value #{unit}").stdout.strip).to eq 'disabled'
+      describe "the unit file state of #{unit}" do
+        it('is disabled') do
+          expect(inspec.command("systemctl show -p UnitFileState --value #{unit}").stdout.strip).to eq 'disabled'
+        end
       end
     end
   end
@@ -68,9 +74,8 @@ end
 
 control 'microwave default keeps the switch off' do
   mw = Microwave.new(inspec)
-  result = mw.converge('microwave::default')
 
-  it('converges') { expect(result.exit_status).to eq(0), (result.stdout.to_s + result.stderr.to_s)[-2000..] }
+  it('converges') { expect(mw.converge('microwave::default').exit_status).to eq(0) }
 
   %w(microwave-server opensearch postgresql garage nginx).each do |unit|
     describe service(unit) do
@@ -82,9 +87,8 @@ end
 
 control 'microwave enable brings everything back' do
   mw = Microwave.new(inspec)
-  result = mw.converge('microwave::enable')
 
-  it('converges') { expect(result.exit_status).to eq(0), (result.stdout.to_s + result.stderr.to_s)[-2000..] }
+  it('converges') { expect(mw.converge('microwave::enable').exit_status).to eq(0) }
 
   %w(nginx garage postgresql opensearch microwave-server).each do |unit|
     describe service(unit) do
@@ -115,7 +119,7 @@ control 'microwave enable brings everything back' do
     info = mw.garage('bucket', 'info', 'chef-cookbooks').stdout
     # The key table pads its permission column, so the flags are followed by
     # spaces rather than the tab of the raw row.
-    expect(info).to match(/\ARWO /)
+    expect(info).to match(/^RWO /)
     expect(info).to include(key)
     expect(info).to match(/^Objects:\s+[1-9]/)
   end
@@ -127,10 +131,17 @@ control 'microwave enable brings everything back' do
     expect(inspec.file('/tmp/disable-download/kitchen_probe-0.1.0/recipes/default.rb')).to exist
   end
 
-  describe 'the status endpoint' do
-    body, code = mw.status
+  # The server's unit is only just started, so the first request can race the
+  # listener; poll bounded instead of probing once.
+  it 'answers 200 with every upstream healthy' do
+    ready = inspec.command(
+      "for i in $(seq 30); do curl -sS -o /dev/null -w '%{http_code}' " \
+      "#{mw.base_url}/_status | grep -qx 200 && exit 0; sleep 1; done; exit 1"
+    )
+    expect(ready.exit_status).to eq(0), "the status endpoint did not come back: #{ready.stderr.to_s.strip}"
 
-    it('answers 200') { expect(code).to eq 200 }
-    it('reports every dependency healthy') { expect(JSON.parse(body)['upstreams'].values).to all(eq 'pong') }
+    body, code = mw.status
+    expect(code).to eq 200
+    expect(JSON.parse(body)['upstreams'].values).to all(eq 'pong')
   end
 end

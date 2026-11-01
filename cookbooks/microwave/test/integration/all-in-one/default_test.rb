@@ -85,8 +85,8 @@ control 'microwave all-in-one wiring' do
     it 'lists the server key as an owner' do
       info = mw.garage('bucket', 'info', 'chef-cookbooks').stdout
       # The key table pads its permission column, so the flags are followed by
-      # spaces rather than the tab of the raw row.
-      expect(info).to match(/\ARWO /)
+      # spaces rather than the tab of the raw row; the banner precedes them.
+      expect(info).to match(/^RWO /)
       expect(info).to include(key)
     end
   end

@@ -58,6 +58,9 @@ action :install do
 
   user 'garage' do
     system true
+    # Without the gid, useradd refuses: the group above already exists, and it
+    # would try to create a second group of the same name.
+    gid 'garage'
     shell '/usr/sbin/nologin'
   end
 
@@ -108,17 +111,22 @@ action :install do
   # The engine secrets restart the engine; the key pair is rendered into the
   # server config, so a rotation restarts the server there (its unit is absent
   # on an object-store-only node and the target is guarded).
-  { rpc_secret => ['garage', 'service[garage]'],
-    admin_token => ['garage', nil],
-    access_key_file => ['microwave', 'service[microwave-server]'],
-    secret_key_file => ['microwave', 'service[microwave-server]'] }.each do |path, (grp, target)|
+  #
+  # Garage runs as `garage` and refuses a secret file that is group or world
+  # readable, so its two own secrets belong to that user 0600. The key pair is
+  # read by the server, which is in the microwave group, so it stays there.
+  { rpc_secret => ['garage', '0600', 'garage', 'service[garage]'],
+    admin_token => ['garage', '0600', 'garage', nil],
+    access_key_file => ['root', '0640', 'microwave', 'service[microwave-server]'],
+    secret_key_file => ['root', '0640', 'microwave', 'service[microwave-server]'] }
+    .each do |path, (owner, mode, grp, target)|
     hex = path.end_with?('access_key') ? 20 : 32
 
     file path do
       content "#{SecureRandom.hex(hex)}\n"
-      owner 'root'
+      owner owner
       group grp
-      mode '0640'
+      mode mode
       sensitive true
       notifies :restart, target, :delayed if target
       not_if "grep -qs \"[^[:space:]]\" #{path}"

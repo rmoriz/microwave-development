@@ -99,9 +99,9 @@ describe 'microwave_garage' do
 
   it 'writes the engine secrets for the engine group' do
     expect(chef_run).to create_file('/etc/microwave/garage.rpc_secret')
-      .with(owner: 'root', group: 'garage', mode: '0640')
+      .with(owner: 'garage', group: 'garage', mode: '0600')
     expect(chef_run).to create_file('/etc/microwave/garage.admin_token')
-      .with(owner: 'root', group: 'garage', mode: '0640')
+      .with(owner: 'garage', group: 'garage', mode: '0600')
 
     expect(chef_run.file('/etc/microwave/garage.rpc_secret').content).to match(/\A[0-9a-f]{64}\n\z/)
     expect(chef_run.file('/etc/microwave/garage.admin_token').content).to match(/\A[0-9a-f]{64}\n\z/)

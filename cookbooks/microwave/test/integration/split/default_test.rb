@@ -28,7 +28,7 @@ control 'microwave split services' do
     body, code = mw.status
 
     it('answers 200') { expect(code).to eq 200 }
-    it('reports both remote backends healthy') do
+    it('reports three remote backends healthy') do
       # See the all-in-one suite: the search upstream key depends on the build.
       report = JSON.parse(body)
       search_key = (report['upstreams'].keys & %w(chef_index chef_opensearch)).first
