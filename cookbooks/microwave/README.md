@@ -228,3 +228,7 @@ runs, because the OpenSearch deb alone is 1.1 GB. The cache is not pruned; it
 currently holds roughly 950 MB (158 archives) after runs of both suites and
 grows with every package version. Deleting the directory is always safe; CI
 keys an `actions/cache` entry on the fixture files.
+
+`chefignore` keeps the cache (and the logs) out of the cookbook, so ChefSpec and
+Test Kitchen do not checksum 950 MB per example; without it every ChefSpec
+example takes about two seconds longer.

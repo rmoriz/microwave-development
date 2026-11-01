@@ -1,0 +1,20 @@
+# What the node does not need. ChefSpec re-uploads the cookbook for every
+# example and Test Kitchen copies it into the sandbox, so generated material
+# stays out: the apt archive cache alone is ~945 MB, and without this list every
+# ChefSpec example spends seconds checksumming it. Patterns need the trailing
+# `**`; a bare `dir/` matches nothing under Chef's `File.fnmatch?`.
+.kitchen/**
+.kitchen.yml
+.kitchen.local.yml
+.git/**
+.gitignore
+.rspec
+Gemfile
+Gemfile.lock
+Rakefile
+README.md
+coverage/**
+spec/**
+test/fixtures/cache/**
+test/fixtures/logs/**
+test/fixtures/shared/**
