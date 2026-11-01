@@ -47,7 +47,9 @@ ready() {
       $compose exec -T search curl -fsS --cacert /mnt/shared/search-ca.crt \
         https://search.microwave.test:9200/_cluster/health 2>/dev/null |
         grep -Eq '"status":"(green|yellow)"' &&
-      $compose exec -T garage curl -fsS --cacert /mnt/shared/garage-ca.crt \
+      # An unsigned GET on the store root answers 403, so no `-f`: the hop is
+      # what counts here.
+      $compose exec -T garage curl -sS --cacert /mnt/shared/garage-ca.crt \
         https://garage.microwave.test:3900/ >/dev/null 2>&1; then
       return 0
     fi
