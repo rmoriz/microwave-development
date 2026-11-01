@@ -34,6 +34,11 @@ describe 'microwave_garage' do
 
     allow(::File).to receive(:symlink?).and_call_original
     allow(::File).to receive(:symlink?).with('/etc/nginx/sites-enabled/default').and_return(true)
+
+    # The spec host decides whether systemd is there; pin it so the unit branch
+    # is taken everywhere and the direct-start example flips it.
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/run/systemd/system').and_return(true)
   end
 
   def rendered(path)
@@ -227,9 +232,34 @@ describe 'microwave_garage' do
     expect(chef_run).to enable_service('garage')
     expect(chef_run).to start_service('garage')
     expect(chef_run.service('garage').not_if.first.block.call).to be(false)
+    # The CLI refuses to work while a restart has the pidfile away, and the
+    # provisioning steps call it right after this resource.
+    expect(chef_run.service('garage'))
+      .to notify('execute[microwave-garage-wait]').to(:run).delayed
 
     names = chef_run.resource_collection.map(&:to_s)
     expect(names.index('service[garage]')).to be < names.index('execute[microwave-garage-wait]')
+  end
+
+  # The image ships no init script and a container runs no init, so update-rc.d
+  # cannot enable the unit. The daemon is driven directly there and only
+  # started, never enabled.
+  it 'starts the daemon directly when systemd is absent' do
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/run/systemd/system').and_return(false)
+
+    run = converge
+    service = run.service('garage')
+
+    expect(service.action).to eq([:start])
+    expect(service.start_command).to include('start-stop-daemon --start')
+    expect(service.start_command).to include('--chuid garage:garage')
+    expect(service.start_command).to include('--exec /usr/local/bin/garage')
+    expect(service.stop_command).to include('--retry TERM/30/KILL/5')
+    expect(service.restart_command).to include('--stop')
+    expect(service.status_command).to include('--status')
+    expect(run).to start_service('garage')
+    expect(run).not_to enable_service('garage')
   end
 
   it 'waits for the admin API, bounded, before staging the layout' do
@@ -371,6 +401,11 @@ describe 'microwave_garage with a client network' do
 
     allow(::File).to receive(:symlink?).and_call_original
     allow(::File).to receive(:symlink?).with('/etc/nginx/sites-enabled/default').and_return(true)
+
+    # The spec host decides whether systemd is there; pin it so the unit branch
+    # is taken everywhere and the direct-start example flips it.
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/run/systemd/system').and_return(true)
   end
 
   def rendered(path)
@@ -394,8 +429,14 @@ end
 
 describe 'microwave_garage switching' do
   before do
+    # The unit is looked up in three directories, so the guard would otherwise
+    # depend on the spec host; it exists everywhere, and the examples below flip
+    # it where they care.
     allow(::File).to receive(:exist?).and_call_original
-    allow(::File).to receive(:exist?).with('/lib/systemd/system/garage.service').and_return(true)
+    Microwave::Disabled::UNIT_DIRS.each do |dir|
+      allow(::File).to receive(:exist?).with("#{dir}/garage.service").and_return(true)
+    end
+    allow(::File).to receive(:exist?).with('/run/systemd/system').and_return(true)
   end
 
   let(:chef_run) do
@@ -410,9 +451,40 @@ describe 'microwave_garage switching' do
       .with(owner: 'root', group: 'root', mode: '0644')
   end
 
+  # Without systemd there is no init script to enable or disable, so the
+  # switch only stops or starts the daemon with the direct commands.
+  it 'stops the daemon directly when systemd is absent' do
+    allow(::File).to receive(:exist?).and_call_original
+    Microwave::Disabled::UNIT_DIRS.each do |dir|
+      allow(::File).to receive(:exist?).with("#{dir}/garage.service").and_return(true)
+    end
+    allow(::File).to receive(:exist?).with('/run/systemd/system').and_return(false)
+
+    expect(chef_run).to stop_service('garage')
+    expect(chef_run).not_to disable_service('garage')
+    expect(chef_run.service('garage').stop_command).to include('start-stop-daemon --stop')
+  end
+
+  it 'starts the daemon directly again on enable' do
+    allow(::File).to receive(:exist?).and_call_original
+    Microwave::Disabled::UNIT_DIRS.each do |dir|
+      allow(::File).to receive(:exist?).with("#{dir}/garage.service").and_return(true)
+    end
+    allow(::File).to receive(:exist?).with('/run/systemd/system').and_return(false)
+
+    runner = ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_garage'])
+    run = runner.converge('microwave-test::garage_enable')
+
+    expect(run).to start_service('garage')
+    expect(run).not_to enable_service('garage')
+  end
+
   it 'skips a unit that does not exist' do
     allow(::File).to receive(:exist?).and_call_original
-    allow(::File).to receive(:exist?).with('/lib/systemd/system/garage.service').and_return(false)
+    Microwave::Disabled::UNIT_DIRS.each do |dir|
+      allow(::File).to receive(:exist?).with("#{dir}/garage.service").and_return(false)
+    end
+    allow(::File).to receive(:exist?).with('/run/systemd/system').and_return(true)
     guard = chef_run.service('garage').only_if.first.block
 
     expect(guard.call).to be(false)

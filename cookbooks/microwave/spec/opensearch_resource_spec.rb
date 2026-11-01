@@ -283,8 +283,8 @@ describe 'microwave_opensearch' do
     expect(names.index('service[opensearch]')).to be < names.index('service[nginx]')
   end
 
-  # Without systemd the packaged init script cannot start the daemon, so the
-  # resource starts it itself and has to provide the pid directory.
+  # Without systemd the packaged init script cannot start or stop the daemon, so
+  # the resource drives it itself and has to provide the pid directory.
   it 'starts OpenSearch directly when systemd is absent' do
     allow(::File).to receive(:exist?).and_call_original
     allow(::File).to receive(:exist?).with('/run/systemd/system').and_return(false)
@@ -292,10 +292,38 @@ describe 'microwave_opensearch' do
     expect(chef_run).to create_directory('/var/run/opensearch')
       .with(owner: 'opensearch', group: 'opensearch', mode: '0755')
 
-    command = chef_run.service('opensearch').start_command
-    expect(command).to include('start-stop-daemon')
-    expect(command).to include('--chuid opensearch')
-    expect(command).to include('OPENSEARCH_PATH_CONF=/etc/opensearch')
+    service = chef_run.service('opensearch')
+    expect(service.start_command).to include('start-stop-daemon')
+    expect(service.start_command).to include('--chuid opensearch')
+    expect(service.start_command).to include('OPENSEARCH_PATH_CONF=/etc/opensearch')
+    expect(service.stop_command).to include('--retry TERM/30/KILL/5')
+    expect(service.restart_command).to include('--stop')
+    expect(service.status_command).to include('--status')
+    expect(chef_run).to start_service('opensearch')
+    expect(chef_run).not_to enable_service('opensearch')
+  end
+
+  it 'installs curl for the readiness probe, after refreshing the lists' do
+    expect(chef_run).to periodic_apt_update('curl')
+    expect(chef_run).to install_apt_package('curl')
+
+    names = chef_run.resource_collection.map(&:to_s)
+    expect(names.index('apt_update[curl]')).to be < names.index('apt_package[curl]')
+  end
+
+  # A restart right after the start caught the engine mid-boot, so the probe
+  # runs as its own step and repeats itself after the delayed restart.
+  it 'waits for the engine and re-probes after a restart' do
+    wait = chef_run.execute('microwave-opensearch-wait')
+
+    expect(wait.command)
+      .to eq('for i in $(seq 90); do curl -fsS --max-time 5 http://127.0.0.1:9210/ >/dev/null && exit 0; sleep 2; done; exit 1')
+    expect(wait).to notify('execute[microwave-opensearch-wait]').to(:run).delayed
+    expect(wait.not_if.first.block.call).to be(false)
+
+    names = chef_run.resource_collection.map(&:to_s)
+    expect(names.index('service[opensearch]')).to be < names.index('execute[microwave-opensearch-wait]')
+    expect(names.index('execute[microwave-opensearch-wait]')).to be < names.index('service[nginx]')
   end
 end
 
@@ -426,15 +454,15 @@ describe 'microwave_opensearch switching' do
     allow(::File).to receive(:symlink?).and_call_original
     allow(::File).to receive(:symlink?).with('/etc/nginx/sites-enabled/default').and_return(true)
 
-    # The spec host decides whether systemd is there; pin it so the systemd
-    # branch is taken everywhere and the direct-start example flips it.
+    # The unit is looked up in three directories, so the switch guard would
+    # otherwise depend on the spec host; it exists everywhere, and the examples
+    # below flip it where they care. The systemd pin makes the guard's branch
+    # independent of the host as well.
     allow(::File).to receive(:exist?).and_call_original
+    Microwave::Disabled::UNIT_DIRS.each do |dir|
+      allow(::File).to receive(:exist?).with("#{dir}/opensearch.service").and_return(true)
+    end
     allow(::File).to receive(:exist?).with('/run/systemd/system').and_return(true)
-
-    # The unit exists on the converged host, so the switch guard lets the action
-    # through; the examples below flip it where they care.
-    allow(::File).to receive(:exist?).and_call_original
-    allow(::File).to receive(:exist?).with('/lib/systemd/system/opensearch.service').and_return(true)
   end
 
   it 'stops the unit, disables it and drops the marker' do
@@ -450,9 +478,29 @@ describe 'microwave_opensearch switching' do
       .to eq(%w(opensearch))
   end
 
+  it 'starts the daemon directly again on enable' do
+    allow(::File).to receive(:exist?).and_call_original
+    Microwave::Disabled::UNIT_DIRS.each do |dir|
+      allow(::File).to receive(:exist?).with("#{dir}/opensearch.service").and_return(true)
+    end
+    allow(::File).to receive(:exist?).with('/run/systemd/system').and_return(false)
+
+    run = ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_opensearch']) do |node|
+      node.name('search.example.com')
+      node.automatic['fqdn'] = 'search.example.com'
+      node.automatic['kernel']['machine'] = 'x86_64'
+    end.converge('microwave-test::search_enable')
+
+    expect(run).to start_service('opensearch')
+    expect(run).not_to enable_service('opensearch')
+  end
+
   it 'skips a unit that does not exist' do
     allow(::File).to receive(:exist?).and_call_original
-    allow(::File).to receive(:exist?).with('/lib/systemd/system/opensearch.service').and_return(false)
+    Microwave::Disabled::UNIT_DIRS.each do |dir|
+      allow(::File).to receive(:exist?).with("#{dir}/opensearch.service").and_return(false)
+    end
+    allow(::File).to receive(:exist?).with('/run/systemd/system').and_return(true)
     guard = chef_run.service('opensearch').only_if.first.block
 
     expect(guard.call).to be(false)

@@ -305,7 +305,26 @@ action :install do
   end
 
   service 'garage' do
-    action %i(enable start)
+    # Garage ships no init script, so a container without systemd cannot enable
+    # or start it through sysvinit: update-rc.d aborts on the missing script.
+    # The daemon is started directly there; a host with systemd keeps its unit.
+    # The wait is repeated after a restart: the CLI refuses to work while the
+    # pidfile is gone, and the steps below call it right after this resource.
+    notifies :run, 'execute[microwave-garage-wait]', :delayed
+    if Microwave::DirectService.systemd?
+      action %i(enable start)
+    else
+      Microwave::DirectService.commands(
+        self,
+        pidfile: '/run/garage.pid',
+        exec: '/usr/local/bin/garage',
+        chuid: 'garage:garage',
+        chdir: '/var/lib/garage',
+        args: '-c /etc/garage.toml server',
+        background: true
+      )
+      action :start
+    end
     not_if { Microwave::Disabled.marked?('garage') }
   end
 
@@ -406,7 +425,20 @@ action :disable do
   end
 
   service 'garage' do
-    action %i(stop disable)
+    if Microwave::DirectService.systemd?
+      action %i(stop disable)
+    else
+      Microwave::DirectService.commands(
+        self,
+        pidfile: '/run/garage.pid',
+        exec: '/usr/local/bin/garage',
+        chuid: 'garage:garage',
+        chdir: '/var/lib/garage',
+        args: '-c /etc/garage.toml server',
+        background: true
+      )
+      action :stop
+    end
     only_if { Microwave::Disabled.unit?('garage') }
   end
 end
@@ -419,7 +451,20 @@ action :enable do
   end
 
   service 'garage' do
-    action %i(enable start)
+    if Microwave::DirectService.systemd?
+      action %i(enable start)
+    else
+      Microwave::DirectService.commands(
+        self,
+        pidfile: '/run/garage.pid',
+        exec: '/usr/local/bin/garage',
+        chuid: 'garage:garage',
+        chdir: '/var/lib/garage',
+        args: '-c /etc/garage.toml server',
+        background: true
+      )
+      action :start
+    end
     only_if { Microwave::Disabled.unit?('garage') }
   end
 end

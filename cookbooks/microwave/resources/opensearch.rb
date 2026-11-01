@@ -76,6 +76,14 @@ action :install do
     environment packaged_env
   end
 
+  # The readiness probe below is a plain curl; a minimal image does not ship
+  # one. The periodic update is a no-op while the lists are fresh.
+  apt_update 'curl'
+
+  apt_package 'curl' do
+    environment packaged_env
+  end
+
   directory '/etc/microwave' do
     owner 'root'
     group 'root'
@@ -283,18 +291,35 @@ action :install do
   service 'opensearch' do
     # The packaged sysv init script aborts under `set -e`: `pidofproc` returns 3
     # while the pid file does not exist yet, so a systemd-less container can
-    # never start through it. Start the daemon directly there; systemd hosts
-    # keep their unit.
-    unless ::File.exist?('/run/systemd/system')
-      start_command 'env OPENSEARCH_PATH_CONF=/etc/opensearch ' \
-                    '/usr/sbin/start-stop-daemon --start --quiet ' \
-                    '--pidfile /var/run/opensearch/opensearch.pid ' \
-                    '--chdir /usr/share/opensearch --chuid opensearch ' \
-                    '--exec /usr/share/opensearch/bin/opensearch -- ' \
-                    '-d -p /var/run/opensearch/opensearch.pid'
+    # neither start nor stop through it. Drive the daemon directly there; a host
+    # with systemd keeps its unit.
+    if Microwave::DirectService.systemd?
+      action %i(enable start)
+    else
+      Microwave::DirectService.commands(
+        self,
+        pidfile: '/var/run/opensearch/opensearch.pid',
+        exec: '/usr/share/opensearch/bin/opensearch',
+        chuid: 'opensearch',
+        chdir: '/usr/share/opensearch',
+        args: '-d -p /var/run/opensearch/opensearch.pid',
+        env: 'OPENSEARCH_PATH_CONF=/etc/opensearch'
+      )
+      action :start
     end
-    action %i(enable start)
     not_if { Microwave::Disabled.marked?('opensearch') }
+  end
+
+  # A restart scheduled right after the start used to catch the engine in its
+  # boot and leave it down. The probe runs as an ordinary step, so the delayed
+  # restart only ever hits a serving node, and the self-notification repeats the
+  # probe after that restart.
+  execute 'microwave-opensearch-wait' do
+    command 'for i in $(seq 90); do ' \
+            "curl -fsS --max-time 5 http://127.0.0.1:#{http_port}/ >/dev/null && exit 0; " \
+            'sleep 2; done; exit 1'
+    not_if { Microwave::Disabled.marked?('opensearch') }
+    notifies :run, 'execute[microwave-opensearch-wait]', :delayed
   end
 
   # The proxy is shared by both backends, so it carries its own marker: the
@@ -353,7 +378,20 @@ action :disable do
   end
 
   service 'opensearch' do
-    action %i(stop disable)
+    if Microwave::DirectService.systemd?
+      action %i(stop disable)
+    else
+      Microwave::DirectService.commands(
+        self,
+        pidfile: '/var/run/opensearch/opensearch.pid',
+        exec: '/usr/share/opensearch/bin/opensearch',
+        chuid: 'opensearch',
+        chdir: '/usr/share/opensearch',
+        args: '-d -p /var/run/opensearch/opensearch.pid',
+        env: 'OPENSEARCH_PATH_CONF=/etc/opensearch'
+      )
+      action :stop
+    end
     only_if { Microwave::Disabled.unit?('opensearch') }
   end
 end
@@ -366,7 +404,20 @@ action :enable do
   end
 
   service 'opensearch' do
-    action %i(enable start)
+    if Microwave::DirectService.systemd?
+      action %i(enable start)
+    else
+      Microwave::DirectService.commands(
+        self,
+        pidfile: '/var/run/opensearch/opensearch.pid',
+        exec: '/usr/share/opensearch/bin/opensearch',
+        chuid: 'opensearch',
+        chdir: '/usr/share/opensearch',
+        args: '-d -p /var/run/opensearch/opensearch.pid',
+        env: 'OPENSEARCH_PATH_CONF=/etc/opensearch'
+      )
+      action :start
+    end
     only_if { Microwave::Disabled.unit?('opensearch') }
   end
 end
