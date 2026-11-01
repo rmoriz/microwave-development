@@ -27,7 +27,7 @@ All three resources carry one `:install` action; there is no remove action.
 
 | Resource | Installs | Manages |
 |---|---|---|
-| `microwave_server` | The `microwave-server` `.deb` of a GitHub release, checksum-pinned to the release's published `.sha256`; `logrotate` | `/etc/microwave/microwave.toml` (mode `0640`, `root:microwave`), the systemd ordering drop-in, the `microwave-server` service, the backend CAs in the system trust store, and the demo organization when asked |
+| `microwave_server` | The `microwave-server` `.deb` of a GitHub release, checksum-pinned to the release's published `.sha256`; `logrotate` | `/etc/microwave/microwave.toml` (mode `0640`, `root:microwave`), the systemd ordering drop-in, the `microwave-server` service, the backend CAs in the system trust store, and the demo organization when asked; the server writes the superuser key into its data directory |
 | `microwave_postgresql` | PostgreSQL 19 from the PGDG repository (pinned), the `microwave` system group without login | A cookbook-generated CA and the `db` service certificate, `/etc/microwave/db.password`, `conf.d/microwave.conf` (TLS on), `pg_hba.conf`, the application role and its database |
 | `microwave_opensearch` | OpenSearch 3.9.0 (pinned) and nginx | `/etc/opensearch/opensearch.yml` on loopback port 9210, the JVM heap, the `vm.max_map_count` sysctl, and the nginx TLS proxy on port 9200 |
 
@@ -130,7 +130,14 @@ rest are defaults the resources pick up.
 | `node['microwave']['search_host']` | `nil` | Search node; the URL is `https://<host>:9200`. |
 | `node['microwave']['opensearch_heap']` | `'1g'` | OpenSearch heap. |
 | `node['microwave']['client_network']` | `nil` | CIDR that opens both backends. |
-| `node['microwave']['create_organization']` | `false` | Creates the `pivotal` admin, the organization `demo` and its membership, and waits for `/_status` first. |
+| `node['microwave']['create_organization']` | `false` | Creates the `pivotal` admin, the organization `demo` and its membership, and waits for `/_status` first. The server writes the superuser key to `<data_dir>/pivotal.pem`. |
+
+The `pivotal` key has no attribute of its own. The server writes it on first
+start to `<data_dir>/pivotal.pem`, mode `0600` and owned by the service user;
+`create_organization` only carries a `user-create … -f` fallback for an account
+that is missing, and its guard skips that while the user exists. A `data_dir`
+swap therefore loses the key: move the file along with the database, and back it
+up like the backend keys the TLS section describes.
 
 ## Topologies
 
