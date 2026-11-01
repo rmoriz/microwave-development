@@ -274,6 +274,12 @@ action :install do
     not_if { ::File.exist?('/run/systemd/system') }
   end
 
+  directory Microwave::Disabled::DIR do
+    owner 'root'
+    group 'root'
+    mode '0755'
+  end
+
   service 'opensearch' do
     # The packaged sysv init script aborts under `set -e`: `pidofproc` returns 3
     # while the pid file does not exist yet, so a systemd-less container can
@@ -288,11 +294,15 @@ action :install do
                     '-d -p /var/run/opensearch/opensearch.pid'
     end
     action %i(enable start)
+    not_if { Microwave::Disabled.marked?('opensearch') }
   end
 
+  # The proxy is shared by both backends, so it carries its own marker: the
+  # search resource stops it, the recipe starts it again.
   service 'nginx' do
     supports reload: true, restart: true, status: true
     action %i(enable start)
+    not_if { Microwave::Disabled.marked?('nginx') }
   end
 
   template vhost do
@@ -325,5 +335,38 @@ action :install do
     action :delete
     only_if { ::File.symlink?('/etc/nginx/sites-enabled/default') }
     notifies :reload, 'service[nginx]', :delayed
+  end
+end
+
+action :disable do
+  directory Microwave::Disabled::DIR do
+    owner 'root'
+    group 'root'
+    mode '0755'
+  end
+
+  file Microwave::Disabled.marker('opensearch') do
+    content "disabled by microwave::disable\n"
+    owner 'root'
+    group 'root'
+    mode '0644'
+  end
+
+  service 'opensearch' do
+    action %i(stop disable)
+    only_if { Microwave::Disabled.unit?('opensearch') }
+  end
+end
+
+# nginx is started by the recipe, not here: both backends share it, and a
+# re-enabled backend must not bring the proxy back on its own.
+action :enable do
+  file Microwave::Disabled.marker('opensearch') do
+    action :delete
+  end
+
+  service 'opensearch' do
+    action %i(enable start)
+    only_if { Microwave::Disabled.unit?('opensearch') }
   end
 end

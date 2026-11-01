@@ -384,3 +384,73 @@ describe 'microwave_opensearch without an FQDN' do
       .to include('-subj "/CN=search-short"', 'DNS:search-short,IP:127.0.0.1')
   end
 end
+
+describe 'microwave_opensearch switching' do
+  include_context 'opensearch certificate guards'
+
+  let(:chef_run) do
+    ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_opensearch']) do |node|
+      node.name('search.example.com')
+      node.automatic['fqdn'] = 'search.example.com'
+      node.automatic['kernel']['machine'] = 'x86_64'
+    end.converge('microwave-test::search_disable')
+  end
+
+  before do
+    stub_certificate_guards
+    stub_command(%r{test -d /usr/share/opensearch/plugins/opensearch-security}).and_return(nil)
+
+    allow(::File).to receive(:symlink?).and_call_original
+    allow(::File).to receive(:symlink?).with('/etc/nginx/sites-enabled/default').and_return(true)
+
+    # The unit exists on the converged host, so the switch guard lets the action
+    # through; the examples below flip it where they care.
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/lib/systemd/system/opensearch.service').and_return(true)
+  end
+
+  it 'stops the unit, disables it and drops the marker' do
+    expect(chef_run).to stop_service('opensearch')
+    expect(chef_run).to disable_service('opensearch')
+    expect(chef_run).to create_file('/etc/microwave/disabled/opensearch')
+      .with(owner: 'root', group: 'root', mode: '0644')
+  end
+
+  # nginx belongs to the recipe, so enabling the backend does not start it again.
+  it 'leaves nginx to the recipe rather than the resource' do
+    expect(chef_run.resource_collection.select { |r| r.resource_name == :service }.map(&:name))
+      .to eq(%w(opensearch))
+  end
+
+  it 'skips a unit that does not exist' do
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/lib/systemd/system/opensearch.service').and_return(false)
+    guard = chef_run.service('opensearch').only_if.first.block
+
+    expect(guard.call).to be(false)
+  end
+
+  it 'does not enable or start a marked unit on install' do
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/etc/microwave/disabled/opensearch').and_return(true)
+    guard = ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_opensearch']) do |node|
+      node.name('search.example.com')
+      node.automatic['fqdn'] = 'search.example.com'
+      node.automatic['kernel']['machine'] = 'x86_64'
+    end.converge('microwave-test::search').service('opensearch').not_if.first.block
+
+    expect(guard.call).to be(true)
+  end
+
+  it 'does not start the nginx proxy for a marked nginx on install' do
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/etc/microwave/disabled/nginx').and_return(true)
+    guard = ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_opensearch']) do |node|
+      node.name('search.example.com')
+      node.automatic['fqdn'] = 'search.example.com'
+      node.automatic['kernel']['machine'] = 'x86_64'
+    end.converge('microwave-test::search').service('nginx').not_if.first.block
+
+    expect(guard.call).to be(true)
+  end
+end

@@ -227,8 +227,15 @@ action :install do
     notifies :restart, 'service[postgresql]', :delayed
   end
 
+  directory Microwave::Disabled::DIR do
+    owner 'root'
+    group 'root'
+    mode '0755'
+  end
+
   service 'postgresql' do
     action %i(enable start)
+    not_if { Microwave::Disabled.marked?('postgresql') }
   end
 
   # Delayed restart target for a rotation. On a database-only node the server
@@ -239,6 +246,7 @@ action :install do
       ['/etc/systemd/system/microwave-server.service',
        '/lib/systemd/system/microwave-server.service'].any? { |path| ::File.exist?(path) }
     end
+    not_if { Microwave::Disabled.marked?('microwave-server') }
   end
 
   execute 'microwave-create-role' do
@@ -264,5 +272,36 @@ action :install do
     group 'postgres'
     sensitive false
     not_if "psql -p #{new_resource.port} -tAc \"SELECT 1 FROM pg_database WHERE datname='#{new_resource.database}'\" | grep -q 1"
+  end
+end
+
+action :disable do
+  directory Microwave::Disabled::DIR do
+    owner 'root'
+    group 'root'
+    mode '0755'
+  end
+
+  file Microwave::Disabled.marker('postgresql') do
+    content "disabled by microwave::disable\n"
+    owner 'root'
+    group 'root'
+    mode '0644'
+  end
+
+  service 'postgresql' do
+    action %i(stop disable)
+    only_if { Microwave::Disabled.unit?('postgresql') }
+  end
+end
+
+action :enable do
+  file Microwave::Disabled.marker('postgresql') do
+    action :delete
+  end
+
+  service 'postgresql' do
+    action %i(enable start)
+    only_if { Microwave::Disabled.unit?('postgresql') }
   end
 end

@@ -485,3 +485,36 @@ describe 'microwave::search' do
     expect(search.client_network).to eq('10.0.0.0/24')
   end
 end
+
+describe 'microwave::disable' do
+  let(:chef_run) do
+    ChefSpec::SoloRunner.new(platform: 'debian', version: '13',
+                             step_into: %w(microwave_server microwave_opensearch microwave_postgresql))
+                        .converge('microwave::disable')
+  end
+
+  it 'disables the three services in dependency order and nginx last' do
+    # `step_into` keeps the resource wrappers in the collection; the order the
+    # run converges is the one inside them.
+    inner = chef_run.resource_collection.reject { |r| r.resource_name.to_s.start_with?('microwave_') }
+
+    expect(inner.map { |r| r.resource_name.to_s }).to eq(
+      %w(directory file service directory file service directory file service file service)
+    )
+    expect(chef_run.resource_collection.select { |r| r.resource_name == :service }.map(&:name))
+      .to eq(%w(microwave-server opensearch postgresql nginx))
+  end
+end
+
+describe 'microwave::enable' do
+  let(:chef_run) do
+    ChefSpec::SoloRunner.new(platform: 'debian', version: '13',
+                             step_into: %w(microwave_server microwave_opensearch microwave_postgresql))
+                        .converge('microwave::enable')
+  end
+
+  it 'starts nginx first and the server last' do
+    expect(chef_run.resource_collection.select { |r| r.resource_name == :service }.map(&:name))
+      .to eq(%w(nginx postgresql opensearch microwave-server))
+  end
+end

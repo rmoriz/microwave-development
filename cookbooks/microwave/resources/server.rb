@@ -2,14 +2,20 @@ unified_mode true
 
 description 'Installs the Microwave Server package, its configuration and its service'
 
-property :database_url, String, required: true
-property :search_url, String, required: true
+property :database_url, String
+property :search_url, String
 property :bind, String, default: lazy { node['microwave']['bind'] }
 property :public_url, String
 property :version, String, default: 'latest', regex: /\A(latest|\d+\.\d+\.\d+)\z/
 property :ca_certs, Array, default: []
 
 action :install do
+  # The URLs are optional so `:disable` and `:enable` work without them. An
+  # install still needs both, and fails before the release lookup reaches the
+  # network.
+  raise 'database_url is required to install the server' if new_resource.database_url.to_s.empty?
+  raise 'search_url is required to install the server' if new_resource.search_url.to_s.empty?
+
   release = Microwave::Release.asset(version: new_resource.version, arch: node['kernel']['machine'])
   package_path = ::File.join('/var/cache/microwave', release[:name])
 
@@ -108,7 +114,45 @@ action :install do
     only_if { ::File.exist?('/run/systemd/system') }
   end
 
+  directory Microwave::Disabled::DIR do
+    owner 'root'
+    group 'root'
+    mode '0755'
+  end
+
   service 'microwave-server' do
     action %i(enable start)
+    not_if { Microwave::Disabled.marked?('microwave-server') }
+  end
+end
+
+action :disable do
+  directory Microwave::Disabled::DIR do
+    owner 'root'
+    group 'root'
+    mode '0755'
+  end
+
+  file Microwave::Disabled.marker('microwave-server') do
+    content "disabled by microwave::disable\n"
+    owner 'root'
+    group 'root'
+    mode '0644'
+  end
+
+  service 'microwave-server' do
+    action %i(stop disable)
+    only_if { Microwave::Disabled.unit?('microwave-server') }
+  end
+end
+
+action :enable do
+  file Microwave::Disabled.marker('microwave-server') do
+    action :delete
+  end
+
+  service 'microwave-server' do
+    action %i(enable start)
+    only_if { Microwave::Disabled.unit?('microwave-server') }
   end
 end

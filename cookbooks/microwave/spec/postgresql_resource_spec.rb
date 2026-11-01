@@ -397,3 +397,53 @@ describe 'microwave_postgresql with client CAs' do
       .with_content(%r{^ssl_ca_file = '/etc/microwave/tls/client-ca\.crt'$})
   end
 end
+
+describe 'microwave_postgresql switching' do
+  let(:chef_run) do
+    ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_postgresql'])
+                        .converge('microwave-test::database_disable')
+  end
+
+  before do
+    stub_command(/SELECT 1 FROM pg_roles/).and_return(nil)
+    stub_command(/SELECT 1 FROM pg_database/).and_return(nil)
+    stub_command(/openssl verify/).and_return(nil)
+    stub_command(/openssl x509 -in/).and_return(nil)
+    stub_command('grep -qs "[^[:space:]]" /etc/microwave/db.password').and_return(true)
+
+    allow(::File).to receive(:read).and_call_original
+    allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return("#{'a' * 32}\n")
+
+    # The unit exists on the converged host, so the switch guard lets the action
+    # through; the examples below flip it where they care.
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/lib/systemd/system/postgresql.service').and_return(true)
+  end
+
+  it 'stops the unit, disables it and drops the marker' do
+    expect(chef_run).to stop_service('postgresql')
+    expect(chef_run).to disable_service('postgresql')
+    expect(chef_run).to create_file('/etc/microwave/disabled/postgresql')
+      .with(owner: 'root', group: 'root', mode: '0644')
+  end
+
+  it 'skips a unit that does not exist' do
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/lib/systemd/system/postgresql.service').and_return(false)
+    guard = chef_run.service('postgresql').only_if.first.block
+
+    expect(guard.call).to be(false)
+  end
+
+  it 'does not enable or start a marked unit on install' do
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/etc/microwave/disabled/postgresql').and_return(true)
+    guard = ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_postgresql']) do |node|
+      node.name('db.example.com')
+      node.automatic['fqdn'] = 'db.example.com'
+      node.automatic['kernel']['machine'] = 'x86_64'
+    end.converge('microwave-test::database').service('postgresql').not_if.first.block
+
+    expect(guard.call).to be(true)
+  end
+end

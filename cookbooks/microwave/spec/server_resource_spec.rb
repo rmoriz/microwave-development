@@ -175,3 +175,63 @@ describe 'microwave_server with an incomplete release' do
     )
   end
 end
+
+describe 'microwave_server switching' do
+  include_context 'release api'
+
+  let(:chef_run) do
+    ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_server']) do |node|
+      node.name('chef.example.com')
+      node.automatic['fqdn'] = 'chef.example.com'
+      node.automatic['kernel']['machine'] = 'x86_64'
+    end.converge('microwave-test::server_disable')
+  end
+
+  before do
+    # The unit exists on the converged host, so the switch guard lets the action
+    # through; the examples below flip it where they care.
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/lib/systemd/system/microwave-server.service')
+                                     .and_return(true)
+  end
+
+  it 'stops the unit, disables it and drops the marker' do
+    expect(chef_run).to stop_service('microwave-server')
+    expect(chef_run).to disable_service('microwave-server')
+    expect(chef_run).to create_file('/etc/microwave/disabled/microwave-server')
+      .with(owner: 'root', group: 'root', mode: '0644')
+  end
+
+  it 'does not need database_url or search_url to disable' do
+    expect(chef_run.microwave_server('default').database_url).to be_nil
+    expect(chef_run.microwave_server('default').search_url).to be_nil
+  end
+
+  it 'skips a unit that does not exist' do
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/lib/systemd/system/microwave-server.service')
+                                     .and_return(false)
+    guard = chef_run.service('microwave-server').only_if.first.block
+
+    expect(guard.call).to be(false)
+  end
+
+  it 'does not enable or start a marked unit on install' do
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/etc/microwave/disabled/microwave-server').and_return(true)
+    guard = ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_server']) do |node|
+      node.name('chef.example.com')
+      node.automatic['fqdn'] = 'chef.example.com'
+      node.automatic['kernel']['machine'] = 'x86_64'
+    end.converge('microwave-test::server').service('microwave-server').not_if.first.block
+
+    expect(guard.call).to be(true)
+  end
+
+  it 'raises on install without a database_url' do
+    expect do
+      ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_server'])
+                          .converge('microwave-test::server_disable_install')
+    end.to raise_error(/database_url/)
+  end
+end

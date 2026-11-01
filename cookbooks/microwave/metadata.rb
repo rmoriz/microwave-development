@@ -16,4 +16,6 @@ recipe 'microwave::default', 'Server and backends on one node'
 recipe 'microwave::server', 'Server, configuration and service only'
 recipe 'microwave::database', 'PostgreSQL 19, its role and its database'
 recipe 'microwave::search', 'OpenSearch 3.9 with a bounded heap'
+recipe 'microwave::disable', 'Stops and disables every service until microwave::enable'
+recipe 'microwave::enable', 'Enables and starts every service again'
 # cookstyle:enable Chef/RedundantCode/RecipeMetadata
