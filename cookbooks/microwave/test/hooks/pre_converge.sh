@@ -117,7 +117,10 @@ $compose exec -T garage cat /etc/nginx/sites-available/microwave-garage \
 $compose exec -T db stat -c '%a' /etc/microwave/db.password \
   > fixtures/shared/db-password.mode
 
-chmod 0644 fixtures/shared/*
+# The shared files are written by the containers, which run as root, so the
+# runner itself cannot chmod them; the mode stays wide enough for the node to
+# read what the probes publish.
+$compose exec -T db sh -c 'chmod 0644 /mnt/shared/*'
 if [ "$provision" -eq 1 ]; then
   digest > "$marker"
   chmod 0644 "$marker"
