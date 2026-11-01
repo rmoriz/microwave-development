@@ -722,13 +722,13 @@ git commit -m "feat(cookbook): wire the object store through attributes and reci
 
 - [ ] **Step 1: Extend the fixture stack**
 
-Add `garage` to `docker-compose.yml` like the other nodes, hostname `garage.microwave.test`, network alias, `depends_on: search: condition: service_healthy`, command `cinc-client ... -o 'microwave-test::garage_node' --json-attributes /tmp/kitchen/attrs.json && exec sleep infinity`, and healthcheck `test -s /mnt/shared/garage.s3 && curl -sS --cacert /mnt/shared/garage-ca.crt https://garage.microwave.test:3900/ -o /dev/null` (interval 5s, timeout 5s, retries 240, start_period 10s).
+Add `garage` to `docker-compose.yml` like the other nodes, hostname `garage.microwave.test`, network alias, `depends_on: search: condition: service_healthy`, command `cinc-client ... -o 'microwave-test::garage_node' --json-attributes /tmp/kitchen/attrs.json && exec sleep infinity`, and healthcheck `test -s /mnt/shared/garage.s3 && curl -sS --cacert /mnt/shared/garage-ca.crt https://garage.microwave.test:3900/ -o /dev/null` (no `-f`: the S3 root answers `403` by design, and `-f` would turn that into a failure) (interval 5s, timeout 5s, retries 240, start_period 10s).
 
 `garage_node.rb` includes `microwave::garage`, publishes `garage.access_key`, `garage.secret_key`, `garage-ca.crt`, runs `garage -c /etc/garage.toml bucket info chef-cookbooks > /mnt/shared/garage-bucket.txt`, and writes `/mnt/shared/garage.s3` last. `search_node.rb` gains `/mnt/shared/search.converged` as its last resource; `search` gains the healthcheck `test -s /mnt/shared/search.converged && curl -fsS --cacert /mnt/shared/search-ca.crt https://search.microwave.test:9200/_cluster/health | grep -Eq '"status":"(green|yellow)"'` (interval 5s, timeout 5s, retries 240, start_period 10s) so `garage` starts only after the search converge finished.
 
 `pre_converge.sh`, in the existing shapes:
 
-- `digest()` and `both_running()` cover `garage` too, and `ready()` additionally requires `-s fixtures/shared/garage.s3` and a successful `$compose exec -T garage curl -fsS --cacert /mnt/shared/garage-ca.crt https://garage.microwave.test:3900/`.
+- `digest()` and `both_running()` cover `garage` too, and `ready()` additionally requires `-s fixtures/shared/garage.s3` and a successful `$compose exec -T garage curl -sS --cacert /mnt/shared/garage-ca.crt -o /dev/null -w '%{http_code}' https://garage.microwave.test:3900/` equal to `403`.
 - the cache-permission loop is `for service in db search garage`.
 - `ca.crt` is built from `db-ca.crt`, `search-ca.crt` and `garage-ca.crt`.
 - publish `garage-vhost.conf` (`$compose exec -T garage cat /etc/nginx/sites-available/microwave-garage`) next to the existing `search-vhost.conf`; the recipe already writes `garage-bucket.txt` into the shared directory, and `chmod 0644` covers both through the existing glob.
@@ -744,8 +744,8 @@ Both existing suites get `object_store_backend: garage`; `split` additionally ge
 ```ruby
 def converge(recipe)
   @backend.command(
-    "CHEF_LICENSE=accept-no-persist cinc-client -z -c /tmp/kitchen/client.rb " \
-    "-j /tmp/kitchen/dna.json -o '#{recipe}'"
+    "CHEF_LICENSE=accept-no-persist cinc-client -z -c /opt/kitchen/client.rb " \
+    "-j /opt/kitchen/dna.json -o '#{recipe}'"
   )
 end
 ```
@@ -756,10 +756,10 @@ In the split controls assert the status endpoint still reports `bookshelf` as `p
 
 Suite `disable`, hostname `kitchen-disable`, run list `microwave::default`, attributes as `all-in-one` with `object_store_backend: garage`, `enforce_idempotency: true` and `multiple_converge: 2`, no network mode, lifecycle `pre_create` + cache permission + `post_destroy`. Its control file, in order:
 
-1. Setup: `mw.install_psql`, `mw.install_knife`, `mw.write_knife_config`, upload `kitchen_probe`, `mw.psql('127.0.0.1', '/etc/microwave/db.password', sql: 'CREATE TABLE disable_probe (id int); INSERT INTO disable_probe VALUES (1)')`.
+1. Setup: `mw.install_psql`, `mw.install_knife`, `mw.write_knife_config`, upload `kitchen_probe`, `mw.psql('127.0.0.1', '/etc/microwave/db.password', sql: 'CREATE TABLE IF NOT EXISTS disable_probe (id int); TRUNCATE disable_probe; INSERT INTO disable_probe VALUES (1)')`.
 2. `expect(mw.converge('microwave::disable').exit_status).to eq(0)`.
 3. For `microwave-server`, `opensearch`, `postgresql`, `garage`, `nginx`: `systemctl is-active` is `inactive`, `is-enabled` is `disabled`, `systemctl show -p UnitFileState --value` is `disabled`.
-4. Data survived: `mw.psql('127.0.0.1', '/etc/microwave/db.password', sql: 'SELECT count(*) FROM disable_probe').stdout.strip` is `'1'`; `garage -c /etc/garage.toml bucket info chef-cookbooks` (run on the node) still lists `RWO` for the imported key and at least one object; the uploaded cookbook downloads again into `/tmp/disable-download`.
+4. Data survived: `mw.psql('127.0.0.1', '/etc/microwave/db.password', sql: 'SELECT count(*) FROM disable_probe').stdout.strip` is `'1'`; `garage -c /etc/garage.toml bucket info chef-cookbooks` (run on the node) still lists `RWO` for the imported key and at least one object; match the row with `^RWO `, not `\ARWO `, because the output starts with a `==== BUCKET INFORMATION ====` banner; the uploaded cookbook downloads again into `/tmp/disable-download`.
 5. `mw.converge('microwave::default')` returns 0 and the units stay `inactive`/`disabled`.
 6. `mw.converge('microwave::enable')` returns 0, the units are `active`/`enabled`, and `/_status` is 200.
 
