@@ -9,16 +9,17 @@ describe 'microwave_garage' do
     end.converge('microwave-test::garage')
   end
 
-  # The admin `node id -q` read is a backtick per command; the state guards
-  # shell out through `system`. The binary is absent on the spec host, so they
-  # all report false and every execute runs.
+  # The admin `node id -q` read is a backtick per command; the layout guard reads
+  # the capacity record through `File` and asks `layout show` whether the node is
+  # still in the live layout. The record `File.exist?`/`File.read` pair, the
+  # `system` call and the backtick are stubbed per example by `record_capacity`.
   let(:node_id) { 'aa11bb22cc33' }
 
   before do
-    # The state guards shell out through `system`, not `stub_command`, and the
-    # binary is absent on the spec host: they all report false and every
-    # execute runs. Only the one backtick read gets a stub, so the commands
-    # carry a node id.
+    # The command guards shell out through `system`; the binary is absent on the
+    # spec host, so they report false and every execute runs. Only the one
+    # backtick read gets a stub here, so the commands carry a node id; the layout
+    # guard reads and shells out through `record_capacity` below.
     stub_command(/openssl verify/).and_return(nil)
     stub_command(/openssl x509 -in/).and_return(nil)
     %w(rpc_secret admin_token access_key secret_key).each do |name|
@@ -53,10 +54,20 @@ describe 'microwave_garage' do
     end.converge('microwave-test::garage')
   end
 
-  # Sets the capacity record the assign guard reads; `nil` leaves it missing.
-  def record_capacity(value)
+  # Sets the capacity record the assign guard reads and whether the node is in
+  # the live layout: `nil` leaves the record missing, `readable: false` makes the
+  # read raise, `in_layout: false` keeps the node out of `layout show`.
+  def record_capacity(value, in_layout: true, readable: true)
     allow(::File).to receive(:exist?).with('/var/lib/garage/capacity').and_return(!value.nil?)
-    allow(::File).to receive(:read).with('/var/lib/garage/capacity').and_return(value) unless value.nil?
+    unless value.nil?
+      if readable
+        allow(::File).to receive(:read).with('/var/lib/garage/capacity').and_return(value)
+      else
+        allow(::File).to receive(:read).with('/var/lib/garage/capacity').and_raise(Errno::EACCES)
+      end
+    end
+    allow_any_instance_of(Chef::Resource::Execute)
+      .to receive(:system) { |_resource, command| command.include?('layout show') && in_layout }
   end
 
   it 'creates the service accounts and keeps the data directories tight' do
@@ -294,24 +305,23 @@ describe 'microwave_garage' do
     assign = chef_run.execute('microwave-garage-layout-assign')
 
     expect(assign.command)
-      .to eq('/usr/local/bin/garage -c /etc/garage.toml layout assign -z dc1 -c 1G aa11bb22cc33 && ' \
+      .to eq('/usr/local/bin/garage -c /etc/garage.toml layout assign -z dc1 -c \'1G\' aa11bb22cc33 && ' \
              "printf '%s' '1G' > /var/lib/garage/capacity")
     expect(assign.not_if.size).to eq(2)
     expect(assign.not_if.first.block.call).to be(false)
-    # No record yet, so the first converge stages.
+    # No record yet, so the first converge stages, and the command writes it.
     expect(assign.not_if.last.block.call).to be(false)
   end
 
-  it 'keeps the assign skipped while the record carries the capacity' do
+  it 'skips the assign when the record matches and the node is in the layout' do
     record_capacity('1G')
     assign = chef_run.execute('microwave-garage-layout-assign')
 
     expect(assign.not_if.last.block.call).to be(true)
   end
 
-  it 'stages a recorded change the assign never made again' do
-    # A superseded stage: the layout row may already carry the capacity, the
-    # record says otherwise.
+  it 'restages when the record differs from the capacity' do
+    # A superseded stage: the record still names the old capacity.
     record_capacity('2G')
     assign = chef_run.execute('microwave-garage-layout-assign')
 
@@ -325,13 +335,21 @@ describe 'microwave_garage' do
     expect(assign.not_if.last.block.call).to be(false)
   end
 
-  it 'skips a staged change whose record the assign already wrote' do
-    # The assign records before `layout apply`; a retry lands the apply, not a
-    # second assign.
-    record_capacity('1G')
+  it 'restages while the node is missing from the live layout' do
+    # A wiped data directory drops the node key from the layout while the
+    # record still carries a matching capacity; the record alone would skip.
+    record_capacity('1G', in_layout: false)
     assign = chef_run.execute('microwave-garage-layout-assign')
 
-    expect(assign.not_if.last.block.call).to be(true)
+    expect(assign.not_if.last.block.call).to be(false)
+  end
+
+  it 'restages when the record cannot be read' do
+    # `exist?` is true but the read raises.
+    record_capacity('1G', readable: false)
+    assign = chef_run.execute('microwave-garage-layout-assign')
+
+    expect(assign.not_if.last.block.call).to be(false)
   end
 
   it 'applies the staged version once' do
@@ -467,7 +485,7 @@ describe 'microwave_garage with a client network' do
 
   it 'passes the capacity through' do
     expect(chef_run.execute('microwave-garage-layout-assign').command)
-      .to eq('/usr/local/bin/garage -c /etc/garage.toml layout assign -z dc1 -c 5G aa11bb22cc33 && ' \
+      .to eq('/usr/local/bin/garage -c /etc/garage.toml layout assign -z dc1 -c \'5G\' aa11bb22cc33 && ' \
              "printf '%s' '5G' > /var/lib/garage/capacity")
   end
 end

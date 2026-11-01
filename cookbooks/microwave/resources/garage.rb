@@ -369,17 +369,33 @@ action :install do
   # `1.9 GiB`), so a parsed comparison cannot be exact. The assign records the
   # accepted string instead and the guard reads that record: the exact value is
   # the state, a superseded stage is restaged, and no capacity spelling can be
-  # mis-parsed. A missing record (first converge) stages.
+  # mis-parsed. A missing record (first converge) stages. The record alone is a
+  # mirror though — an out-of-band layout change or a wiped data directory
+  # leaves a stale one — so the node also has to be in the live layout.
   execute 'microwave-garage-layout-assign' do
     command lazy {
-      "#{garage} -c #{config} layout assign -z dc1 -c #{new_resource.capacity} #{node_id.call} && " \
+      "#{garage} -c #{config} layout assign -z dc1 -c '#{new_resource.capacity}' #{node_id.call} && " \
         "printf '%s' '#{new_resource.capacity}' > #{capacity_file}"
     }
     user 'garage'
     group 'garage'
     sensitive false
     not_if { Microwave::Disabled.marked?('garage') }
-    not_if { ::File.exist?(capacity_file) && ::File.read(capacity_file) == new_resource.capacity }
+    not_if do
+      next false unless ::File.exist?(capacity_file)
+
+      record = begin
+        ::File.read(capacity_file)
+               rescue SystemCallError
+                 nil
+      end
+      next false unless record == new_resource.capacity
+
+      id = node_id.call
+      next false if id.empty?
+
+      system("#{garage} -c #{config} layout show 2>/dev/null | grep -q #{id[0, 16]}")
+    end
   end
 
   # A staged section is the only reason to apply; the node sitting in the

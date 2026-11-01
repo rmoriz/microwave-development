@@ -429,9 +429,9 @@ git commit -m "feat(cookbook): add sticky disable and enable actions"
 
 - [ ] **Step 1: Write the failing resource spec**
 
-Create `spec/garage_resource_spec.rb` with a fixture recipe `spec/fixtures/cookbooks/microwave-test/recipes/garage.rb` that steps into `microwave_garage`. The guards use `system`, not `stub_command`, and the binary is absent on the spec host, so they all report false and every execute runs; stub `::File.read` for the three key files the commands interpolate. Examples:
+Create `spec/garage_resource_spec.rb` with a fixture recipe `spec/fixtures/cookbooks/microwave-test/recipes/garage.rb` that steps into `microwave_garage`. The command guards shell out through `system`, not `stub_command`, and the binary is absent on the spec host, so they report false and every execute runs; stub `::File.read` for the three key files the commands interpolate, and stub the layout guard's `::File.exist?`/`::File.read` record pair and its `layout show` `system` call. Examples:
 
-- creates the `microwave` and `garage` system groups, the `garage` user, and `/var/lib/garage/{meta,data}` as `0700 garage:garage`;
+- creates the `microwave` and `garage` system groups, the `garage` user, and `/var/lib/garage` with its `{meta,data}` subdirectories as `0700 garage:garage`;
 - downloads `https://garagehq.deuxfleurs.fr/_releases/v2.5.0/x86_64-unknown-linux-musl/garage` to `/usr/local/bin/garage` with the `x86_64` digest and mode `0755`;
 - writes `/etc/garage.toml` `0640 root:garage` containing `replication_factor = 1`, `db_engine = "sqlite"`, `api_bind_addr = "127.0.0.1:3910"`, `public_endpoint = "https://garage.example.com:3900"`, `public_endpoint_path_style = true`, and no literal `rpc_secret =`;
 - writes the rpc secret and admin token `0600 garage:garage` (Garage rejects group/other bits on secret files) and the access/secret key `0640 root:microwave`;
@@ -477,7 +477,7 @@ property :port, Integer, default: 3900
 property :capacity, String, default: lazy { node['microwave']['garage_capacity'] }
 property :bucket, String, default: 'chef-cookbooks'
 property :region, String, default: 'garage'
-property :client_network, [String, nil]
+property :client_network, [String, nil], default: lazy { node['microwave']['client_network'] }
 property :version, String, default: lazy { node['microwave']['garage_version'] }, regex: /\A\d+\.\d+\.\d+\z/
 ```
 
@@ -492,12 +492,23 @@ Order after the service: readiness wait, layout assign, layout apply, bucket cre
 command "for i in $(seq 60); do #{garage} -c #{config} status >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1"
 not_if { system("#{garage} -c #{config} status >/dev/null 2>&1") }
 # assign: stage the only node with the configured capacity and record it
-command "#{garage} -c #{config} layout assign -z dc1 -c #{capacity} #{node_id} && printf '%s' '#{capacity}' > #{capacity_file}"
+command "#{garage} -c #{config} layout assign -z dc1 -c '#{capacity}' #{node_id} && printf '%s' '#{capacity}' > #{capacity_file}"
 not_if do
   # `layout show` renders capacities humanised and rounded (`2G` becomes
   # `1.9 GiB`), so the exact recorded string is the state instead: a missing
-  # record stages, a superseded stage restages, and no spelling can be mixed up
-  ::File.exist?(capacity_file) && ::File.read(capacity_file) == capacity
+  # or unreadable record stages, a superseded stage restages, and no spelling
+  # can be mixed up. The record is only a mirror though, so the node also has
+  # to sit in the live layout for a skip.
+  next false unless ::File.exist?(capacity_file)
+  record = begin
+    ::File.read(capacity_file)
+  rescue SystemCallError
+    nil
+  end
+  next false unless record == capacity
+  id = node_id.call
+  next false if id.empty?
+  system("#{garage} -c #{config} layout show 2>/dev/null | grep -q #{id[0, 16]}")
 end
 # apply: enact the staged version once
 command "#{garage} -c #{config} layout apply --version 1"

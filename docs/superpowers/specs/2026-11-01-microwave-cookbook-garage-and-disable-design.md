@@ -148,8 +148,8 @@ Properties: `hostname` (as in the other resources), `port` (default 3900),
    and the group otherwise only exists once the database resource ran, which
    a garage-only node does not have.
 2. `group`/`user` `garage` (system, no home, `/usr/sbin/nologin`).
-3. Directories `/var/lib/garage/meta`, `/var/lib/garage/data` (`0700`,
-   `garage:garage`), `/etc/microwave` (`0755`).
+3. Directories `/var/lib/garage` and its `meta`/`data` subdirectories
+   (`0700`, `garage:garage`), `/etc/microwave` (`0755`).
 4. `remote_file /usr/local/bin/garage` with the arch URL and digest, `0755`,
    notifies the unit restart.
 5. `/etc/microwave/garage.rpc_secret` and `/etc/microwave/garage.admin_token`
