@@ -798,7 +798,62 @@ git commit -m "test(cookbook): prove garage and the disable suite"
 
 - [ ] **Step 1: Update the cookbook README**
 
-Add garage to the resource table and recipe table, document `object_store_*` and `garage_*`, `:disable`/`:enable`, the marker directory and the `microwave::disable`/`microwave::enable` recipes, and state that a single node with `replication_factor = 1` is for evaluation and small installations. State that the endpoint is handed to clients in presigned URLs and must therefore be reachable from them and appear in the certificate SAN. Record where the two digests came from and the re-record command (`curl ... | shasum -a 256`) on a bump. State that the server now verifies the S3 hop against the system store.
+The README has to cover the Garage installation end to end, in its existing
+sections, not only mention it:
+
+- **Intro** (the paragraph that names the three resources): four resources now,
+  `microwave_garage` beside them.
+- **Resource table**: a `microwave_garage` row — the pinned Garage static binary
+  from the official release URL, nginx; manages `/etc/garage.toml`, the
+  `/etc/microwave/garage.*` secret files, the `garage` unit, the nginx TLS
+  proxy on `3900`, the certificate pair, and the layout/bucket/key provisioning.
+- **New `### microwave_garage` subsection** after `microwave_opensearch`, in the
+  same shape as the other two: a property table (`hostname`, `port` `3900`,
+  `capacity` `1G`, `bucket`, `region` `garage`, `client_network`) and prose that
+  covers: the engine listens on `127.0.0.1:3910`, nginx terminates TLS on
+  `3900`; the binary is pinned by `garage_version` and both digests live in
+  `garage_digests` (`x86_64`/`aarch64`), verified by `remote_file`; there is no
+  package and no container, and no source build; `replication_factor = 1` on a
+  single node, for evaluation and small installations, with no multi-node
+  support; the certificate SAN is the node name plus `127.0.0.1`; the endpoint
+  is handed to clients inside presigned URLs, so it must be reachable from them
+  and appear in the SAN; the key pair is generated once and imported
+  (`garage key import … --yes`) and granted `RWO` on the bucket, and the bucket
+  is created before the key is granted; a second converge provisions nothing
+  again; the resource installs nginx itself because either backend may be the
+  only proxy on a node.
+- **Digest provenance**: where the two digests came from (the release artifact
+  for `2.5.0`) and the re-record command on a version bump,
+  `curl -fsSL <release-url> | shasum -a 256`, plus that a missing architecture
+  raises instead of downloading unverified.
+- **Recipes table**: `microwave::garage` (Garage only, for a node a wrapper
+  points the server at), `microwave::disable` and `microwave::enable`, and
+  `microwave::default` now composes garage when `object_store_backend` is
+  `garage`.
+- **A new `### The service switches` subsection** under Topologies or after it:
+  `:disable` is exactly `stop` + `disable` plus a marker under
+  `/etc/microwave/disabled/<unit>` — no `mask`, no package removal, no data
+  deletion; the marker keeps every later `microwave::default` converge from
+  enabling or starting the unit again; only `:enable` or `microwave::enable`
+  removes it; `microwave::disable` disables the server first and nginx last,
+  `microwave::enable` does the reverse; a single resource's `:enable` never
+  starts nginx. Say that the unit names are `microwave-server`, `postgresql`,
+  `opensearch`, `garage`, `nginx`.
+- **Attributes table**: `object_store_backend` (`local`), `object_store_bucket`
+  (follows `garage_bucket`), `object_store_region`, `object_store_endpoint`,
+  `object_store_host`, `object_store_path_style`, the two key-file attributes,
+  and `garage_version`, `garage_capacity`, `garage_bucket`, `garage_digests` —
+  each with its purpose, and that a wrapper setting only `garage_bucket`
+  changes the bucket the store and the server share.
+- **Topologies**: extend the split example with a garage node
+  (`include_recipe 'microwave::garage'`, `client_network`) and the server's
+  `object_store_*` lines, and note that `object_store_host` names the store node
+  when the endpoint is not given explicitly.
+- **TLS section**: the server verifies the S3 hop against the system trust
+  store, which is why the store's CA has to reach `ca_certs`/`ca_cert_file`; the
+  garage certificate is a separate pair from the database and search ones.
+- **MCP paragraph** stays as it is: MCP is still experimental, writes on by
+  default, `writes = false` turns them off.
 
 - [ ] **Step 2: Update `docs/deployment.md`**
 
