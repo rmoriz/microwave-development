@@ -17,6 +17,11 @@ describe 'microwave_opensearch' do
 
     allow(::File).to receive(:symlink?).and_call_original
     allow(::File).to receive(:symlink?).with('/etc/nginx/sites-enabled/default').and_return(true)
+
+    # The spec host decides whether systemd is there; pin it so the systemd
+    # branch is taken everywhere and the direct-start example flips it.
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/run/systemd/system').and_return(true)
   end
 
   def rendered(path)
@@ -281,6 +286,9 @@ describe 'microwave_opensearch' do
   # Without systemd the packaged init script cannot start the daemon, so the
   # resource starts it itself and has to provide the pid directory.
   it 'starts OpenSearch directly when systemd is absent' do
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/run/systemd/system').and_return(false)
+
     expect(chef_run).to create_directory('/var/run/opensearch')
       .with(owner: 'opensearch', group: 'opensearch', mode: '0755')
 
@@ -309,6 +317,11 @@ describe 'microwave_opensearch with a client network' do
 
     allow(::File).to receive(:symlink?).and_call_original
     allow(::File).to receive(:symlink?).with('/etc/nginx/sites-enabled/default').and_return(true)
+
+    # The spec host decides whether systemd is there; pin it so the systemd
+    # branch is taken everywhere and the direct-start example flips it.
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/run/systemd/system').and_return(true)
   end
 
   def rendered(path)
@@ -352,6 +365,11 @@ describe 'microwave_opensearch with a custom heap' do
 
     allow(::File).to receive(:symlink?).and_call_original
     allow(::File).to receive(:symlink?).with('/etc/nginx/sites-enabled/default').and_return(true)
+
+    # The spec host decides whether systemd is there; pin it so the systemd
+    # branch is taken everywhere and the direct-start example flips it.
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/run/systemd/system').and_return(true)
   end
 
   it 'uses the heap for both bounds' do
@@ -377,6 +395,11 @@ describe 'microwave_opensearch without an FQDN' do
 
     allow(::File).to receive(:symlink?).and_call_original
     allow(::File).to receive(:symlink?).with('/etc/nginx/sites-enabled/default').and_return(true)
+
+    # The spec host decides whether systemd is there; pin it so the systemd
+    # branch is taken everywhere and the direct-start example flips it.
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/run/systemd/system').and_return(true)
   end
 
   it 'names the certificate after the hostname' do
@@ -402,6 +425,11 @@ describe 'microwave_opensearch switching' do
 
     allow(::File).to receive(:symlink?).and_call_original
     allow(::File).to receive(:symlink?).with('/etc/nginx/sites-enabled/default').and_return(true)
+
+    # The spec host decides whether systemd is there; pin it so the systemd
+    # branch is taken everywhere and the direct-start example flips it.
+    allow(::File).to receive(:exist?).and_call_original
+    allow(::File).to receive(:exist?).with('/run/systemd/system').and_return(true)
 
     # The unit exists on the converged host, so the switch guard lets the action
     # through; the examples below flip it where they care.

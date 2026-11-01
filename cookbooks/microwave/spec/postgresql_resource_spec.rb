@@ -414,10 +414,13 @@ describe 'microwave_postgresql switching' do
     allow(::File).to receive(:read).and_call_original
     allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return("#{'a' * 32}\n")
 
-    # The unit exists on the converged host, so the switch guard lets the action
-    # through; the examples below flip it where they care.
+    # The unit is looked up in three directories, so the switch guard would
+    # otherwise depend on the spec host; it exists everywhere, and the examples
+    # below flip it where they care.
     allow(::File).to receive(:exist?).and_call_original
-    allow(::File).to receive(:exist?).with('/lib/systemd/system/postgresql.service').and_return(true)
+    Microwave::Disabled::UNIT_DIRS.each do |dir|
+      allow(::File).to receive(:exist?).with("#{dir}/postgresql.service").and_return(true)
+    end
   end
 
   it 'stops the unit, disables it and drops the marker' do
@@ -429,7 +432,9 @@ describe 'microwave_postgresql switching' do
 
   it 'skips a unit that does not exist' do
     allow(::File).to receive(:exist?).and_call_original
-    allow(::File).to receive(:exist?).with('/lib/systemd/system/postgresql.service').and_return(false)
+    Microwave::Disabled::UNIT_DIRS.each do |dir|
+      allow(::File).to receive(:exist?).with("#{dir}/postgresql.service").and_return(false)
+    end
     guard = chef_run.service('postgresql').only_if.first.block
 
     expect(guard.call).to be(false)
