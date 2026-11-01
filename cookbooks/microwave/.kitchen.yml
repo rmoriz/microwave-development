@@ -141,6 +141,11 @@ suites:
       # enforce_idempotency alone only attaches the fail-if-update handler to the
       # single run, so it needs a second converge to be told apart.
       multiple_converge: 2
+      # The verify converges the switch recipes itself, and for that it needs
+      # the provisioner's client.rb and dna.json in /opt/kitchen. Dokken empties
+      # the sandbox after every converge, which the bind mount mirrors into the
+      # node, so the cleanup is kept off for this suite.
+      clean_dokken_sandbox: false
     run_list:
       - recipe[microwave::default]
     attributes:
