@@ -1,0 +1,5 @@
+name 'kitchen_probe'
+maintainer 'Roland Moriz'
+license 'AGPL-3.0'
+description 'Empty cookbook the kitchen verifiers upload and converge'
+version '0.1.0'

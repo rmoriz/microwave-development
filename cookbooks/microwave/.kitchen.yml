@@ -1,0 +1,124 @@
+---
+# Two topologies, both real: all-in-one on a single node and the split layout
+# against two containerised backends. The sysctl resource writes /proc/sys and
+# the service resources drive systemd, so the node is privileged and boots
+# systemd as PID 1.
+driver:
+  name: dokken
+  privileged: true
+  pid_one_command: /lib/systemd/systemd
+  # The container keeps its own cgroup namespace (no cgroupns_host, no host
+  # cgroup bind): OpenSearch's security manager may only read memory.max at the
+  # namespace root, while a host cgroup path below system.slice is denied.
+  # exec, because OpenSearch unpacks JNA into java.io.tmpdir and maps it, which
+  # the docker tmpfs default (noexec) refuses.
+  tmpfs:
+    - /run:rw,exec
+    - /tmp:rw,exec
+  intermediate_instructions:
+    # systemd for the service resources, a gpg home for the apt_repository
+    # keyserver fetch, and the client: the dokken provisioner never installs
+    # one, it expects the image to carry it. The base image's docker-clean hook
+    # wipes downloaded debs after every apt run; it is dropped here so the host
+    # archive cache fills up and the next run does not fetch them again.
+    - RUN apt-get update && apt-get install -y --no-install-recommends systemd procps sudo ca-certificates curl gnupg openssl && rm -f /etc/apt/apt.conf.d/docker-clean && printf 'APT::Keep-Downloaded-Packages "true";\nBinary::apt::APT::Keep-Downloaded-Packages "true";\n' > /etc/apt/apt.conf.d/99keep-packages && install -d -m 0700 /root/.gnupg && curl -fsSLo /tmp/cinc.deb "https://packages.cinc.sh/files/stable/cinc/19.4.46/debian/13/cinc_19.4.46-1_$(dpkg --print-architecture).deb" && dpkg -i /tmp/cinc.deb && rm -f /tmp/cinc.deb && rm -rf /var/lib/apt/lists/*
+  binds:
+    - <%= File.join(File.dirname(__FILE__), 'test/fixtures') %>:/opt/fixtures:ro
+    - <%= File.join(File.dirname(__FILE__), 'test/fixtures/shared') %>:/mnt/backend:ro
+    # The same host apt archive cache the compose backends use: the OpenSearch
+    # deb alone is 1.1 GB and would be fetched again on every converge.
+    - <%= File.join(File.dirname(__FILE__), 'test/fixtures/cache/apt/archives') %>:/var/cache/apt/archives:rw
+
+provisioner:
+  name: dokken
+  # The image carries the client, see intermediate_instructions above.
+  chef_binary: /opt/cinc/bin/cinc-client
+  product_name: cinc
+  product_version: 19.4.46
+  chef_license: accept-no-persist
+  deprecations_as_errors: true
+
+transport:
+  name: dokken
+
+verifier:
+  name: inspec
+  sudo: true
+  format: documentation
+  # The probes depend on side effects: a repeated `knife` call has to really
+  # run, and a re-read has to see what the previous command just wrote. The
+  # backend cache (on by default) would answer the second call from the first.
+  backend_cache: false
+
+# The cache is a host mount whose mode can shift with the uid mapping, so it is
+# set from inside the node rather than on the host (see the hook as well). The
+# remote hook is exec'd without a shell, hence the explicit `sh -c`.
+x-cache-permission: &cache_permission
+  remote: >-
+    sh -c 'chmod 0777 /var/cache/apt/archives &&
+    install -d -m 0777 /var/cache/apt/archives/partial'
+
+platforms:
+  - name: debian-13
+    driver:
+      image: debian:13
+
+suites:
+  - name: all-in-one
+    driver:
+      hostname: kitchen-all-in-one
+    provisioner:
+      enforce_idempotency: true
+      # enforce_idempotency alone only attaches the fail-if-update handler to the
+      # single run, so it needs a second converge to be told apart.
+      multiple_converge: 2
+    run_list:
+      - recipe[microwave::default]
+    attributes:
+      microwave:
+        bind: kitchen-all-in-one
+        create_organization: true
+    lifecycle:
+      pre_create:
+        - local: test/hooks/pre_create.sh
+      pre_converge:
+        - *cache_permission
+      post_destroy:
+        - local: test/hooks/post_destroy.sh
+
+  - name: split
+    # Joins the fixture network; pre_create makes sure it exists before the
+    # driver creates the node container.
+    driver:
+      hostname: kitchen-split
+      network_mode: microwave-test
+    # The hook leaves a healthy backend stack alone (marker + readiness check),
+    # so a second converge sees the same password, CAs and data and must be
+    # change-free: verified with two `kitchen converge split` runs in a row, the
+    # second logs "stack unchanged" and converges 0/18 resources. No resource
+    # keeps reporting a change; the whole run is idempotent. The marker only
+    # serves `kitchen converge` — `kitchen test` starts with a destroy whose
+    # `post_destroy` deletes it, so a test always provisions once. The remote
+    # cache hook comes first, so the mode is right before anything downloads.
+    provisioner:
+      enforce_idempotency: true
+      multiple_converge: 2
+    run_list:
+      - recipe[microwave::server]
+    attributes:
+      microwave:
+        bind: kitchen-split
+        create_organization: true
+        database_host: db.microwave.test
+        search_host: search.microwave.test
+        database_password_file: /mnt/backend/db.password
+        ca_cert_file: /mnt/backend/ca.crt
+        client_network: 172.28.0.0/16
+    lifecycle:
+      pre_create:
+        - local: test/hooks/pre_create.sh
+      pre_converge:
+        - *cache_permission
+        - local: test/hooks/pre_converge.sh
+      post_destroy:
+        - local: test/hooks/post_destroy.sh

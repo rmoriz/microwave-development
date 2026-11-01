@@ -2,4 +2,32 @@ require 'rspec/core/rake_task'
 
 RSpec::Core::RakeTask.new(:spec)
 
+# The kitchen suites. Both need a docker daemon; the log is kept next to the
+# fixtures (git-ignored) because Test Kitchen truncates `.kitchen/logs` on every
+# invocation, so the captured console is the only durable record of a run.
+namespace :kitchen do
+  logs = File.join(__dir__, 'test/fixtures/logs')
+
+  # CHEF_LICENSE: the bundled verifier is Chef InSpec, not Cinc Auditor, and it
+  # refuses to run without an accepted license.
+  def kitchen_command(suite, logs)
+    log = File.join(logs, "kitchen-#{suite}.log")
+    "mkdir -p #{logs} && CHEF_LICENSE=accept-no-persist KITCHEN_LOG=info " \
+      "kitchen test #{suite.to_s.tr('_', '-')} 2>&1 | tee #{log}"
+  end
+
+  desc 'Run the all-in-one kitchen suite'
+  task :all_in_one do
+    sh('bash', '-o', 'pipefail', '-c', kitchen_command(:all_in_one, logs))
+  end
+
+  desc 'Run the split kitchen suite'
+  task :split do
+    sh('bash', '-o', 'pipefail', '-c', kitchen_command(:split, logs))
+  end
+end
+
+desc 'Run both kitchen suites'
+task kitchen: %w(kitchen:all_in_one kitchen:split)
+
 task default: :spec

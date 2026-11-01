@@ -5,3 +5,7 @@ coverage/
 Berksfile.lock
 spec/examples.txt
 Gemfile.lock
+test/fixtures/shared/
+# The apt archive cache and the captured kitchen logs survive runs.
+test/fixtures/cache/
+test/fixtures/logs/

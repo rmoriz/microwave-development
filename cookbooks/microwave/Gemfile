@@ -1,4 +1,20 @@
 source 'https://rubygems.org'
 
 gem 'chefspec', '~> 9.3'
+# The kitchen suites (see .kitchen.yml and README): dokken drives docker, inspec
+# verifies, cookstyle lints. `bundle exec rake kitchen:all_in_one` runs a suite.
+gem 'cookstyle'
+gem 'kitchen-dokken'
+gem 'kitchen-inspec'
 gem 'rake'
+# Cinc Auditor (what the workstation ships) is license-free; the Chef InSpec gem
+# is not. 5.x only needs the EULA accepted via CHEF_LICENSE, 6+ wants a license
+# key from a TTY. The rake tasks set CHEF_LICENSE.
+gem 'inspec-core', '~> 5.22'
+
+# inspec-core builds a `:json` middleware that Faraday 1.x only registers from
+# faraday_middleware. Faraday itself stays below 2 because the Azure SDK gems in
+# the dependency tree still pin `faraday (>= 0.9, < 2.0.0)`; without the
+# middleware the verifier dies with "json is not registered on Faraday::Request".
+gem 'faraday', '~> 1.10'
+gem 'faraday_middleware', '~> 1.2'

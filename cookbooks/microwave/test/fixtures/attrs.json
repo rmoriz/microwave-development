@@ -1,0 +1,6 @@
+{
+  "microwave": {
+    "client_network": "172.28.0.0/16",
+    "opensearch_heap": "512m"
+  }
+}
