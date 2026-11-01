@@ -98,7 +98,7 @@ Neither path is lossless: no cookbook blobs without `--bookshelf-dir`, no passwo
 `admin` flags, and no client or user private keys. Run both to get closer — the crawl first for
 policies and policy groups, the knife backup last for hashes and admin flags. The full runbook, the
 limits, and the `chef-server.rb` translation table are in
-[deployment § 10](https://rmoriz.github.io/microwave-development/docs/deployment/#10-migration-from-a-legacy-server).
+[deployment § 11](https://rmoriz.github.io/microwave-development/docs/deployment/#11-migration-from-a-legacy-server).
 
 ## Pedant compatibility
 
