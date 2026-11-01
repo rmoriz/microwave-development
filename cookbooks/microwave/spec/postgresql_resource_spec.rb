@@ -16,7 +16,7 @@ describe 'microwave_postgresql' do
     stub_command(/SELECT 1 FROM pg_database/).and_return(nil)
     stub_command(/openssl verify/).and_return(nil)
     stub_command(/openssl x509 -in/).and_return(nil)
-    stub_command('test -s /etc/microwave/db.password').and_return(true)
+    stub_command('grep -qs "[^[:space:]]" /etc/microwave/db.password').and_return(true)
 
     allow(::File).to receive(:read).and_call_original
     allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return("#{password}\n")
@@ -47,7 +47,7 @@ describe 'microwave_postgresql' do
   end
 
   it 'writes a 32 character password, 0640 root:microwave' do
-    stub_command('test -s /etc/microwave/db.password').and_return(false)
+    stub_command('grep -qs "[^[:space:]]" /etc/microwave/db.password').and_return(false)
 
     expect(chef_run).to create_file('/etc/microwave/db.password')
       .with(owner: 'root', group: 'microwave', mode: '0640')
@@ -57,14 +57,43 @@ describe 'microwave_postgresql' do
   it 'leaves a password file that has content alone' do
     expect(chef_run.file('/etc/microwave/db.password').action).to eq([:create])
     expect(chef_run.file('/etc/microwave/db.password').not_if.map(&:command))
-      .to eq(['test -s /etc/microwave/db.password'])
+      .to eq(['grep -qs "[^[:space:]]" /etc/microwave/db.password'])
   end
 
   it 'rewrites an existing but empty file, which would set an empty role password' do
-    stub_command('test -s /etc/microwave/db.password').and_return(false)
+    stub_command('grep -qs "[^[:space:]]" /etc/microwave/db.password').and_return(false)
     allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return('')
 
     expect(chef_run).to create_file('/etc/microwave/db.password')
+  end
+
+  it 'rewrites a whitespace-only file, which the server recipe would strip to nothing' do
+    stub_command('grep -qs "[^[:space:]]" /etc/microwave/db.password').and_return(false)
+    allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return(" \t\n")
+
+    expect(chef_run).to create_file('/etc/microwave/db.password')
+  end
+
+  it 'leaves a file whose content survives a strip alone' do
+    guard = chef_run.file('/etc/microwave/db.password').not_if.first.command
+
+    Dir.mktmpdir do |dir|
+      path = ::File.join(dir, 'db.password')
+      ::File.write(path, "s3cret\n")
+
+      expect(system(guard.sub('/etc/microwave/db.password', path))).to be(true)
+    end
+  end
+
+  it 'runs the real guard on a whitespace-only file and finds it unwritten' do
+    guard = chef_run.file('/etc/microwave/db.password').not_if.first.command
+
+    Dir.mktmpdir do |dir|
+      path = ::File.join(dir, 'db.password')
+      ::File.write(path, " \t\n")
+
+      expect(system(guard.sub('/etc/microwave/db.password', path))).to be(false)
+    end
   end
 
   it 'rotates the role password only when the file was just written' do
@@ -257,7 +286,7 @@ describe 'microwave_postgresql with a client network' do
     stub_command(/SELECT 1 FROM pg_database/).and_return(nil)
     stub_command(/openssl verify/).and_return(nil)
     stub_command(/openssl x509 -in/).and_return(nil)
-    stub_command('test -s /etc/microwave/db.password').and_return(true)
+    stub_command('grep -qs "[^[:space:]]" /etc/microwave/db.password').and_return(true)
 
     allow(::File).to receive(:read).and_call_original
     allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return('a' * 32)
@@ -291,7 +320,7 @@ describe 'microwave_postgresql on a custom port' do
     stub_command(/SELECT 1 FROM pg_database/).and_return(nil)
     stub_command(/openssl verify/).and_return(nil)
     stub_command(/openssl x509 -in/).and_return(nil)
-    stub_command('test -s /etc/microwave/db.password').and_return(true)
+    stub_command('grep -qs "[^[:space:]]" /etc/microwave/db.password').and_return(true)
 
     allow(::File).to receive(:read).and_call_original
     allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return('a' * 32)
@@ -326,7 +355,7 @@ describe 'microwave_postgresql without an FQDN' do
     stub_command(/SELECT 1 FROM pg_database/).and_return(nil)
     stub_command(/openssl verify/).and_return(nil)
     stub_command(/openssl x509 -in/).and_return(nil)
-    stub_command('test -s /etc/microwave/db.password').and_return(true)
+    stub_command('grep -qs "[^[:space:]]" /etc/microwave/db.password').and_return(true)
 
     allow(::File).to receive(:read).and_call_original
     allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return('a' * 32)
@@ -352,7 +381,7 @@ describe 'microwave_postgresql with client CAs' do
     stub_command(/SELECT 1 FROM pg_database/).and_return(nil)
     stub_command(/openssl verify/).and_return(nil)
     stub_command(/openssl x509 -in/).and_return(nil)
-    stub_command('test -s /etc/microwave/db.password').and_return(true)
+    stub_command('grep -qs "[^[:space:]]" /etc/microwave/db.password').and_return(true)
 
     allow(::File).to receive(:read).and_call_original
     allow(::File).to receive(:read).with('/etc/microwave/db.password').and_return('a' * 32)

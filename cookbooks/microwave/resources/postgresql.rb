@@ -173,8 +173,10 @@ action :install do
     notifies :run, 'execute[microwave-alter-role-password]', :immediately
     notifies :restart, 'service[microwave-server]', :delayed
     # An existing but empty file would set an empty role password, so only a
-    # file with content counts as already written.
-    not_if 'test -s /etc/microwave/db.password'
+    # file with a non-blank line counts as already written. `test -s` alone
+    # would accept a file that holds nothing but a newline, which the server
+    # recipe then strips to an empty password.
+    not_if 'grep -qs "[^[:space:]]" /etc/microwave/db.password'
   end
 
   directory ::File.join(data_dir, 'conf.d') do
