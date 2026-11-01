@@ -29,7 +29,10 @@ describe 'microwave metadata' do
     let(:kitchen) do
       YAML.safe_load(File.read(File.expand_path('../.kitchen.yml', __dir__)), aliases: true)
     end
-    let(:product_version) { kitchen.dig('provisioner', 'product_version') }
+    let(:product_version) do
+      kitchen.dig('provisioner', 'product_version') ||
+        raise('.kitchen.yml provisioner has no product_version')
+    end
 
     it 'satisfies the metadata chef_version requirement' do
       expect(metadata.chef_versions.first.requirement)
@@ -38,6 +41,13 @@ describe 'microwave metadata' do
 
     it 'is at least the declared floor of 19.4.46' do
       expect(Gem::Version.new(product_version)).to be >= Gem::Version.new('19.4.46')
+    end
+
+    it 'names the missing product_version instead of failing on a nil' do
+      allow(YAML).to receive(:safe_load).and_return({})
+
+      expect { Gem::Version.new(product_version) }
+        .to raise_error(RuntimeError, /provisioner has no product_version/)
     end
   end
 
