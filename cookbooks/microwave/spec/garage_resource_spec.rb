@@ -9,10 +9,10 @@ describe 'microwave_garage' do
     end.converge('microwave-test::garage')
   end
 
-  # The admin `node id -q` read is a backtick per command; the layout guard reads
-  # the capacity record through `File` and asks `layout show` whether the node is
-  # still in the live layout. The record `File.exist?`/`File.read` pair, the
-  # `system` call and the backtick are stubbed per example by `record_capacity`.
+  # The admin `node id -q` read is a backtick per command, stubbed in the `before`
+  # block below; the layout guard reads the capacity record through `File` and
+  # asks `layout show` whether the node is still in the live layout, both stubbed
+  # per example by `record_capacity`.
   let(:node_id) { 'aa11bb22cc33' }
 
   before do
@@ -376,6 +376,21 @@ describe 'microwave_garage' do
       expect(assign.command)
         .to end_with(" #{node_id} && printf '%s' '1G' > /var/lib/garage/capacity")
       expect(assign.not_if.last.block.call).to be(false)
+    end
+
+    it 'probes the layout with the 16-character id prefix' do
+      record_capacity('1G')
+      # Capture the guard's shell-out, like the backtick stub above records its
+      # command; the printed layout carries the short 16-character id.
+      probes = []
+      allow_any_instance_of(Chef::Resource::Execute).to receive(:system) do |_resource, command|
+        probes << command if command.include?('layout show') && !command.include?('grep -qE')
+        true
+      end
+      assign = chef_run.execute('microwave-garage-layout-assign')
+
+      expect(assign.not_if.last.block.call).to be(true)
+      expect(probes.last).to end_with("grep -q #{node_id[0, 16]}")
     end
   end
 
