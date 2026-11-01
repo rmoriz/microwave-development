@@ -28,7 +28,11 @@ with axe. A website-only commit does not need `cargo test`.
 
 CI is path-filtered: documentation changes only run the `claims` and `docs`
 jobs, homepage changes only `claims` and `homepage`, and the Rust jobs
-(`fmt`, `clippy`, `test`, `postgres`) only run when code changes. Workflow
+(`fmt`, `clippy`, `test`, `postgres`) only run when code changes.
+`cookbooks/**`, `docs/**` and `website/**` alone never build Rust — a new
+`cargo` job needs `if: needs.changes.outputs.rust == 'true'` and its paths must
+stay out of the `rust` filter; `scripts/tests/test_workflow_gates.py` fails
+when either slips. Workflow
 edits run `claims`, which lints them; `cookbook.yml` also lists itself in its
 path filter, so a cookbook workflow edit runs its own `specs` and `kitchen`
 jobs on the next push or pull request.
