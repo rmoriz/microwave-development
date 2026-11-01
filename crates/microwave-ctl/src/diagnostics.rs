@@ -2,7 +2,7 @@ use crate::{context::Context, CtlError};
 use microwave_config::{DatabaseDriver, ObjectStoreBackend, SearchBackend};
 use microwave_mail::SmtpMailer;
 use microwave_store::SqliteStore;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::Path;
 use url::Url;
 
@@ -59,9 +59,9 @@ pub fn check_config(context: &Context) -> Result<(), CtlError> {
         }
     }
 
-    match config.server.bind.parse::<SocketAddr>() {
-        Ok(bind) => checks.push(format!("server.bind {bind}")),
-        Err(_) => problems.push(format!(
+    match resolve_bind(&config.server.bind) {
+        Some(bind) => checks.push(format!("server.bind {bind}")),
+        None => problems.push(format!(
             "server.bind {:?} is not a valid socket address",
             config.server.bind
         )),
@@ -221,6 +221,21 @@ pub fn check_config(context: &Context) -> Result<(), CtlError> {
             problems.join("\n  - ")
         )))
     }
+}
+
+/// Resolve the configured bind to a socket address.
+///
+/// This is the `check-config` half of the pair: the recipe renders a literal
+/// address, while a hand-written config may name its bind, and the listener
+/// accepts both through [`tokio::net::TcpListener::bind`]. A literal address is
+/// used unchanged. For a name the resolver's first result wins, in the order
+/// [`ToSocketAddrs`] yields it, matching the recipe's `Resolv.getaddress`; a
+/// name that does not resolve still fails the check.
+fn resolve_bind(bind: &str) -> Option<SocketAddr> {
+    if let Ok(address) = bind.parse::<SocketAddr>() {
+        return Some(address);
+    }
+    bind.to_socket_addrs().ok()?.next()
 }
 
 /// Report the high-availability state. Chef Server's DRBD/keepalived HA was
@@ -494,7 +509,8 @@ pub(crate) fn object_store_backend_name(backend: ObjectStoreBackend) -> &'static
 
 #[cfg(test)]
 mod tests {
-    use super::{check_config, parse_psql_args, Context, PsqlInvocation};
+    use super::{check_config, parse_psql_args, resolve_bind, Context, PsqlInvocation};
+    use std::net::ToSocketAddrs;
     use std::path::PathBuf;
 
     fn parse(arguments: &[&str]) -> PsqlInvocation {
@@ -525,6 +541,53 @@ mod tests {
             "unexpected error: {error}"
         );
         assert!(check_config(&context_with_pool_size(10)).is_ok());
+    }
+
+    fn context_with_bind(bind: &str) -> Context {
+        let mut context = context_with_pool_size(10);
+        context.config.server.bind = bind.to_string();
+        context
+    }
+
+    #[test]
+    fn check_config_resolves_a_host_name_bind() {
+        assert!(check_config(&context_with_bind("localhost:8000")).is_ok());
+    }
+
+    #[test]
+    fn check_config_rejects_an_unresolvable_bind() {
+        let error = check_config(&context_with_bind("no-such-host.invalid")).unwrap_err();
+        assert!(
+            error.to_string().contains("server.bind"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn check_config_rejects_a_bind_without_a_port() {
+        let error = check_config(&context_with_bind("127.0.0.1")).unwrap_err();
+        assert!(
+            error.to_string().contains("server.bind"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn resolve_bind_keeps_a_literal_address_unchanged() {
+        assert_eq!(
+            resolve_bind("127.0.0.1:8000"),
+            Some("127.0.0.1:8000".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn resolve_bind_takes_the_first_address_a_name_resolves_to() {
+        let first = "localhost:8000"
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut addresses| addresses.next());
+        assert!(first.is_some());
+        assert_eq!(resolve_bind("localhost:8000"), first);
     }
 
     #[test]
