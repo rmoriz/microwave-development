@@ -51,9 +51,10 @@ describe 'microwave_server' do
       .with_content(/^bind = "chef\.example\.com:8000"$/)
   end
 
-  it 'writes the configuration 0640 root:microwave' do
+  it 'writes the configuration 0640 root:microwave, kept out of the run report' do
     expect(chef_run).to create_template('/etc/microwave/microwave.toml')
       .with(owner: 'root', group: 'microwave', mode: '0640')
+    expect(chef_run.template('/etc/microwave/microwave.toml').sensitive).to be(true)
   end
 
   it 'trusts both CAs with consecutive names and refreshes the system store' do

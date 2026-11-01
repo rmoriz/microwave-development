@@ -69,6 +69,8 @@ action :install do
     owner 'root'
     group 'microwave'
     mode '0640'
+    # The rendered URL carries the database password.
+    sensitive true
     variables(
       bind: new_resource.bind,
       public_url: new_resource.public_url,
