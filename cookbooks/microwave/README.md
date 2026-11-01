@@ -123,10 +123,11 @@ in `node['microwave']['garage_digests']` (`x86_64` or `aarch64`) through
 downloading unverified.
 
 The engine itself only listens on `127.0.0.1:3910`; nginx terminates TLS on
-`3900` and is the only way in — on the node's name with `client_network`, and
-then behind an allow list. The resource installs nginx itself rather than
-borrowing another backend's package, because either backend may be the only
-proxy on a node.
+`3900` and is the only way in. Its vhost always listens on the node's name and
+on `127.0.0.1`; the `allow` list with `deny all` is added only with
+`client_network`, so a node without it answers on the name without an IP allow
+list. The resource installs nginx itself rather than borrowing another
+backend's package, because either backend may be the only proxy on a node.
 
 The certificate SAN is the node name plus `127.0.0.1`. The endpoint is handed
 to clients inside presigned URLs, so it has to be reachable from those clients
@@ -145,10 +146,10 @@ guard; a second converge provisions nothing again.
 installations. Multi-node clusters, extra zones and a higher factor are not
 supported here and stay out of band.
 
-Nodes installed with a cookbook before 0.1.1 carry the two engine secret files
-as `0640 root:garage`. The `not_if` guards leave existing files alone, so an
-upgrade alone does not touch them and Garage refuses to start. Fix it before
-the first start after the upgrade, on such a node only:
+Nodes installed with a cookbook built before this change carry the two engine
+secret files as `0640 root:garage`. The `not_if` guards leave existing files
+alone, so an upgrade alone does not touch them and Garage refuses to start. Fix
+it before the first start after the upgrade, on such a node only:
 
 ```sh
 chown garage:garage /etc/microwave/garage.rpc_secret /etc/microwave/garage.admin_token
@@ -321,8 +322,9 @@ connection verify. That connection is the one the CA has to cover.
 The S3 hop verifies the same way: the server checks the store certificate
 against the system trust store, so the store's CA has to reach `ca_certs` or
 `ca_cert_file` on the server node. The garage certificate is a separate pair
-from the database and search ones, but all three are signed by the node's own
-CA, so one CA file covers every backend hop.
+from the database and search ones, and each node signs with its own CA. A
+split server therefore needs all three CAs concatenated into the one
+`ca_cert_file` it reads.
 
 ## Tests
 
