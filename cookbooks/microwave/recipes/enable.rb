@@ -9,6 +9,10 @@ service 'nginx' do
   only_if { Microwave::Disabled.unit?('nginx') }
 end
 
+microwave_garage 'default' do
+  action :enable
+end
+
 microwave_postgresql 'default' do
   action :enable
 end

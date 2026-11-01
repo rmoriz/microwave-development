@@ -1,0 +1,18 @@
+[Unit]
+Description=Garage S3-compatible object store
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=garage
+Group=garage
+ExecStart=/usr/local/bin/garage -c /etc/garage.toml server
+Environment=GARAGE_LOG_TO_JOURNALD=1
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=60
+LimitNOFILE=42000
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

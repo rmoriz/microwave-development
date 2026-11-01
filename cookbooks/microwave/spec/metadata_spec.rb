@@ -54,7 +54,7 @@ describe 'microwave metadata' do
   it 'declares the recipes and the source' do
     expect(metadata.recipes.keys).to contain_exactly(
       'microwave::default', 'microwave::server', 'microwave::database', 'microwave::search',
-      'microwave::disable', 'microwave::enable'
+      'microwave::garage', 'microwave::disable', 'microwave::enable'
     )
     expect(metadata.source_url).to eq('https://github.com/rmoriz/microwave-development')
     expect(metadata.issues_url).to eq('https://github.com/rmoriz/microwave-development/issues')

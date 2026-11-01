@@ -15,5 +15,12 @@ default['microwave']['ca_certs'] = []
 default['microwave']['ca_cert_file'] = nil
 default['microwave']['search_host'] = nil
 default['microwave']['opensearch_heap'] = '1g'
+default['microwave']['garage_version'] = '2.5.0'
+default['microwave']['garage_capacity'] = '1G'
+default['microwave']['garage_bucket'] = 'chef-cookbooks'
+default['microwave']['garage_digests'] = {
+  'x86_64' => '2ff667286217cd73ebcb1c03af993822365000441dfe31a80cb64c5189a9dea8',
+  'aarch64' => '69b6040cef428b993500c17dd0d0c1240acf2f3f667b9b05ceba4b9660db4e8c',
+}
 default['microwave']['client_network'] = nil
 default['microwave']['create_organization'] = false

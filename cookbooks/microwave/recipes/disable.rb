@@ -12,6 +12,10 @@ microwave_postgresql 'default' do
   action :disable
 end
 
+microwave_garage 'default' do
+  action :disable
+end
+
 file Microwave::Disabled.marker('nginx') do
   content "disabled by microwave::disable\n"
   owner 'root'
