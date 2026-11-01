@@ -101,9 +101,10 @@ services:
       - -c
       - cinc-client -z -c /tmp/kitchen/client.rb -o 'microwave-test::garage_node' --json-attributes /tmp/kitchen/attrs.json && exec sleep infinity
 
+# The kitchen node joins this network by name at create time, which is before
+# the stack starts, so test/hooks/pre_create.sh creates it (with the subnet the
+# suite's client_network names) and compose joins it as an existing network.
 networks:
   microwave-test:
     name: microwave-test
-    ipam:
-      config:
-        - subnet: 172.28.0.0/16
+    external: true
