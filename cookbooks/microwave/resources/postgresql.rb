@@ -4,7 +4,10 @@ unified_mode true
 
 description 'Installs PostgreSQL 19 with the Microwave role, database and TLS material'
 
-property :hostname, String, default: lazy { node['fqdn'].empty? ? node['hostname'] : node['fqdn'] }
+# `node['fqdn']` is nil on a bare Chef::Node, so the `to_s` covers that case.
+# cookstyle:disable Chef/RedundantCode/OhaiAttributeToString
+property :hostname, String, default: lazy { node['fqdn'].to_s.empty? ? node['hostname'] : node['fqdn'] }
+# cookstyle:enable Chef/RedundantCode/OhaiAttributeToString
 property :port, Integer, default: lazy { node['microwave']['database_port'] }
 property :database, String, default: lazy { node['microwave']['database_name'] }
 property :user, String, default: lazy { node['microwave']['database_user'] }

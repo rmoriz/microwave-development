@@ -2,7 +2,10 @@ unified_mode true
 
 description 'Installs OpenSearch 3.9 with a bounded heap and terminates TLS in front of it'
 
-property :hostname, String, default: lazy { node['fqdn'].empty? ? node['hostname'] : node['fqdn'] }
+# `node['fqdn']` is nil on a bare Chef::Node, so the `to_s` covers that case.
+# cookstyle:disable Chef/RedundantCode/OhaiAttributeToString
+property :hostname, String, default: lazy { node['fqdn'].to_s.empty? ? node['hostname'] : node['fqdn'] }
+# cookstyle:enable Chef/RedundantCode/OhaiAttributeToString
 property :heap, String, default: lazy { node['microwave']['opensearch_heap'] }
 property :client_network, [String, nil], default: lazy { node['microwave']['client_network'] }
 
