@@ -9,13 +9,10 @@ describe 'microwave_garage' do
     end.converge('microwave-test::garage')
   end
 
-  # The admin reads answer per command: `node id -q` returns the key, `layout
-  # show` the table. Both are backticks, the guards shell out through `system`.
+  # The admin `node id -q` read is a backtick per command; the state guards
+  # shell out through `system`. The binary is absent on the spec host, so they
+  # all report false and every execute runs.
   let(:node_id) { 'aa11bb22cc33' }
-  # The shape Garage really prints: a truncated id and a humanised capacity.
-  let(:layout_show) do
-    "==== CURRENT CLUSTER LAYOUT ====\n#{node_id}  []  dc1  953.7 MiB  953.7 MiB (100.0%)\n"
-  end
 
   before do
     # The state guards shell out through `system`, not `stub_command`, and the
@@ -33,10 +30,6 @@ describe 'microwave_garage' do
     allow(::File).to receive(:read).with('/etc/microwave/garage.secret_key').and_return("SECRETKEY\n")
     allow_any_instance_of(Chef::Provider).to receive(:`) do |*args|
       args.last.to_s.include?('node id') ? "#{node_id}@127.0.0.1:3901\n" : ''
-    end
-    # The assign guard reads `layout show` from the resource, not the provider.
-    allow_any_instance_of(Chef::Resource::Execute).to receive(:`) do |_resource, command|
-      command.to_s.include?('layout show') ? layout_show : ''
     end
 
     allow(::File).to receive(:symlink?).and_call_original
@@ -60,23 +53,10 @@ describe 'microwave_garage' do
     end.converge('microwave-test::garage')
   end
 
-  # A converge at another capacity.
-  def converge_at(capacity)
-    ChefSpec::SoloRunner.new(platform: 'debian', version: '13', step_into: ['microwave_garage']) do |node|
-      node.name('garage.example.com')
-      node.automatic['fqdn'] = 'garage.example.com'
-      node.automatic['kernel']['machine'] = 'x86_64'
-      node.normal['microwave']['garage_capacity'] = capacity
-    end.converge('microwave-test::garage')
-  end
-
-  # The assign guard reads the layout table; serve it with the capacity asked
-  # for, so the examples below can vary the table and the capacity separately.
-  def assign_guard(capacity, layout = nil)
-    allow_any_instance_of(Chef::Resource::Execute).to receive(:`) do |_resource, command|
-      command.to_s.include?('layout show') ? (layout || layout_show) : ''
-    end
-    converge_at(capacity).execute('microwave-garage-layout-assign')
+  # Sets the capacity record the assign guard reads; `nil` leaves it missing.
+  def record_capacity(value)
+    allow(::File).to receive(:exist?).with('/var/lib/garage/capacity').and_return(!value.nil?)
+    allow(::File).to receive(:read).with('/var/lib/garage/capacity').and_return(value) unless value.nil?
   end
 
   it 'creates the service accounts and keeps the data directories tight' do
@@ -84,6 +64,9 @@ describe 'microwave_garage' do
     expect(chef_run).to create_group('garage').with(system: true)
     expect(chef_run).to create_user('garage').with(system: true, shell: '/usr/sbin/nologin')
 
+    # The assign writes the capacity record into the parent directory.
+    expect(chef_run).to create_directory('/var/lib/garage')
+      .with(owner: 'garage', group: 'garage', mode: '0700')
     expect(chef_run).to create_directory('/var/lib/garage/meta')
       .with(owner: 'garage', group: 'garage', mode: '0700')
     expect(chef_run).to create_directory('/var/lib/garage/data')
@@ -306,37 +289,49 @@ describe 'microwave_garage' do
     expect(wait.group).to eq('garage')
   end
 
-  it 'stages the only node with the configured capacity' do
-    assign = assign_guard('1G')
+  it 'stages the node and records the capacity' do
+    record_capacity(nil)
+    assign = chef_run.execute('microwave-garage-layout-assign')
 
     expect(assign.command)
-      .to eq('/usr/local/bin/garage -c /etc/garage.toml layout assign -z dc1 -c 1G aa11bb22cc33')
+      .to eq('/usr/local/bin/garage -c /etc/garage.toml layout assign -z dc1 -c 1G aa11bb22cc33 && ' \
+             "printf '%s' '1G' > /var/lib/garage/capacity")
     expect(assign.not_if.size).to eq(2)
     expect(assign.not_if.first.block.call).to be(false)
-    # The layout row already carries the configured capacity, humanised as
-    # `953.7 MiB`.
-    expect(assign.not_if.last.block.call).to be(true)
-  end
-
-  it 'stages again when the capacity changed' do
-    assign = assign_guard('2G')
-
-    expect(assign.command).to end_with(' -c 2G aa11bb22cc33')
+    # No record yet, so the first converge stages.
     expect(assign.not_if.last.block.call).to be(false)
   end
 
-  it 'leaves an already staged capacity alone' do
-    layout = layout_show.sub("\n", "\n==== STAGED ROLE CHANGES ====\n#{node_id}  []  dc1  1907.3 MiB  1907.3 MiB (100.0%)\n")
-    assign = assign_guard('2G', layout)
+  it 'keeps the assign skipped while the record carries the capacity' do
+    record_capacity('1G')
+    assign = chef_run.execute('microwave-garage-layout-assign')
 
     expect(assign.not_if.last.block.call).to be(true)
   end
 
-  it 'does not mistake a larger capacity for the configured one' do
-    layout = layout_show.sub('953.7 MiB  953.7 MiB', '10.2 GiB  10.2 GiB')
-    assign = assign_guard('1G', layout)
+  it 'stages a recorded change the assign never made again' do
+    # A superseded stage: the layout row may already carry the capacity, the
+    # record says otherwise.
+    record_capacity('2G')
+    assign = chef_run.execute('microwave-garage-layout-assign')
 
     expect(assign.not_if.last.block.call).to be(false)
+  end
+
+  it 'compares the exact string, so another spelling runs again' do
+    record_capacity('2g')
+    assign = chef_run.execute('microwave-garage-layout-assign')
+
+    expect(assign.not_if.last.block.call).to be(false)
+  end
+
+  it 'skips a staged change whose record the assign already wrote' do
+    # The assign records before `layout apply`; a retry lands the apply, not a
+    # second assign.
+    record_capacity('1G')
+    assign = chef_run.execute('microwave-garage-layout-assign')
+
+    expect(assign.not_if.last.block.call).to be(true)
   end
 
   it 'applies the staged version once' do
@@ -356,17 +351,17 @@ describe 'microwave_garage' do
   context 'with a full node key' do
     let(:node_id) { '580a5f67a86de67f0123456789abcdef0123456789abcdef0123456789abcdef' }
 
-    it 'matches the truncated id the layout table prints' do
-      assign = assign_guard('1G', "==== CURRENT CLUSTER LAYOUT ====\n580a5f67a86de67f  []  dc1  953.7 MiB  953.7 MiB (100.0%)\n")
+    it 'passes the full key to the command' do
+      record_capacity(nil)
+      assign = chef_run.execute('microwave-garage-layout-assign')
 
-      expect(assign.command).to end_with(" #{node_id}")
-      expect(assign.not_if.last.block.call).to be(true)
+      expect(assign.command)
+        .to end_with(" #{node_id} && printf '%s' '1G' > /var/lib/garage/capacity")
+      expect(assign.not_if.last.block.call).to be(false)
     end
   end
 
   context 'with a staged change' do
-    let(:layout_show) { "Current cluster layout version: 1\n\n==== STAGED ROLE CHANGES ====\n" }
-
     it 'applies while a stage is open' do
       allow_any_instance_of(Chef::Resource::Execute).to receive(:system).and_return(true)
       apply = chef_run.execute('microwave-garage-layout-apply')
@@ -472,7 +467,8 @@ describe 'microwave_garage with a client network' do
 
   it 'passes the capacity through' do
     expect(chef_run.execute('microwave-garage-layout-assign').command)
-      .to eq('/usr/local/bin/garage -c /etc/garage.toml layout assign -z dc1 -c 5G aa11bb22cc33')
+      .to eq('/usr/local/bin/garage -c /etc/garage.toml layout assign -z dc1 -c 5G aa11bb22cc33 && ' \
+             "printf '%s' '5G' > /var/lib/garage/capacity")
   end
 end
 

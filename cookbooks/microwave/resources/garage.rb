@@ -18,6 +18,7 @@ property :version, String, default: lazy { node['microwave']['garage_version'] }
 action :install do
   garage = '/usr/local/bin/garage'
   config = '/etc/garage.toml'
+  capacity_file = '/var/lib/garage/capacity'
   s3_port = 3910
   vhost = '/etc/nginx/sites-available/microwave-garage'
   vhost_link = '/etc/nginx/sites-enabled/microwave-garage'
@@ -82,10 +83,12 @@ action :install do
     mode '0755'
   end
 
+  # The data directory is also where the assign records the accepted capacity,
+  # so the engine user has to own it; the guard reads it as root.
   directory '/var/lib/garage' do
-    owner 'root'
-    group 'root'
-    mode '0755'
+    owner 'garage'
+    group 'garage'
+    mode '0700'
   end
 
   %w(meta data).each do |dir|
@@ -362,38 +365,21 @@ action :install do
     not_if { Microwave::Disabled.marked?('garage') }
   end
 
-  # `layout show` prints the node id truncated to the first 16 hex characters
-  # and the capacity humanised (`1G` becomes `953.7 MiB`), so the guard matches
-  # the node's own rows and compares the capacity in bytes with rounding slack.
-  # A changed capacity stages again; a row that already carries it — current or
-  # already staged — is left alone.
+  # `layout show` prints the capacity humanised and rounded (`2G` becomes
+  # `1.9 GiB`), so a parsed comparison cannot be exact. The assign records the
+  # accepted string instead and the guard reads that record: the exact value is
+  # the state, a superseded stage is restaged, and no capacity spelling can be
+  # mis-parsed. A missing record (first converge) stages.
   execute 'microwave-garage-layout-assign' do
-    command lazy { "#{garage} -c #{config} layout assign -z dc1 -c #{new_resource.capacity} #{node_id.call}" }
+    command lazy {
+      "#{garage} -c #{config} layout assign -z dc1 -c #{new_resource.capacity} #{node_id.call} && " \
+        "printf '%s' '#{new_resource.capacity}' > #{capacity_file}"
+    }
     user 'garage'
     group 'garage'
     sensitive false
     not_if { Microwave::Disabled.marked?('garage') }
-    not_if do
-      id = node_id.call
-      next false if id.empty?
-
-      match = new_resource.capacity.match(/\A([\d.]+)\s*([KMGTP]?)(i?B?)\z/i)
-      next false if match.nil?
-
-      amount, prefix, binary = match.captures
-      power = prefix.empty? ? 0 : 'KMGTP'.index(prefix.upcase) + 1
-      wanted = amount.to_f * (binary.downcase == 'ib' ? 1024 : 1000)**power
-      units = { 'B' => 1, 'KiB' => 1024, 'MiB' => 1024**2, 'GiB' => 1024**3, 'TiB' => 1024**4 }
-
-      `#{garage} -c #{config} layout show 2>/dev/null`.lines.any? do |line|
-        fields = line.split
-        next false unless fields.first == id[0, 16]
-
-        fields.each_cons(2).any? do |number, unit|
-          units.key?(unit) && (number.to_f * units[unit] - wanted).abs <= wanted * 0.001
-        end
-      end
-    end
+    not_if { ::File.exist?(capacity_file) && ::File.read(capacity_file) == new_resource.capacity }
   end
 
   # A staged section is the only reason to apply; the node sitting in the

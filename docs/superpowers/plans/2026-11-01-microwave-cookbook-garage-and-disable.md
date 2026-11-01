@@ -481,7 +481,7 @@ property :client_network, [String, nil]
 property :version, String, default: lazy { node['microwave']['garage_version'] }, regex: /\A\d+\.\d+\.\d+\z/
 ```
 
-`action :install` starts with `garage = '/usr/local/bin/garage'`, `config = '/etc/garage.toml'`, and an arch map (`x86_64` → `x86_64-unknown-linux-musl`, `aarch64`/`arm64` → `aarch64-unknown-linux-musl`) that raises on anything else and rejects an absent digest. Create `group 'microwave'`, `group 'garage'`, `user 'garage'` (system, `/usr/sbin/nologin`, no home), `/etc/microwave`, `Microwave::TLS.ca_dir`, the marker directory, the data directories, a guarded `remote_file` with `checksum`, the two `SecureRandom.hex(32)` secret files, the key pair files (`hex(20)`/`hex(32)`), the config template, the unit template, the full TLS block from `postgresql.rb`: the CA key and CA certificate executes plus their root-owned `0640`/`0644` files, the service key generate, the `backend-cert.cnf.erb` template, the certificate execute with the `DNS:<hostname>,IP:127.0.0.1` SAN, and the key file as `0600 garage:garage`. The split garage node is the only TLS issuer there, so the CA block is not optional; keep its `not_if` guards and point every restart notification at `service[garage]` instead of `service[postgresql]`. Then `apt_package 'nginx'`, the nginx vhost/link and default-site deletion, a marker-guarded `service 'nginx'` (the reload target for the vhost and link, `supports reload: true`), the marker-guarded `service 'garage'`, and the provisioning executes. A garage-only node and the all-in-one node both need nginx, so the resource installs it itself instead of borrowing the OpenSearch resource's package. `:enable` in this resource does not start nginx, like OpenSearch.
+`action :install` starts with `garage = '/usr/local/bin/garage'`, `config = '/etc/garage.toml'`, `capacity_file = '/var/lib/garage/capacity'`, and an arch map (`x86_64` → `x86_64-unknown-linux-musl`, `aarch64`/`arm64` → `aarch64-unknown-linux-musl`) that raises on anything else and rejects an absent digest. Create `group 'microwave'`, `group 'garage'`, `user 'garage'` (system, `/usr/sbin/nologin`, no home), `/etc/microwave`, `Microwave::TLS.ca_dir`, the marker directory, the data directories, a guarded `remote_file` with `checksum`, the two `SecureRandom.hex(32)` secret files, the key pair files (`hex(20)`/`hex(32)`), the config template, the unit template, the full TLS block from `postgresql.rb`: the CA key and CA certificate executes plus their root-owned `0640`/`0644` files, the service key generate, the `backend-cert.cnf.erb` template, the certificate execute with the `DNS:<hostname>,IP:127.0.0.1` SAN, and the key file as `0600 garage:garage`. The split garage node is the only TLS issuer there, so the CA block is not optional; keep its `not_if` guards and point every restart notification at `service[garage]` instead of `service[postgresql]`. Then `apt_package 'nginx'`, the nginx vhost/link and default-site deletion, a marker-guarded `service 'nginx'` (the reload target for the vhost and link, `supports reload: true`), the marker-guarded `service 'garage'`, and the provisioning executes. A garage-only node and the all-in-one node both need nginx, so the resource installs it itself instead of borrowing the OpenSearch resource's package. `:enable` in this resource does not start nginx, like OpenSearch.
 
 - [ ] **Step 4: Implement the provisioning and both actions**
 
@@ -491,26 +491,13 @@ Order after the service: readiness wait, layout assign, layout apply, bucket cre
 # wait: bounded readiness loop, only while the admin API does not answer
 command "for i in $(seq 60); do #{garage} -c #{config} status >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1"
 not_if { system("#{garage} -c #{config} status >/dev/null 2>&1") }
-# assign: stage the only node with the configured capacity
-command "#{garage} -c #{config} layout assign -z dc1 -c #{capacity} #{node_id}"
+# assign: stage the only node with the configured capacity and record it
+command "#{garage} -c #{config} layout assign -z dc1 -c #{capacity} #{node_id} && printf '%s' '#{capacity}' > #{capacity_file}"
 not_if do
-  id = `#{garage} -c #{config} node id -q 2>/dev/null`.split('@').first.to_s
-  next false if id.empty?
-  # only the node's own rows count; the capacity is printed humanised
-  # (`1G` becomes `953.7 MiB`), so compare it in bytes with rounding slack
-  match = capacity.match(/\A([\d.]+)\s*([KMGTP]?)(i?B?)\z/i)
-  next false if match.nil?
-  amount, prefix, binary = match.captures
-  power = prefix.empty? ? 0 : 'KMGTP'.index(prefix.upcase) + 1
-  wanted = amount.to_f * (binary.downcase == 'ib' ? 1024 : 1000)**power
-  units = { 'B' => 1, 'KiB' => 1024, 'MiB' => 1024**2, 'GiB' => 1024**3, 'TiB' => 1024**4 }
-  `#{garage} -c #{config} layout show 2>/dev/null`.lines.any? do |line|
-    fields = line.split
-    next false unless fields.first == id[0, 16]
-    fields.each_cons(2).any? do |number, unit|
-      units.key?(unit) && (number.to_f * units[unit] - wanted).abs <= wanted * 0.001
-    end
-  end
+  # `layout show` renders capacities humanised and rounded (`2G` becomes
+  # `1.9 GiB`), so the exact recorded string is the state instead: a missing
+  # record stages, a superseded stage restages, and no spelling can be mixed up
+  ::File.exist?(capacity_file) && ::File.read(capacity_file) == capacity
 end
 # apply: enact the staged version once
 command "#{garage} -c #{config} layout apply --version 1"
