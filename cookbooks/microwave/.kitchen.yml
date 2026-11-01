@@ -16,12 +16,13 @@ driver:
     - /run:rw,exec
     - /tmp:rw,exec
   intermediate_instructions:
-    # systemd for the service resources, a gpg home for the apt_repository
-    # keyserver fetch, and the client: the dokken provisioner never installs
-    # one, it expects the image to carry it. The base image's docker-clean hook
-    # wipes downloaded debs after every apt run; it is dropped here so the host
-    # archive cache fills up and the next run does not fetch them again.
-    - RUN apt-get update && apt-get install -y --no-install-recommends systemd procps sudo ca-certificates curl gnupg openssl && rm -f /etc/apt/apt.conf.d/docker-clean && printf 'APT::Keep-Downloaded-Packages "true";\nBinary::apt::APT::Keep-Downloaded-Packages "true";\n' > /etc/apt/apt.conf.d/99keep-packages && install -d -m 0700 /root/.gnupg && curl -fsSLo /tmp/cinc.deb "https://packages.cinc.sh/files/stable/cinc/19.4.46/debian/13/cinc_19.4.46-1_$(dpkg --print-architecture).deb" && dpkg -i /tmp/cinc.deb && rm -f /tmp/cinc.deb && rm -rf /var/lib/apt/lists/*
+    # systemd for the service resources and the client: the dokken provisioner
+    # never installs one, it expects the image to carry it. The base image's
+    # docker-clean hook wipes downloaded debs after every apt run; it is dropped
+    # here so the host archive cache fills up and the next run does not fetch
+    # them again. No gnupg: both apt repositories are pinned with `signed-by`
+    # keyring files, so nothing asks a keyserver.
+    - RUN apt-get update && apt-get install -y --no-install-recommends systemd procps sudo ca-certificates curl openssl && rm -f /etc/apt/apt.conf.d/docker-clean && printf 'APT::Keep-Downloaded-Packages "true";\nBinary::apt::APT::Keep-Downloaded-Packages "true";\n' > /etc/apt/apt.conf.d/99keep-packages && curl -fsSLo /tmp/cinc.deb "https://packages.cinc.sh/files/stable/cinc/19.4.46/debian/13/cinc_19.4.46-1_$(dpkg --print-architecture).deb" && dpkg -i /tmp/cinc.deb && rm -f /tmp/cinc.deb && rm -rf /var/lib/apt/lists/*
   binds:
     - <%= File.join(File.dirname(__FILE__), 'test/fixtures') %>:/opt/fixtures:ro
     - <%= File.join(File.dirname(__FILE__), 'test/fixtures/shared') %>:/mnt/backend:ro
