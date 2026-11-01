@@ -319,6 +319,7 @@ action :install do
             "curl -fsS --max-time 5 http://127.0.0.1:#{http_port}/ >/dev/null && exit 0; " \
             'sleep 2; done; exit 1'
     not_if { Microwave::Disabled.marked?('opensearch') }
+    not_if "curl -fsS --max-time 5 http://127.0.0.1:#{http_port}/ >/dev/null 2>&1"
     notifies :run, 'execute[microwave-opensearch-wait]', :delayed
   end
 

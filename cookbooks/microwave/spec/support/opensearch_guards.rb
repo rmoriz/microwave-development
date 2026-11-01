@@ -14,5 +14,9 @@ RSpec.shared_context 'opensearch certificate guards' do
     fragments.sort_by { |_name, (_pattern, value)| value ? 0 : 1 }.each do |_name, (pattern, value)|
       stub_command(pattern).and_return(value)
     end
+
+    # The readiness probe is only skipped while the engine answers, and a fresh
+    # node does not.
+    stub_command(%r{curl -fsS --max-time 5 http://127\.0\.0\.1:9210/}).and_return(false)
   end
 end

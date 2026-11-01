@@ -320,6 +320,9 @@ describe 'microwave_opensearch' do
       .to eq('for i in $(seq 90); do curl -fsS --max-time 5 http://127.0.0.1:9210/ >/dev/null && exit 0; sleep 2; done; exit 1')
     expect(wait).to notify('execute[microwave-opensearch-wait]').to(:run).delayed
     expect(wait.not_if.first.block.call).to be(false)
+    # A serving engine makes the probe a no-op, so a second converge that
+    # changes nothing stays change-free.
+    expect(wait.not_if.last.command).to eq('curl -fsS --max-time 5 http://127.0.0.1:9210/ >/dev/null 2>&1')
 
     names = chef_run.resource_collection.map(&:to_s)
     expect(names.index('service[opensearch]')).to be < names.index('execute[microwave-opensearch-wait]')
