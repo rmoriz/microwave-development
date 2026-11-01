@@ -9,6 +9,11 @@ describe 'microwave_garage' do
     end.converge('microwave-test::garage')
   end
 
+  # The admin reads answer per command: `node id -q` returns the key, `layout
+  # show` the table. Both are backticks, the guards shell out through `system`.
+  let(:node_id) { 'aa11bb22cc33' }
+  let(:layout_show) { "==== CURRENT CLUSTER LAYOUT ====\n#{node_id}  []  dc1  1G\n" }
+
   before do
     # The state guards shell out through `system`, not `stub_command`, and the
     # binary is absent on the spec host: they all report false and every
@@ -23,7 +28,9 @@ describe 'microwave_garage' do
     allow(::File).to receive(:read).and_call_original
     allow(::File).to receive(:read).with('/etc/microwave/garage.access_key').and_return("AKIAEXAMPLE\n")
     allow(::File).to receive(:read).with('/etc/microwave/garage.secret_key').and_return("SECRETKEY\n")
-    allow_any_instance_of(Chef::Provider).to receive(:`).and_return("aa11bb22cc33@127.0.0.1:3901\n")
+    allow_any_instance_of(Chef::Provider).to receive(:`) do |*args|
+      args.last.to_s.include?('node id') ? "#{node_id}@127.0.0.1:3901\n" : layout_show
+    end
 
     allow(::File).to receive(:symlink?).and_call_original
     allow(::File).to receive(:symlink?).with('/etc/nginx/sites-enabled/default').and_return(true)
@@ -243,10 +250,46 @@ describe 'microwave_garage' do
   end
 
   it 'applies the staged version once' do
+    # Guard blocks are bound to the resource, so `system` is stubbed there.
+    allow_any_instance_of(Chef::Resource::Execute).to receive(:system).and_return(false)
     apply = chef_run.execute('microwave-garage-layout-apply')
 
-    expect(apply.command).to eq('/usr/local/bin/garage -c /etc/garage.toml layout apply --version 1')
-    expect(apply.not_if.last).to be_kind_of(Chef::Resource::Conditional)
+    expect(apply.command).to eq(
+      '/usr/local/bin/garage -c /etc/garage.toml layout apply --version ' \
+      '$(($(/usr/local/bin/garage -c /etc/garage.toml layout show 2>/dev/null | ' \
+      "sed -n 's/^Current cluster layout version: \\([0-9]*\\)$/\\1/p') + 1))"
+    )
+    # No stage is open on a node that only sits in the current layout.
+    expect(apply.not_if.last.block.call).to be true
+  end
+
+  context 'with a full node key' do
+    let(:node_id) { '580a5f67a86de67f0123456789abcdef0123456789abcdef0123456789abcdef' }
+
+    it 'greps the truncated id the layout table prints' do
+      commands = []
+      allow_any_instance_of(Chef::Resource::Execute).to receive(:system) do |command|
+        commands << command.to_s
+        false
+      end
+
+      assign = chef_run.execute('microwave-garage-layout-assign')
+      assign.not_if.last.block.call
+
+      expect(assign.command).to end_with(" #{node_id}")
+      expect(commands.grep(/layout show/)).to all(end_with('grep -q 580a5f67a86de67f'))
+    end
+  end
+
+  context 'with a staged change' do
+    let(:layout_show) { "Current cluster layout version: 1\n\n==== STAGED ROLE CHANGES ====\n" }
+
+    it 'applies while a stage is open' do
+      allow_any_instance_of(Chef::Resource::Execute).to receive(:system).and_return(true)
+      apply = chef_run.execute('microwave-garage-layout-apply')
+
+      expect(apply.not_if.last.block.call).to be false
+    end
   end
 
   it 'creates the bucket guarded by its absence' do

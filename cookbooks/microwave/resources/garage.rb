@@ -326,6 +326,9 @@ action :install do
     not_if { system("#{garage} -c #{config} status >/dev/null 2>&1") }
   end
 
+  # `layout show` prints the node id truncated to the first 16 hex characters,
+  # so the guard greps that prefix instead of the full key. Matching anywhere in
+  # the output also covers a change that is already staged.
   execute 'microwave-garage-layout-assign' do
     command lazy { "#{garage} -c #{config} layout assign -z dc1 -c #{new_resource.capacity} #{node_id.call}" }
     user 'garage'
@@ -334,17 +337,24 @@ action :install do
     not_if { Microwave::Disabled.marked?('garage') }
     not_if do
       id = node_id.call
-      !id.empty? && system("#{garage} -c #{config} layout show 2>/dev/null | grep -q #{id}")
+      !id.empty? && system("#{garage} -c #{config} layout show 2>/dev/null | grep -q #{id[0, 16]}")
     end
   end
 
+  # A staged section is the only reason to apply; the node sitting in the
+  # current layout alone is not one. The pending version is the current one plus
+  # one, read in the shell so a capacity change is what actually lands.
   execute 'microwave-garage-layout-apply' do
-    command lazy { "#{garage} -c #{config} layout apply --version 1" }
+    command lazy {
+      "#{garage} -c #{config} layout apply --version " \
+        "$(($(#{garage} -c #{config} layout show 2>/dev/null | " \
+        "sed -n 's/^Current cluster layout version: \\([0-9]*\\)$/\\1/p') + 1))"
+    }
     user 'garage'
     group 'garage'
     sensitive false
     not_if { Microwave::Disabled.marked?('garage') }
-    not_if { system("#{garage} -c #{config} layout show 2>/dev/null | grep -qE '^Current cluster layout version: [1-9]'") }
+    not_if { !system("#{garage} -c #{config} layout show 2>/dev/null | grep -q '==== STAGED ROLE CHANGES ===='") }
   end
 
   execute 'microwave-garage-bucket-create' do
