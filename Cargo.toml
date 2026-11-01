@@ -64,7 +64,7 @@ num-bigint-dig = "0.8"
 tempfile = "3"
 tar = "0.4"
 assert_cmd = "2"
-ureq = "3.5"
+ureq = { version = "3.5", features = ["platform-verifier"] }
 http = "1"
 schemars = "1"
 rmcp = { version = "3.8", features = ["transport-streamable-http-server"] }

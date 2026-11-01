@@ -102,6 +102,13 @@ impl S3ObjectStore {
             .timeout_connect(Some(Duration::from_secs(10)))
             .timeout_global(Some(Duration::from_secs(60)))
             .http_status_as_error(false)
+            // Trust whatever the platform trusts, so a private CA installed
+            // after boot (update-ca-certificates, keychain) verifies the hop.
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
             .build()
             .new_agent();
         Ok(Self { config, agent })
@@ -805,6 +812,108 @@ mod tests {
             "unexpected authorization header: {authorization}"
         );
         assert!(authorization.contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date"));
+    }
+
+    /// Set `SSL_CERT_FILE` for the test body and remove it again, even when the
+    /// test panics and unwinding skips the rest of the body.
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    struct SslCertFileGuard;
+
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    impl SslCertFileGuard {
+        fn set(path: &std::path::Path) -> Self {
+            // SAFETY: the network tests are serialised by NETWORK_TEST_LOCK.
+            unsafe { std::env::set_var("SSL_CERT_FILE", path) };
+            Self
+        }
+    }
+
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    impl Drop for SslCertFileGuard {
+        fn drop(&mut self) {
+            // SAFETY: see `set`.
+            unsafe { std::env::remove_var("SSL_CERT_FILE") };
+        }
+    }
+
+    /// Serve the bucket fallback over TLS with a throwaway CA.
+    ///
+    /// Returns the base URL and the CA certificate in PEM form, so a test can
+    /// install the CA in the platform trust store.
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    async fn tls_bucket_server(status: u16) -> (String, String) {
+        use axum::http::StatusCode;
+        use axum::Router;
+        use rcgen::{
+            BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer,
+            KeyPair,
+        };
+        use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
+        use std::sync::Arc;
+
+        let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params
+            .distinguished_name
+            .push(DnType::CommonName, "microwave test CA");
+        let ca_key = KeyPair::generate().unwrap();
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+
+        let mut leaf_params = CertificateParams::new(vec!["127.0.0.1".to_string()]).unwrap();
+        leaf_params
+            .distinguished_name
+            .push(DnType::CommonName, "127.0.0.1");
+        leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        let leaf_key = KeyPair::generate().unwrap();
+        let leaf_cert = leaf_params
+            .signed_by(&leaf_key, &Issuer::from_params(&ca_params, &ca_key))
+            .unwrap();
+
+        let chain = vec![
+            CertificateDer::from(leaf_cert.der().to_vec()),
+            CertificateDer::from(ca_cert.der().to_vec()),
+        ];
+        let key = PrivatePkcs8KeyDer::from(leaf_key.serialize_der()).into();
+        // Both aws-lc-rs and ring are compiled in, so name the provider
+        // instead of relying on process-wide feature detection.
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .unwrap();
+
+        let app =
+            Router::new().fallback(move || async move { StatusCode::from_u16(status).unwrap() });
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = axum_server::from_tcp_rustls(
+            listener,
+            axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(config)),
+        )
+        .unwrap();
+        tokio::spawn(server.serve(app.into_make_service()));
+
+        (format!("https://{address}"), ca_cert.pem())
+    }
+
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn health_check_trusts_a_private_ca_from_the_platform_store() {
+        let _network = NETWORK_TEST_LOCK.lock().await;
+        let (base_url, ca_pem) = tls_bucket_server(200).await;
+        let dir = tempfile::tempdir().unwrap();
+        let ca_path = dir.path().join("ca.pem");
+        std::fs::write(&ca_path, ca_pem).unwrap();
+
+        // SAFETY: the network tests are serialised by NETWORK_TEST_LOCK and the
+        // plain-HTTP tests ignore SSL_CERT_FILE.
+        let _ssl_cert = SslCertFileGuard::set(&ca_path);
+        let store =
+            S3ObjectStore::new(S3Config::new(base_url, "chef", "garage", "key", "secret")).unwrap();
+        store.health_check().unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
