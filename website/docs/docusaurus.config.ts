@@ -40,6 +40,7 @@ const config: Config = {
           include: [
             'index.md',
             'deployment.md',
+            'cookbook.md',
             'mcp.md',
             'debian-package.md',
             'http-parity.md',
