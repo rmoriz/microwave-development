@@ -15,6 +15,8 @@ Progress.
   migration route from a legacy Chef Infra Server. TLS, SMTP, external
   backends, and the whole runbook are documented in
   [`docs/deployment.md`](./deployment.md).
+- **[Install it with Chef](./cookbook.md)** — the cookbook for Debian 13, from a
+  single embedded node to a server with every backend on its own host.
 - **[Point MCP clients at it](./mcp.md)** — the per-organization MCP endpoint
   over the Streamable HTTP transport. MCP is `experimental`: off by default, and
   writes are on by default but switched off with `writes = false`.

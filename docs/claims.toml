@@ -2128,3 +2128,24 @@ area = "tooling"
 status = "verified"
 surfaces = [ { path = "docs/load-test.md", needle = "A canary failure is reported but never fails the run." } ]
 verify = { kind = "grep", path = "docs/load-test.md", pattern = "A canary failure is reported but never fails the run." }
+
+[[claim]]
+id = "cookbook-guide-minimal"
+summary = "Cookbook guide: the embedded node needs only a bind and the demo organization."
+area = "deployment"
+status = "verified"
+surfaces = [
+  { path = "docs/cookbook.md", needle = "include_recipe 'microwave::default'" },
+]
+verify = { kind = "grep", path = "cookbooks/microwave/README.md", pattern = "Only the bind is worth setting" }
+
+[[claim]]
+id = "cookbook-guide-external"
+summary = "Cookbook guide: the external topology is one node per role on a client network."
+area = "deployment"
+status = "verified"
+surfaces = [
+  { path = "docs/cookbook.md", needle = "include_recipe 'microwave::server'" },
+  { path = "docs/cookbook.md", needle = "client_network" },
+]
+verify = { kind = "grep", path = "cookbooks/microwave/README.md", pattern = "A database node, a search node, a store node and a server node" }

@@ -656,6 +656,9 @@ guide — package, `/etc/microwave/microwave.toml`, systemd unit — for hosts u
 a Chef run list, and adds packaged backends with generated, cookbook-signed TLS
 on top.
 
+The full guide is [Chef cookbook](./cookbook.md); this section keeps the
+summary.
+
 The intended topologies are exercised by Kitchen:
 
 - **All-in-one** (`microwave::default`): server and all backends on one node,

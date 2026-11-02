@@ -84,6 +84,7 @@ const config: Config = {
           position: 'left',
         },
         {type: 'doc', docId: 'mcp', label: 'MCP', position: 'left'},
+        {type: 'doc', docId: 'cookbook', label: 'Cookbook', position: 'left'},
         {
           href: 'https://rmoriz.github.io/microwave-development/',
           label: 'Homepage',
@@ -105,6 +106,7 @@ const config: Config = {
             {label: 'Deployment', to: '/deployment'},
             {label: 'MCP endpoint', to: '/mcp'},
             {label: 'Debian packages', to: '/debian-package'},
+            {label: 'Chef cookbook', to: '/cookbook'},
           ],
         },
         {
