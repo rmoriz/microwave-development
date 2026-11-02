@@ -1461,8 +1461,5 @@ fn string_array(value: &Value, key: &str) -> Vec<String> {
 /// Exposed for tests and for callers that want to validate a key before
 /// starting a crawl. The key is never written into a snapshot.
 pub fn read_private_key(path: &Path) -> Result<String, MigrateError> {
-    std::fs::read_to_string(path).map_err(|source| MigrateError::Read {
-        path: path.to_path_buf(),
-        source,
-    })
+    crate::crawl::read_private_key(path)
 }

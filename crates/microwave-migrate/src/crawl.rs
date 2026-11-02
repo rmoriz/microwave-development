@@ -64,7 +64,7 @@ impl Fetcher {
         if !(normalized.starts_with("http://") || normalized.starts_with("https://")) {
             return Err(MigrateError::InvalidUrl(base_url.to_string()));
         }
-        let private_key = crate::from_api::read_private_key(key_path)?;
+        let private_key = read_private_key(key_path)?;
         // Fail before the first request when the key is unusable.
         microwave_crypto::parse_private_key_pem(&private_key)?;
 
@@ -593,6 +593,17 @@ pub(crate) fn synthetic_i64(scope: &str) -> i64 {
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(&digest[..8]);
     (u64::from_be_bytes(bytes) & 0x7fff_ffff_ffff_ffff) as i64
+}
+
+/// Read a private key from a path and return it as a string.
+///
+/// The key is only used for request signing and is never written into a
+/// snapshot.
+pub(crate) fn read_private_key(path: &Path) -> Result<String, MigrateError> {
+    std::fs::read_to_string(path).map_err(|source| MigrateError::Read {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 /// Percent-encode a single URL path segment. Chef names are already limited to

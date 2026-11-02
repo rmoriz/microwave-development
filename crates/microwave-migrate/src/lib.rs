@@ -41,6 +41,7 @@ use url::Url;
 mod archive;
 mod crawl;
 mod from_api;
+mod goiardi;
 mod knife_backup;
 mod server_secrets;
 
@@ -57,6 +58,9 @@ pub use archive::{
 pub use from_api::{
     crawl_from_api, crawl_from_api_with_summary, from_api_with_options,
     from_api_with_options_with_summary, read_private_key, BlobDownloadSummary, FromApiOptions,
+};
+pub use goiardi::{
+    crawl_from_goiardi, from_goiardi_with_options, Crawler, GoiardiOptions, GoiardiSummary,
 };
 pub use knife_backup::{
     apply_knife_backup_plan_postgres, apply_knife_backup_plan_postgres_with_options,
