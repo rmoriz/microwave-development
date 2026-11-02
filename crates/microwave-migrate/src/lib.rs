@@ -335,7 +335,8 @@ pub fn export_postgres_with_options(
 ///
 /// The import runs in one database transaction and preserves source ids,
 /// authz ids, timestamps, hashes, and keys. Importing the same snapshot twice
-/// is idempotent.
+/// is idempotent, unless the snapshot is a goiardi snapshot: that layout does
+/// not merge and is refused when the target already holds data.
 ///
 /// The function is synchronous and owns a current-thread Tokio runtime. Do not
 /// call it from inside an existing Tokio runtime; use the async

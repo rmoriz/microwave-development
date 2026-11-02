@@ -7,7 +7,9 @@
 //! The legacy API does not expose the source database's internal ids or authz
 //! ids. Those are derived deterministically from the organization and object
 //! names so repeated crawls produce the same snapshot and importing the same
-//! snapshot twice is idempotent.
+//! snapshot twice is idempotent, unless the snapshot is a goiardi snapshot:
+//! that layout does not merge and is refused when the target already holds
+//! data.
 
 use crate::crawl::{
     bool_field, cookbook_files, encode_segment, store_blob, string_field, synthetic_i64,

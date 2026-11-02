@@ -892,7 +892,7 @@ fn confirm_import(yes: bool) -> Result<(), MigrateError> {
     }
     if !std::io::stdin().is_terminal() {
         return Err(MigrateError::Confirmation(
-            "import writes or merges into the target store/data directory and stdin is not a terminal; re-run with --yes after verifying the target"
+            "import writes or merges into the target store/data directory, except a goiardi snapshot, which needs an empty target; stdin is not a terminal; re-run with --yes after verifying the target"
                 .into(),
         ));
     }
