@@ -769,7 +769,9 @@ The source is commonly reachable only from one bastion host. Pass
 SOCKS5 tunnel; run on the bastion when no tunnel exists. A `403` from a host
 that can resolve the URL usually means the vhost refuses the direct connection
 and `--socks5` is missing. A `401` points at `--client-name` or `--key`. Use
-the source superuser; without ACLs a lesser client sees a partial listing.
+the source superuser; without ACLs a lesser client sees a partial listing. The
+user must literally be named `admin`: only that name gets an organization
+membership and can be reset with `microwave-ctl password admin`.
 
 `--bookshelf-dir DIR` copies cookbook file blobs to
 `DIR/organization-<org_id>/checksum-<md5>`, MD5-verified before each atomic
@@ -798,9 +800,10 @@ microwave-ctl password admin
 microwave-ctl reindex
 ```
 
-Importing the same snapshot twice fails like any second import into a used
-target; re-crawl and import into a fresh target to update. goiardi exposes no
-password hashes, so every user is imported with an empty `bcrypt` hash;
+Importing the same snapshot twice fails like every second goiardi import into
+the same target; re-crawl and import into a fresh target to update. goiardi
+exposes no password hashes, so every user is imported with an empty `bcrypt`
+hash;
 `microwave-ctl password admin` prints a new password once and must be repeated
 per user (or use reset mail). Only `admin` is associated with the organization;
 add other users with `microwave-ctl org-user-add acme <user>`. The search index

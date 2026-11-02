@@ -1793,7 +1793,9 @@ microwave-migrate from-goiardi \
 A `403` from a host that can resolve the URL usually means the vhost is
 refusing the direct connection; retry through `--socks5` or from the bastion. A
 `401` points at `--client-name` or `--key`. Use the source's superuser: goiardi
-has no ACL API, so a lesser client sees a partial listing.
+has no ACL API, so a lesser client sees a partial listing. The source user must
+literally be named `admin`; only that name receives the organization membership,
+so only it can be reset with `microwave-ctl password admin` after the import.
 
 Every run maps the whole source into the one `--org` organization (lowercase
 letters, digits, and dashes) and rebuilds Microwave's default organization
@@ -1828,9 +1830,9 @@ than deleting rows from a used one. Importing the same snapshot twice fails for
 the same reason — re-crawl to pick up source changes and import into a fresh
 target again.
 
-goiardi never exposes password hashes, so every imported user starts without
-one and `hash_type` `bcrypt`. `microwave-ctl password admin` prints a new
-password once; repeat it for each migrated user, or enable reset mail
+goiardi never exposes password hashes, so every imported user starts without a
+password hash, with `hash_type` `bcrypt`. `microwave-ctl password admin` prints
+a new password once; repeat it for each migrated user, or enable reset mail
 (`mail.enabled` plus `server.public_url`, see [Mail](#mail-smtp)). Only `admin`
 is associated with the organization; add other users with `microwave-ctl
 org-user-add acme <user>` and grant what they need.

@@ -319,7 +319,7 @@ verify = { kind = "grep", path = "docs/deployment.md", pattern = "Backfilling af
 
 [[claim]]
 id = "readme-migrate-lossy"
-summary = "README: neither migration path is lossless."
+summary = "Three migration paths exist; the two Chef paths are lossy and the goiardi path cannot carry hashes."
 area = "migration"
 status = "verified"
 surfaces = [
@@ -884,10 +884,10 @@ summary = "The goiardi importer cannot carry password hashes; the imported admin
 area = "migration"
 status = "gap"
 surfaces = [
-  { path = "docs/deployment.md", needle = "from-goiardi" },
-  { path = "crates/microwave-migrate/README.md", needle = "from-goiardi" },
+  { path = "docs/deployment.md", needle = "password hash, with `hash_type` `bcrypt`" },
+  { path = "crates/microwave-migrate/README.md", needle = "imported with an empty `bcrypt`" },
 ]
-verify = { kind = "grep", path = "docs/deployment.md", pattern = "from-goiardi" }
+verify = { kind = "grep", path = "crates/microwave-migrate/src/goiardi.rs", pattern = "password_hash: String::new\\(\\)" }
 
 [[claim]]
 id = "gap-ldap-fips"

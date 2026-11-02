@@ -279,6 +279,10 @@ pub fn import_database(database: &Path, input: &Path) -> Result<(), MigrateError
 
 /// Import a JSON snapshot into a specific SQLite database, writing
 /// serialized objects with the configured compression mode.
+///
+/// Global groups whose name already exists in the target are reused, with the
+/// snapshot's authz references rewritten to the existing ids. This keeps the
+/// bootstrap `server-admins` row from colliding on its unique name.
 pub fn import_database_with_compression(
     database: &Path,
     input: &Path,
@@ -353,6 +357,10 @@ pub fn export_postgres_with_options(
 /// authz ids, timestamps, hashes, and keys. Importing the same snapshot twice
 /// is idempotent, unless the snapshot is a goiardi snapshot: that layout does
 /// not merge and is refused when the target already holds data.
+///
+/// Global groups whose name already exists in the target are reused first, with
+/// the snapshot's authz references rewritten to the existing ids, so the
+/// bootstrap `server-admins` row does not collide on its unique name.
 ///
 /// The function is synchronous and owns a current-thread Tokio runtime. Do not
 /// call it from inside an existing Tokio runtime; use the async
