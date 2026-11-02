@@ -9,15 +9,16 @@
 //! names so repeated crawls produce the same snapshot and importing the same
 //! snapshot twice is idempotent.
 
+use crate::crawl::{
+    bool_field, cookbook_files, encode_segment, store_blob, string_field, synthetic_i64,
+    synthetic_id, url_field, BlobSummary, CollectionEntry, Fetcher,
+};
 use crate::{
     write_snapshot, MigrateError, Snapshot, SnapshotSource, SnapshotSourceKind, SNAPSHOT_FORMAT,
     SNAPSHOT_VERSION,
 };
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use chrono::{SecondsFormat, Utc};
-use microwave_crypto::{sign_request, CanonicalRequest, SignVersion};
-use microwave_objectstore::{md5_hex, LocalObjectStore, ObjectStore};
+use microwave_objectstore::{LocalObjectStore, ObjectStore};
 use microwave_store::{
     parse_version, ActorKeyRow, AuthzAclActorRow, AuthzAclGroupRow, AuthzEntityRow,
     AuthzGroupActorRow, AuthzGroupGroupRow, ChecksumRow, ClientRow, CookbookRow,
@@ -25,15 +26,9 @@ use microwave_store::{
     NodeRow, OrgRow, OrgUserAssociationRow, PolicyGroupRevisionAssociationRow, PolicyGroupRow,
     PolicyRevisionRow, PolicyRow, StoreSnapshot, UserRow,
 };
-use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-
-/// Largest single cookbook blob the live crawler will download.
-const MAX_BLOB_BYTES: u64 = 64 * 1024 * 1024;
-/// Largest total volume of cookbook blobs downloaded in one crawl.
-const MAX_TOTAL_BLOB_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 /// Options for [`from_api_with_options`].
 #[derive(Debug, Clone)]
@@ -121,7 +116,10 @@ pub fn crawl_from_api_with_summary(
         .bookshelf_dir
         .as_ref()
         .map(|path| path.display().to_string());
-    let summary = crawler.blob_summary;
+    let summary = BlobDownloadSummary {
+        downloaded: crawler.blob_summary.downloaded,
+        skipped: crawler.blob_summary.skipped,
+    };
     Ok((
         Snapshot {
             format: SNAPSHOT_FORMAT.to_string(),
@@ -139,15 +137,9 @@ pub fn crawl_from_api_with_summary(
     ))
 }
 
-#[derive(Debug, Clone)]
-struct CollectionEntry {
-    name: String,
-    value: Value,
-    url: Option<String>,
-}
-
 /// One key returned by an actor's keys endpoint. Older API versions embed the
 /// public key in the list response instead of linking to a separate key object.
+#[derive(Debug, Clone)]
 struct KeyDescriptor {
     name: String,
     url: Option<String>,
@@ -155,11 +147,8 @@ struct KeyDescriptor {
 }
 
 struct Crawler {
-    agent: ureq::Agent,
+    fetcher: Fetcher,
     base_url: String,
-    client_name: String,
-    private_key: String,
-    api_version: String,
     generated_at: String,
     data: StoreSnapshot,
     user_authz: HashMap<String, String>,
@@ -174,7 +163,7 @@ struct Crawler {
     bookshelf_dir: Option<PathBuf>,
     bookshelf: Option<LocalObjectStore>,
     pending_blobs: HashMap<(String, String), String>,
-    blob_summary: BlobDownloadSummary,
+    blob_summary: BlobSummary,
     downloaded_blob_bytes: u64,
 }
 
@@ -187,20 +176,14 @@ struct AclRequest {
 
 impl Crawler {
     fn new(options: &FromApiOptions) -> Result<Self, MigrateError> {
-        let base_url = options.url.trim().trim_end_matches('/').to_string();
-        if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
-            return Err(MigrateError::InvalidUrl(options.url.clone()));
-        }
-        let private_key = read_private_key(&options.key_path)?;
-        // Fail before the first request when the key is unusable.
-        microwave_crypto::parse_private_key_pem(&private_key)?;
-
-        let agent = ureq::Agent::config_builder()
-            .timeout_connect(Some(std::time::Duration::from_secs(15)))
-            .timeout_global(Some(std::time::Duration::from_secs(120)))
-            .http_status_as_error(false)
-            .build()
-            .new_agent();
+        let fetcher = Fetcher::new(
+            &options.url,
+            &options.client_name,
+            &options.key_path,
+            options.api_version,
+            None,
+        )?;
+        let base_url = fetcher.resolve("/").trim_end_matches('/').to_string();
 
         let bookshelf_dir = options.bookshelf_dir.clone();
         let bookshelf = bookshelf_dir
@@ -208,11 +191,8 @@ impl Crawler {
             .map(|dir| LocalObjectStore::new(dir.clone(), "", "http://localhost"));
 
         Ok(Self {
-            agent,
+            fetcher,
             base_url,
-            client_name: options.client_name.clone(),
-            private_key,
-            api_version: options.api_version.to_string(),
             generated_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
             data: StoreSnapshot::default(),
             user_authz: HashMap::new(),
@@ -227,7 +207,7 @@ impl Crawler {
             bookshelf_dir,
             bookshelf,
             pending_blobs: HashMap::new(),
-            blob_summary: BlobDownloadSummary::default(),
+            blob_summary: BlobSummary::default(),
             downloaded_blob_bytes: 0,
         })
     }
@@ -256,12 +236,12 @@ impl Crawler {
     // ------------------------------------------------------------------
 
     fn list_orgs(&mut self) -> Result<Vec<OrgRow>, MigrateError> {
-        let entries = self.get_collection("/organizations")?;
+        let entries = self.fetcher.get_collection("/organizations")?;
         let mut orgs = Vec::new();
         for entry in entries {
             let name = entry.name.clone();
             let detail = match &entry.url {
-                Some(url) => self.get_optional_json(&self.resolve_url(url))?,
+                Some(url) => self.fetcher.get_optional_json(&self.fetcher.resolve(url))?,
                 None => Some(entry.value.clone()),
             };
             let value = detail.unwrap_or(Value::Null);
@@ -271,8 +251,10 @@ impl Crawler {
     }
 
     fn fetch_org(&mut self, name: &str) -> Result<OrgRow, MigrateError> {
-        let url = self.resolve_url(&format!("/organizations/{}", encode_segment(name)));
-        match self.get_optional_raw(&url)? {
+        let url = self
+            .fetcher
+            .resolve(&format!("/organizations/{}", encode_segment(name)));
+        match self.fetcher.get_optional_raw(&url)? {
             Some((value, _)) => Ok(self.org_row(name, &value)),
             None => Err(MigrateError::Api {
                 url,
@@ -301,11 +283,11 @@ impl Crawler {
     }
 
     fn crawl_users(&mut self) -> Result<(), MigrateError> {
-        let entries = self.get_collection("/users")?;
+        let entries = self.fetcher.get_collection("/users")?;
         for entry in entries {
             let name = entry.name.clone();
             let value = match &entry.url {
-                Some(url) => self.get_optional_json(&self.resolve_url(url))?,
+                Some(url) => self.fetcher.get_optional_json(&self.fetcher.resolve(url))?,
                 None => Some(entry.value.clone()),
             };
             let Some(value) = value else { continue };
@@ -390,7 +372,7 @@ impl Crawler {
     }
 
     fn crawl_org_users(&mut self, org: &OrgRow) -> Result<(), MigrateError> {
-        let entries = self.get_collection(&format!(
+        let entries = self.fetcher.get_collection(&format!(
             "/organizations/{}/users",
             encode_segment(&org.name)
         ))?;
@@ -415,14 +397,14 @@ impl Crawler {
     // ------------------------------------------------------------------
 
     fn crawl_clients(&mut self, org: &OrgRow) -> Result<(), MigrateError> {
-        let entries = self.get_collection(&format!(
+        let entries = self.fetcher.get_collection(&format!(
             "/organizations/{}/clients",
             encode_segment(&org.name)
         ))?;
         for entry in entries {
             let list_name = entry.name.clone();
             let value = match &entry.url {
-                Some(url) => self.get_optional_json(&self.resolve_url(url))?,
+                Some(url) => self.fetcher.get_optional_json(&self.fetcher.resolve(url))?,
                 None => Some(entry.value.clone()),
             };
             let Some(value) = value else { continue };
@@ -481,8 +463,8 @@ impl Crawler {
         actor_id: &str,
         actor_type: &str,
     ) -> Result<bool, MigrateError> {
-        let url = self.resolve_url(path);
-        let Some((value, _)) = self.get_optional_raw(&url)? else {
+        let url = self.fetcher.resolve(path);
+        let Some((value, _)) = self.fetcher.get_optional_raw(&url)? else {
             return Ok(false);
         };
 
@@ -496,7 +478,10 @@ impl Crawler {
             } = descriptor;
             let key_value = match (key_url, inline) {
                 (Some(key_url), inline) => {
-                    match self.get_optional_json(&self.resolve_url(&key_url))? {
+                    match self
+                        .fetcher
+                        .get_optional_json(&self.fetcher.resolve(&key_url))?
+                    {
                         Some(value) => value,
                         None => match inline {
                             Some(value) => value,
@@ -558,7 +543,7 @@ impl Crawler {
     // ------------------------------------------------------------------
 
     fn crawl_groups(&mut self, org: &OrgRow) -> Result<(), MigrateError> {
-        let entries = self.get_collection(&format!(
+        let entries = self.fetcher.get_collection(&format!(
             "/organizations/{}/groups",
             encode_segment(&org.name)
         ))?;
@@ -568,7 +553,7 @@ impl Crawler {
         for entry in entries {
             let list_name = entry.name.clone();
             let value = match &entry.url {
-                Some(url) => self.get_optional_json(&self.resolve_url(url))?,
+                Some(url) => self.fetcher.get_optional_json(&self.fetcher.resolve(url))?,
                 None => Some(entry.value.clone()),
             };
             let Some(value) = value else { continue };
@@ -640,7 +625,7 @@ impl Crawler {
     // ------------------------------------------------------------------
 
     fn crawl_nodes(&mut self, org: &OrgRow) -> Result<(), MigrateError> {
-        let entries = self.get_collection(&format!(
+        let entries = self.fetcher.get_collection(&format!(
             "/organizations/{}/nodes",
             encode_segment(&org.name)
         ))?;
@@ -696,7 +681,7 @@ impl Crawler {
             ("role", "roles", "roles"),
             ("environment", "environments", "environments"),
         ] {
-            let entries = self.get_collection(&format!(
+            let entries = self.fetcher.get_collection(&format!(
                 "/organizations/{}/{}",
                 encode_segment(&org.name),
                 collection
@@ -753,7 +738,7 @@ impl Crawler {
     }
 
     fn crawl_data_bags(&mut self, org: &OrgRow) -> Result<(), MigrateError> {
-        let entries = self.get_collection(&format!(
+        let entries = self.fetcher.get_collection(&format!(
             "/organizations/{}/data",
             encode_segment(&org.name)
         ))?;
@@ -804,7 +789,7 @@ impl Crawler {
                     encode_segment(&name)
                 )
             });
-            let items = self.get_collection(&items_path)?;
+            let items = self.fetcher.get_collection(&items_path)?;
             for item in items {
                 let item_list_name = item.name.clone();
                 let Some((item_value, item_raw)) = self.entry_raw(
@@ -840,14 +825,14 @@ impl Crawler {
     // ------------------------------------------------------------------
 
     fn crawl_cookbooks(&mut self, org: &OrgRow) -> Result<(), MigrateError> {
-        let entries = self.get_collection(&format!(
+        let entries = self.fetcher.get_collection(&format!(
             "/organizations/{}/cookbooks",
             encode_segment(&org.name)
         ))?;
         for entry in entries {
             let list_name = entry.name.clone();
             let value = match &entry.url {
-                Some(url) => self.get_optional_json(&self.resolve_url(url))?,
+                Some(url) => self.fetcher.get_optional_json(&self.fetcher.resolve(url))?,
                 None => Some(entry.value.clone()),
             };
             let Some(value) = value else { continue };
@@ -885,8 +870,9 @@ impl Crawler {
                         encode_segment(&version)
                     )
                 });
-                let version_url = self.resolve_url(&version_path);
-                let Some((version_value, raw)) = self.get_optional_raw(&version_url)? else {
+                let version_url = self.fetcher.resolve(&version_path);
+                let Some((version_value, raw)) = self.fetcher.get_optional_raw(&version_url)?
+                else {
                     continue;
                 };
                 self.push_cookbook_version(org, &name, cookbook_id, &version, &version_value, raw);
@@ -1006,63 +992,17 @@ impl Crawler {
                 continue;
             }
 
-            let bytes = self.fetch_blob(&reference)?;
-            let actual = md5_hex(&bytes);
-            if !actual.eq_ignore_ascii_case(&checksum) {
-                return Err(MigrateError::InvalidApiResponse {
-                    url: redacted_url(&reference),
-                    message: format!(
-                        "cookbook blob checksum mismatch for organization {org_id}: expected {checksum}, got {actual}"
-                    ),
-                });
-            }
-
-            let total = self.downloaded_blob_bytes + bytes.len() as u64;
-            if total > MAX_TOTAL_BLOB_BYTES {
-                return Err(MigrateError::Config(format!(
-                    "cookbook blob download would exceed the {} GiB total limit; reduce the --org scope or copy the bookshelf separately",
-                    MAX_TOTAL_BLOB_BYTES / (1024 * 1024 * 1024)
-                )));
-            }
-
-            // LocalObjectStore::put verifies the MD5 again and writes through a
-            // temporary `.part` file before renaming, so no partial final blob
-            // is ever visible.
-            store.put(&org_id, &checksum, &bytes)?;
-            self.downloaded_blob_bytes = total;
-            self.blob_summary.downloaded += 1;
+            store_blob(
+                &store,
+                &org_id,
+                &checksum,
+                &reference,
+                &self.fetcher,
+                &mut self.blob_summary,
+                &mut self.downloaded_blob_bytes,
+            )?;
         }
         Ok(())
-    }
-
-    fn fetch_blob(&self, reference: &str) -> Result<Vec<u8>, MigrateError> {
-        let absolute = is_absolute_url(reference);
-        let resolved = if absolute {
-            reference.to_string()
-        } else {
-            self.resolve_url(reference)
-        };
-        let redacted = redacted_url(&resolved);
-        let (status, bytes) = if absolute {
-            self.unsigned_get_bytes(&resolved, &redacted)?
-        } else {
-            self.signed_get_bytes(&resolved, &redacted)?
-        };
-
-        if !(200..300).contains(&status) {
-            return Err(MigrateError::Api {
-                url: redacted,
-                status,
-                message: format!("cookbook blob download failed with HTTP {status}"),
-            });
-        }
-        if bytes.is_empty() {
-            return Err(MigrateError::InvalidApiResponse {
-                url: redacted,
-                message: "cookbook blob response was empty".to_string(),
-            });
-        }
-        Ok(bytes)
     }
 
     // ------------------------------------------------------------------
@@ -1071,14 +1011,14 @@ impl Crawler {
 
     fn crawl_policies(&mut self, org: &OrgRow) -> Result<(), MigrateError> {
         let mut revision_ids: HashMap<(String, String), String> = HashMap::new();
-        let entries = self.get_collection(&format!(
+        let entries = self.fetcher.get_collection(&format!(
             "/organizations/{}/policies",
             encode_segment(&org.name)
         ))?;
         for entry in entries {
             let list_name = entry.name.clone();
             let value = match &entry.url {
-                Some(url) => self.get_optional_json(&self.resolve_url(url))?,
+                Some(url) => self.fetcher.get_optional_json(&self.fetcher.resolve(url))?,
                 None => Some(entry.value.clone()),
             };
             let Some(value) = value else { continue };
@@ -1104,8 +1044,9 @@ impl Crawler {
                     encode_segment(&name),
                     encode_segment(&revision_id)
                 );
-                let Some((_revision_value, raw)) =
-                    self.get_optional_raw(&self.resolve_url(&path))?
+                let Some((_revision_value, raw)) = self
+                    .fetcher
+                    .get_optional_raw(&self.fetcher.resolve(&path))?
                 else {
                     continue;
                 };
@@ -1147,14 +1088,14 @@ impl Crawler {
         org: &OrgRow,
         revision_ids: &HashMap<(String, String), String>,
     ) -> Result<(), MigrateError> {
-        let entries = self.get_collection(&format!(
+        let entries = self.fetcher.get_collection(&format!(
             "/organizations/{}/policy_groups",
             encode_segment(&org.name)
         ))?;
         for entry in entries {
             let list_name = entry.name.clone();
             let value = match &entry.url {
-                Some(url) => self.get_optional_json(&self.resolve_url(url))?,
+                Some(url) => self.fetcher.get_optional_json(&self.fetcher.resolve(url))?,
                 None => Some(entry.value.clone()),
             };
             let Some(value) = value else { continue };
@@ -1237,14 +1178,14 @@ impl Crawler {
         let pending = std::mem::take(&mut self.pending_acls);
         for request in pending {
             if let Some(primary) = &request.primary {
-                let url = self.resolve_url(primary);
-                if let Some(value) = self.get_optional_json(&url)? {
+                let url = self.fetcher.resolve(primary);
+                if let Some(value) = self.fetcher.get_optional_json(&url)? {
                     self.apply_acl(&value, &request.target_authz, request.org_name.as_deref())?;
                     continue;
                 }
             }
-            let url = self.resolve_url(&request.fallback);
-            if let Some(value) = self.get_optional_json(&url)? {
+            let url = self.fetcher.resolve(&request.fallback);
+            if let Some(value) = self.fetcher.get_optional_json(&url)? {
                 self.apply_acl(&value, &request.target_authz, request.org_name.as_deref())?;
             }
         }
@@ -1350,287 +1291,15 @@ impl Crawler {
         fallback_path: &str,
     ) -> Result<Option<(Value, String)>, MigrateError> {
         if let Some(url) = &entry.url {
-            return self.get_optional_raw(&self.resolve_url(url));
+            return self.fetcher.get_optional_raw(&self.fetcher.resolve(url));
         }
         if !entry.value.is_null() {
             let raw = serde_json::to_string(&entry.value)?;
             return Ok(Some((entry.value.clone(), raw)));
         }
-        self.get_optional_raw(&self.resolve_url(fallback_path))
+        self.fetcher
+            .get_optional_raw(&self.fetcher.resolve(fallback_path))
     }
-
-    fn get_collection(&self, path: &str) -> Result<Vec<CollectionEntry>, MigrateError> {
-        let mut entries = Vec::new();
-        let mut next = Some(self.resolve_url(path));
-        let mut visited = HashSet::new();
-        let mut pages = 0usize;
-
-        while let Some(url) = next.take() {
-            if !visited.insert(url.clone()) {
-                break;
-            }
-            pages += 1;
-            if pages > 1000 {
-                return Err(MigrateError::InvalidApiResponse {
-                    url,
-                    message: "pagination exceeded 1000 pages".to_string(),
-                });
-            }
-            let Some((value, _)) = self.get_optional_raw(&url)? else {
-                break;
-            };
-            let (mut page, next_url) = parse_collection(value);
-            entries.append(&mut page);
-            next = next_url.map(|reference| self.resolve_url(&reference));
-        }
-        Ok(entries)
-    }
-
-    fn get_optional_json(&self, url: &str) -> Result<Option<Value>, MigrateError> {
-        Ok(self.get_optional_raw(url)?.map(|(value, _)| value))
-    }
-
-    fn get_optional_raw(&self, url: &str) -> Result<Option<(Value, String)>, MigrateError> {
-        let (status, body) = self.signed_get(url)?;
-        if status == 404 {
-            return Ok(None);
-        }
-        if !(200..300).contains(&status) {
-            return Err(MigrateError::Api {
-                url: redacted_url(url),
-                status,
-                message: api_message(status, &body),
-            });
-        }
-        let value =
-            serde_json::from_str(&body).map_err(|error| MigrateError::InvalidApiResponse {
-                url: redacted_url(url),
-                message: error.to_string(),
-            })?;
-        Ok(Some((value, body)))
-    }
-
-    fn signed_request(
-        &self,
-        url: &str,
-    ) -> Result<ureq::RequestBuilder<ureq::typestate::WithoutBody>, MigrateError> {
-        let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
-        let path = path_for_signing(url);
-        let request = CanonicalRequest {
-            method: "GET",
-            path,
-            body: b"",
-            user_id: &self.client_name,
-            timestamp: &timestamp,
-            api_version: Some(&self.api_version),
-            version: SignVersion::V1_3,
-        };
-        let signed = sign_request(&self.private_key, &request)?;
-
-        let mut request = self
-            .agent
-            .get(url)
-            .header("Accept", "application/json")
-            .header("X-Ops-Sign", "algorithm=sha256;version=1.3;")
-            .header("X-Ops-Userid", &self.client_name)
-            .header("X-Ops-Timestamp", &signed.timestamp)
-            .header("X-Ops-Content-Hash", &signed.content_hash)
-            .header("X-Ops-Server-API-Version", &self.api_version);
-
-        let encoded = STANDARD.encode(&signed.signature);
-        for (index, chunk) in encoded.as_bytes().chunks(60).enumerate() {
-            let chunk =
-                std::str::from_utf8(chunk).map_err(|error| MigrateError::InvalidApiResponse {
-                    url: redacted_url(url),
-                    message: error.to_string(),
-                })?;
-            request = request.header(format!("X-Ops-Authorization-{}", index + 1).as_str(), chunk);
-        }
-        Ok(request)
-    }
-
-    fn signed_get(&self, url: &str) -> Result<(u16, String), MigrateError> {
-        match self.signed_request(url)?.call() {
-            Ok(mut response) => {
-                let status = response.status().as_u16();
-                let body = response.body_mut().read_to_string().map_err(|error| {
-                    MigrateError::InvalidApiResponse {
-                        url: redacted_url(url),
-                        message: error.to_string(),
-                    }
-                })?;
-                Ok((status, body))
-            }
-            Err(error) => Err(MigrateError::Transport {
-                url: redacted_url(url),
-                message: error.to_string(),
-            }),
-        }
-    }
-
-    fn signed_get_bytes(&self, url: &str, redacted: &str) -> Result<(u16, Vec<u8>), MigrateError> {
-        match self.signed_request(url)?.call() {
-            Ok(response) => read_blob_response(response, redacted),
-            Err(error) => Err(MigrateError::Transport {
-                url: redacted.to_string(),
-                message: error.to_string().replace(url, redacted),
-            }),
-        }
-    }
-
-    fn unsigned_get_bytes(
-        &self,
-        url: &str,
-        redacted: &str,
-    ) -> Result<(u16, Vec<u8>), MigrateError> {
-        match self
-            .agent
-            .get(url)
-            .header("Accept", "application/octet-stream")
-            .call()
-        {
-            Ok(response) => read_blob_response(response, redacted),
-            Err(error) => Err(MigrateError::Transport {
-                url: redacted.to_string(),
-                message: error.to_string().replace(url, redacted),
-            }),
-        }
-    }
-
-    fn resolve_url(&self, reference: &str) -> String {
-        if reference.starts_with("http://") || reference.starts_with("https://") {
-            reference.to_string()
-        } else if reference.starts_with('/') {
-            format!("{}{}", self.base_url, reference)
-        } else {
-            format!("{}/{}", self.base_url, reference)
-        }
-    }
-}
-
-fn parse_collection(value: Value) -> (Vec<CollectionEntry>, Option<String>) {
-    match value {
-        Value::Array(items) => (items.into_iter().filter_map(array_entry).collect(), None),
-        Value::Object(map) => {
-            if let Some(next) = pagination_link(&map) {
-                let items = map
-                    .get("results")
-                    .or_else(|| map.get("items"))
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                return (
-                    items.into_iter().filter_map(array_entry).collect(),
-                    Some(next),
-                );
-            }
-            if let Some(items) = map.get("results").and_then(Value::as_array) {
-                return (
-                    items.clone().into_iter().filter_map(array_entry).collect(),
-                    None,
-                );
-            }
-            if let Some(items) = map.get("items").and_then(Value::as_array) {
-                return (
-                    items.clone().into_iter().filter_map(array_entry).collect(),
-                    None,
-                );
-            }
-
-            // A single resource object rather than a name -> URL map.
-            if map.contains_key("name")
-                || map.contains_key("username")
-                || map.contains_key("clientname")
-            {
-                if let Some(entry) = map_entry_for_object(&map) {
-                    return (vec![entry], None);
-                }
-            }
-
-            let entries = map
-                .iter()
-                .filter_map(|(name, value)| match value {
-                    Value::String(url) => Some(CollectionEntry {
-                        name: name.clone(),
-                        value: Value::Null,
-                        url: Some(url.clone()),
-                    }),
-                    Value::Null => Some(CollectionEntry {
-                        name: name.clone(),
-                        value: Value::Null,
-                        url: None,
-                    }),
-                    Value::Object(object) => Some(CollectionEntry {
-                        name: name.clone(),
-                        value: Value::Object(object.clone()),
-                        url: url_field(&Value::Object(object.clone())),
-                    }),
-                    Value::Array(array) => Some(CollectionEntry {
-                        name: name.clone(),
-                        value: Value::Array(array.clone()),
-                        url: None,
-                    }),
-                    _ => None,
-                })
-                .collect();
-            (entries, None)
-        }
-        _ => (Vec::new(), None),
-    }
-}
-
-fn pagination_link(map: &Map<String, Value>) -> Option<String> {
-    for key in ["next", "next_page", "next_url"] {
-        if let Some(Value::String(next)) = map.get(key) {
-            if !next.is_empty() {
-                return Some(next.clone());
-            }
-        }
-    }
-    None
-}
-
-fn array_entry(value: Value) -> Option<CollectionEntry> {
-    match value {
-        Value::String(url) => {
-            let name = url
-                .trim_end_matches('/')
-                .rsplit('/')
-                .next()
-                .unwrap_or_default()
-                .to_string();
-            Some(CollectionEntry {
-                name,
-                value: Value::Null,
-                url: Some(url),
-            })
-        }
-        Value::Object(object) => map_entry_for_object(&object),
-        _ => None,
-    }
-}
-
-fn map_entry_for_object(object: &Map<String, Value>) -> Option<CollectionEntry> {
-    let value = Value::Object(object.clone());
-    let name = string_field(&value, "name")
-        .or_else(|| string_field(&value, "username"))
-        .or_else(|| string_field(&value, "clientname"))
-        .or_else(|| string_field(&value, "groupname"))
-        .or_else(|| string_field(&value, "id"))
-        .or_else(|| {
-            url_field(&value).map(|url| {
-                url.trim_end_matches('/')
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or_default()
-                    .to_string()
-            })
-        })?;
-    Some(CollectionEntry {
-        name,
-        url: url_field(&value),
-        value,
-    })
 }
 
 fn key_descriptors(value: &Value) -> Vec<KeyDescriptor> {
@@ -1736,43 +1405,6 @@ fn cookbook_versions(value: &Value) -> Vec<(String, Option<String>)> {
     output
 }
 
-/// Return each unique cookbook file checksum and the first URL advertised for
-/// it. The legacy API usually provides a presigned bookshelf/S3 URL, but some
-/// server versions return a relative path or omit the URL entirely.
-fn cookbook_files(value: &Value) -> Vec<(String, Option<String>)> {
-    const FILE_KEYS: &[&str] = &[
-        "recipes",
-        "definitions",
-        "libraries",
-        "attributes",
-        "files",
-        "templates",
-        "resources",
-        "providers",
-        "root_files",
-    ];
-    let mut files: BTreeMap<String, Option<String>> = BTreeMap::new();
-    for key in FILE_KEYS {
-        if let Some(entries) = value.get(key).and_then(Value::as_array) {
-            for file in entries {
-                let Some(checksum) = string_field(file, "checksum") else {
-                    continue;
-                };
-                let url = url_field(file);
-                files
-                    .entry(checksum)
-                    .and_modify(|existing| {
-                        if existing.is_none() {
-                            *existing = url.clone();
-                        }
-                    })
-                    .or_insert(url);
-            }
-        }
-    }
-    files.into_iter().collect()
-}
-
 fn policy_revisions(value: &Value) -> Vec<String> {
     let Some(revisions) = value.get("revisions") else {
         return Vec::new();
@@ -1803,110 +1435,8 @@ fn policy_group_policies(value: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
-fn path_for_signing(url: &str) -> &str {
-    let after_scheme = url
-        .find("://")
-        .map(|index| &url[index + 3..])
-        .unwrap_or(url);
-    match after_scheme.find('/') {
-        Some(index) => {
-            let path = &after_scheme[index..];
-            path.split(['?', '#']).next().unwrap_or(path)
-        }
-        None => "/",
-    }
-}
-
-fn is_absolute_url(reference: &str) -> bool {
-    reference.starts_with("http://") || reference.starts_with("https://")
-}
-
-/// Remove the query string and fragment from a URL before printing it.
-///
-/// Bookshelf/S3 URLs carry their credentials in query parameters, so an error
-/// must never echo the raw URL.
-fn redacted_url(url: &str) -> String {
-    let base = url.split(['?', '#']).next().unwrap_or(url);
-    if base.len() == url.len() {
-        base.to_string()
-    } else {
-        format!("{base}?<redacted>")
-    }
-}
-
-/// Read a bounded cookbook blob response. Non-2xx responses are returned with
-/// an empty body so the caller can report the status without echoing a
-/// server-supplied payload that may contain a signed URL.
-fn read_blob_response(
-    mut response: ureq::http::Response<ureq::Body>,
-    redacted: &str,
-) -> Result<(u16, Vec<u8>), MigrateError> {
-    let status = response.status().as_u16();
-    if !(200..300).contains(&status) {
-        return Ok((status, Vec::new()));
-    }
-
-    let declared = response
-        .headers()
-        .get("content-length")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse::<u64>().ok());
-    if declared.is_some_and(|length| length > MAX_BLOB_BYTES) {
-        return Err(MigrateError::InvalidApiResponse {
-            url: redacted.to_string(),
-            message: format!(
-                "cookbook blob is larger than the {} MiB per-file limit",
-                MAX_BLOB_BYTES / (1024 * 1024)
-            ),
-        });
-    }
-
-    let body = response
-        .body_mut()
-        .with_config()
-        .limit(MAX_BLOB_BYTES)
-        .read_to_vec()
-        .map_err(|error| MigrateError::InvalidApiResponse {
-            url: redacted.to_string(),
-            message: format!(
-                "could not read cookbook blob (limit {} MiB): {error}",
-                MAX_BLOB_BYTES / (1024 * 1024)
-            ),
-        })?;
-    Ok((status, body))
-}
-
-fn api_message(status: u16, body: &str) -> String {
-    let body = body.trim();
-    if body.is_empty() {
-        return match status {
-            401 => "authentication failed (check --client-name and --key)".to_string(),
-            403 => "authorization failed (the client may not be a superuser)".to_string(),
-            _ => format!("unexpected HTTP status {status}"),
-        };
-    }
-    let mut message = body.replace(['\n', '\r'], " ");
-    if message.len() > 500 {
-        message.truncate(500);
-        message.push_str("...");
-    }
-    message
-}
-
-fn string_field(value: &Value, key: &str) -> Option<String> {
-    value.get(key).and_then(Value::as_str).map(str::to_string)
-}
-
 fn non_empty_string(value: &Value, key: &str) -> Option<String> {
     string_field(value, key).filter(|text| !text.is_empty())
-}
-
-fn bool_field(value: &Value, key: &str) -> Option<bool> {
-    value.get(key).and_then(Value::as_bool)
-}
-
-fn url_field(value: &Value) -> Option<String> {
-    string_field(value, "url").or_else(|| string_field(value, "uri"))
 }
 
 fn string_array(value: &Value, key: &str) -> Vec<String> {
@@ -1921,33 +1451,6 @@ fn string_array(value: &Value, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-fn synthetic_id(scope: &str) -> String {
-    let digest = Sha256::digest(format!("microwave-migrate/from-api/v1/{scope}").as_bytes());
-    hex::encode(&digest[..16])
-}
-
-fn synthetic_i64(scope: &str) -> i64 {
-    let digest = Sha256::digest(format!("microwave-migrate/from-api/v1/{scope}").as_bytes());
-    let mut bytes = [0u8; 8];
-    bytes.copy_from_slice(&digest[..8]);
-    (u64::from_be_bytes(bytes) & 0x7fff_ffff_ffff_ffff) as i64
-}
-
-/// Percent-encode a single URL path segment. Chef names are already limited to
-/// a small character set, but this keeps unusual names from breaking requests.
-fn encode_segment(segment: &str) -> String {
-    let mut encoded = String::with_capacity(segment.len());
-    for byte in segment.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b':' | b'@' => {
-                encoded.push(byte as char)
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
 }
 
 /// Read a private key from a path and return it as a string.

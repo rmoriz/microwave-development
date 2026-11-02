@@ -39,6 +39,7 @@ use thiserror::Error;
 use url::Url;
 
 mod archive;
+mod crawl;
 mod from_api;
 mod knife_backup;
 mod server_secrets;
