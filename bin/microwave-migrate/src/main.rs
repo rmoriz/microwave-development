@@ -403,16 +403,16 @@ fn main() -> ExitCode {
             options.socks5 = socks5;
             options.skip_orphan_clients = skip_orphan_clients;
             options.dry_run = dry_run;
-            from_goiardi_with_options(&options).map(|summary| {
-                // The crawler prints the snapshot path alone on stdout, so its
-                // blob counters go to stderr next to its own summary. A dry run
-                // copies nothing, so the counters would always read zero there.
-                if let Some(dir) = options.bookshelf_dir.as_deref().filter(|_| !dry_run) {
-                    eprintln!("Bookshelf: {}", dir.display());
-                    eprintln!(
-                        "Cookbook blobs: {} downloaded, {} already present",
-                        summary.blobs_downloaded, summary.blobs_skipped
-                    );
+            from_goiardi_with_options(&options).map(|_| {
+                // The crawler owns stdout (the snapshot path) and the crawl
+                // table on stderr, blob counters included; the CLI only names
+                // the bookshelf it was asked to fill.
+                if let Some(dir) = &options.bookshelf_dir {
+                    if dry_run {
+                        eprintln!("Bookshelf: {} (not copied on a dry run)", dir.display());
+                    } else {
+                        eprintln!("Bookshelf: {}", dir.display());
+                    }
                 }
             })
         }

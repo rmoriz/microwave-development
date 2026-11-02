@@ -929,7 +929,7 @@ fn from_goiardi_rejects_bad_org_and_socks() {
 }
 
 #[test]
-fn from_goiardi_writes_a_snapshot_and_prints_blob_counts() {
+fn from_goiardi_writes_a_snapshot_and_reports_the_bookshelf() {
     let server = start_mock_legacy_server(
         [
             "/users",
@@ -978,7 +978,7 @@ fn from_goiardi_writes_a_snapshot_and_prints_blob_counts() {
     assert_eq!(text.matches(&path).count(), 1, "{text}");
     assert_eq!(text.lines().count(), 1, "{text}");
     assert!(
-        stderr(&crawled).contains("Cookbook blobs: 0 downloaded, 0 already present"),
+        stderr(&crawled).contains(&format!("Bookshelf: {}", bookshelf.display())),
         "{}",
         stderr(&crawled)
     );
@@ -988,6 +988,7 @@ fn from_goiardi_writes_a_snapshot_and_prints_blob_counts() {
     assert_eq!(snapshot.data.orgs[0].full_name, "Acme");
 
     let dry_run_output = dir.path().join("dry-run.json");
+    let dry_run_bookshelf = dir.path().join("dry-run-bookshelf");
     let dry_run = run(&[
         "from-goiardi",
         "--url",
@@ -1000,6 +1001,8 @@ fn from_goiardi_writes_a_snapshot_and_prints_blob_counts() {
         "acme",
         "--output",
         dry_run_output.to_str().unwrap(),
+        "--bookshelf-dir",
+        dry_run_bookshelf.to_str().unwrap(),
         "--dry-run",
     ]);
     assert!(dry_run.status.success(), "{}", stderr(&dry_run));
@@ -1007,7 +1010,14 @@ fn from_goiardi_writes_a_snapshot_and_prints_blob_counts() {
         stdout(&dry_run).trim(),
         dry_run_output.display().to_string()
     );
-    assert!(!stderr(&dry_run).contains("Cookbook blobs"));
+    assert!(
+        stderr(&dry_run).contains(&format!(
+            "Bookshelf: {} (not copied on a dry run)",
+            dry_run_bookshelf.display()
+        )),
+        "{}",
+        stderr(&dry_run)
+    );
     assert!(!dry_run_output.exists());
 }
 
