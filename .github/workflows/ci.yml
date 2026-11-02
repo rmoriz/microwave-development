@@ -80,6 +80,37 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
 
+  pedant:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    # Own concurrency group: a push on a branch must not cancel the nightly
+    # run in pedant.yml, which shares the ref.
+    concurrency:
+      group: pedant-ci-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p microwave-server
+      - name: Run the strict pedant tags
+        env:
+          MW_SKIP_BUILD: "1"
+          PEDANT_ARTIFACTS: ${{ runner.temp }}/pedant-artifacts
+        run: scripts/run-pedant.sh strict
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: pedant-artifacts
+          path: ${{ runner.temp }}/pedant-artifacts
+          if-no-files-found: ignore
+          retention-days: 14
+
   claims:
     runs-on: ubuntu-24.04
     steps:

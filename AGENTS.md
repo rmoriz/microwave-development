@@ -28,14 +28,20 @@ with axe. A website-only commit does not need `cargo test`.
 
 CI is path-filtered: documentation changes only run the `claims` and `docs`
 jobs, homepage changes only `claims` and `homepage`, and the Rust jobs
-(`fmt`, `clippy`, `test`, `postgres`) only run when code changes.
+(`fmt`, `clippy`, `test`, `pedant`, `postgres`) only run when code changes.
 `cookbooks/**`, `docs/**` and `website/**` alone never build Rust — a new
 `cargo` job needs `if: needs.changes.outputs.rust == 'true'` and its paths must
 stay out of the `rust` filter; `scripts/tests/test_workflow_gates.py` fails
-when either slips. Workflow
+when either slips. `pedant` gates on the whole workspace, so a Rust change
+waits for the strict suites; `pedant.yml` keeps the nightly run as a canary.
+Workflow
 edits run `claims`, which lints them; `cookbook.yml` also lists itself in its
 path filter, so a cookbook workflow edit runs its own `specs` and `kitchen`
 jobs on the next push or pull request.
+
+`pedant` runs in CI for every Rust change; locally run
+`scripts/run-pedant.sh <tag>` for the suites you touched instead of the whole
+`strict` set.
 
 Run `cargo fmt --all` and `cargo clippy --workspace --all-targets` before
 committing Rust. The homepage has no linter beyond `astro check`.
