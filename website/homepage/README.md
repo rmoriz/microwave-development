@@ -61,13 +61,13 @@ environment deployment.
 - `SITE_URL` and `BASE_PATH` live in `src/data/config.ts`; `robots.txt` and the
   sitemap are generated from them.
 - `BASE_PATH` and the docs `baseUrl` must move together.
-- Pages has no cache-header configuration; it sets its own.
 
-### Cache headers
+### Headers and policy
 
-Pages serves its own header defaults. Because Pages gives no header
-configuration, the site carries its security policy as `<meta http-equiv>` tags
-in `src/layouts/Base.astro`:
+Pages accepts no header configuration and fixes its own: responses carry
+`cache-control: max-age=600` and no `X-Frame-Options`. What the site can
+actually set is therefore its security policy, as `<meta http-equiv>` tags in
+`src/layouts/Base.astro`:
 
 - `Content-Security-Policy`: `default-src 'self'`; scripts from `'self'`,
   `'unsafe-inline'` and `https://www.youtube.com` (the iframe API), the
@@ -85,10 +85,11 @@ from a real header, so the meta tag documents the intent and a header layer
 would enforce it. The e2e console check ignores the browser's one-line notice
 for that directive, nothing else.
 
-`${BASE_PATH}/_astro/*` is cache-busted by content hashes. Pages sets its own
-cache headers on top:
+A header layer would add real cache headers on top of the fixed
+`max-age=600`, so these values are the intent, not what Pages serves today:
 
-- `${BASE_PATH}/_astro/*`: `public, max-age=31536000, immutable`
+- `${BASE_PATH}/_astro/*`: `public, max-age=31536000, immutable` — the file
+  names are content-hashed, so a year and `immutable` are safe
 - HTML: short-lived, revalidated on deploy
 
 ## Before launch

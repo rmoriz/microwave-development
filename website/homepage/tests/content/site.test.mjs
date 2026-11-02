@@ -228,7 +228,12 @@ test('the head carries the security metas', () => {
   assert.ok(csp, 'Content-Security-Policy meta');
   assert.match(csp, /frame-ancestors 'none'/);
   assert.match(csp, /script-src 'self' 'unsafe-inline' https:\/\/www\.youtube\.com/);
+  // The asciinema player compiles its parser with WebAssembly; the narrower
+  // wasm variant keeps 'unsafe-eval' out.
+  assert.match(csp, /script-src [^;]*'wasm-unsafe-eval'/);
   assert.match(csp, /frame-src https:\/\/www\.youtube-nocookie\.com/);
+  // Astro inlines the small font subsets, so the metas need data: fonts.
+  assert.match(csp, /font-src 'self' data:/);
   assert.equal(metas.get('x-content-type-options'), 'nosniff');
   assert.equal(metas.get('x-xss-protection'), '1');
   assert.equal(metas.get('referrer-policy'), 'no-referrer');
