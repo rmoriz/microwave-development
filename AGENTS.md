@@ -3,6 +3,9 @@
 ## Layout
 
 - `crates/`, `bin/`: the Rust workspace (server, API, store backends, CLI).
+- `crates/microwave-api/assets/`: the landing page, the favicon and the fonts.
+  Embedded into the binary and shared with the homepage and the docs site;
+  verified by `cargo test --workspace`.
 - `website/homepage`: the static Astro marketing site for `microwave.io`.
 - `docs/`: operator and contributor documentation. `docs/mcp.md` is the guide
   the homepage links to.
@@ -72,6 +75,16 @@ committing Rust. The homepage has no linter beyond `astro check`.
   implementation.
 - MCP tool calls must keep the structured log line: organization, principal,
   tool, duration, result count, outcome, and the target on writes.
+- A request with no `X-Chef-Version`, no `X-Cinc-Version` and no `X-Ops-*`
+  header gets the static landing page instead of the JSON `401`, but only on a
+  path `location /` owns. The nginx-owned paths (`/version`, `/_status`,
+  `/_stats`, `/server_api_version`, `/id*`, `/bookshelf/*`, `…/validate`,
+  `…/required_recipe`, `…/data-collector`, `…/mcp`, compliance) keep their own
+  answer. The hardening headers (`Content-Security-Policy`,
+  `X-Frame-Options`, `X-Content-Type-Options`, `X-XSS-Protection`,
+  `Referrer-Policy`) belong to static responses only, never to API answers.
+  `favicon.svg` is byte-identical on server, homepage and docs; a test compares
+  all three files.
 - Local builds may run through [kache](https://github.com/kunobi-ninja/kache):
   it configures Cargo for every project on the machine and sits in
   `RUSTC_WRAPPER`; plain `cargo` commands stay the same. Prefix a command with
