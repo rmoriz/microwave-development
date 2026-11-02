@@ -857,9 +857,38 @@ fn export_help_lists_private_key_options() {
 
 #[test]
 fn from_goiardi_requires_url_key_org_and_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = dir.path().join("admin.pem");
+    let snapshot = dir.path().join("snapshot.json");
+    let key = key.to_str().unwrap();
+    let snapshot = snapshot.to_str().unwrap();
+    std::fs::write(key, PRIVATE_KEY).unwrap();
+    let required = [
+        "--url",
+        "http://127.0.0.1:1",
+        "--client-name",
+        "admin",
+        "--key",
+        key,
+        "--org",
+        "acme",
+        "--output",
+        snapshot,
+    ];
+
     let output = run(&["from-goiardi"]);
     assert!(!output.status.success());
     assert!(stderr(&output).contains("--url"));
+
+    // `args` starts with the subcommand, so every flag index shifts by one.
+    for (index, flag) in [(1, "--url"), (5, "--key"), (7, "--org"), (9, "--output")] {
+        let mut args = vec!["from-goiardi"];
+        args.extend_from_slice(&required);
+        args.drain(index..index + 2);
+        let output = run(&args);
+        assert!(!output.status.success(), "{flag} is required");
+        assert!(stderr(&output).contains(flag), "{}", stderr(&output));
+    }
 }
 
 #[test]
@@ -943,11 +972,16 @@ fn from_goiardi_writes_a_snapshot_and_prints_blob_counts() {
     let crawled = run(&args);
     assert!(crawled.status.success(), "{}", stderr(&crawled));
     let text = stdout(&crawled);
+    let path = output.display().to_string();
+    // The crawler owns stdout: one line, the bare snapshot path.
+    assert_eq!(text.trim(), path);
+    assert_eq!(text.matches(&path).count(), 1, "{text}");
+    assert_eq!(text.lines().count(), 1, "{text}");
     assert!(
-        text.contains(&format!("Wrote goiardi snapshot to {}", output.display())),
-        "{text}"
+        stderr(&crawled).contains("Cookbook blobs: 0 downloaded, 0 already present"),
+        "{}",
+        stderr(&crawled)
     );
-    assert!(text.contains("Cookbook blobs: 0 downloaded, 0 already present"));
     let snapshot = microwave_migrate::read_snapshot(&output).unwrap();
     assert_eq!(snapshot.source.layout.as_deref(), Some("goiardi"));
     assert_eq!(snapshot.data.orgs[0].name, "acme");
@@ -969,7 +1003,11 @@ fn from_goiardi_writes_a_snapshot_and_prints_blob_counts() {
         "--dry-run",
     ]);
     assert!(dry_run.status.success(), "{}", stderr(&dry_run));
-    assert!(stdout(&dry_run).contains("Dry run"));
+    assert_eq!(
+        stdout(&dry_run).trim(),
+        dry_run_output.display().to_string()
+    );
+    assert!(!stderr(&dry_run).contains("Cookbook blobs"));
     assert!(!dry_run_output.exists());
 }
 

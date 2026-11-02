@@ -404,14 +404,12 @@ fn main() -> ExitCode {
             options.skip_orphan_clients = skip_orphan_clients;
             options.dry_run = dry_run;
             from_goiardi_with_options(&options).map(|summary| {
-                if dry_run {
-                    println!("Dry run: no goiardi snapshot written; counts are on stderr");
-                } else {
-                    println!("Wrote goiardi snapshot to {}", output.display());
-                }
-                if let Some(dir) = &options.bookshelf_dir {
-                    println!("Bookshelf: {}", dir.display());
-                    println!(
+                // The crawler prints the snapshot path alone on stdout, so its
+                // blob counters go to stderr next to its own summary. A dry run
+                // copies nothing, so the counters would always read zero there.
+                if let Some(dir) = options.bookshelf_dir.as_deref().filter(|_| !dry_run) {
+                    eprintln!("Bookshelf: {}", dir.display());
+                    eprintln!(
                         "Cookbook blobs: {} downloaded, {} already present",
                         summary.blobs_downloaded, summary.blobs_skipped
                     );
