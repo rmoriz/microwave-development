@@ -1,0 +1,157 @@
+# Local build cache docs Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Document Kache as an optional local compiler cache in the README and `AGENTS.md`, with claims that keep the statements traceable.
+
+**Architecture:** Two documentation edits. `AGENTS.md` gets the agent-facing note first, because a README claim verifies against it. The README gets a `## Development` section, a table-of-contents entry, and two `docs/claims.toml` entries. No code, no workflow, no config file.
+
+**Tech Stack:** Markdown, Python claim checker (`scripts/check-claims.py`), Homebrew for the install check.
+
+**Spec:** `docs/superpowers/specs/2026-11-02-local-build-cache-design.md`
+
+## Global Constraints
+
+- English copy, no invented metrics, customers, or certifications. No `AI-powered` or `built-in AI`.
+- Kache stays optional: every step works with it absent.
+- The stable channel in examples; the v2 preview only through the upstream installation link.
+- `AGENTS.md` is not covered by `COVERAGE_PATTERNS`, so it needs no claim entry.
+- Run `python3 scripts/check-claims.py` and `python3 -m unittest discover -s scripts/tests` before each commit.
+
+## Review Focus
+
+- A contributor without Kache must see an unchanged build (plain `cargo`).
+- `cargo install kache --locked` fails on Rust 1.94, so the README must lead with package managers.
+- The 90-day manual-claim expiry must not apply, so both claims grep in-repo files.
+- Disabling must be obvious and scoped to one command.
+- Upstream links must resolve, not be guessed.
+
+---
+
+### Task 1: Agent note in `AGENTS.md`
+
+**Files:**
+- Modify: `AGENTS.md` (`## Rust notes`, after the MCP log-line bullet)
+
+**Interfaces:**
+- Produces: the literal phrase `Local builds may run through`, which Task 2's claim greps.
+
+- [ ] **Step 1: Add the bullet**
+
+Append to `## Rust notes`:
+
+```markdown
+- Local builds may run through [kache](https://github.com/kunobi-ninja/kache):
+  it sits in `RUSTC_WRAPPER`, and plain `cargo` commands stay the same. Prefix a
+  command with `KACHE_DISABLED=1` when it must not touch the cache.
+```
+
+- [ ] **Step 2: Verify the claims still pass**
+
+Run: `python3 scripts/check-claims.py`
+Expected: exit 0, no output.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add AGENTS.md
+git commit -m "docs(agents): note the optional kache build wrapper"
+```
+
+### Task 2: README section and claims
+
+**Files:**
+- Modify: `README.md` (table of contents after the `Pedant compatibility` entry; new `## Development` section before `## Layout`)
+- Modify: `docs/claims.toml` (append two `[[claim]]` records)
+
+**Interfaces:**
+- Consumes: the `AGENTS.md` phrase `Local builds may run through` from Task 1.
+- Produces: README heading `### Faster local builds`, claim ids `readme-local-build-cache` and `readme-kache-rust-floor`.
+
+- [ ] **Step 1: Add the table-of-contents entry**
+
+After `- [Pedant compatibility](#pedant-compatibility)`:
+
+```markdown
+- [Development](#development)
+```
+
+- [ ] **Step 2: Add the `## Development` section before `## Layout`**
+
+````markdown
+## Development
+
+Build from source for local work. The workspace is a plain Cargo workspace; [`AGENTS.md`](AGENTS.md)
+lists the suites to run per area and the rules the code follows.
+
+### Faster local builds
+
+[Kache](https://github.com/kunobi-ninja/kache) is an optional compiler cache. It wraps `rustc`,
+keeps compile outputs, and restores them on later builds, so a rebuild after a branch switch or a
+second worktree does not start from scratch. It is a local tool: nothing needs it to build.
+
+Install it with your package manager and enable it once:
+
+```sh
+brew install kunobi-ninja/kunobi/kache   # apt, AUR, nix and mise also work
+kache init
+```
+
+Cargo installs need Rust 1.95 or newer, above this workspace's 1.94 floor, so prefer a package
+manager. Open a new terminal, then probe the setup:
+
+```sh
+kache doctor --probe
+```
+
+Keep using `cargo` as usual; `kache stats` reports hits and misses. Install routes, daemon and
+store settings are in the [Kache documentation](https://kunobi.ninja/docs/kache/getting-started/installation).
+Disable the cache for one command with `KACHE_DISABLED=1`.
+````
+
+- [ ] **Step 3: Add the claims**
+
+Append to `docs/claims.toml`:
+
+```toml
+[[claim]]
+id = "readme-local-build-cache"
+summary = "README: kache is an optional local compiler cache for developers."
+area = "tooling"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "kache doctor --probe" },
+]
+verify = { kind = "grep", path = "AGENTS.md", pattern = "Local builds may run through" }
+
+[[claim]]
+id = "readme-kache-rust-floor"
+summary = "README: cargo installs of kache need Rust 1.95, above the workspace floor."
+area = "tooling"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "Cargo installs need Rust 1.95 or newer" },
+]
+verify = { kind = "grep", path = "Cargo.toml", pattern = "rust-version = \"1.94\"" }
+```
+
+- [ ] **Step 4: Run the claim and workflow checks**
+
+Run: `python3 scripts/check-claims.py`
+Expected: exit 0, no output.
+
+Run: `python3 -m unittest discover -s scripts/tests`
+Expected: `OK`.
+
+- [ ] **Step 5: Prove the documented commands exist**
+
+Run: `brew install kunobi-ninja/kunobi/kache && kache --version && kache doctor --probe`
+Expected: a version string, then a passing probe report. Record anything the probe says that the
+README should warn about, and fix the copy in Step 2 if needed.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add README.md docs/claims.toml docs/superpowers/specs/2026-11-02-local-build-cache-design.md docs/superpowers/plans/2026-11-02-local-build-cache-docs.md
+git commit -m "docs(readme): document the optional local build cache"
+```

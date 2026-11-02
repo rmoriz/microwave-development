@@ -2160,3 +2160,23 @@ surfaces = [
   { path = "docs/cookbook.md", needle = "client_network" },
 ]
 verify = { kind = "grep", path = "cookbooks/microwave/README.md", pattern = "A database node, a search node, a store node and a server node" }
+
+[[claim]]
+id = "readme-local-build-cache"
+summary = "README: kache is an optional local compiler cache for developers."
+area = "tooling"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "kache doctor --probe" },
+]
+verify = { kind = "grep", path = "AGENTS.md", pattern = "Local builds may run through" }
+
+[[claim]]
+id = "readme-kache-rust-floor"
+summary = "README: cargo installs of kache need Rust 1.95, above the workspace floor."
+area = "tooling"
+status = "verified"
+surfaces = [
+  { path = "README.md", needle = "Cargo installs need Rust 1.95 or newer" },
+]
+verify = { kind = "grep", path = "Cargo.toml", pattern = "rust-version = \"1.94\"" }

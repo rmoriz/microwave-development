@@ -15,6 +15,7 @@ surface.
 - [Known gaps](#known-gaps)
 - [Migrate from Chef Infra Server](#migrate-from-chef-infra-server)
 - [Pedant compatibility](#pedant-compatibility)
+- [Development](#development)
 - [Layout](#layout)
 
 ## Why
@@ -114,6 +115,41 @@ are green.
 
 Records: [`docs/pedant-report.md`](docs/pedant-report.md) and
 [`docs/pedant-extended-report.md`](docs/pedant-extended-report.md).
+
+## Development
+
+Build from source for local work. The workspace is a plain Cargo workspace; [`AGENTS.md`](AGENTS.md)
+lists the suites to run per area and the rules the code follows.
+
+### Faster local builds
+
+[Kache](https://github.com/kunobi-ninja/kache) is an optional compiler cache. It wraps `rustc`,
+keeps compile outputs, and restores them on later builds, so a rebuild after a branch switch or a
+second worktree does not start from scratch. It is a local tool: nothing needs it to build.
+
+Install it with your package manager and enable it once:
+
+```sh
+brew install kunobi-ninja/kunobi/kache   # apt, AUR, nix and mise also work
+kache init
+```
+
+Cargo installs need Rust 1.95 or newer, above this workspace's 1.94 floor, so prefer a package
+manager. Open a new terminal, then check the setup:
+
+```sh
+kache doctor
+```
+
+It ends with `All checks passed.` A `kache doctor --probe` run goes further by compiling a throwaway
+library twice to prove a restore, but `--probe` only exists in the v2 preview and the stable Homebrew
+formula is still 1.x, so the plain command above is what the documented install gives you. If a
+dotfile manager symlinks `~/.zshrc`, `kache init` skips the shell parts and says so; Cargo caching
+is still configured.
+
+Keep using `cargo` as usual; `kache stats` reports hits and misses. Install routes, daemon and
+store settings are in the [Kache documentation](https://kunobi.ninja/docs/kache/getting-started/installation).
+Disable the cache for one command with `KACHE_DISABLED=1`.
 
 ## Layout
 
