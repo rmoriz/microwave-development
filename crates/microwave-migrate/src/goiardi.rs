@@ -1472,7 +1472,7 @@ fn validate_org(org: &str) -> Result<(), MigrateError> {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
     {
         return Err(MigrateError::Config(format!(
-            "invalid --org {org:?}; expected [a-z0-9-]+"
+            "invalid organization --org {org:?}; expected [a-z0-9-]+"
         )));
     }
     Ok(())

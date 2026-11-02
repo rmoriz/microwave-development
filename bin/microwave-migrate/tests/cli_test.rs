@@ -856,6 +856,124 @@ fn export_help_lists_private_key_options() {
 }
 
 #[test]
+fn from_goiardi_requires_url_key_org_and_output() {
+    let output = run(&["from-goiardi"]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("--url"));
+}
+
+#[test]
+fn from_goiardi_rejects_bad_org_and_socks() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = dir.path().join("admin.pem");
+    let snapshot = dir.path().join("snapshot.json");
+    let key = key.to_str().unwrap();
+    let snapshot = snapshot.to_str().unwrap();
+    std::fs::write(key, PRIVATE_KEY).unwrap();
+    let common = [
+        "from-goiardi",
+        "--url",
+        "http://127.0.0.1:1",
+        "--client-name",
+        "admin",
+        "--key",
+        key,
+        "--output",
+        snapshot,
+    ];
+
+    let mut bad_org = common.to_vec();
+    bad_org.extend(["--org", "Acme_1"]);
+    let output = run(&bad_org);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("invalid organization"),
+        "{}",
+        stderr(&output)
+    );
+
+    let mut bad_socks = common.to_vec();
+    bad_socks.extend(["--org", "acme", "--socks5", "localhost"]);
+    let output = run(&bad_socks);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("--socks5"));
+}
+
+#[test]
+fn from_goiardi_writes_a_snapshot_and_prints_blob_counts() {
+    let server = start_mock_legacy_server(
+        [
+            "/users",
+            "/clients",
+            "/roles",
+            "/environments",
+            "/nodes",
+            "/data",
+            "/cookbooks",
+        ]
+        .into_iter()
+        .map(|path| (path, b"{}".to_vec()))
+        .collect(),
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let key = dir.path().join("migrator.pem");
+    std::fs::write(&key, PRIVATE_KEY).unwrap();
+    let output = dir.path().join("snapshot.json");
+    let bookshelf = dir.path().join("bookshelf");
+    let args = [
+        "from-goiardi",
+        "--url",
+        server.as_str(),
+        "--client-name",
+        "migrator",
+        "--key",
+        key.to_str().unwrap(),
+        "--org",
+        "acme",
+        "--org-full-name",
+        "Acme",
+        "--output",
+        output.to_str().unwrap(),
+        "--bookshelf-dir",
+        bookshelf.to_str().unwrap(),
+        "--skip-orphan-clients",
+    ];
+
+    let crawled = run(&args);
+    assert!(crawled.status.success(), "{}", stderr(&crawled));
+    let text = stdout(&crawled);
+    assert!(
+        text.contains(&format!("Wrote goiardi snapshot to {}", output.display())),
+        "{text}"
+    );
+    assert!(text.contains("Cookbook blobs: 0 downloaded, 0 already present"));
+    let snapshot = microwave_migrate::read_snapshot(&output).unwrap();
+    assert_eq!(snapshot.source.layout.as_deref(), Some("goiardi"));
+    assert_eq!(snapshot.data.orgs[0].name, "acme");
+    assert_eq!(snapshot.data.orgs[0].full_name, "Acme");
+
+    let dry_run_output = dir.path().join("dry-run.json");
+    let dry_run = run(&[
+        "from-goiardi",
+        "--url",
+        server.as_str(),
+        "--client-name",
+        "migrator",
+        "--key",
+        key.to_str().unwrap(),
+        "--org",
+        "acme",
+        "--output",
+        dry_run_output.to_str().unwrap(),
+        "--dry-run",
+    ]);
+    assert!(dry_run.status.success(), "{}", stderr(&dry_run));
+    assert!(stdout(&dry_run).contains("Dry run"));
+    assert!(!dry_run_output.exists());
+}
+
+#[test]
 fn from_api_help_lists_org_and_api_version() {
     let output = run(&["from-api", "--help"]);
     assert!(output.status.success());

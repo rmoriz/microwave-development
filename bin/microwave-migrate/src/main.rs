@@ -4,10 +4,11 @@ use microwave_migrate::{
     apply_knife_backup_plan_postgres_with_options, apply_knife_backup_plan_sqlite_with_options,
     apply_server_secrets, archive_secrets_included, export_archive_postgres_with_private_keys,
     export_archive_with_private_keys, export_postgres_with_options, export_with_options,
-    from_api_with_options_with_summary, import_archive_postgres_with_private_keys,
-    import_archive_with_private_keys, import_postgres_with_compression, import_with_compression,
-    prepare_knife_backup, prepare_server_secrets, read_snapshot, redacted_postgres_url,
-    validate_postgres_url, Compression, FromApiOptions, KnifeBackupApplyOptions, KnifeBackupPlan,
+    from_api_with_options_with_summary, from_goiardi_with_options,
+    import_archive_postgres_with_private_keys, import_archive_with_private_keys,
+    import_postgres_with_compression, import_with_compression, prepare_knife_backup,
+    prepare_server_secrets, read_snapshot, redacted_postgres_url, validate_postgres_url,
+    Compression, FromApiOptions, GoiardiOptions, KnifeBackupApplyOptions, KnifeBackupPlan,
     MigrateError, PrivateKeyExportOptions, PrivateKeyImportOptions, ServerSecretsOptions,
     ServerSecretsPlan, DATABASE_FILE,
 };
@@ -239,6 +240,43 @@ enum Command {
         #[arg(long, value_name = "DIR")]
         bookshelf_dir: Option<PathBuf>,
     },
+    /// Crawl a live goiardi server into a snapshot.
+    FromGoiardi {
+        /// Base URL of the goiardi server.
+        #[arg(long, value_name = "URL")]
+        url: String,
+        /// User or client name used to sign requests.
+        #[arg(long, value_name = "NAME")]
+        client_name: String,
+        /// PEM private key used to sign requests.
+        #[arg(long, value_name = "PATH")]
+        key: PathBuf,
+        /// Target organization that every source object is mapped into.
+        #[arg(long, value_name = "NAME")]
+        org: String,
+        /// Snapshot file to write.
+        #[arg(long, value_name = "FILE")]
+        output: PathBuf,
+        /// Human-readable organization name; defaults to --org.
+        #[arg(long, value_name = "NAME")]
+        org_full_name: Option<String>,
+        /// Download cookbook file blobs into this local object-store root.
+        ///
+        /// Files are written as organization-<org_id>/checksum-<md5>.
+        /// Existing blobs are skipped. Without this flag only metadata and
+        /// checksum references are crawled.
+        #[arg(long, value_name = "DIR")]
+        bookshelf_dir: Option<PathBuf>,
+        /// SOCKS5 proxy for a source only reachable through a bastion.
+        #[arg(long, value_name = "HOST:PORT")]
+        socks5: Option<String>,
+        /// Drop clients that have no node of the same name.
+        #[arg(long)]
+        skip_orphan_clients: bool,
+        /// Crawl and count without writing the snapshot or copying blobs.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -343,6 +381,39 @@ fn main() -> ExitCode {
                     println!(
                         "Cookbook blobs: {} downloaded, {} already present",
                         summary.downloaded, summary.skipped
+                    );
+                }
+            })
+        }
+        Command::FromGoiardi {
+            url,
+            client_name,
+            key,
+            org,
+            output,
+            org_full_name,
+            bookshelf_dir,
+            socks5,
+            skip_orphan_clients,
+            dry_run,
+        } => {
+            let mut options = GoiardiOptions::new(&url, &client_name, &key, &output, &org);
+            options.org_full_name = org_full_name;
+            options.bookshelf_dir = bookshelf_dir;
+            options.socks5 = socks5;
+            options.skip_orphan_clients = skip_orphan_clients;
+            options.dry_run = dry_run;
+            from_goiardi_with_options(&options).map(|summary| {
+                if dry_run {
+                    println!("Dry run: no goiardi snapshot written; counts are on stderr");
+                } else {
+                    println!("Wrote goiardi snapshot to {}", output.display());
+                }
+                if let Some(dir) = &options.bookshelf_dir {
+                    println!("Bookshelf: {}", dir.display());
+                    println!(
+                        "Cookbook blobs: {} downloaded, {} already present",
+                        summary.blobs_downloaded, summary.blobs_skipped
                     );
                 }
             })
