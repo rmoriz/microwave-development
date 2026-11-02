@@ -461,11 +461,13 @@ first write and fails with the target's org and user counts; use a fresh data
 directory or database. Because of that, a second import of the same snapshot
 also fails.
 
-Name uniqueness still applies: a row with the same unique name but a different
-id is rejected by the backend rather than silently rewritten. This matters most
-when importing into a non-empty PostgreSQL database that already has the
-global `server-admins` group from another installation; import into a fresh
-database (or reconcile the ids first) for a clean migration.
+Global groups are the one thing every layout reuses: `global_groups.name` is
+unique, so a snapshot row whose name already exists in the target (normally
+`server-admins` from the bootstrap superuser) is dropped and its authz id is
+rewritten to the existing one before the import. Other name uniqueness still
+applies: a row with the same unique name but a different id is rejected by the
+backend rather than silently rewritten. Import into a fresh database for a
+clean migration.
 
 PostgreSQL's sequence-backed identifiers (`cookbooks`, `cookbook_artifacts`,
 `cookbook_artifact_versions`, `oauth_applications`, `oauth_access_grants`, and
@@ -786,7 +788,9 @@ aborts the run.
 
 **Import requires a fresh target.** The snapshot importer does not merge a
 goiardi layout: a target with an organization or more than one user is refused
-before the first write, so keep only the bootstrap superuser:
+before the first write. Start the target once so its `pivotal` superuser and
+`server-admins` group exist, create no organization, then import; the existing
+`server-admins` row is reused:
 
 ```sh
 microwave-ctl migrate-from-legacy --input acme.json --yes

@@ -30,9 +30,12 @@
 
 use chrono::{SecondsFormat, Utc};
 pub use microwave_store::Compression;
-use microwave_store::{ImportTargetCounts, SqliteStore, StoreError, StoreSnapshot};
+use microwave_store::{
+    AuthzRepository, ImportTargetCounts, SqliteStore, StoreError, StoreSnapshot,
+};
 use microwave_store_postgres::PostgresStore;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -281,7 +284,7 @@ pub fn import_database_with_compression(
     input: &Path,
     compression: Compression,
 ) -> Result<(), MigrateError> {
-    let snapshot = read_snapshot(input)?;
+    let mut snapshot = read_snapshot(input)?;
     if let Some(parent) = database.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent).map_err(|source| MigrateError::Write {
@@ -295,6 +298,12 @@ pub fn import_database_with_compression(
         &store.import_target_counts()?,
         snapshot.source.layout.as_deref(),
     )?;
+    if !snapshot.data.global_groups.is_empty() {
+        reconcile_global_groups(
+            &mut snapshot.data,
+            &existing_global_groups(store.list_global_groups()?),
+        );
+    }
     store.import_snapshot(&snapshot.data)?;
     Ok(())
 }
@@ -360,7 +369,7 @@ pub fn import_postgres_with_compression(
     compression: Compression,
 ) -> Result<(), MigrateError> {
     validate_postgres_url(database_url)?;
-    let snapshot = read_snapshot(input)?;
+    let mut snapshot = read_snapshot(input)?;
     let runtime = runtime()?;
     let store = runtime.block_on(PostgresStore::connect_with_compression(
         database_url,
@@ -368,6 +377,10 @@ pub fn import_postgres_with_compression(
     ))?;
     let counts = runtime.block_on(store.import_target_counts())?;
     ensure_empty_goiardi_target(&counts, snapshot.source.layout.as_deref())?;
+    if !snapshot.data.global_groups.is_empty() {
+        let existing = existing_global_groups(runtime.block_on(store.list_global_groups())?);
+        reconcile_global_groups(&mut snapshot.data, &existing);
+    }
     runtime.block_on(store.import_snapshot(&snapshot.data))?;
     Ok(())
 }
@@ -388,6 +401,65 @@ fn ensure_empty_goiardi_target(
         });
     }
     Ok(())
+}
+
+/// Flatten a store's global groups into `(name, authz_id)` pairs.
+fn existing_global_groups(groups: Vec<microwave_store::Group>) -> Vec<(String, String)> {
+    groups
+        .into_iter()
+        .map(|group| (group.name, group.authz_id))
+        .collect()
+}
+
+/// Reuse global groups that the target already has under the same name.
+///
+/// Snapshot rows are keyed by authz id but `global_groups.name` is unique, and
+/// every snapshot that carries global groups (`from-api`, goiardi, and local
+/// exports) repeats the target's bootstrap `server-admins` group with a
+/// different authz id. Inserting it unchanged fails on the unique name after the
+/// empty-target preflight has already passed. Rewriting the snapshot's authz ids
+/// to the existing ones keeps every layout importable; the matching
+/// `global_groups` row and its authz entity are dropped because the target
+/// already holds them.
+fn reconcile_global_groups(data: &mut StoreSnapshot, existing: &[(String, String)]) {
+    let mut replacements: HashMap<String, String> = HashMap::new();
+    for planned in &data.global_groups {
+        if let Some((_, existing_authz)) = existing.iter().find(|(name, _)| name == &planned.name) {
+            if existing_authz != &planned.authz_id {
+                replacements.insert(planned.authz_id.clone(), existing_authz.clone());
+            }
+        }
+    }
+    let existing_names: HashSet<&str> = existing.iter().map(|(name, _)| name.as_str()).collect();
+    data.global_groups
+        .retain(|group| !existing_names.contains(group.name.as_str()));
+    if replacements.is_empty() {
+        return;
+    }
+
+    let rewrite = |value: &mut String| {
+        if let Some(replacement) = replacements.get(value) {
+            *value = replacement.clone();
+        }
+    };
+    data.authz_entities
+        .retain(|entity| !replacements.contains_key(&entity.authz_id));
+    for row in &mut data.authz_acl_actor {
+        rewrite(&mut row.target_authz_id);
+        rewrite(&mut row.actor_authz_id);
+    }
+    for row in &mut data.authz_acl_group {
+        rewrite(&mut row.target_authz_id);
+        rewrite(&mut row.group_authz_id);
+    }
+    for row in &mut data.authz_group_actors {
+        rewrite(&mut row.group_authz_id);
+        rewrite(&mut row.actor_authz_id);
+    }
+    for row in &mut data.authz_group_groups {
+        rewrite(&mut row.parent_group_authz_id);
+        rewrite(&mut row.child_group_authz_id);
+    }
 }
 
 /// Reject a malformed or non-PostgreSQL database URL without echoing it.

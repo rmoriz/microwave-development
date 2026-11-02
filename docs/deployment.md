@@ -1810,9 +1810,10 @@ is written through a temporary file and never appears finally. Blobs already
 copied by the run do stay, and a re-run skips them.
 
 **The import needs a fresh target.** A goiardi snapshot carries a fresh-install
-policy and the snapshot importer does not merge it into existing data. Import a
-barely bootstrapped instance — no organizations, and at most its default
-`pivotal` superuser:
+policy and the snapshot importer does not merge it into existing data. Start the
+target once, so it bootstraps its `pivotal` superuser and `server-admins` group,
+and create no organization before the import. The import reuses the existing
+`server-admins` row instead of colliding with it:
 
 ```sh
 microwave-ctl --config /etc/microwave/microwave.toml \
