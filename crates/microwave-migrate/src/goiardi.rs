@@ -14,14 +14,17 @@
 //! expose authz ids. Both are derived deterministically with the `from-api`
 //! scheme, so repeated crawls produce the same snapshot.
 
-use crate::crawl::{bool_field, string_field, synthetic_id, BlobSummary, Fetcher};
+use crate::crawl::{
+    bool_field, encode_segment, string_field, synthetic_id, BlobSummary, CollectionEntry, Fetcher,
+};
 use crate::{
     write_snapshot, MigrateError, Snapshot, SnapshotSource, SnapshotSourceKind, SNAPSHOT_FORMAT,
     SNAPSHOT_VERSION,
 };
 use chrono::{SecondsFormat, Utc};
 use microwave_store::{
-    ActorKeyRow, AuthzEntityRow, ClientRow, OrgRow, OrgUserAssociationRow, StoreSnapshot, UserRow,
+    ActorKeyRow, AuthzEntityRow, ClientRow, DataBagItemRow, NamedObjectRow, NodeRow, OrgRow,
+    OrgUserAssociationRow, StoreSnapshot, UserRow,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -104,6 +107,7 @@ pub fn crawl_from_goiardi(
     validate_org(&options.org)?;
     let mut crawler = Crawler::new(options)?;
     crawler.crawl_identity()?;
+    crawler.crawl_objects()?;
     crawler.summary.blobs_downloaded = crawler.blob_summary.downloaded;
     crawler.summary.blobs_skipped = crawler.blob_summary.skipped;
 
@@ -158,6 +162,8 @@ pub struct Crawler {
     pub(crate) downloaded_blob_bytes: u64,
     /// Every environment name in the source, for node validation.
     pub(crate) environment_names: HashSet<String>,
+    /// Drop clients that have no node of the same name.
+    pub(crate) skip_orphan_clients: bool,
     pub(crate) summary: GoiardiSummary,
 }
 
@@ -199,6 +205,7 @@ impl Crawler {
             blob_summary: BlobSummary::default(),
             downloaded_blob_bytes: 0,
             environment_names: HashSet::new(),
+            skip_orphan_clients: options.skip_orphan_clients,
             summary: GoiardiSummary::default(),
         };
 
@@ -214,6 +221,209 @@ impl Crawler {
         self.crawl_users(&org_id)?;
         self.crawl_clients(&org_id)?;
         Ok(())
+    }
+
+    fn crawl_objects(&mut self) -> Result<(), MigrateError> {
+        let org = self.org.clone();
+        // Environments come first so node validation knows every valid name.
+        self.crawl_named_objects(&org)?;
+        self.crawl_nodes(&org)?;
+        if self.skip_orphan_clients {
+            let node_names = self
+                .data
+                .nodes
+                .iter()
+                .map(|node| node.name.clone())
+                .collect();
+            self.filter_orphan_clients(&node_names);
+        }
+        self.crawl_data_bags(&org)?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Nodes, roles, environments, data bags
+    // ------------------------------------------------------------------
+
+    fn crawl_nodes(&mut self, org: &OrgRow) -> Result<(), MigrateError> {
+        let entries = self.fetcher.get_collection("/nodes")?;
+        for entry in entries {
+            let list_name = entry.name.clone();
+            let fallback = format!("/nodes/{}", encode_segment(&list_name));
+            let Some((value, raw)) = self.entry_raw(&entry, &fallback)? else {
+                continue;
+            };
+            let name = string_field(&value, "name").unwrap_or(list_name);
+            let environment =
+                string_field(&value, "chef_environment").unwrap_or_else(|| "_default".to_string());
+            if !self.environment_names.contains(&environment) {
+                self.summary.warnings.push(format!(
+                    "node {name:?} names unknown environment {environment:?}; imported anyway"
+                ));
+            }
+
+            let id = synthetic_id(&format!("node:{}:{name}", org.name));
+            let authz_id = synthetic_id(&format!("authz:node:{}:{name}", org.name));
+            self.ensure_entity(&authz_id, "object", Some(&org.id));
+
+            self.data.nodes.push(NodeRow {
+                id,
+                authz_id: authz_id.clone(),
+                org_id: org.id.clone(),
+                name,
+                environment,
+                policy_name: non_empty_string(&value, "policy_name"),
+                policy_group: non_empty_string(&value, "policy_group"),
+                serialized_object: Some(raw),
+                last_updated_by: String::new(),
+                created_at: self.generated_at.clone(),
+                updated_at: self.generated_at.clone(),
+            });
+            self.object_authz.push(("nodes".to_string(), authz_id));
+            self.summary.nodes += 1;
+        }
+        Ok(())
+    }
+
+    fn crawl_named_objects(&mut self, org: &OrgRow) -> Result<(), MigrateError> {
+        for (kind, collection) in [("role", "roles"), ("environment", "environments")] {
+            let entries = self.fetcher.get_collection(&format!("/{collection}"))?;
+            if kind == "environment" {
+                // Node validation needs every name, `_default` included.
+                self.environment_names
+                    .extend(entries.iter().map(|entry| entry.name.clone()));
+            }
+            for entry in entries {
+                let list_name = entry.name.clone();
+                if kind == "environment" && list_name == "_default" {
+                    continue;
+                }
+                let fallback = format!("/{collection}/{}", encode_segment(&list_name));
+                let Some((value, raw)) = self.entry_raw(&entry, &fallback)? else {
+                    continue;
+                };
+                let name = string_field(&value, "name").unwrap_or(list_name);
+                let id = synthetic_id(&format!("{kind}:{}:{name}", org.name));
+                let authz_id = synthetic_id(&format!("authz:{kind}:{}:{name}", org.name));
+                self.ensure_entity(&authz_id, "object", Some(&org.id));
+
+                let row = NamedObjectRow {
+                    id,
+                    authz_id: authz_id.clone(),
+                    org_id: org.id.clone(),
+                    name,
+                    serialized_object: Some(raw),
+                    last_updated_by: String::new(),
+                    created_at: self.generated_at.clone(),
+                    updated_at: self.generated_at.clone(),
+                };
+                match kind {
+                    "role" => {
+                        self.data.roles.push(row);
+                        self.summary.roles += 1;
+                    }
+                    "environment" => {
+                        self.data.environments.push(row);
+                        self.summary.environments += 1;
+                    }
+                    _ => unreachable!(),
+                }
+                self.object_authz.push((collection.to_string(), authz_id));
+            }
+        }
+        Ok(())
+    }
+
+    fn crawl_data_bags(&mut self, org: &OrgRow) -> Result<(), MigrateError> {
+        let entries = self.fetcher.get_collection("/data")?;
+        for entry in entries {
+            let name = entry.name.clone();
+            let id = synthetic_id(&format!("data_bag:{}:{name}", org.name));
+            let authz_id = synthetic_id(&format!("authz:data_bag:{}:{name}", org.name));
+            self.ensure_entity(&authz_id, "object", Some(&org.id));
+
+            // goiardi has no data bag metadata route; the list name is the bag.
+            let raw = serde_json::to_string(&serde_json::json!({
+                "name": name,
+                "json_class": "Chef::DataBag",
+                "chef_type": "data_bag"
+            }))?;
+            self.data.data_bags.push(NamedObjectRow {
+                id,
+                authz_id: authz_id.clone(),
+                org_id: org.id.clone(),
+                name: name.clone(),
+                serialized_object: Some(raw),
+                last_updated_by: String::new(),
+                created_at: self.generated_at.clone(),
+                updated_at: self.generated_at.clone(),
+            });
+            self.object_authz.push(("data".to_string(), authz_id));
+            self.summary.data_bags += 1;
+
+            let items_path = entry
+                .url
+                .clone()
+                .unwrap_or_else(|| format!("/data/{}", encode_segment(&name)));
+            let items = self.fetcher.get_collection(&items_path)?;
+            for item in items {
+                let item_list_name = item.name.clone();
+                let fallback = format!(
+                    "/data/{}/{}",
+                    encode_segment(&name),
+                    encode_segment(&item_list_name)
+                );
+                let Some((item_value, item_raw)) = self.entry_raw(&item, &fallback)? else {
+                    continue;
+                };
+                let Some(item_name) = non_empty_string(&item_value, "id") else {
+                    self.summary.warnings.push(format!(
+                        "data bag item {name:?}/{item_list_name:?} has no id; skipped"
+                    ));
+                    continue;
+                };
+                self.data.data_bag_items.push(DataBagItemRow {
+                    id: synthetic_id(&format!("data_bag_item:{}:{name}:{item_name}", org.name)),
+                    org_id: org.id.clone(),
+                    data_bag_name: name.clone(),
+                    item_name,
+                    serialized_object: Some(item_raw),
+                    last_updated_by: String::new(),
+                    created_at: self.generated_at.clone(),
+                    updated_at: self.generated_at.clone(),
+                });
+                self.summary.data_bag_items += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Drop clients that have no node of the same name.
+    ///
+    /// `chef-validator` and `chef-webui` always stay. Every row that refers to
+    /// a dropped client is removed with it, so the policy synthesis cannot
+    /// point at an actor that no longer exists.
+    fn filter_orphan_clients(&mut self, node_names: &HashSet<String>) {
+        const ALWAYS_KEEP: [&str; 2] = ["chef-validator", "chef-webui"];
+        let mut dropped = Vec::new();
+        self.data.clients.retain(|client| {
+            let keep =
+                node_names.contains(&client.name) || ALWAYS_KEEP.contains(&client.name.as_str());
+            if !keep {
+                dropped.push(client.clone());
+            }
+            keep
+        });
+
+        for client in &dropped {
+            self.data.actor_keys.retain(|key| key.actor_id != client.id);
+            self.data
+                .authz_entities
+                .retain(|entity| entity.authz_id != client.authz_id);
+            self.seen_authz.remove(&client.authz_id);
+            self.client_authz.remove(&client.name);
+        }
+        self.summary.clients -= dropped.len();
     }
 
     // ------------------------------------------------------------------
@@ -354,6 +564,24 @@ impl Crawler {
             return Ok(None);
         }
         Ok(Some(embedded.clone()))
+    }
+
+    /// Return the detail body of a collection entry together with its raw
+    /// text. Embedded objects fall back to their serialized form.
+    fn entry_raw(
+        &self,
+        entry: &CollectionEntry,
+        fallback_path: &str,
+    ) -> Result<Option<(Value, String)>, MigrateError> {
+        if let Some(url) = &entry.url {
+            return self.fetcher.get_optional_raw(&self.fetcher.resolve(url));
+        }
+        if !entry.value.is_null() {
+            let raw = serde_json::to_string(&entry.value)?;
+            return Ok(Some((entry.value.clone(), raw)));
+        }
+        self.fetcher
+            .get_optional_raw(&self.fetcher.resolve(fallback_path))
     }
 
     fn ensure_entity(&mut self, authz_id: &str, entity_type: &str, org_id: Option<&str>) {

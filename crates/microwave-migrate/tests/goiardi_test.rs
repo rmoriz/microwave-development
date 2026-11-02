@@ -1,6 +1,6 @@
 mod common;
 
-use common::{json_route, options, raw_route, start_server};
+use common::{json_route, options, raw_route, start_server, Route};
 use microwave_migrate::crawl_from_goiardi;
 use serde_json::json;
 
@@ -10,8 +10,109 @@ const USER: &str = r#"{"username":"admin","name":"admin","email":"ops@example.co
 const CLIENT: &str =
     r#"{"name":"web1","admin":false,"validator":false,"public_key":"<PUBLIC_KEY>"}"#;
 
+const NODE: &str = r#"{"name":"web1","chef_environment":"_default","normal":{},"run_list":[]}"#;
+const ROLE: &str =
+    r#"{"name":"web","run_list":[],"default_attributes":{},"override_attributes":{}}"#;
+const ENV: &str = r#"{"name":"production","cookbook_versions":{},"default_attributes":{},"override_attributes":{}}"#;
+const BAG_ITEM: &str = r#"{"id":"db","password":"x"}"#;
+
 fn tempdir() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
+}
+
+fn crawl_objects_routes() -> Vec<(&'static str, Route)> {
+    vec![
+        ("/nodes", json_route(json!({"web1": "/nodes/web1"}))),
+        ("/nodes/web1", raw_route(NODE)),
+        ("/roles", json_route(json!({"web": "/roles/web"}))),
+        ("/roles/web", raw_route(ROLE)),
+        (
+            "/environments",
+            json_route(json!({"production": "/environments/production"})),
+        ),
+        ("/environments/production", raw_route(ENV)),
+        ("/data", json_route(json!({"secrets": "/data/secrets"}))),
+        (
+            "/data/secrets",
+            json_route(json!({"db": "/data/secrets/db"})),
+        ),
+        ("/data/secrets/db", raw_route(BAG_ITEM)),
+    ]
+}
+
+#[test]
+fn crawls_objects_raw_and_skips_default_environment() {
+    let dir = tempdir();
+    let (url, _) = start_server(crawl_objects_routes());
+    let (snapshot, summary) = crawl_from_goiardi(&options(&url, dir.path())).unwrap();
+    assert_eq!(snapshot.data.nodes[0].name, "web1");
+    assert_eq!(
+        snapshot.data.nodes[0].serialized_object.as_deref(),
+        Some(NODE)
+    );
+    assert_eq!(snapshot.data.roles[0].name, "web");
+    assert_eq!(snapshot.data.environments.len(), 1); // production only
+    assert_eq!(snapshot.data.environments[0].name, "production");
+    assert_eq!(snapshot.data.data_bags[0].name, "secrets");
+    assert_eq!(snapshot.data.data_bag_items[0].item_name, "db");
+    assert_eq!(summary.data_bag_items, 1);
+}
+
+#[test]
+fn warns_about_an_unknown_node_environment_and_keeps_the_node() {
+    let dir = tempdir();
+    let mut routes = crawl_objects_routes();
+    routes[1].1 =
+        raw_route(r#"{"name":"web1","chef_environment":"gone","normal":{},"run_list":[]}"#);
+    let (url, _) = start_server(routes);
+    let (snapshot, summary) = crawl_from_goiardi(&options(&url, dir.path())).unwrap();
+    assert!(summary
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("gone")));
+    assert!(snapshot.data.nodes.iter().any(|node| node.name == "web1"));
+}
+
+#[test]
+fn skip_orphan_clients_keeps_validator_and_webui() {
+    let dir = tempdir();
+    let mut routes = crawl_objects_routes();
+    routes.extend([
+        (
+            "/clients",
+            json_route(json!({
+                "web1": "/clients/web1",
+                "old1": "/clients/old1",
+                "chef-validator": "/clients/chef-validator",
+                "chef-webui": "/clients/chef-webui",
+            })),
+        ),
+        ("/clients/web1", raw_route(CLIENT)),
+        (
+            "/clients/old1",
+            raw_route(r#"{"name":"old1","public_key":"<PUBLIC_KEY>"}"#),
+        ),
+        (
+            "/clients/chef-validator",
+            raw_route(r#"{"name":"chef-validator","validator":true,"public_key":"<PUBLIC_KEY>"}"#),
+        ),
+        (
+            "/clients/chef-webui",
+            raw_route(r#"{"name":"chef-webui","admin":true,"public_key":"<PUBLIC_KEY>"}"#),
+        ),
+    ]);
+    let (url, _) = start_server(routes);
+    let mut options = options(&url, dir.path());
+    options.skip_orphan_clients = true;
+    let (snapshot, _) = crawl_from_goiardi(&options).unwrap();
+    let mut names: Vec<_> = snapshot
+        .data
+        .clients
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, ["chef-validator", "chef-webui", "web1"]);
 }
 
 #[test]
