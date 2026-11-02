@@ -22,7 +22,9 @@
 
 - A contributor without Kache must see an unchanged build (plain `cargo`).
 - `cargo install kache --locked` fails on Rust 1.94, so the README must lead with package managers.
-- The 90-day manual-claim expiry must not apply, so both claims grep in-repo files.
+- The 90-day manual-claim expiry must not bite the factual pairs: the Rust
+  floor and the preview flag have grep claims where possible and manual claims
+  that point back at the spec.
 - Disabling must be obvious and scoped to one command.
 - Upstream links must resolve, not be guessed.
 
@@ -42,8 +44,9 @@ Append to `## Rust notes`:
 
 ```markdown
 - Local builds may run through [kache](https://github.com/kunobi-ninja/kache):
-  it sits in `RUSTC_WRAPPER`, and plain `cargo` commands stay the same. Prefix a
-  command with `KACHE_DISABLED=1` when it must not touch the cache.
+  it configures Cargo for every project on the machine and sits in
+  `RUSTC_WRAPPER`; plain `cargo` commands stay the same. Prefix a command with
+  `KACHE_DISABLED=1` when it must not touch the cache.
 ```
 
 - [ ] **Step 2: Verify the claims still pass**
@@ -62,11 +65,12 @@ git commit -m "docs(agents): note the optional kache build wrapper"
 
 **Files:**
 - Modify: `README.md` (table of contents after the `Pedant compatibility` entry; new `## Development` section before `## Layout`)
-- Modify: `docs/claims.toml` (append two `[[claim]]` records)
+- Modify: `docs/claims.toml` (append four `[[claim]]` records)
 
 **Interfaces:**
 - Consumes: the `AGENTS.md` phrase `Local builds may run through` from Task 1.
-- Produces: README heading `### Faster local builds`, claim ids `readme-local-build-cache` and `readme-kache-rust-floor`.
+- Produces: README heading `### Faster local builds`, claim ids `readme-local-build-cache`,
+  `readme-kache-rust-floor`, `readme-kache-rust-upstream-floor` and `readme-kache-probe-preview`.
 
 - [ ] **Step 1: Add the table-of-contents entry**
 
@@ -90,7 +94,9 @@ lists the suites to run per area and the rules the code follows.
 keeps compile outputs, and restores them on later builds, so a rebuild after a branch switch or a
 second worktree does not start from scratch. It is a local tool: nothing needs it to build.
 
-Install it with your package manager and enable it once:
+Install it with your package manager and enable it once. `kache init` configures Cargo for every
+project in your account, so nothing here sets it up per repository; preview the changes with
+`kache init --check`, and add `--yes` when no terminal can answer its prompts:
 
 ```sh
 brew install kunobi-ninja/kunobi/kache   # apt, AUR, nix and mise also work
@@ -112,7 +118,7 @@ so; Cargo caching is still configured.
 
 Keep using `cargo` as usual; `kache stats` reports hits and misses. Install routes, daemon and
 store settings are in the [Kache documentation](https://kunobi.ninja/docs/kache/getting-started/installation).
-Disable the cache for one command with `KACHE_DISABLED=1`.
+Disable the cache for one command with `KACHE_DISABLED=1 cargo test`.
 ````
 
 The block above is the README text verbatim; `--probe` is v2-preview-only, so the stable formula
@@ -135,14 +141,37 @@ verify = { kind = "grep", path = "AGENTS.md", pattern = "Local builds may run th
 
 [[claim]]
 id = "readme-kache-rust-floor"
-summary = "README: cargo installs of kache need Rust 1.95, above the workspace floor."
+summary = "README: the workspace's Rust 1.94 floor is below kache's 1.95 cargo requirement."
 area = "tooling"
 status = "verified"
 surfaces = [
   { path = "README.md", needle = "Cargo installs need Rust 1.95 or newer" },
 ]
 verify = { kind = "grep", path = "Cargo.toml", pattern = "rust-version = \"1.94\"" }
+
+[[claim]]
+id = "readme-kache-rust-upstream-floor"
+summary = "kache's installation docs require Rust 1.95 or newer for `cargo install`."
+area = "tooling"
+status = "manual"
+surfaces = [
+  { path = "README.md", needle = "Cargo installs need Rust 1.95 or newer" },
+]
+verify = { kind = "manual", ref = "docs/superpowers/specs/2026-11-02-local-build-cache-design.md", checked = 2026-11-02 }
+
+[[claim]]
+id = "readme-kache-probe-preview"
+summary = "`kache doctor --probe` only exists in the v2 preview and the stable Homebrew formula is still 1.x."
+area = "tooling"
+status = "manual"
+surfaces = [
+  { path = "README.md", needle = "only exists in the v2 preview" },
+]
+verify = { kind = "manual", ref = "docs/superpowers/specs/2026-11-02-local-build-cache-design.md", checked = 2026-11-02 }
 ```
+
+Also update the plan's own constraints so they match: the two manual claims need
+the spec as `ref`, and the 90-day expiry applies to them.
 
 - [ ] **Step 4: Run the claim and workflow checks**
 

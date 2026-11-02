@@ -67,8 +67,9 @@ committing Rust. The homepage has no linter beyond `astro check`.
 - MCP tool calls must keep the structured log line: organization, principal,
   tool, duration, result count, outcome, and the target on writes.
 - Local builds may run through [kache](https://github.com/kunobi-ninja/kache):
-  it sits in `RUSTC_WRAPPER`, and plain `cargo` commands stay the same. Prefix a
-  command with `KACHE_DISABLED=1` when it must not touch the cache.
+  it configures Cargo for every project on the machine and sits in
+  `RUSTC_WRAPPER`; plain `cargo` commands stay the same. Prefix a command with
+  `KACHE_DISABLED=1` when it must not touch the cache.
 
 ## docker-e2e notes
 

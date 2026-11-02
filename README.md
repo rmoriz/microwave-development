@@ -127,7 +127,9 @@ lists the suites to run per area and the rules the code follows.
 keeps compile outputs, and restores them on later builds, so a rebuild after a branch switch or a
 second worktree does not start from scratch. It is a local tool: nothing needs it to build.
 
-Install it with your package manager and enable it once:
+Install it with your package manager and enable it once. `kache init` configures Cargo for every
+project in your account, so nothing here sets it up per repository; preview the changes with
+`kache init --check`, and add `--yes` when no terminal can answer its prompts:
 
 ```sh
 brew install kunobi-ninja/kunobi/kache   # apt, AUR, nix and mise also work
@@ -149,7 +151,7 @@ so; Cargo caching is still configured.
 
 Keep using `cargo` as usual; `kache stats` reports hits and misses. Install routes, daemon and
 store settings are in the [Kache documentation](https://kunobi.ninja/docs/kache/getting-started/installation).
-Disable the cache for one command with `KACHE_DISABLED=1`.
+Disable the cache for one command with `KACHE_DISABLED=1 cargo test`.
 
 ## Layout
 

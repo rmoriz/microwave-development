@@ -2173,10 +2173,30 @@ verify = { kind = "grep", path = "AGENTS.md", pattern = "Local builds may run th
 
 [[claim]]
 id = "readme-kache-rust-floor"
-summary = "README: cargo installs of kache need Rust 1.95, above the workspace floor."
+summary = "README: the workspace's Rust 1.94 floor is below kache's 1.95 cargo requirement."
 area = "tooling"
 status = "verified"
 surfaces = [
   { path = "README.md", needle = "Cargo installs need Rust 1.95 or newer" },
 ]
 verify = { kind = "grep", path = "Cargo.toml", pattern = "rust-version = \"1.94\"" }
+
+[[claim]]
+id = "readme-kache-rust-upstream-floor"
+summary = "kache's installation docs require Rust 1.95 or newer for `cargo install`."
+area = "tooling"
+status = "manual"
+surfaces = [
+  { path = "README.md", needle = "Cargo installs need Rust 1.95 or newer" },
+]
+verify = { kind = "manual", ref = "docs/superpowers/specs/2026-11-02-local-build-cache-design.md", checked = 2026-11-02 }
+
+[[claim]]
+id = "readme-kache-probe-preview"
+summary = "`kache doctor --probe` only exists in the v2 preview and the stable Homebrew formula is still 1.x."
+area = "tooling"
+status = "manual"
+surfaces = [
+  { path = "README.md", needle = "only exists in the v2 preview" },
+]
+verify = { kind = "manual", ref = "docs/superpowers/specs/2026-11-02-local-build-cache-design.md", checked = 2026-11-02 }

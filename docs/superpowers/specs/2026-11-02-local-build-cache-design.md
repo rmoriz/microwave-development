@@ -29,12 +29,15 @@ job changes.
 - The examples use Kache's stable channel (`brew install
   kunobi-ninja/kunobi/kache`, `cargo install kache --locked`, Nix). The v2
   preview is mentioned only through the upstream installation link; the
-  upstream docs pin release candidates themselves.
+  upstream docs pin release candidates themselves. `kache doctor --probe` is
+  v2-preview-only, and the stable Homebrew formula is still 1.x, so the README
+  says exactly that instead of implying the flag is part of the install.
 - `cargo install` needs Rust 1.95 or newer while the workspace pins
   `rust-version = "1.94"`, so the README says so and leads with the package
   managers.
-- Two claims in `docs/claims.toml` pin the new README statements: one greps
-  the `AGENTS.md` note, one greps the workspace `rust-version`.
+- Four claims in `docs/claims.toml` pin the new README statements: one greps
+  the `AGENTS.md` note, one greps the workspace `rust-version`, and two are
+  manual claims that point back at this spec.
 
 ## Verification
 
