@@ -6,8 +6,9 @@
 
 use microwave_store::{
     ActorType, ArtifactRepository, AuthzRepository, Compression, CookbookRepository,
-    IdentityRepository, KvRepository, MembershipRepository, NewNode, OAuthRepository,
-    ObjectRepository, PolicyRepository, SandboxRepository, SecretsRepository, COMPRESSED_PREFIX,
+    IdentityRepository, ImportTargetCounts, KvRepository, MembershipRepository, NewNode,
+    OAuthRepository, ObjectRepository, PolicyRepository, SandboxRepository, SecretsRepository,
+    COMPRESSED_PREFIX,
 };
 use microwave_store_postgres::PostgresStore;
 
@@ -711,6 +712,38 @@ async fn migration_adds_the_environment_constraints_column() {
         "re-running the migration did not restore the column"
     );
     store.migrate().await.expect("migration stays idempotent");
+
+    drop(store);
+    drop_scratch_database(&url, &name).await;
+}
+
+#[tokio::test]
+async fn import_target_counts_starts_empty_and_counts_orgs() {
+    let Some(url) = test_url() else {
+        eprintln!(
+            "SKIP: MICROWAVE_TEST_POSTGRES_URL is not set; start a disposable \
+             PostgreSQL with scripts/run-postgres-tests.sh"
+        );
+        return;
+    };
+    let suffix = suffix();
+    let (name, scratch_url) = create_scratch_database(&url, &suffix).await;
+    let store = PostgresStore::connect(&scratch_url)
+        .await
+        .expect("connect to fresh scratch database");
+
+    assert_eq!(
+        store.import_target_counts().await.unwrap(),
+        ImportTargetCounts::default()
+    );
+
+    store
+        .create_org(&format!("counts-org-{suffix}"), "Counts Org")
+        .await
+        .unwrap();
+    let counts = store.import_target_counts().await.unwrap();
+    assert_eq!(counts.orgs, 1);
+    assert_eq!(counts.users, 0);
 
     drop(store);
     drop_scratch_database(&url, &name).await;

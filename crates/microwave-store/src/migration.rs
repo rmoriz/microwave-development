@@ -11,6 +11,16 @@ use crate::sqlite::{SqliteStore, StoreError};
 use rusqlite::{params, Connection, Row, Transaction};
 use serde::{Deserialize, Serialize};
 
+/// Row counts that decide whether a snapshot import target is still empty.
+///
+/// A target counts as empty with zero orgs and at most one user, the bootstrap
+/// superuser.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ImportTargetCounts {
+    pub orgs: i64,
+    pub users: i64,
+}
+
 /// A complete logical dump of a local Microwave store.
 ///
 /// Every collection is optional when deserializing so older or partial
@@ -514,6 +524,22 @@ pub struct TelemetryRow {
 }
 
 impl SqliteStore {
+    /// Count the org and user rows that decide whether an import target is
+    /// still empty.
+    pub fn import_target_counts(&self) -> Result<ImportTargetCounts, StoreError> {
+        let connection = self.connection();
+        Ok(connection.query_row(
+            "SELECT (SELECT COUNT(*) FROM orgs), (SELECT COUNT(*) FROM users)",
+            [],
+            |row| {
+                Ok(ImportTargetCounts {
+                    orgs: row.get(0)?,
+                    users: row.get(1)?,
+                })
+            },
+        )?)
+    }
+
     /// Read every migration-relevant table into a [`StoreSnapshot`].
     ///
     /// This full-fidelity form includes secret-bearing `kvpair`, OAuth grant

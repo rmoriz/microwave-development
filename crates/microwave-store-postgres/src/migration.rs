@@ -20,10 +20,11 @@ use microwave_store::{
     AuthzAclGroupRow, AuthzEntityRow, AuthzGroupActorRow, AuthzGroupGroupRow, ChecksumRow,
     ClientRow, Compression, ContainerRow, CookbookArtifactRow, CookbookArtifactVersionChecksumRow,
     CookbookArtifactVersionRow, CookbookRow, CookbookVersionChecksumRow, CookbookVersionRow,
-    DataBagItemRow, GlobalGroupRow, GroupRow, KvPairRow, NamedObjectRow, NodeRow,
-    OAuthAccessGrantRow, OAuthAccessTokenRow, OAuthApplicationRow, OrgRow, OrgUserAssociationRow,
-    OrgUserInviteRow, PolicyGroupRevisionAssociationRow, PolicyGroupRow, PolicyRevisionRow,
-    PolicyRow, SandboxRow, SandboxedChecksumRow, StoreError, StoreSnapshot, TelemetryRow, UserRow,
+    DataBagItemRow, GlobalGroupRow, GroupRow, ImportTargetCounts, KvPairRow, NamedObjectRow,
+    NodeRow, OAuthAccessGrantRow, OAuthAccessTokenRow, OAuthApplicationRow, OrgRow,
+    OrgUserAssociationRow, OrgUserInviteRow, PolicyGroupRevisionAssociationRow, PolicyGroupRow,
+    PolicyRevisionRow, PolicyRow, SandboxRow, SandboxedChecksumRow, StoreError, StoreSnapshot,
+    TelemetryRow, UserRow,
 };
 use sqlx::postgres::{PgRow, Postgres};
 use sqlx::{Row, Transaction};
@@ -33,6 +34,19 @@ use crate::store::{db, PostgresStore};
 type PgTransaction<'a> = Transaction<'a, Postgres>;
 
 impl PostgresStore {
+    /// Count the org and user rows that decide whether an import target is
+    /// still empty.
+    pub async fn import_target_counts(&self) -> Result<ImportTargetCounts, StoreError> {
+        let row = sqlx::query("SELECT (SELECT COUNT(*) FROM orgs), (SELECT COUNT(*) FROM users)")
+            .fetch_one(self.pool())
+            .await
+            .map_err(db)?;
+        Ok(ImportTargetCounts {
+            orgs: integer(&row, 0)?,
+            users: integer(&row, 1)?,
+        })
+    }
+
     /// Read every migration-relevant table into a [`StoreSnapshot`].
     ///
     /// This full-fidelity form includes secret-bearing `kvpair`, OAuth grant

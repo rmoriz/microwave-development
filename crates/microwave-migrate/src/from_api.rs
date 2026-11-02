@@ -129,6 +129,7 @@ pub fn crawl_from_api_with_summary(
                 kind: SnapshotSourceKind::LegacyApi,
                 url: Some(crawler.base_url.clone()),
                 data_dir,
+                layout: None,
             },
             secrets_included: false,
             data: crawler.data,

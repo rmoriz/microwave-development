@@ -30,7 +30,7 @@
 
 use chrono::{SecondsFormat, Utc};
 pub use microwave_store::Compression;
-use microwave_store::{SqliteStore, StoreError, StoreSnapshot};
+use microwave_store::{ImportTargetCounts, SqliteStore, StoreError, StoreSnapshot};
 use microwave_store_postgres::PostgresStore;
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, BufWriter, Write};
@@ -100,6 +100,10 @@ pub struct SnapshotSource {
     pub kind: SnapshotSourceKind,
     pub url: Option<String>,
     pub data_dir: Option<String>,
+    /// Layout of the source data, e.g. `goiardi`. Snapshots written before the
+    /// field existed omit it and are imported with merge semantics.
+    #[serde(default)]
+    pub layout: Option<String>,
 }
 
 impl Default for SnapshotSource {
@@ -108,6 +112,7 @@ impl Default for SnapshotSource {
             kind: SnapshotSourceKind::LocalStore,
             url: None,
             data_dir: None,
+            layout: None,
         }
     }
 }
@@ -172,6 +177,10 @@ pub enum MigrateError {
         "target store already has user {username:?} with a different id; re-run with --merge-users to reuse it"
     )]
     ExistingUser { username: String },
+    #[error(
+        "target already contains data (orgs: {orgs}, users: {users}); goiardi imports do not merge, use a fresh data directory or database"
+    )]
+    TargetNotEmpty { orgs: i64, users: i64 },
     #[error("crypto error: {0}")]
     Crypto(#[from] microwave_crypto::CryptoError),
     #[error("failed to build tokio runtime: {0}")]
@@ -229,6 +238,7 @@ pub fn export_database_with_options(
             kind: SnapshotSourceKind::LocalStore,
             url: None,
             data_dir: Some(data_dir_of(database)),
+            layout: None,
         },
         secrets_included: include_secrets,
         data,
@@ -274,6 +284,10 @@ pub fn import_database_with_compression(
         }
     }
     let store = SqliteStore::open_with_compression(database, compression)?;
+    ensure_empty_goiardi_target(
+        &store.import_target_counts()?,
+        snapshot.source.layout.as_deref(),
+    )?;
     store.import_snapshot(&snapshot.data)?;
     Ok(())
 }
@@ -309,6 +323,7 @@ pub fn export_postgres_with_options(
             kind: SnapshotSourceKind::LocalStore,
             url: None,
             data_dir: None,
+            layout: None,
         },
         secrets_included: include_secrets,
         data,
@@ -343,7 +358,27 @@ pub fn import_postgres_with_compression(
         database_url,
         compression,
     ))?;
+    let counts = runtime.block_on(store.import_target_counts())?;
+    ensure_empty_goiardi_target(&counts, snapshot.source.layout.as_deref())?;
     runtime.block_on(store.import_snapshot(&snapshot.data))?;
+    Ok(())
+}
+
+/// Goiardi snapshots carry a fresh-install layout and are imported without
+/// merging, so the target may hold at most the bootstrap superuser.
+fn ensure_empty_goiardi_target(
+    target: &ImportTargetCounts,
+    layout: Option<&str>,
+) -> Result<(), MigrateError> {
+    if layout != Some("goiardi") {
+        return Ok(());
+    }
+    if target.orgs > 0 || target.users > 1 {
+        return Err(MigrateError::TargetNotEmpty {
+            orgs: target.orgs,
+            users: target.users,
+        });
+    }
     Ok(())
 }
 
