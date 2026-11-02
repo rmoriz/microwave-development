@@ -88,6 +88,8 @@ calls get their `503`.
   the sites get `<meta http-equiv>` tags.
 - Translation, `apple-touch-icon`, or a raster `.ico`.
 - Headers on API responses.
+- Serving the page from disk. The assets are compiled in, so changing them
+  needs a rebuild; an operator override (`server.landing_dir`) can come later.
 
 ## Anti-goals
 
@@ -152,6 +154,12 @@ Stylesheet sources: `tokens.css`, `global.css` and `components.css` are
 embedded with `include_str!` from `website/homepage/src/styles/`; `fonts.css`
 and `landing.css` live in `assets/landing/`. `OFL.txt` is repository material
 and is not served.
+
+Everything is compiled in: `include_str!` for text, `include_bytes!` for the
+woff2 files, no `rust-embed`, no runtime path, no missing-asset case at startup
+and nothing to copy in the packaging or container build. The included paths are
+checked by the compiler, so a moved stylesheet fails the build instead of the
+page. The page's cost is roughly 85 KB of binary before compression.
 
 `crates/microwave-api/src/landing.rs` embeds them and exposes:
 
