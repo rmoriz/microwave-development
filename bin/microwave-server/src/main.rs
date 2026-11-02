@@ -297,10 +297,17 @@ fn listener_scheme(config: &Config) -> &'static str {
     }
 }
 
-/// Base URL for local `/bookshelf` presigned links. It follows the listener
-/// scheme because the server may serve HTTPS directly.
+/// Base URL for local `/bookshelf` presigned links.
+///
+/// `server.public_url` wins so a proxy-hosted deployment can hand out links on
+/// the name clients use instead of the socket it listens on. Without it the
+/// listener scheme and `server.bind` are used, because the server may serve
+/// HTTPS directly.
 fn local_object_store_base_url(config: &Config) -> String {
-    format!("{}://{}", listener_scheme(config), config.server.bind)
+    match config.server.public_url.as_deref() {
+        Some(url) => url.trim_end_matches('/').to_string(),
+        None => format!("{}://{}", listener_scheme(config), config.server.bind),
+    }
 }
 
 fn build_object_store(
@@ -679,6 +686,23 @@ mod tests {
         assert_eq!(
             local_object_store_base_url(&disabled),
             "http://0.0.0.0:8000"
+        );
+    }
+
+    #[test]
+    fn local_object_store_prefers_the_public_url() {
+        let mut config = Config::default();
+        config.server.public_url = Some("https://microwave.example.com".into());
+        assert_eq!(
+            local_object_store_base_url(&config),
+            "https://microwave.example.com"
+        );
+
+        // A trailing slash would produce `//bookshelf` in the presigned path.
+        config.server.public_url = Some("https://microwave.example.com/".into());
+        assert_eq!(
+            local_object_store_base_url(&config),
+            "https://microwave.example.com"
         );
     }
 

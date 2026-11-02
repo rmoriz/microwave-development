@@ -127,7 +127,7 @@ tell it.
 |---|---|
 | `server.bind`<br/>`MW_SERVER__BIND` | Default `0.0.0.0:8000`. Listener address. Plain HTTP unless `server.tls` is configured. |
 | `server.worker_threads`<br/>`MW_SERVER__WORKER_THREADS` | Default `0`. `0` = size from available CPUs. |
-| `server.public_url`<br/>`MW_SERVER__PUBLIC_URL` | Unset by default. Public origin used to build password-reset links, e.g. `https://chef.example.com`. Required when mail is enabled. Must be an absolute origin with no credentials, path, query, or fragment. `https` is required except for loopback hosts, which may use `http`. |
+| `server.public_url`<br/>`MW_SERVER__PUBLIC_URL` | Unset by default. Public origin used to build password-reset links and, with the local object store, `/bookshelf` blob links, e.g. `https://chef.example.com`. Required when mail is enabled. Must be an absolute origin with no credentials, path, query, or fragment. `https` is required except for loopback hosts, which may use `http`. |
 | `server.default_orgname`<br/>`MW_SERVER__DEFAULT_ORGNAME` | Unset by default. Rewrite upstream short paths (`/nodes`, `/search`, `/cookbooks`, …) to this organization. Signature verification still uses the client's original path. |
 | `server.trusted_proxies`<br/>`MW_SERVER__TRUSTED_PROXIES` | Empty by default. Comma-separated IPs/CIDRs/socket addresses allowed to set `X-Forwarded-Host`/`X-Forwarded-Proto`. Untrusted peers fall back to `Host`. |
 
@@ -368,9 +368,10 @@ Operational notes:
   certificate is suitable only for tests or when the CA is installed on every
   client.
 - When TLS is enabled, presigned URLs for the local `/bookshelf` backend use
-  `https://<server.bind>` instead of `http://`, and API-generated URLs fall
-  back to `https` when no `X-Forwarded-Proto` header is present. A proxy may
-  still override the scheme with that header.
+  `https://<server.bind>` instead of `http://`, unless `server.public_url`
+  names a host, which always wins; API-generated URLs fall back to `https`
+  when no `X-Forwarded-Proto` header is present. A proxy may still override
+  the scheme with that header.
 - A TLS-terminating load balancer or reverse proxy in front of plain HTTP
   remains fully supported and is still the simplest option when you need
   automatic certificate rotation, multiple hostnames, or centralized TLS
@@ -920,15 +921,16 @@ secret_key = "..."
 ### The object store caveat
 
 With `backend = "local"`, presigned `/bookshelf` URLs are built from
-`server.bind` (for example `http://0.0.0.0:8000/bookshelf/...`). They are not
-derived from the incoming `Host`/`X-Forwarded-Host` the way API URLs are. For a
-single host this is harmless; behind NAT, a proxy, or for remote
-`chef-client` nodes it is not usable. Options today:
+`server.public_url` when it is set, otherwise from `server.bind` (for example
+`http://0.0.0.0:8000/bookshelf/...`). They are not derived from the incoming
+`Host`/`X-Forwarded-Host` the way API URLs are. A bind address that is not the
+address clients use — a wildcard bind, a proxy, or NAT in front — makes them
+unusable, so set `server.public_url` to the name clients reach:
 
-- bind the server to the address clients use, when that address is local to
-  the host, or
-- use S3/Garage for cookbook blobs (recommended for anything fronted by a
-  proxy).
+- `server.public_url` fixes the host of blob links without changing the listen
+  address, so a later hostname change is a configuration change, or
+- use S3/Garage for cookbook blobs, where links point at the object store
+  endpoint and are independent of the API host.
 
 This is a server limitation, not a configuration mistake.
 
