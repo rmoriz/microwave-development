@@ -217,3 +217,20 @@ test('final CTA, footer, and legal pages', () => {
   assert.match(imprint, /DE246360556/);
   assert.doesNotMatch(imprint, /to be supplied|must be completed/);
 });
+
+test('the head carries the security metas', () => {
+  const metas = new Map(
+    $('meta[http-equiv]')
+      .toArray()
+      .map((el) => [$(el).attr('http-equiv').toLowerCase(), $(el).attr('content')]),
+  );
+  const csp = metas.get('content-security-policy');
+  assert.ok(csp, 'Content-Security-Policy meta');
+  assert.match(csp, /frame-ancestors 'none'/);
+  assert.match(csp, /script-src 'self' 'unsafe-inline' https:\/\/www\.youtube\.com/);
+  assert.match(csp, /frame-src https:\/\/www\.youtube-nocookie\.com/);
+  assert.equal(metas.get('x-content-type-options'), 'nosniff');
+  assert.equal(metas.get('x-xss-protection'), '1');
+  assert.equal(metas.get('referrer-policy'), 'no-referrer');
+  assert.equal($('link[rel="icon"]').attr('href'), `${BASE_PATH}/favicon.svg`);
+});

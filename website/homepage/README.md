@@ -65,8 +65,28 @@ environment deployment.
 
 ### Cache headers
 
-Pages serves its own header defaults, so these values are aspirational until a
-header layer exists:
+Pages serves its own header defaults. Because Pages gives no header
+configuration, the site carries its security policy as `<meta http-equiv>` tags
+in `src/layouts/Base.astro`:
+
+- `Content-Security-Policy`: `default-src 'self'`; scripts from `'self'`,
+  `'unsafe-inline'` and `https://www.youtube.com` (the iframe API), the
+  asciinema player's WebAssembly needs `'wasm-unsafe-eval'` instead of
+  `'unsafe-eval'`; frames only from `https://www.youtube-nocookie.com`; images
+  from `'self'` and `data:`; fonts from `'self'` and `data:` (Astro inlines the
+  small subsets)
+- `X-Content-Type-Options: nosniff`
+- `X-XSS-Protection: 1`
+- `Referrer-Policy: no-referrer`
+
+`X-Frame-Options` cannot be expressed in a meta tag, so `frame-ancestors 'none'`
+in the CSP carries that job. Browsers currently only honour `frame-ancestors`
+from a real header, so the meta tag documents the intent and a header layer
+would enforce it. The e2e console check ignores the browser's one-line notice
+for that directive, nothing else.
+
+`${BASE_PATH}/_astro/*` is cache-busted by content hashes. Pages sets its own
+cache headers on top:
 
 - `${BASE_PATH}/_astro/*`: `public, max-age=31536000, immutable`
 - HTML: short-lived, revalidated on deploy
