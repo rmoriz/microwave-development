@@ -234,3 +234,58 @@ async fn client_can_read_roles_and_nodes_needed_for_a_converge() {
         .unwrap()
         .contains(&json!("normal")));
 }
+
+/// A node saves itself at the end of every converge without holding an ACE on
+/// the object: upstream special-cases the node whose name matches the client.
+#[tokio::test]
+async fn client_may_update_and_delete_its_own_node_without_an_ace() {
+    let state = support::state_with_pivotal();
+    let app = support::app(state.clone());
+    create_org(&app).await;
+    create_client(&app, "node1").await;
+
+    for name in ["node1", "node2"] {
+        let body = json!({"name": name}).to_string();
+        let (status, _) = request(
+            &app,
+            "POST",
+            "/organizations/acme/nodes",
+            body.as_bytes(),
+            "pivotal",
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    let own = json!({"name": "node1", "run_list": []}).to_string();
+    let (status, _) = request(
+        &app,
+        "PUT",
+        "/organizations/acme/nodes/node1",
+        own.as_bytes(),
+        "node1",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let other = json!({"name": "node2", "run_list": []}).to_string();
+    let (status, _) = request(
+        &app,
+        "PUT",
+        "/organizations/acme/nodes/node2",
+        other.as_bytes(),
+        "node1",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _) = request(
+        &app,
+        "DELETE",
+        "/organizations/acme/nodes/node1",
+        b"",
+        "node1",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
