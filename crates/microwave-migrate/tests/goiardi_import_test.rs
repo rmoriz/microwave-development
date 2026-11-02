@@ -1,7 +1,7 @@
 mod common;
 
 use common::{full_goiardi_routes, options, start_server};
-use microwave_migrate::{from_goiardi_with_options, import, MigrateError};
+use microwave_migrate::{from_goiardi_with_options, import, read_snapshot, MigrateError};
 use microwave_store::{ActorType, Permission, SqliteStore};
 
 #[test]
@@ -50,4 +50,37 @@ fn import_roundtrip_keeps_keys_acls_and_blobs_and_refuses_a_second_import() {
     assert!(!records.is_empty());
     assert!(records.iter().all(|record| record.method == "GET"));
     assert!(records.iter().all(|record| record.verified));
+}
+
+#[test]
+fn source_without_an_admin_user_still_imports_a_synthesized_admin() {
+    let (routes, _, _) = full_goiardi_routes();
+    let routes = routes
+        .into_iter()
+        .filter(|(path, _)| !path.starts_with("/users"))
+        .collect();
+    let (url, _) = start_server(routes);
+    let data = tempfile::tempdir().unwrap();
+    let snapshot_path = data.path().join("snapshot.json");
+    let mut options = options(&url, data.path());
+    options.bookshelf_dir = Some(data.path().join("bookshelf"));
+
+    let summary = from_goiardi_with_options(&options).unwrap();
+    assert!(summary
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("synthesized")));
+
+    let snapshot = read_snapshot(&snapshot_path).unwrap();
+    let org_id = snapshot.data.orgs[0].id.clone();
+    import(data.path(), &snapshot_path).unwrap();
+
+    let store = SqliteStore::open(&data.path().join("microwave.db")).unwrap();
+    let admin = store
+        .find_user("admin")
+        .unwrap()
+        .expect("synthesized admin");
+    assert!(admin.admin);
+    let orgs = store.list_user_orgs(&admin.id).unwrap();
+    assert!(orgs.iter().any(|org| org.id == org_id));
 }

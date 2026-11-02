@@ -10,6 +10,8 @@ use microwave_migrate::{
 use serde_json::json;
 
 const PUBLIC_KEY: &str = include_str!("../../microwave-crypto/tests/fixtures/test_key_pub.pem");
+const SYNTHESIZED_ADMIN: &str =
+    "source has no user named \"admin\"; synthesized one for the organization association";
 
 fn tempdir() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
@@ -58,7 +60,7 @@ fn crawls_objects_raw_and_skips_default_environment() {
     assert_eq!(snapshot.data.data_bag_items[0].item_name, "db");
     assert_eq!(summary.data_bag_items, 1);
     // The node sits in `_default`, which must count as a known environment.
-    assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+    assert_eq!(summary.warnings, [SYNTHESIZED_ADMIN]);
     // The summary counts the environment rows, the synthesized one included.
     assert_eq!(summary.environments, snapshot.data.environments.len());
 }
@@ -70,7 +72,7 @@ fn node_in_default_environment_does_not_warn_when_the_source_omits_it() {
     routes[4].1 = json_route(json!({}));
     let (url, _) = start_server(routes);
     let (_, summary) = crawl_from_goiardi(&options(&url, dir.path())).unwrap();
-    assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+    assert_eq!(summary.warnings, [SYNTHESIZED_ADMIN]);
 }
 
 #[test]
@@ -209,7 +211,7 @@ fn derives_a_missing_blob_url_from_base_and_copies_the_blob() {
     assert_eq!(summary.cookbooks, 1);
     assert_eq!(summary.cookbook_versions, 1);
     assert_eq!(summary.checksums, 1);
-    assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+    assert_eq!(summary.warnings, [SYNTHESIZED_ADMIN]);
     assert_eq!(snapshot.data.cookbooks[0].name, "app");
 
     let version = &snapshot.data.cookbook_versions[0];

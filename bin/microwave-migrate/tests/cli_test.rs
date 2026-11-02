@@ -986,6 +986,27 @@ fn from_goiardi_writes_a_snapshot_and_reports_the_bookshelf() {
     assert_eq!(snapshot.source.layout.as_deref(), Some("goiardi"));
     assert_eq!(snapshot.data.orgs[0].name, "acme");
     assert_eq!(snapshot.data.orgs[0].full_name, "Acme");
+    // The zero-user source still produces an importable admin user.
+    let admin = snapshot
+        .data
+        .users
+        .iter()
+        .find(|user| user.username == "admin")
+        .expect("synthesized admin");
+    assert!(admin.admin);
+
+    let target = tempfile::tempdir().unwrap();
+    let imported = run(&[
+        "import",
+        "--data-dir",
+        target.path().to_str().unwrap(),
+        "--input",
+        output.to_str().unwrap(),
+        "--yes",
+    ]);
+    assert!(imported.status.success(), "{}", stderr(&imported));
+    let store = SqliteStore::open(&database(target.path())).unwrap();
+    assert!(store.find_user("admin").unwrap().unwrap().admin);
 
     let dry_run_output = dir.path().join("dry-run.json");
     let dry_run_bookshelf = dir.path().join("dry-run-bookshelf");

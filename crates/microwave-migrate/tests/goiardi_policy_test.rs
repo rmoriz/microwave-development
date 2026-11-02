@@ -164,11 +164,20 @@ fn builder_matches_create_organization() {
     let client = store
         .create_client_with_acl(&org.id, "web1", false, false, Some(&creator.authz_id))
         .unwrap();
-    let clients_group = store.find_group(&org.id, "clients").unwrap().unwrap();
-    store
-        .add_group_member(&clients_group.authz_id, &client.authz_id)
+    // Validators get the creator grant but no self-service ACL.
+    let validator = store
+        .create_client_with_acl(&org.id, "validator1", true, false, Some(&creator.authz_id))
         .unwrap();
-    let client_authz = vec![client.authz_id.clone()];
+    let clients_group = store.find_group(&org.id, "clients").unwrap().unwrap();
+    for client in [&client, &validator] {
+        store
+            .add_group_member(&clients_group.authz_id, &client.authz_id)
+            .unwrap();
+    }
+    let client_authz = vec![
+        (client.authz_id.clone(), false),
+        (validator.authz_id.clone(), true),
+    ];
 
     // The reference is the real server policy, canonicalized from uuids to names.
     let reference_snapshot = store.export_snapshot().unwrap();
@@ -199,15 +208,18 @@ fn builder_matches_create_organization() {
             ..Default::default()
         });
     }
-    built.clients.push(microwave_store::ClientRow {
-        id: client.id.clone(),
-        org_id: org.id.clone(),
-        authz_id: client.authz_id.clone(),
-        name: client.name.clone(),
-        created_at: NOW.to_string(),
-        updated_at: NOW.to_string(),
-        ..Default::default()
-    });
+    for client in [&client, &validator] {
+        built.clients.push(microwave_store::ClientRow {
+            id: client.id.clone(),
+            org_id: org.id.clone(),
+            authz_id: client.authz_id.clone(),
+            name: client.name.clone(),
+            validator: client.validator,
+            created_at: NOW.to_string(),
+            updated_at: NOW.to_string(),
+            ..Default::default()
+        });
+    }
 
     let org_row = built.orgs[0].clone();
     apply_default_policy(
@@ -278,6 +290,32 @@ fn builder_matches_create_organization() {
         )));
     }
     assert!(memberships.contains(&("clients".to_string(), "web1".to_string())));
+
+    // A validator inherits the container ACL and joins the group, but unlike
+    // the non-validator client above it does not own itself.
+    for permission in ["create", "read", "update", "delete", "grant"] {
+        assert!(grants.contains(&(
+            "validator1".to_string(),
+            permission.to_string(),
+            "actor",
+            "admin".to_string()
+        )));
+        assert!(!grants.contains(&(
+            "validator1".to_string(),
+            permission.to_string(),
+            "actor",
+            "validator1".to_string()
+        )));
+    }
+    for permission in ["read", "delete"] {
+        assert!(grants.contains(&(
+            "validator1".to_string(),
+            permission.to_string(),
+            "group",
+            "users".to_string()
+        )));
+    }
+    assert!(memberships.contains(&("clients".to_string(), "validator1".to_string())));
     // Nodes-only ACEs do not leak onto the client.
     assert!(!grants.contains(&(
         "web1".to_string(),
@@ -384,7 +422,10 @@ fn object_acls_copy_the_container_acl_and_add_the_creator() {
         &mut built,
         &org,
         creator,
-        &["client-a".to_string(), "client-b".to_string()],
+        &[
+            ("client-a".to_string(), false),
+            ("client-b".to_string(), false),
+        ],
         &object_authz,
         NOW,
     );
@@ -494,7 +535,10 @@ fn object_acls_copy_the_container_acl_and_add_the_creator() {
         &mut again,
         &org,
         creator,
-        &["client-a".to_string(), "client-b".to_string()],
+        &[
+            ("client-a".to_string(), false),
+            ("client-b".to_string(), false),
+        ],
         &object_authz,
         NOW,
     );

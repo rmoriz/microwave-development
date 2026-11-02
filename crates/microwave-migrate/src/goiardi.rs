@@ -948,8 +948,49 @@ impl Crawler {
             .get("admin")
             .cloned()
             .unwrap_or_else(|| synthetic_id("authz:user:admin"));
+        // The source account may have been renamed, but the policy and the org
+        // association need an `admin` user row either way. Synthesize one
+        // instead of failing; the operator resets its password after import.
+        if !self
+            .data
+            .users
+            .iter()
+            .any(|user| user.authz_id == admin_authz)
+        {
+            self.data.users.push(UserRow {
+                id: synthetic_id("user:admin"),
+                authz_id: admin_authz.clone(),
+                username: "admin".to_string(),
+                email: None,
+                password_hash: String::new(),
+                password_salt: String::new(),
+                hash_type: "bcrypt".to_string(),
+                admin: true,
+                recovery_authentication_enabled: true,
+                last_updated_by: "admin".to_string(),
+                created_at: self.generated_at.clone(),
+                updated_at: self.generated_at.clone(),
+                ..UserRow::default()
+            });
+            self.summary.users += 1;
+            self.summary.warnings.push(
+                "source has no user named \"admin\"; synthesized one for the organization association"
+                    .to_string(),
+            );
+        }
         // Sorted so repeated crawls write the same rows in the same order.
-        let mut client_authz: Vec<String> = self.client_authz.values().cloned().collect();
+        let mut client_authz: Vec<(String, bool)> = self
+            .client_authz
+            .values()
+            .map(|authz_id| {
+                let validator = self
+                    .data
+                    .clients
+                    .iter()
+                    .any(|client| client.authz_id == *authz_id && client.validator);
+                (authz_id.clone(), validator)
+            })
+            .collect();
         client_authz.sort_unstable();
         let object_authz = self.object_authz.clone();
         let org = self.org.clone();
@@ -1035,7 +1076,7 @@ pub fn apply_default_policy(
     data: &mut StoreSnapshot,
     org: &OrgRow,
     admin_authz: &str,
-    client_authz: &[String],
+    client_authz: &[(String, bool)],
     object_authz: &[(String, String)],
     generated_at: &str,
 ) {
@@ -1138,7 +1179,7 @@ pub fn apply_default_policy(
 
     add_group_member(data, admins, admin_authz);
     add_group_member(data, users, admin_authz);
-    for client in client_authz {
+    for (client, _) in client_authz {
         add_group_member(data, clients, client);
     }
     add_group_child(data, &read_access, admins);
@@ -1295,13 +1336,15 @@ pub fn apply_default_policy(
         copy_container_acl(data, container, target, admin_authz);
     }
 
-    // A client is an object of the `clients` container and owns its own ACL:
-    // the API copies the container ACL onto the new client and lets the client
-    // manage itself.
-    for client in client_authz {
+    // A client is an object of the `clients` container and inherits its ACL.
+    // Non-validator clients may also manage themselves; validators have no
+    // self-service grants, matching `create_client_with_acl`.
+    for (client, validator) in client_authz {
         ensure_entity(data, client, "actor", Some(&org.id), generated_at);
         copy_container_acl(data, "clients", client, admin_authz);
-        grant_actor_all(data, client, client);
+        if !*validator {
+            grant_actor_all(data, client, client);
+        }
     }
 }
 
