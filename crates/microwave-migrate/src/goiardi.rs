@@ -225,7 +225,10 @@ impl Crawler {
 
     fn crawl_objects(&mut self) -> Result<(), MigrateError> {
         let org = self.org.clone();
-        // Environments come first so node validation knows every valid name.
+        // The policy creates `_default`, so it is a valid name even when the
+        // source does not list it. Environments come first so node validation
+        // knows every other valid name too.
+        self.environment_names.insert("_default".to_string());
         self.crawl_named_objects(&org)?;
         self.crawl_nodes(&org)?;
         if self.skip_orphan_clients {

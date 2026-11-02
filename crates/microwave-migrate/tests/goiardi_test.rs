@@ -14,6 +14,7 @@ const NODE: &str = r#"{"name":"web1","chef_environment":"_default","normal":{},"
 const ROLE: &str =
     r#"{"name":"web","run_list":[],"default_attributes":{},"override_attributes":{}}"#;
 const ENV: &str = r#"{"name":"production","cookbook_versions":{},"default_attributes":{},"override_attributes":{}}"#;
+const DEFAULT_ENV: &str = r#"{"name":"_default","cookbook_versions":{},"default_attributes":{},"override_attributes":{}}"#;
 const BAG_ITEM: &str = r#"{"id":"db","password":"x"}"#;
 
 fn tempdir() -> tempfile::TempDir {
@@ -28,9 +29,13 @@ fn crawl_objects_routes() -> Vec<(&'static str, Route)> {
         ("/roles/web", raw_route(ROLE)),
         (
             "/environments",
-            json_route(json!({"production": "/environments/production"})),
+            json_route(json!({
+                "_default": "/environments/_default",
+                "production": "/environments/production",
+            })),
         ),
         ("/environments/production", raw_route(ENV)),
+        ("/environments/_default", raw_route(DEFAULT_ENV)),
         ("/data", json_route(json!({"secrets": "/data/secrets"}))),
         (
             "/data/secrets",
@@ -56,6 +61,18 @@ fn crawls_objects_raw_and_skips_default_environment() {
     assert_eq!(snapshot.data.data_bags[0].name, "secrets");
     assert_eq!(snapshot.data.data_bag_items[0].item_name, "db");
     assert_eq!(summary.data_bag_items, 1);
+    // The node sits in `_default`, which must count as a known environment.
+    assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+}
+
+#[test]
+fn node_in_default_environment_does_not_warn_when_the_source_omits_it() {
+    let dir = tempdir();
+    let mut routes = crawl_objects_routes();
+    routes[4].1 = json_route(json!({}));
+    let (url, _) = start_server(routes);
+    let (_, summary) = crawl_from_goiardi(&options(&url, dir.path())).unwrap();
+    assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
 }
 
 #[test]
@@ -102,6 +119,30 @@ fn skip_orphan_clients_keeps_validator_and_webui() {
         ),
     ]);
     let (url, _) = start_server(routes);
+
+    // The unfiltered crawl shows the rows the filter has to remove.
+    let unfiltered_dir = tempdir();
+    let (unfiltered, _) = crawl_from_goiardi(&options(&url, unfiltered_dir.path())).unwrap();
+    let old1 = unfiltered
+        .data
+        .clients
+        .iter()
+        .find(|client| client.name == "old1")
+        .expect("old1 imported without the filter");
+    let old1_key = unfiltered
+        .data
+        .actor_keys
+        .iter()
+        .find(|key| key.actor_id == old1.id)
+        .expect("old1 has a key");
+    assert!(!old1_key.public_key.is_empty());
+    assert!(unfiltered
+        .data
+        .authz_entities
+        .iter()
+        .any(|entity| entity.authz_id == old1.authz_id));
+    let (old1_id, old1_authz) = (old1.id.clone(), old1.authz_id.clone());
+
     let mut options = options(&url, dir.path());
     options.skip_orphan_clients = true;
     let (snapshot, _) = crawl_from_goiardi(&options).unwrap();
@@ -113,6 +154,16 @@ fn skip_orphan_clients_keeps_validator_and_webui() {
         .collect();
     names.sort_unstable();
     assert_eq!(names, ["chef-validator", "chef-webui", "web1"]);
+    assert!(!snapshot
+        .data
+        .actor_keys
+        .iter()
+        .any(|key| key.actor_id == old1_id));
+    assert!(!snapshot
+        .data
+        .authz_entities
+        .iter()
+        .any(|entity| entity.authz_id == old1_authz));
 }
 
 #[test]
