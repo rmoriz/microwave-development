@@ -230,6 +230,84 @@ fn write_key(dir: &Path) -> std::path::PathBuf {
     path
 }
 
+const FULL_USER: &str = r#"{"username":"admin","name":"admin","email":"ops@example.com","admin":true,"public_key":"<PUBLIC_KEY>"}"#;
+const FULL_CLIENT: &str =
+    r#"{"name":"web1","admin":false,"validator":false,"public_key":"<PUBLIC_KEY>"}"#;
+const FULL_NODE: &str =
+    r#"{"name":"web1","chef_environment":"_default","normal":{},"run_list":[]}"#;
+const FULL_ROLE: &str =
+    r#"{"name":"web","run_list":[],"default_attributes":{},"override_attributes":{}}"#;
+const FULL_ENV: &str = r#"{"name":"production","cookbook_versions":{},"default_attributes":{},"override_attributes":{}}"#;
+const FULL_DEFAULT_ENV: &str = r#"{"name":"_default","cookbook_versions":{},"default_attributes":{},"override_attributes":{}}"#;
+const FULL_BAG_ITEM: &str = r#"{"id":"db","password":"x"}"#;
+
+/// The union of every fixture route the goiardi tests serve: one user, client,
+/// node, role, environment, data bag item and cookbook version, plus the
+/// `/file_store/<checksum>` blob the version's recipe references without a URL.
+///
+/// Returns the routes and the checksum of the served blob.
+pub fn full_goiardi_routes() -> (Vec<(&'static str, Route)>, String) {
+    let (body, checksum, blob_path) = blob_fixture("import");
+    let versions = serde_json::json!([{"version": "1.2.3", "url": "/cookbooks/app/1.2.3"}]);
+    let cookbook = serde_json::json!({"app": {"url": "/cookbooks/app", "versions": versions}});
+    let version = serde_json::json!({
+        "name": "app-1.2.3",
+        "cookbook": "app",
+        "version": "1.2.3",
+        "frozen?": false,
+        "metadata": {"name": "app", "version": "1.2.3"},
+        "recipes": [{"name": "default.rb", "path": "recipes/default.rb", "checksum": checksum}],
+    });
+    let mut routes = vec![
+        (
+            "/users",
+            json_route(serde_json::json!({"admin": "/users/admin"})),
+        ),
+        ("/users/admin", raw_route(FULL_USER)),
+        (
+            "/clients",
+            json_route(serde_json::json!({"web1": "/clients/web1"})),
+        ),
+        ("/clients/web1", raw_route(FULL_CLIENT)),
+        (
+            "/nodes",
+            json_route(serde_json::json!({"web1": "/nodes/web1"})),
+        ),
+        ("/nodes/web1", raw_route(FULL_NODE)),
+        (
+            "/roles",
+            json_route(serde_json::json!({"web": "/roles/web"})),
+        ),
+        ("/roles/web", raw_route(FULL_ROLE)),
+        (
+            "/environments",
+            json_route(serde_json::json!({
+                "_default": "/environments/_default",
+                "production": "/environments/production",
+            })),
+        ),
+        ("/environments/production", raw_route(FULL_ENV)),
+        ("/environments/_default", raw_route(FULL_DEFAULT_ENV)),
+        (
+            "/data",
+            json_route(serde_json::json!({"secrets": "/data/secrets"})),
+        ),
+        (
+            "/data/secrets",
+            json_route(serde_json::json!({"db": "/data/secrets/db"})),
+        ),
+        ("/data/secrets/db", raw_route(FULL_BAG_ITEM)),
+        (
+            "/cookbooks",
+            json_route(serde_json::json!({"app": cookbook["app"]})),
+        ),
+        ("/cookbooks/app", json_route(cookbook)),
+        ("/cookbooks/app/1.2.3", json_route(version)),
+    ];
+    routes.push((blob_path, bytes_route(200, body)));
+    (routes, checksum)
+}
+
 /// Minimal goiardi options: `acme` organization into `dir/snapshot.json`.
 ///
 /// Tests override only the fields they exercise, for example `dry_run`.
