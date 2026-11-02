@@ -24,12 +24,14 @@ FROM rust:${RUST_VERSION}-trixie AS builder
 
 WORKDIR /src
 
-# Only the workspace manifest and source are copied. The vendored chef/ and
-# chef-server/ trees are excluded by .dockerignore; they are not part of the
-# Cargo workspace.
+# The workspace manifest and source are copied, plus the homepage stylesheets
+# the landing page embeds at compile time. The vendored chef/ and chef-server/
+# trees are excluded by .dockerignore; they are not part of the Cargo
+# workspace.
 COPY Cargo.toml Cargo.lock ./
 COPY bin ./bin
 COPY crates ./crates
+COPY website/homepage/src/styles ./website/homepage/src/styles
 
 # Cargo caches live in BuildKit cache mounts so repeated builds do not re-fetch
 # the registry. The binaries are staged into /out inside the same RUN because

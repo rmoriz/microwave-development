@@ -29,7 +29,7 @@ const CACHE_PUBLIC: &str = "public, max-age=3600";
 const CACHE_PAGE: &str = "no-cache";
 
 const PAGE: &str = include_str!("../assets/landing/index.html");
-const FAVICON: &str = include_str!("../assets/landing/favicon.svg");
+const FAVICON: &[u8] = include_bytes!("../assets/landing/favicon.svg");
 const FONTS_CSS: &str = include_str!("../assets/landing/fonts.css");
 const LANDING_CSS: &str = include_str!("../assets/landing/landing.css");
 const TOKENS_CSS: &str = include_str!("../../../website/homepage/src/styles/tokens.css");
@@ -40,7 +40,17 @@ const SPACE_GROTESK_WOFF2: &[u8] = include_bytes!("../assets/fonts/space-grotesk
 
 /// The landing page itself.
 pub fn page() -> Response {
-    static_response("text/html; charset=utf-8", CACHE_PAGE, Body::from(PAGE))
+    static_response(
+        "text/html; charset=utf-8",
+        CACHE_PAGE,
+        Body::from(page_body()),
+    )
+}
+
+/// The page with the site URL substituted. The URL lives in one constant so
+/// the page and its tests cannot drift apart.
+fn page_body() -> String {
+    PAGE.replace("{{website_url}}", WEBSITE_URL)
 }
 
 /// A site stylesheet by exact filename.
@@ -134,14 +144,16 @@ mod tests {
 
     #[test]
     fn the_page_links_the_site_and_every_stylesheet() {
-        assert!(PAGE.contains(WEBSITE_URL));
+        let page = page_body();
+        assert!(page.contains(WEBSITE_URL));
+        assert!(!page.contains("{{"));
         for name in CSS_FILES {
             assert!(
-                PAGE.contains(&format!(r#"href="/css/{name}""#)),
+                page.contains(&format!(r#"href="/css/{name}""#)),
                 "the page must link {name}"
             );
         }
-        assert!(PAGE.contains(r#"href="/favicon.svg""#));
+        assert!(page.contains(r#"href="/favicon.svg""#));
     }
 
     #[test]

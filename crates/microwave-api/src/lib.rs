@@ -59,9 +59,13 @@ pub fn router(state: AppState) -> Router {
         // rather than on the outer router, so they match the trailing-slash
         // normalization that runs in front of this router. They pass the
         // middleware through unauthenticated (see `authenticate_request`).
+        // The bare `/css` and `/fonts` spellings (what `/css/` normalizes to)
+        // answer 404 with the header block instead of the JSON API fallback.
         .route("/index.html", get(|| async { landing::page() }))
         .route("/favicon.svg", get(|| async { landing::favicon() }))
+        .route("/css", get(|| async { landing::not_found() }))
         .route("/css/{file}", get(stylesheet_handler))
+        .route("/fonts", get(|| async { landing::not_found() }))
         .route("/fonts/{file}", get(font_handler))
         .route("/server_api_version", get(server_api_version))
         .route("/license", get(license))

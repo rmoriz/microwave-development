@@ -604,6 +604,25 @@ async fn authenticate_request(
         }
     }
 
+    // nginx answers the landing page and its assets from static `location`
+    // blocks before `location /`, so they never reach erchef: they bypass
+    // maintenance mode and signature authentication alike. The page is exactly
+    // what an operator wants to see during a drain.
+    if path == "/index.html"
+        || path == "/favicon.svg"
+        || path == "/css"
+        || path.starts_with("/css/")
+        || path == "/fonts"
+        || path.starts_with("/fonts/")
+    {
+        let response = next.run(request).await;
+        return with_version_header(
+            response,
+            &requested_version.to_string(),
+            &requested_version.to_string(),
+        );
+    }
+
     // Maintenance mode rejects normal API traffic before authentication runs,
     // so an unauthenticated request during a drain cannot mutate the store.
     // Health checks stay reachable.
@@ -789,13 +808,6 @@ async fn authenticate_request(
         || path == "/id"
         || path.starts_with("/id/")
         || path.starts_with("/bookshelf/")
-        // nginx serves the landing page and its assets from their own static
-        // locations before `location /`, so they never reach erchef
-        // authentication and need no version header.
-        || path == "/index.html"
-        || path == "/favicon.svg"
-        || path.starts_with("/css/")
-        || path.starts_with("/fonts/")
     {
         let response = next.run(request).await;
         return with_version_header(

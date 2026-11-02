@@ -55,7 +55,7 @@ async fn every_stylesheet_and_font_is_served_by_exact_name() {
 #[tokio::test]
 async fn unknown_static_names_are_404_with_the_header_block() {
     let app = support::app(support::state_with_pivotal());
-    for path in ["/css/nope.css", "/fonts/nope.woff2"] {
+    for path in ["/css/nope.css", "/fonts/nope.woff2", "/css/", "/fonts/"] {
         let response = app.clone().oneshot(headerless("GET", path)).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert_eq!(response.headers()["x-content-type-options"], "nosniff");
@@ -96,4 +96,39 @@ async fn head_returns_headers_without_a_body() {
         .await
         .unwrap();
     assert!(body.is_empty());
+}
+
+#[tokio::test]
+async fn maintenance_mode_keeps_the_static_surface_reachable() {
+    let state = support::state_with_pivotal();
+    state.sqlite().set_maintenance_enabled(true).unwrap();
+    let app = support::app(state);
+    let page = app
+        .clone()
+        .oneshot(headerless("GET", "/index.html"))
+        .await
+        .unwrap();
+    assert_static_headers(&page, "text/html; charset=utf-8");
+    let stylesheet = app
+        .oneshot(headerless("GET", "/css/tokens.css"))
+        .await
+        .unwrap();
+    assert_static_headers(&stylesheet, "text/css; charset=utf-8");
+}
+
+#[tokio::test]
+async fn the_page_stays_script_free_with_one_heading() {
+    let app = support::app(support::state_with_pivotal());
+    let response = app.oneshot(headerless("GET", "/index.html")).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    assert_eq!(body.matches("<h1").count(), 1, "exactly one h1");
+    assert!(!body.contains("<script"), "the page runs no JavaScript");
+    assert!(!body.contains("style="), "no inline style attribute");
+    let main = body.split_once("<main").expect("a main element").1;
+    let main = main.split_once('>').expect("a closed main start tag").1;
+    let main = main.split_once("</main>").expect("a closed main element").0;
+    assert!(!main.trim().is_empty(), "main carries content");
 }
