@@ -323,7 +323,7 @@ summary = "README: neither migration path is lossless."
 area = "migration"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "Neither path is lossless" },
+  { path = "README.md", needle = "Neither Chef path is lossless" },
 ]
 verify = { kind = "grep", path = "docs/deployment.md", pattern = "Without the flag `from-api` remains metadata-only" }
 
@@ -877,6 +877,17 @@ surfaces = [
   { path = "website/homepage/src/components/KnownGaps.astro", needle = "from-api migration cannot copy password hashes" },
 ]
 verify = { kind = "grep", path = "crates/microwave-migrate/src/from_api.rs", pattern = "password" }
+
+[[claim]]
+id = "gap-goiardi-password-hashes"
+summary = "The goiardi importer cannot carry password hashes; the imported admin needs a reset."
+area = "migration"
+status = "gap"
+surfaces = [
+  { path = "docs/deployment.md", needle = "from-goiardi" },
+  { path = "crates/microwave-migrate/README.md", needle = "from-goiardi" },
+]
+verify = { kind = "grep", path = "docs/deployment.md", pattern = "from-goiardi" }
 
 [[claim]]
 id = "gap-ldap-fips"

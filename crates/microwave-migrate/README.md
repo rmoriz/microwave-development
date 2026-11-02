@@ -3,9 +3,9 @@
 Migration support for Microwave Server. This crate owns the versioned JSON
 snapshot format and the `microwave-migrate` binary. It can export a local
 SQLite store or a PostgreSQL metadata store, import a snapshot into either
-backend, crawl a live legacy Chef Infra Server into the same snapshot
-envelope, or import a `knife ec backup` repository directly without an HTTP
-server.
+backend, crawl a live legacy Chef Infra Server or goiardi server into the same
+snapshot envelope, or import a `knife ec backup` repository directly without an
+HTTP server.
 
 ## Commands
 
@@ -37,7 +37,7 @@ microwave-migrate export \
   --bookshelf-dir /var/lib/microwave/bookshelf \
   --archive migration.tar.gz
 
-# Create or merge into ./new-data/microwave.db
+# Create or merge into ./new-data/microwave.db (a goiardi snapshot needs a fresh target)
 microwave-migrate import --data-dir ./new-data --input migration.json --yes
 
 # Restore snapshot + bookshelf/ from an archive. Existing key files and
@@ -78,6 +78,24 @@ microwave-migrate from-api \
   --client-name migrator \
   --key migrator.pem \
   --org acme \
+  --bookshelf-dir /var/lib/microwave/bookshelf \
+  --output acme.json
+
+# Crawl a live goiardi server into one target organization
+microwave-migrate from-goiardi \
+  --url https://chef.example.com \
+  --client-name admin \
+  --key admin.pem \
+  --org acme \
+  --output acme.json
+
+# Same crawl through a SOCKS5 tunnel, copying and verifying cookbook blobs
+microwave-migrate from-goiardi \
+  --url https://chef.example.com \
+  --client-name admin \
+  --key admin.pem \
+  --org acme \
+  --socks5 127.0.0.1:1080 \
   --bookshelf-dir /var/lib/microwave/bookshelf \
   --output acme.json
 
@@ -126,9 +144,11 @@ microwave-migrate import-knife-backup \
 microwave-ctl migrate-from-legacy --input migration.json --yes
 ```
 
-`import` and `import-knife-backup` merge into live metadata and ask for
-confirmation; `--yes` is required in scripts and other non-interactive
-environments. `--dry-run` never confirms and never writes.
+`import` and `import-knife-backup` ask for confirmation; `--yes` is required in
+scripts and other non-interactive environments. `--dry-run` never confirms and
+never writes. Both merge into live metadata, except a goiardi snapshot: that
+layout is a fresh-install policy, so the import refuses any target that has an
+organization or more than one user.
 
 `import` validates the envelope before touching the database. Invalid JSON,
 an unexpected `format`, or an unsupported `version` exit non-zero and do not
@@ -434,6 +454,13 @@ upserted by primary key, so:
 - OAuth grants and tokens keep their ids, timestamps, expiry, and revocation
   state; PostgreSQL advances those sequences after import.
 
+A goiardi snapshot is the exception to all of this. It is marked
+`source.layout = "goiardi"` and imported without merging: the target may hold
+at most the bootstrap superuser and no organization. The check runs before the
+first write and fails with the target's org and user counts; use a fresh data
+directory or database. Because of that, a second import of the same snapshot
+also fails.
+
 Name uniqueness still applies: a row with the same unique name but a different
 id is rejected by the backend rather than silently rewritten. This matters most
 when importing into a non-empty PostgreSQL database that already has the
@@ -710,3 +737,68 @@ identity provider after migration. Cookbook file blobs are copied only with
 `--bookshelf-dir`; files whose JSON entry has no `url` remain metadata-only.
 Without the flag the crawl records metadata and checksum references exactly as
 before. The search index is derived data and rebuilds after import.
+
+## goiardi crawler
+
+`from-goiardi` reads a goiardi server's flat Chef 11 API and writes the same
+snapshot envelope, marked `source.layout = "goiardi"`. It is read-only and
+never creates, updates, or deletes source objects:
+
+```sh
+microwave-migrate from-goiardi \
+  --url https://chef.example.com \
+  --client-name admin \
+  --key admin.pem \
+  --org acme \
+  --output acme.json
+```
+
+`--url`, `--client-name`, `--key`, `--org`, and `--output` are required.
+`--org` must match `[a-z0-9-]+`; `--org-full-name` sets the display name. The
+whole source is mapped into that one organization. goiardi exports no
+organizations, groups, or ACLs, so the crawler rebuilds Microwave's default
+organization policy — containers, default and global groups, the ACL matrix,
+per-object ACLs, and the `_default` environment — deterministically. Policies,
+policy groups, cookbook artifacts, OAuth applications, sandboxes, reports, and
+server-owned secrets are not in the source and stay out of the snapshot.
+
+The source is commonly reachable only from one bastion host. Pass
+`--socks5 HOST:PORT` to send every request, blob fetches included, through a
+SOCKS5 tunnel; run on the bastion when no tunnel exists. A `403` from a host
+that can resolve the URL usually means the vhost refuses the direct connection
+and `--socks5` is missing. A `401` points at `--client-name` or `--key`. Use
+the source superuser; without ACLs a lesser client sees a partial listing.
+
+`--bookshelf-dir DIR` copies cookbook file blobs to
+`DIR/organization-<org_id>/checksum-<md5>`, MD5-verified before each atomic
+write. The copy runs after the metadata crawl, so an aborted crawl leaves no
+half-populated bookshelf and a failed blob never appears finally; blobs already
+copied by the run stay and a re-run skips them. Without the flag the snapshot
+keeps metadata and checksum references only. Limits match `from-api`: 64 MiB
+per file and 4 GiB per run.
+
+`--dry-run` crawls, prints the counts and skip warnings, and writes neither the
+snapshot nor blobs. `--skip-orphan-clients` drops clients that have no node of
+the same name. Junk a valid source can contain (an actor without a public key, a
+data-bag item without an id) is kept or skipped with a warning; a structural
+failure, an object without an ACL row, or a requested checksum without its blob
+aborts the run.
+
+**Import requires a fresh target.** The snapshot importer does not merge a
+goiardi layout: a target with an organization or more than one user is refused
+before the first write, so keep only the bootstrap superuser:
+
+```sh
+microwave-ctl migrate-from-legacy --input acme.json --yes
+microwave-ctl password admin
+microwave-ctl reindex
+```
+
+Importing the same snapshot twice fails like any second import into a used
+target; re-crawl and import into a fresh target to update. goiardi exposes no
+password hashes, so every user is imported with an empty `bcrypt` hash;
+`microwave-ctl password admin` prints a new password once and must be repeated
+per user (or use reset mail). Only `admin` is associated with the organization;
+add other users with `microwave-ctl org-user-add acme <user>`. The search index
+is derived data, so `reindex` follows every import. Clients keep their keys and
+only need their `client.rb`/`knife.rb` server URL changed.

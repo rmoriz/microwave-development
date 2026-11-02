@@ -1381,9 +1381,11 @@ microwave-migrate import \
   --yes
 ```
 
-`import` merges into live metadata and asks for confirmation. Use `--yes` in
-scripts and other non-interactive environments. The target is printed without
-authority or query-string passwords.
+`import` merges into live metadata and asks for confirmation, except for a
+goiardi snapshot, which needs an empty target (see [Migrating from
+goiardi](#migrating-from-goiardi)). Use `--yes` in scripts and other
+non-interactive environments. The target is printed without authority or
+query-string passwords.
 
 The snapshot is versioned JSON (`format: microwave-server-snapshot`,
 `version: 1`) containing users (including password hashes), organizations,
@@ -1761,6 +1763,86 @@ For a legacy Chef Server source whose bookshelf layout is not the Microwave
 authoritative, move one organization at a time, and keep the legacy server
 read-only until the new one is verified. For large or S3/Garage-backed
 deployments, the same parallel-run approach applies.
+
+### Migrating from goiardi
+
+`microwave-migrate from-goiardi` crawls a live goiardi server through its flat
+API and writes the same versioned snapshot. These sources are usually reachable
+only from one bastion host, so either run the command there or tunnel through
+`--socks5`:
+
+```sh
+# on the bastion host
+microwave-migrate from-goiardi \
+  --url https://chef.example.com \
+  --client-name admin \
+  --key admin.pem \
+  --org acme \
+  --output acme.json
+
+# on a workstation: ssh -L 1080:chef.example.com:443 <bastion> first
+microwave-migrate from-goiardi \
+  --url https://chef.example.com \
+  --client-name admin \
+  --key admin.pem \
+  --org acme \
+  --output acme.json \
+  --socks5 127.0.0.1:1080
+```
+
+A `403` from a host that can resolve the URL usually means the vhost is
+refusing the direct connection; retry through `--socks5` or from the bastion. A
+`401` points at `--client-name` or `--key`. Use the source's superuser: goiardi
+has no ACL API, so a lesser client sees a partial listing.
+
+Every run maps the whole source into the one `--org` organization (lowercase
+letters, digits, and dashes) and rebuilds Microwave's default organization
+policy — containers, groups, ACLs, and the `_default` environment — because
+goiardi exports none. `--org-full-name` sets the display name. `--dry-run`
+crawls and prints the counts without writing a snapshot or fetching blobs;
+`--skip-orphan-clients` drops clients that have no node of the same name.
+
+`--bookshelf-dir DIR` also copies cookbook file blobs, MD5-verified, to
+`DIR/organization-<org_id>/checksum-<md5>`. Without it the snapshot keeps
+metadata and checksum references only. Blobs are fetched after the metadata
+crawl, so a failed crawl never leaves a half-populated bookshelf; a failed blob
+is written through a temporary file and never appears finally. Blobs already
+copied by the run do stay, and a re-run skips them.
+
+**The import needs a fresh target.** A goiardi snapshot carries a fresh-install
+policy and the snapshot importer does not merge it into existing data. Import a
+barely bootstrapped instance — no organizations, and at most its default
+`pivotal` superuser:
+
+```sh
+microwave-ctl --config /etc/microwave/microwave.toml \
+  migrate-from-legacy --input acme.json --yes
+microwave-ctl --config /etc/microwave/microwave.toml password admin
+microwave-ctl --config /etc/microwave/microwave.toml reindex
+```
+
+The import refuses a target with an organization or more than one user and
+names both counts; start over with an empty data directory or database rather
+than deleting rows from a used one. Importing the same snapshot twice fails for
+the same reason — re-crawl to pick up source changes and import into a fresh
+target again.
+
+goiardi never exposes password hashes, so every imported user starts without
+one and `hash_type` `bcrypt`. `microwave-ctl password admin` prints a new
+password once; repeat it for each migrated user, or enable reset mail
+(`mail.enabled` plus `server.public_url`, see [Mail](#mail-smtp)). Only `admin`
+is associated with the organization; add other users with `microwave-ctl
+org-user-add acme <user>` and grant what they need.
+
+The search index is derived data: run `microwave-ctl reindex` after the import
+and after the password reset, as for the other migration paths. Clients keep
+their existing keys, so moving their `client.rb`/`knife.rb` server URL to the
+new host needs no re-registration.
+
+Server-owned secrets (`pivotal.pem`, the object-store secret, TLS material),
+OAuth applications, policies, policy groups, and cookbook artifacts are not
+part of this path; they belong to the fresh installation or to a follow-up
+step.
 
 ## 12. Health, status, and logs
 

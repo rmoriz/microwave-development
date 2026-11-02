@@ -84,7 +84,7 @@ model, and the dual-backend suites are described in the [parity page](https://rm
 The open inventory below is generated from `docs/claims.toml` and includes the three above:
 
 <!-- generated:remaining-work:start -->
-Open gaps: 17 (migration: 6, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3). By area: [migration](docs/remaining-work.md#area-migration), [mail](docs/remaining-work.md#area-mail), [search](docs/remaining-work.md#area-search), [ha](docs/remaining-work.md#area-ha), [auth](docs/remaining-work.md#area-auth), [tooling](docs/remaining-work.md#area-tooling).
+Open gaps: 18 (migration: 7, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3). By area: [migration](docs/remaining-work.md#area-migration), [mail](docs/remaining-work.md#area-mail), [search](docs/remaining-work.md#area-search), [ha](docs/remaining-work.md#area-ha), [auth](docs/remaining-work.md#area-auth), [tooling](docs/remaining-work.md#area-tooling).
 <!-- generated:remaining-work:end -->
 
 ## Migrate from Chef Infra Server
@@ -92,13 +92,18 @@ Open gaps: 17 (migration: 6, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3). By
 The supported route is a snapshot copy: `microwave-migrate from-api` (or `export`) writes a
 versioned JSON snapshot, and `microwave-ctl migrate-from-legacy --input <snapshot>` imports it into
 the configured SQLite or PostgreSQL database. A `knife ec backup` directory imports just as
-directly with `import-knife-backup`.
+directly with `import-knife-backup`, and `from-goiardi` crawls a goiardi server into the same
+snapshot format.
 
-Neither path is lossless: no cookbook blobs without `--bookshelf-dir`, no password hashes or
+Neither Chef path is lossless: no cookbook blobs without `--bookshelf-dir`, no password hashes or
 `admin` flags, and no client or user private keys. Run both to get closer — the crawl first for
 policies and policy groups, the knife backup last for hashes and admin flags. The full runbook, the
 limits, and the `chef-server.rb` translation table are in
 [deployment § 11](https://rmoriz.github.io/microwave-development/docs/deployment/#11-migration-from-a-legacy-server).
+
+A goiardi snapshot is the exception: it imports only into a fresh target, carries no password
+hashes, and needs `microwave-ctl password admin` plus `microwave-ctl reindex` afterwards. See
+[the goiardi runbook](docs/deployment.md#migrating-from-goiardi).
 
 ## Pedant compatibility
 

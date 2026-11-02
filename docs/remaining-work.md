@@ -2,7 +2,7 @@
 
 # Remaining work
 
-Open gaps: 17 (migration: 6, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3)
+Open gaps: 18 (migration: 7, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3)
 
 <a id="area-migration"></a>
 
@@ -19,6 +19,13 @@ Open gaps: 17 (migration: 6, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3)
 **gap-from-api-credentials** — The live legacy API crawler cannot copy password hashes or the admin flag.
 
 - `website/homepage/src/components/KnownGaps.astro`
+
+<a id="gap-goiardi-password-hashes"></a>
+
+**gap-goiardi-password-hashes** — The goiardi importer cannot carry password hashes; the imported admin needs a reset.
+
+- `docs/deployment.md`
+- `crates/microwave-migrate/README.md`
 
 <a id="gap-knife-artifacts-policies"></a>
 
