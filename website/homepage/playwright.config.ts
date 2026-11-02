@@ -12,7 +12,7 @@ export default defineConfig({
   },
   webServer: {
     command:
-      `npm run build && rm -rf .preview && mkdir -p ${previewDir} && cp -R dist/. ${previewDir}/ && python3 -m http.server 4321 --bind 127.0.0.1 --directory .preview`,
+      `npm run build && rm -rf .preview && mkdir -p ${previewDir} && cp -R dist/. ${previewDir}/ && node scripts/stage-landing.mjs && python3 -m http.server 4321 --bind 127.0.0.1 --directory .preview`,
     url: `http://127.0.0.1:4321${BASE_PATH}/`,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
