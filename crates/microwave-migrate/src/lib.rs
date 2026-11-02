@@ -60,8 +60,8 @@ pub use from_api::{
     from_api_with_options_with_summary, read_private_key, BlobDownloadSummary, FromApiOptions,
 };
 pub use goiardi::{
-    apply_default_policy, crawl_from_goiardi, from_goiardi_with_options, Crawler, GoiardiOptions,
-    GoiardiSummary,
+    apply_default_policy, crawl_from_goiardi, from_goiardi_with_options, validate_snapshot,
+    Crawler, GoiardiOptions, GoiardiSummary,
 };
 pub use knife_backup::{
     apply_knife_backup_plan_postgres, apply_knife_backup_plan_postgres_with_options,
@@ -196,6 +196,8 @@ pub enum MigrateError {
     InvalidDatabaseUrl,
     #[error("invalid migration archive: {0}")]
     Archive(String),
+    #[error("snapshot validation failed: {0}")]
+    Validation(String),
 }
 
 /// Export the store under `data_dir` to a JSON snapshot at `output`.

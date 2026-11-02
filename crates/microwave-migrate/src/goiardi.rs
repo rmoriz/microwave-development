@@ -24,7 +24,7 @@ use crate::{
 };
 use chrono::{SecondsFormat, Utc};
 use microwave_authz::{Permission, DEFAULT_CONTAINERS, DEFAULT_GROUPS};
-use microwave_objectstore::{LocalObjectStore, ObjectStore};
+use microwave_objectstore::{object_path, LocalObjectStore, ObjectStore};
 use microwave_store::{
     parse_version, ActorKeyRow, AuthzAclActorRow, AuthzAclGroupRow, AuthzEntityRow,
     AuthzGroupActorRow, AuthzGroupGroupRow, ChecksumRow, ClientRow, ContainerRow, CookbookRow,
@@ -33,7 +33,7 @@ use microwave_store::{
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Options for [`crawl_from_goiardi`] and [`from_goiardi_with_options`].
 #[derive(Debug, Clone)]
@@ -127,6 +127,13 @@ pub fn crawl_from_goiardi(
     crawler.summary.blobs_downloaded = crawler.blob_summary.downloaded;
     crawler.summary.blobs_skipped = crawler.blob_summary.skipped;
 
+    let blob_check =
+        if options.dry_run || crawler.blob_summary.downloaded + crawler.blob_summary.skipped == 0 {
+            None
+        } else {
+            options.bookshelf_dir.as_deref()
+        };
+
     let snapshot = Snapshot {
         format: SNAPSHOT_FORMAT.to_string(),
         version: SNAPSHOT_VERSION,
@@ -144,8 +151,15 @@ pub fn crawl_from_goiardi(
         data: crawler.data,
     };
 
-    if !options.dry_run {
+    print_summary(&crawler.summary);
+    // Blobs only exist when they were copied, so a dry run skips that half.
+    validate_snapshot(&snapshot, blob_check)?;
+
+    if options.dry_run {
+        println!("dry run: would write {}", options.output.display());
+    } else {
         write_snapshot(&snapshot, &options.output)?;
+        println!("{}", options.output.display());
     }
     Ok((snapshot, crawler.summary))
 }
@@ -153,6 +167,135 @@ pub fn crawl_from_goiardi(
 /// Crawl a goiardi server, write the snapshot, and return the summary.
 pub fn from_goiardi_with_options(options: &GoiardiOptions) -> Result<GoiardiSummary, MigrateError> {
     crawl_from_goiardi(options).map(|(_, summary)| summary)
+}
+
+/// Print the crawl counters and every skip warning to stderr.
+///
+/// The counts are diagnostics; the snapshot path alone goes to stdout so a
+/// caller can capture it.
+fn print_summary(summary: &GoiardiSummary) {
+    eprintln!("goiardi crawl summary:");
+    for (label, count) in [
+        ("users", summary.users),
+        ("clients", summary.clients),
+        ("nodes", summary.nodes),
+        ("roles", summary.roles),
+        ("environments", summary.environments),
+        ("data bags", summary.data_bags),
+        ("data bag items", summary.data_bag_items),
+        ("cookbooks", summary.cookbooks),
+        ("cookbook versions", summary.cookbook_versions),
+        ("checksums", summary.checksums),
+        ("blobs downloaded", summary.blobs_downloaded),
+        ("blobs skipped", summary.blobs_skipped),
+    ] {
+        eprintln!("  {label}: {count}");
+    }
+    for warning in &summary.warnings {
+        eprintln!("warning: {warning}");
+    }
+}
+
+/// Reject a snapshot an import would leave half-broken.
+///
+/// Every `object` authz entity needs at least one actor or group ACL row, and
+/// when blobs were fetched every checksum row needs its blob under
+/// `bookshelf_dir`. The directory is only passed for a real run, so a dry run
+/// checks ACLs but not blobs.
+pub fn validate_snapshot(
+    snapshot: &Snapshot,
+    bookshelf_dir: Option<&Path>,
+) -> Result<(), MigrateError> {
+    let guarded: HashSet<&str> = snapshot
+        .data
+        .authz_acl_actor
+        .iter()
+        .map(|row| row.target_authz_id.as_str())
+        .chain(
+            snapshot
+                .data
+                .authz_acl_group
+                .iter()
+                .map(|row| row.target_authz_id.as_str()),
+        )
+        .collect();
+    let mut unguarded: Vec<String> = snapshot
+        .data
+        .authz_entities
+        .iter()
+        .filter(|entity| entity.entity_type == "object")
+        .filter(|entity| !guarded.contains(entity.authz_id.as_str()))
+        .map(|entity| object_label(&snapshot.data, &entity.authz_id))
+        .collect();
+    if !unguarded.is_empty() {
+        unguarded.sort();
+        return Err(MigrateError::Validation(format!(
+            "objects without any ACL row: {}",
+            unguarded.join(", ")
+        )));
+    }
+
+    let Some(dir) = bookshelf_dir else {
+        return Ok(());
+    };
+    let mut missing: Vec<String> = snapshot
+        .data
+        .checksums
+        .iter()
+        .filter(|row| !object_path(dir, &row.org_id, &row.checksum).is_file())
+        .map(|row| match cookbook_of_checksum(snapshot, &row.checksum) {
+            Some(cookbook) => format!("{} ({cookbook})", row.checksum),
+            None => row.checksum.clone(),
+        })
+        .collect();
+    if !missing.is_empty() {
+        missing.sort();
+        return Err(MigrateError::Validation(format!(
+            "cookbook blobs missing under {}: {}",
+            dir.display(),
+            missing.join(", ")
+        )));
+    }
+    Ok(())
+}
+
+/// Name the row behind an object authz id, for a validation error.
+fn object_label(data: &StoreSnapshot, authz_id: &str) -> String {
+    if let Some(node) = data.nodes.iter().find(|row| row.authz_id == authz_id) {
+        return format!("node {:?}", node.name);
+    }
+    for (kind, rows) in [
+        ("role", &data.roles),
+        ("environment", &data.environments),
+        ("data bag", &data.data_bags),
+    ] {
+        if let Some(row) = rows.iter().find(|row| row.authz_id == authz_id) {
+            return format!("{kind} {:?}", row.name);
+        }
+    }
+    if let Some(cookbook) = data.cookbooks.iter().find(|row| row.authz_id == authz_id) {
+        return format!("cookbook {:?}", cookbook.name);
+    }
+    format!("authz id {authz_id:?}")
+}
+
+/// Name the cookbook version that links a checksum, when one does.
+fn cookbook_of_checksum(snapshot: &Snapshot, checksum: &str) -> Option<String> {
+    let version_id = snapshot
+        .data
+        .cookbook_version_checksums
+        .iter()
+        .find(|row| row.checksum == checksum)
+        .map(|row| row.cookbook_version_id.as_str())?;
+    let version = snapshot
+        .data
+        .cookbook_versions
+        .iter()
+        .find(|row| row.id == version_id)?;
+    Some(format!(
+        "cookbook {:?} {}.{}.{}",
+        version.name, version.major, version.minor, version.patch
+    ))
 }
 
 /// Crawl state for one goiardi source.

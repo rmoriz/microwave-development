@@ -1,7 +1,9 @@
 mod common;
 
 use common::{blob_fixture, bytes_route, json_route, options, raw_route, start_server, Route};
-use microwave_migrate::{crawl_from_goiardi, from_goiardi_with_options, GoiardiOptions};
+use microwave_migrate::{
+    crawl_from_goiardi, from_goiardi_with_options, validate_snapshot, GoiardiOptions,
+};
 use serde_json::json;
 
 const PUBLIC_KEY: &str = include_str!("../../microwave-crypto/tests/fixtures/test_key_pub.pem");
@@ -296,4 +298,49 @@ fn dry_run_writes_no_snapshot_and_fetches_no_blob() {
         .unwrap()
         .iter()
         .all(|record| !record.path.starts_with("/file_store/")));
+}
+
+#[test]
+fn an_object_without_acl_is_rejected() {
+    let dir = tempdir();
+    let (url, _) = start_server(crawl_objects_routes());
+    let (mut snapshot, _) = crawl_from_goiardi(&options(&url, dir.path())).unwrap();
+    let node_authz = snapshot.data.nodes[0].authz_id.clone();
+    snapshot
+        .data
+        .authz_acl_actor
+        .retain(|row| row.target_authz_id != node_authz);
+    snapshot
+        .data
+        .authz_acl_group
+        .retain(|row| row.target_authz_id != node_authz);
+    let error = validate_snapshot(&snapshot, None).unwrap_err();
+    assert!(error.to_string().contains("web1"), "{error}");
+}
+
+#[test]
+fn a_missing_blob_is_rejected_by_validation_and_names_the_checksum() {
+    let dir = tempdir();
+    let bookshelf = tempdir();
+    let (routes, checksum, _) = cookbooks_routes(false);
+    let (url, _) = start_server(routes);
+    let mut options = options(&url, dir.path());
+    options.dry_run = true;
+    let (snapshot, _) = crawl_from_goiardi(&options).unwrap();
+    let error = validate_snapshot(&snapshot, Some(bookshelf.path())).unwrap_err();
+    assert!(error.to_string().contains(&checksum), "{error}");
+    assert!(error.to_string().contains("app"), "{error}");
+}
+
+#[test]
+fn dry_run_counts_checksums_but_writes_nothing() {
+    let dir = tempdir();
+    let output = dir.path().join("snapshot.json");
+    let (routes, _, _) = cookbooks_routes(false);
+    let (url, _) = start_server(routes);
+    let mut options = options(&url, dir.path());
+    options.dry_run = true;
+    let summary = from_goiardi_with_options(&options).unwrap();
+    assert_eq!(summary.checksums, 1);
+    assert!(!output.exists());
 }
