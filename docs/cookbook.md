@@ -43,8 +43,12 @@ its membership, waits for `/_status`, and leaves the superuser key in
 `<data_dir>/pivotal.pem` — back it up with the database.
 
 Garage is composed only with `object_store_backend = 'garage'`; the default
-`local` store writes the cookbook blobs under the data directory. The listener
-is plain HTTP, so client TLS belongs in a proxy in front of the node.
+`local` store writes the cookbook blobs under the data directory. That local
+Garage endpoint defaults to `https://127.0.0.1:3900`, so set
+`object_store_host` to the name clients reach the node at — or
+`object_store_endpoint` directly — as soon as `chef-client` hosts elsewhere
+fetch cookbooks: the endpoint lands in the presigned URLs. The listener is
+plain HTTP, so client TLS belongs in a proxy in front of the node.
 
 ## Everything external
 
@@ -84,22 +88,27 @@ node.default['microwave']['object_store_secret_key_file'] = '/etc/chef/garage.se
 include_recipe 'microwave::server'
 ```
 
-Without `client_network` a backend stays on loopback and no remote client can
-connect: PostgreSQL keeps only `hostssl` loopback rules in `pg_hba.conf`, and
-the nginx proxies listen on the node name only with a client network.
+Without `client_network` PostgreSQL keeps only `hostssl` loopback rules in
+`pg_hba.conf` and the OpenSearch proxy stays on loopback, so no remote client
+reaches either. The Garage proxy always listens on the store's name;
+`client_network` is what adds its IP allow list, and without it the store
+answers on the name unfenced.
 
 `microwave::server` raises without a database host and a search host, and
 without a password it can read from `database_password` or the password file.
 A server-only wrapper therefore carries the database password and the CA
-material itself, in files the run can read. `ca_cert_file` has to hold all
-three CAs concatenated — every node issues its own CA, and the server verifies
-the OpenSearch and S3 hops against the system trust store.
+material itself, in files the run can read. The password is
+`/etc/microwave/db.password` on the database node and the key pair is
+`/etc/microwave/garage.access_key` and `/etc/microwave/garage.secret_key` on
+the store node; copy all three together with the CA files before the server
+converges. `ca_cert_file` has to hold all three CAs concatenated — every node
+issues its own CA, and the server verifies the OpenSearch and S3 hops against
+the system trust store.
 
 `object_store_endpoint` lands in presigned URLs, so it must be the address the
 clients reach the store at, and the store certificate has to cover that host.
 The backends' CA files are `/etc/microwave/tls/ca.crt` on each backend node;
-Garage has its own pair from its own CA. Move them next to the password with
-the run list material.
+Garage's certificate is a separate pair from its own CA.
 
 ## The service switches
 
