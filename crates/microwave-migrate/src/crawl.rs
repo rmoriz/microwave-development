@@ -323,31 +323,18 @@ pub(crate) fn parse_collection(value: Value) -> (Vec<CollectionEntry>, Option<St
     match value {
         Value::Array(items) => (items.into_iter().filter_map(array_entry).collect(), None),
         Value::Object(map) => {
-            if let Some(next) = pagination_link(&map) {
-                let items = map
-                    .get("results")
-                    .or_else(|| map.get("items"))
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                return (
-                    items.into_iter().filter_map(array_entry).collect(),
-                    Some(next),
-                );
-            }
-            if let Some(items) = map.get("results").and_then(Value::as_array) {
+            // A literal entry named `next` must not swallow its siblings, so
+            // only a link next to a `results`/`items` array is pagination.
+            if let Some(items) = map
+                .get("results")
+                .or_else(|| map.get("items"))
+                .and_then(Value::as_array)
+            {
                 return (
                     items.clone().into_iter().filter_map(array_entry).collect(),
-                    None,
+                    pagination_link(&map),
                 );
             }
-            if let Some(items) = map.get("items").and_then(Value::as_array) {
-                return (
-                    items.clone().into_iter().filter_map(array_entry).collect(),
-                    None,
-                );
-            }
-
             // A single resource object rather than a name -> URL map.
             if map.contains_key("name")
                 || map.contains_key("username")
@@ -619,4 +606,33 @@ pub(crate) fn encode_segment(segment: &str) -> String {
         }
     }
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_collection;
+    use serde_json::json;
+
+    #[test]
+    fn a_literal_next_entry_does_not_swallow_its_siblings() {
+        let (entries, next) = parse_collection(json!({
+            "web1": {"name": "web1", "url": "/nodes/web1"},
+            "next": "/nodes/next",
+        }));
+        assert_eq!(next, None);
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|entry| entry.name == "web1"));
+        assert!(entries.iter().any(|entry| entry.name == "next"));
+    }
+
+    #[test]
+    fn a_next_link_beside_a_results_array_still_paginates() {
+        let (entries, next) = parse_collection(json!({
+            "results": ["/nodes/web1"],
+            "next": "/nodes?page=2",
+        }));
+        assert_eq!(next.as_deref(), Some("/nodes?page=2"));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "web1");
+    }
 }
