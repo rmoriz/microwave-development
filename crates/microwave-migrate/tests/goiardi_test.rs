@@ -197,12 +197,12 @@ fn crawls_users_and_clients_with_keys_and_marks_the_layout() {
     }
 }
 
-fn cookbooks_routes(with_blob: bool) -> (Vec<(&'static str, Route)>, String) {
+fn cookbooks_routes(with_blob: bool) -> (Vec<(&'static str, Route)>, String, Vec<u8>) {
     let (body, checksum, path) = blob_fixture("blob");
-    let cookbook = json!({
-        "name": "app",
-        "versions": [{"version": "1.2.3", "url": "/cookbooks/app/1.2.3"}],
-    });
+    let versions = json!([{"version": "1.2.3", "url": "/cookbooks/app/1.2.3"}]);
+    // goiardi wraps both the list entry and the detail body under the
+    // cookbook name; only the detail route carries every version.
+    let cookbook = json!({"app": {"url": "/cookbooks/app", "versions": versions}});
     let version = json!({
         "name": "app-1.2.3",
         "cookbook": "app",
@@ -212,39 +212,60 @@ fn cookbooks_routes(with_blob: bool) -> (Vec<(&'static str, Route)>, String) {
         "recipes": [{"name": "default.rb", "path": "recipes/default.rb", "checksum": checksum}],
     });
     let mut routes = vec![
-        ("/cookbooks", json_route(json!({"app": "/cookbooks/app"}))),
+        ("/cookbooks", json_route(json!({"app": cookbook["app"]}))),
         ("/cookbooks/app", json_route(cookbook)),
         ("/cookbooks/app/1.2.3", json_route(version)),
     ];
     if with_blob {
-        routes.push((path, bytes_route(200, body)));
+        routes.push((path, bytes_route(200, body.clone())));
     }
-    (routes, checksum)
+    (routes, checksum, body)
 }
 
 #[test]
 fn derives_a_missing_blob_url_from_base_and_copies_the_blob() {
     let out = tempdir();
     let bookshelf = tempdir();
-    let (routes, checksum) = cookbooks_routes(true);
+    let (routes, checksum, body) = cookbooks_routes(true);
     let (url, _) = start_server(routes);
     let options = GoiardiOptions {
         bookshelf_dir: Some(bookshelf.path().to_path_buf()),
         ..options(&url, out.path())
     };
-    let (snapshot, _) = crawl_from_goiardi(&options).unwrap();
+    let (snapshot, summary) = crawl_from_goiardi(&options).unwrap();
+    assert_eq!(summary.cookbooks, 1);
+    assert_eq!(summary.cookbook_versions, 1);
+    assert_eq!(summary.checksums, 1);
+    assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+    assert_eq!(snapshot.data.cookbooks[0].name, "app");
+
+    let version = &snapshot.data.cookbook_versions[0];
+    assert_eq!(version.name, "app");
+    assert_eq!((version.major, version.minor, version.patch), (1, 2, 3));
+    let raw = version.serialized_object.as_deref().unwrap();
+    assert!(raw.contains(&checksum), "{raw}");
+    assert_eq!(snapshot.data.checksums[0].checksum, checksum);
+    assert_eq!(
+        snapshot.data.cookbook_version_checksums[0].cookbook_version_id,
+        version.id
+    );
+    assert_eq!(
+        snapshot.data.cookbook_version_checksums[0].checksum,
+        checksum
+    );
+
     let org_id = &snapshot.data.orgs[0].id;
-    assert!(bookshelf
+    let blob = bookshelf
         .path()
-        .join(format!("organization-{org_id}/checksum-{checksum}"))
-        .exists());
+        .join(format!("organization-{org_id}/checksum-{checksum}"));
+    assert_eq!(std::fs::read(blob).unwrap(), body);
 }
 
 #[test]
 fn a_checksum_without_a_blob_is_an_error_when_blobs_are_requested() {
     let out = tempdir();
     let bookshelf = tempdir();
-    let (routes, _) = cookbooks_routes(false);
+    let (routes, _, _) = cookbooks_routes(false);
     let (url, _) = start_server(routes);
     let options = GoiardiOptions {
         bookshelf_dir: Some(bookshelf.path().to_path_buf()),
@@ -256,10 +277,12 @@ fn a_checksum_without_a_blob_is_an_error_when_blobs_are_requested() {
 #[test]
 fn dry_run_writes_no_snapshot_and_fetches_no_blob() {
     let dir = tempdir();
+    let bookshelf = tempdir();
     let output = dir.path().join("snapshot.json");
-    let (routes, _) = cookbooks_routes(true);
+    let (routes, _, _) = cookbooks_routes(true);
     let (url, records) = start_server(routes);
     let mut options = options(&url, dir.path());
+    options.bookshelf_dir = Some(bookshelf.path().to_path_buf());
     options.dry_run = true;
     let summary = from_goiardi_with_options(&options).unwrap();
     assert_eq!(summary.checksums, 1);

@@ -438,6 +438,7 @@ impl Crawler {
                 None => Some(entry.value.clone()),
             };
             let Some(value) = value else { continue };
+            let value = unwrap_cookbook(value, &list_name);
             let name = string_field(&value, "name").unwrap_or(list_name);
 
             let cookbook_id = synthetic_i64(&format!("cookbook:{}:{name}", org.name));
@@ -458,7 +459,13 @@ impl Crawler {
                 self.summary.cookbooks += 1;
             }
 
-            for (version, version_url) in cookbook_versions(&value) {
+            let versions = cookbook_versions(&value);
+            if versions.is_empty() {
+                self.summary.warnings.push(format!(
+                    "cookbook {name:?} lists no versions; imported without any"
+                ));
+            }
+            for (version, version_url) in versions {
                 if !self
                     .seen_cookbook_versions
                     .insert((name.clone(), version.clone()))
@@ -475,6 +482,9 @@ impl Crawler {
                 let version_url = self.fetcher.resolve(&version_path);
                 let Some((version_value, raw)) = self.fetcher.get_optional_raw(&version_url)?
                 else {
+                    self.summary.warnings.push(format!(
+                        "cookbook {name:?} version {version:?} detail answered 404; skipped"
+                    ));
                     continue;
                 };
                 if self.push_cookbook_version(
@@ -828,6 +838,22 @@ fn validate_org(org: &str) -> Result<(), MigrateError> {
 
 fn non_empty_string(value: &Value, key: &str) -> Option<String> {
     string_field(value, key).filter(|text| !text.is_empty())
+}
+
+/// Unwrap goiardi's cookbook-name envelope.
+///
+/// Both `/cookbooks` and `/cookbooks/<name>` wrap the resource under its name
+/// (`{"app": {"url": ..., "versions": [...]}}`), so the body has to be
+/// descended into before it looks like a cookbook. A body that already is the
+/// resource passes through unchanged.
+fn unwrap_cookbook(value: Value, name: &str) -> Value {
+    if value.get("versions").is_some() || value.get("version").is_some() {
+        return value;
+    }
+    if let Some(inner) = value.get(name).cloned() {
+        return inner;
+    }
+    value
 }
 
 /// Read the version list of a cookbook resource.
