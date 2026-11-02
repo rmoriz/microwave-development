@@ -301,6 +301,22 @@ fn dry_run_writes_no_snapshot_and_fetches_no_blob() {
 }
 
 #[test]
+fn a_real_run_without_a_bookshelf_counts_checksums_but_copies_no_blob() {
+    let dir = tempdir();
+    let (routes, _, _) = cookbooks_routes(false);
+    let (url, records) = start_server(routes);
+    let summary = from_goiardi_with_options(&options(&url, dir.path())).unwrap();
+    assert_eq!(summary.checksums, 1);
+    assert_eq!(summary.blobs_downloaded, 0);
+    assert_eq!(summary.blobs_skipped, 0);
+    assert!(records
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|record| !record.path.starts_with("/file_store/")));
+}
+
+#[test]
 fn an_object_without_acl_is_rejected() {
     let dir = tempdir();
     let (url, _) = start_server(crawl_objects_routes());

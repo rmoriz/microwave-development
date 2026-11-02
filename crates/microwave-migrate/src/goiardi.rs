@@ -104,8 +104,12 @@ pub struct GoiardiSummary {
 
 /// Crawl a goiardi server and write a snapshot unless `dry_run` is set.
 ///
-/// The snapshot is returned either way, but a dry run leaves the output path
-/// untouched.
+/// Counts and warnings go to stderr as they are collected, so an aborted run
+/// still reports what it saw; the snapshot path alone goes to stdout. The
+/// written snapshot is validated first: every imported object needs an ACL and
+/// every copied blob must exist. The snapshot is returned either way, but a
+/// dry run leaves the output path untouched, copies no blobs and skips the
+/// blob half of the validation.
 pub fn crawl_from_goiardi(
     options: &GoiardiOptions,
 ) -> Result<(Snapshot, GoiardiSummary), MigrateError> {
@@ -119,6 +123,9 @@ pub fn crawl_from_goiardi(
     // grants plus one object ACL per imported object. It has to be complete
     // before the blob copy, so a failure never leaves a half-described store.
     crawler.apply_policy();
+    // Everything up to here can still abort; report it before the blob phase
+    // so the counts and skip reasons are not lost.
+    print_summary(&crawler.summary);
     // Blob work runs last so a failed metadata crawl never leaves a
     // half-populated bookshelf behind, and a dry run downloads nothing.
     if !options.dry_run {
@@ -126,13 +133,15 @@ pub fn crawl_from_goiardi(
     }
     crawler.summary.blobs_downloaded = crawler.blob_summary.downloaded;
     crawler.summary.blobs_skipped = crawler.blob_summary.skipped;
+    // The blob counters only exist once the copy ran, so they close the table
+    // here instead of being repeated in the first block.
+    print_blob_counts(&crawler.summary);
 
-    let blob_check =
-        if options.dry_run || crawler.blob_summary.downloaded + crawler.blob_summary.skipped == 0 {
-            None
-        } else {
-            options.bookshelf_dir.as_deref()
-        };
+    // A dry run copies nothing, so only a real crawl can check the blobs.
+    let blob_check = options
+        .bookshelf_dir
+        .as_deref()
+        .filter(|_| !options.dry_run);
 
     let snapshot = Snapshot {
         format: SNAPSHOT_FORMAT.to_string(),
@@ -156,11 +165,11 @@ pub fn crawl_from_goiardi(
     validate_snapshot(&snapshot, blob_check)?;
 
     if options.dry_run {
-        println!("dry run: would write {}", options.output.display());
+        eprintln!("dry run: no snapshot written");
     } else {
         write_snapshot(&snapshot, &options.output)?;
-        println!("{}", options.output.display());
     }
+    println!("{}", options.output.display());
     Ok((snapshot, crawler.summary))
 }
 
@@ -172,7 +181,8 @@ pub fn from_goiardi_with_options(options: &GoiardiOptions) -> Result<GoiardiSumm
 /// Print the crawl counters and every skip warning to stderr.
 ///
 /// The counts are diagnostics; the snapshot path alone goes to stdout so a
-/// caller can capture it.
+/// caller can capture it. The blob counters close the table later, once the
+/// copy ran, so an aborted crawl still shows everything up to that point.
 fn print_summary(summary: &GoiardiSummary) {
     eprintln!("goiardi crawl summary:");
     for (label, count) in [
@@ -186,14 +196,18 @@ fn print_summary(summary: &GoiardiSummary) {
         ("cookbooks", summary.cookbooks),
         ("cookbook versions", summary.cookbook_versions),
         ("checksums", summary.checksums),
-        ("blobs downloaded", summary.blobs_downloaded),
-        ("blobs skipped", summary.blobs_skipped),
     ] {
         eprintln!("  {label}: {count}");
     }
     for warning in &summary.warnings {
         eprintln!("warning: {warning}");
     }
+}
+
+/// Close the summary table with the blob counters of the finished copy.
+fn print_blob_counts(summary: &GoiardiSummary) {
+    eprintln!("  blobs downloaded: {}", summary.blobs_downloaded);
+    eprintln!("  blobs skipped: {}", summary.blobs_skipped);
 }
 
 /// Reject a snapshot an import would leave half-broken.
