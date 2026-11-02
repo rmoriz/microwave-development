@@ -155,6 +155,20 @@ fn empty_org(name: &str, full_name: &str) -> OrgRow {
 #[test]
 fn builder_matches_create_organization() {
     let (_dir, store, creator, org) = created_org();
+    // A second, non-admin user and a client, created the way the server API
+    // creates them, so both `create_user` and `create_client_with_acl` branches
+    // are pinned, not only the creator.
+    let dev = store
+        .create_user("dev", "dev@example.com", "bcrypt", "", "", false)
+        .unwrap();
+    let client = store
+        .create_client_with_acl(&org.id, "web1", false, false, Some(&creator.authz_id))
+        .unwrap();
+    let clients_group = store.find_group(&org.id, "clients").unwrap().unwrap();
+    store
+        .add_group_member(&clients_group.authz_id, &client.authz_id)
+        .unwrap();
+    let client_authz = vec![client.authz_id.clone()];
 
     // The reference is the real server policy, canonicalized from uuids to names.
     let reference_snapshot = store.export_snapshot().unwrap();
@@ -170,28 +184,114 @@ fn builder_matches_create_organization() {
         updated_at: NOW.to_string(),
         ..Default::default()
     });
-    // The crawler imports `admin` before the policy runs; the builder needs the
-    // same row to derive the creator's user id.
-    built.users.push(microwave_store::UserRow {
-        id: creator.id.clone(),
-        authz_id: creator.authz_id.clone(),
-        username: "admin".to_string(),
-        email: Some("ops@example.com".to_string()),
-        hash_type: "bcrypt".to_string(),
-        admin: true,
+    // The crawler imports the users and clients before the policy runs; the
+    // builder needs the same rows.
+    for user in [&creator, &dev] {
+        built.users.push(microwave_store::UserRow {
+            id: user.id.clone(),
+            authz_id: user.authz_id.clone(),
+            username: user.username.clone(),
+            email: user.email.clone(),
+            hash_type: "bcrypt".to_string(),
+            admin: user.admin,
+            created_at: NOW.to_string(),
+            updated_at: NOW.to_string(),
+            ..Default::default()
+        });
+    }
+    built.clients.push(microwave_store::ClientRow {
+        id: client.id.clone(),
+        org_id: org.id.clone(),
+        authz_id: client.authz_id.clone(),
+        name: client.name.clone(),
         created_at: NOW.to_string(),
         updated_at: NOW.to_string(),
         ..Default::default()
     });
 
     let org_row = built.orgs[0].clone();
-    apply_default_policy(&mut built, &org_row, &creator.authz_id, &[], &[], NOW);
+    apply_default_policy(
+        &mut built,
+        &org_row,
+        &creator.authz_id,
+        &client_authz,
+        &[],
+        NOW,
+    );
 
     assert_eq!(canonical_grants(&built, &[]), reference);
     assert_eq!(
         canonical_memberships(&built, &[]),
         canonical_memberships(&reference_snapshot, &[])
     );
+
+    // The non-admin user gets exactly the `create_user` template: ALL on
+    // itself, create/read/update/delete for `server-admins`, no membership.
+    let grants = canonical_grants(&built, &[]);
+    let memberships = canonical_memberships(&built, &[]);
+    for permission in ["create", "read", "update", "delete", "grant"] {
+        assert!(grants.contains(&(
+            "dev".to_string(),
+            permission.to_string(),
+            "actor",
+            "dev".to_string()
+        )));
+    }
+    for permission in ["create", "read", "update", "delete"] {
+        assert!(grants.contains(&(
+            "dev".to_string(),
+            permission.to_string(),
+            "group",
+            "server-admins".to_string()
+        )));
+    }
+    assert!(!memberships.contains(&("server-admins".to_string(), "dev".to_string())));
+    assert!(!grants.contains(&(
+        "dev".to_string(),
+        "grant".to_string(),
+        "group",
+        "server-admins".to_string()
+    )));
+
+    // The client owns itself, inherits the `clients` container ACL and joins
+    // the `clients` group.
+    for permission in ["create", "read", "update", "delete", "grant"] {
+        assert!(grants.contains(&(
+            "web1".to_string(),
+            permission.to_string(),
+            "actor",
+            "web1".to_string()
+        )));
+        assert!(grants.contains(&(
+            "web1".to_string(),
+            permission.to_string(),
+            "actor",
+            "admin".to_string()
+        )));
+    }
+    for permission in ["read", "delete"] {
+        assert!(grants.contains(&(
+            "web1".to_string(),
+            permission.to_string(),
+            "group",
+            "users".to_string()
+        )));
+    }
+    assert!(memberships.contains(&("clients".to_string(), "web1".to_string())));
+    // Nodes-only ACEs do not leak onto the client.
+    assert!(!grants.contains(&(
+        "web1".to_string(),
+        "create".to_string(),
+        "group",
+        "users".to_string()
+    )));
+    assert!(!grants.contains(&(
+        "web1".to_string(),
+        "read".to_string(),
+        "group",
+        "clients".to_string()
+    )));
+
     // `associate_user_org` links the creator to the org.
     let associations: BTreeSet<(String, String)> = built
         .org_user_associations

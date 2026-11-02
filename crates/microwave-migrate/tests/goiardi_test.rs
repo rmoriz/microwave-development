@@ -65,6 +65,8 @@ fn crawls_objects_raw_and_skips_default_environment() {
     assert_eq!(summary.data_bag_items, 1);
     // The node sits in `_default`, which must count as a known environment.
     assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+    // The summary counts the environment rows, the synthesized one included.
+    assert_eq!(summary.environments, snapshot.data.environments.len());
 }
 
 #[test]

@@ -806,6 +806,9 @@ impl Crawler {
             &object_authz,
             &self.generated_at,
         );
+        // The policy appends the `_default` environment the source crawl skips,
+        // so the reported count has to come from the snapshot.
+        self.summary.environments = self.data.environments.len();
     }
 
     // ------------------------------------------------------------------
@@ -1136,18 +1139,25 @@ pub fn apply_default_policy(
         ensure_entity(data, target, "object", Some(&org.id), generated_at);
         copy_container_acl(data, container, target, admin_authz);
     }
+
+    // A client is an object of the `clients` container and owns its own ACL:
+    // the API copies the container ACL onto the new client and lets the client
+    // manage itself.
+    for client in client_authz {
+        ensure_entity(data, client, "actor", Some(&org.id), generated_at);
+        copy_container_acl(data, "clients", client, admin_authz);
+        grant_actor_all(data, client, client);
+    }
 }
 
 /// Copy every ACE of `container` onto `target` and add `creator` `ALL`.
 fn copy_container_acl(data: &mut StoreSnapshot, container: &str, target: &str, creator: &str) {
-    let Some(source) = data
+    let source = data
         .containers
         .iter()
         .find(|row| row.name == container)
         .map(|row| row.authz_id.clone())
-    else {
-        return;
-    };
+        .unwrap_or_else(|| panic!("default container {container}"));
     let actors: Vec<(String, String)> = data
         .authz_acl_actor
         .iter()
