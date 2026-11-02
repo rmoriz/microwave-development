@@ -130,12 +130,12 @@ pub fn crawl_from_goiardi(
     // half-populated bookshelf behind, and a dry run downloads nothing.
     if !options.dry_run {
         crawler.download_blobs()?;
+        crawler.summary.blobs_downloaded = crawler.blob_summary.downloaded;
+        crawler.summary.blobs_skipped = crawler.blob_summary.skipped;
+        // The blob counters only exist once the copy ran; they close the
+        // table here instead of being repeated in the block above.
+        print_blob_counts(&crawler.summary);
     }
-    crawler.summary.blobs_downloaded = crawler.blob_summary.downloaded;
-    crawler.summary.blobs_skipped = crawler.blob_summary.skipped;
-    // The blob counters only exist once the copy ran, so they close the table
-    // here instead of being repeated in the first block.
-    print_blob_counts(&crawler.summary);
 
     // A dry run copies nothing, so only a real crawl can check the blobs.
     let blob_check = options
@@ -160,7 +160,6 @@ pub fn crawl_from_goiardi(
         data: crawler.data,
     };
 
-    print_summary(&crawler.summary);
     // Blobs only exist when they were copied, so a dry run skips that half.
     validate_snapshot(&snapshot, blob_check)?;
 
@@ -212,10 +211,9 @@ fn print_blob_counts(summary: &GoiardiSummary) {
 
 /// Reject a snapshot an import would leave half-broken.
 ///
-/// Every `object` authz entity needs at least one actor or group ACL row, and
-/// when blobs were fetched every checksum row needs its blob under
-/// `bookshelf_dir`. The directory is only passed for a real run, so a dry run
-/// checks ACLs but not blobs.
+/// Every `object` authz entity needs at least one actor or group ACL row. When
+/// a bookshelf directory is passed — a real run that copied blobs, never a dry
+/// run — every checksum row also needs its blob under that directory.
 pub fn validate_snapshot(
     snapshot: &Snapshot,
     bookshelf_dir: Option<&Path>,
