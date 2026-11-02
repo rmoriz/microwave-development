@@ -49,6 +49,9 @@ jobs:
           npm ci
           npm run typecheck
           npm run build
+      - name: Test the docs head
+        working-directory: website/docs
+        run: npm test
       - name: Assemble the site
         run: |
           set -euo pipefail

@@ -15,6 +15,34 @@ const config: Config = {
 
   trailingSlash: true,
 
+  // Pages serves its own header defaults and gives no header configuration, so
+  // the security policy rides along as `<meta http-equiv>` tags, like the
+  // homepage does. `X-Frame-Options` cannot be a meta tag, so `frame-ancestors
+  // 'none'` carries that job. `data:` under `img-src` is needed for the theme's
+  // inline SVG icons; the site ships no web fonts, so `font-src` stays `'self'`.
+  headTags: [
+    {
+      tagName: 'meta',
+      attributes: {
+        'http-equiv': 'Content-Security-Policy',
+        content:
+          "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+      },
+    },
+    {
+      tagName: 'meta',
+      attributes: {'http-equiv': 'X-Content-Type-Options', content: 'nosniff'},
+    },
+    {
+      tagName: 'meta',
+      attributes: {'http-equiv': 'X-XSS-Protection', content: '1'},
+    },
+    {
+      tagName: 'meta',
+      attributes: {'http-equiv': 'Referrer-Policy', content: 'no-referrer'},
+    },
+  ],
+
   onBrokenLinks: 'throw',
   // `docs/remaining-work.md` marks its gap anchors with raw `<a id="...">`
   // elements, which Docusaurus does not count as headings; the anchors work,

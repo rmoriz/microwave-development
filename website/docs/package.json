@@ -8,6 +8,7 @@
     "build": "docusaurus build",
     "preview": "docusaurus serve",
     "clear": "docusaurus clear",
+    "test": "node --test tests/",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
