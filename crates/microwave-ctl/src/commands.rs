@@ -3,7 +3,7 @@ use crate::{
     secrets::KNOWN_CREDENTIALS,
     CtlError,
 };
-use microwave_authz::{create_organization_with_policy, OrgPolicy};
+use microwave_authz::create_organization;
 use microwave_crypto::{generate_rsa_keypair, hash_password, parse_public_key_pem};
 use microwave_store::{ActorType, Org, StoreError, User, UserProfile};
 use std::io::Write;
@@ -326,15 +326,12 @@ pub fn org_create(
     })?;
     // The CLI is synchronous. The authorization policy lives behind async
     // repository traits, so bridge into the handle's current-thread runtime.
-    let org = store.run(create_organization_with_policy(
+    let org = store.run(create_organization(
         store.store(),
         name,
         full_name,
         &creator.id,
         &creator.authz_id,
-        OrgPolicy {
-            client_data_bag_writes: context.config.org.client_data_bag_writes,
-        },
     ))?;
 
     let client = match provision_validator(&store, &org, &creator.authz_id, &public_key) {

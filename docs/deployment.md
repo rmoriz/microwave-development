@@ -217,13 +217,42 @@ verifies them against the actor's keys.
 
 #### Organization policy
 
-Defaults written into every organization created through the API or
-`microwave-ctl org-create`. Changing them does not touch existing
-organizations; edit their ACLs instead.
+Every organization created through the API or `microwave-ctl org-create` starts
+with the upstream container and group ACLs, so the `acls` Pedant suite stays
+green. In practice:
 
-| Setting | Details |
-|---|---|
-| `org.client_data_bag_writes`<br/>`MW_ORG__CLIENT_DATA_BAG_WRITES` | Default `true`. Let the `clients` group create, update, and delete data bags and items. Cookbooks such as `acme_persistence` save certificates into a bag during a converge; with `false`, clients may only read data bags and those runs fail with `403` unless the ACLs are widened. Upstream Chef Infra Server grants clients read only here, so `false` matches its `acls` Pedant expectations. Node saves need no extra grant either way: a node carries a creator grant for the client named like it, and the goiardi importer seeds that grant for imported nodes. |
+- Clients read every object a converge needs and may create nodes. A node
+  carries a creator ACE for the client named like it, which is what lets that
+  client save its own node; a node created by somebody else stays closed until
+  an ACE is added.
+- The `data` container is read-only for clients. A bag or item a client creates
+  is covered by its creator ACE; writes to somebody else's bag are not.
+
+The goiardi importer seeds the bag ACEs for imported bags (drop them again with
+`--no-client-data-bag-writes`). For bags created later, an admin grants the
+write explicitly: item writes check the ACL of their bag, so one edit on the bag
+covers every item in it. With an org admin key:
+
+1. Read the current ACL and keep every existing actor and group:
+
+   ```sh
+   GET /organizations/ORG/data/BAG/_acl
+   ```
+
+2. Add the client to the `actors` of `create`, `update`, and `delete` and PUT
+   each permission back with the members you read:
+
+   ```sh
+   PUT /organizations/ORG/data/BAG/_acl/update
+   {"actors":["CLIENT"],"groups":["admins","users"]}
+   ```
+
+   Repeat with `/create` and `/delete`; each PUT replaces that one permission
+   list, so keep the actors and groups from step 1 and only add the client.
+
+`read` needs no change, clients already hold it. Removing the client from those
+three ACEs locks the bag again; whether items can be written follows the bag, so
+there is nothing to edit on the items themselves.
 
 #### Mail
 
@@ -1818,11 +1847,15 @@ goiardi exports none. `--org-full-name` sets the display name. `--dry-run`
 crawls and prints the counts without writing a snapshot or fetching blobs;
 `--skip-orphan-clients` drops clients that have no node of the same name.
 
-The imported policy lets clients create, update, and delete data bag items, as
-the source server did; cookbooks such as `acme_persistence` save certificates
-into a bag and fail with `403` without it. Pass
-`--no-client-data-bag-writes` to grant read access only — matching
-`org.client_data_bag_writes = false` on the target.
+The imported policy mirrors the upstream container ACLs: the `data` container
+stays read-only for clients, and every imported node gets a creator ACE for the
+client of the same name. Because cookbooks such as `acme_persistence` save
+certificates into a bag during a converge, the importer additionally grants
+every client create, update, and delete on every imported bag object. Those are
+ACEs on the bags, not on the `data` container, so the container ACL keeps the
+upstream shape and the `acls` Pedant suite stays green. Pass
+`--no-client-data-bag-writes` to skip them and leave clients with read access
+only; lifts are then manual (see "Letting clients write a data bag").
 
 `--bookshelf-dir DIR` also copies cookbook file blobs, MD5-verified, to
 `DIR/organization-<org_id>/checksum-<md5>`. For a migration that should serve

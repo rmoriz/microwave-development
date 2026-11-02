@@ -1,6 +1,4 @@
-use microwave_authz::{
-    create_organization, create_organization_with_policy, OrgPolicy, Permission,
-};
+use microwave_authz::{create_organization, Permission};
 use microwave_store::{SqliteStore, StoreError};
 
 #[tokio::test]
@@ -164,8 +162,8 @@ async fn applies_the_upstream_default_container_and_group_matrices() {
         acl_groups(&store, &nodes.authz_id, Permission::Create),
         vec!["admins", "clients", "users"]
     );
-    // Nodes stay at the upstream matrix: a client updates its own node through
-    // the handler-side self rule, not through the container ACL.
+    // Nodes stay at the upstream matrix: a client's write rights come from the
+    // creator grant on the node it made.
     assert_eq!(
         acl_groups(&store, &nodes.authz_id, Permission::Update),
         vec!["admins", "users"]
@@ -175,18 +173,17 @@ async fn applies_the_upstream_default_container_and_group_matrices() {
         vec!["admins", "users"]
     );
 
-    // Data is the deliberate deviation: converges write data bag items, so
-    // clients need `data` beyond read.
+    // Data is read-only for clients, as upstream; bag writes are ACEs on the
+    // bag objects and arrive with the import or an admin.
     let data = store.find_container(&org.id, "data").unwrap().unwrap();
-    for permission in [
-        Permission::Create,
-        Permission::Read,
-        Permission::Update,
-        Permission::Delete,
-    ] {
+    assert_eq!(
+        acl_groups(&store, &data.authz_id, Permission::Read),
+        vec!["admins", "clients", "users"]
+    );
+    for permission in [Permission::Create, Permission::Update, Permission::Delete] {
         assert_eq!(
             acl_groups(&store, &data.authz_id, permission),
-            vec!["admins", "clients", "users"],
+            vec!["admins", "users"],
             "{permission:?}"
         );
     }
@@ -252,23 +249,14 @@ async fn applies_the_upstream_default_container_and_group_matrices() {
 }
 
 #[tokio::test]
-async fn read_only_data_bags_keep_clients_out_of_writes() {
+async fn clients_read_data_bags_but_do_not_write_them() {
     let store = SqliteStore::open_in_memory().unwrap();
     let creator = store
         .create_user("root", "root@example.com", "bcrypt", "hash", "salt", true)
         .unwrap();
-    let org = create_organization_with_policy(
-        &store,
-        "acme",
-        "Acme Corp",
-        &creator.id,
-        &creator.authz_id,
-        OrgPolicy {
-            client_data_bag_writes: false,
-        },
-    )
-    .await
-    .unwrap();
+    let org = create_organization(&store, "acme", "Acme Corp", &creator.id, &creator.authz_id)
+        .await
+        .unwrap();
 
     let data = store.find_container(&org.id, "data").unwrap().unwrap();
     assert_eq!(

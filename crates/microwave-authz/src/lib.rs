@@ -5,10 +5,7 @@ use microwave_store::{AuthzRepository, StoreError};
 pub mod org;
 
 pub use microwave_store::Permission;
-pub use org::{
-    create_organization, create_organization_with_policy, OrgPolicy, DEFAULT_CONTAINERS,
-    DEFAULT_GROUPS,
-};
+pub use org::{create_organization, DEFAULT_CONTAINERS, DEFAULT_GROUPS};
 
 /// Check whether an actor has a permission on a target.
 pub async fn check<S>(

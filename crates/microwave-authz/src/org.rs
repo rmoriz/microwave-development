@@ -26,24 +26,8 @@ pub const DEFAULT_GROUPS: [&str; 5] = [
     "public_key_read_access",
 ];
 
-/// Policy knobs applied while an organization is created. They only affect
-/// the defaults written at creation time, not later ACL edits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OrgPolicy {
-    /// Grant the `clients` group create, read, update and delete on the `data`
-    /// container. Off means clients may only read data bags and items.
-    pub client_data_bag_writes: bool,
-}
-
-impl Default for OrgPolicy {
-    fn default() -> Self {
-        Self {
-            client_data_bag_writes: true,
-        }
-    }
-}
-
-/// Create an organization with the default [`OrgPolicy`].
+/// Create an organization and apply the default container, group and ACL
+/// policy. The organization row is removed again if any policy step fails.
 pub async fn create_organization<S>(
     store: &S,
     name: &str,
@@ -54,36 +38,9 @@ pub async fn create_organization<S>(
 where
     S: IdentityRepository + AuthzRepository + ObjectRepository + ?Sized,
 {
-    create_organization_with_policy(
-        store,
-        name,
-        full_name,
-        creator_user_id,
-        creator_authz_id,
-        OrgPolicy::default(),
-    )
-    .await
-}
-
-/// Create an organization and apply the default container/group/ACL policy,
-/// adjusted by `policy`. The organization row is removed again if any policy
-/// step fails.
-pub async fn create_organization_with_policy<S>(
-    store: &S,
-    name: &str,
-    full_name: &str,
-    creator_user_id: &str,
-    creator_authz_id: &str,
-    policy: OrgPolicy,
-) -> Result<Org, StoreError>
-where
-    S: IdentityRepository + AuthzRepository + ObjectRepository + ?Sized,
-{
     let org = store.create_org(name, full_name).await?;
 
-    if let Err(error) =
-        apply_default_policy(store, &org, creator_user_id, creator_authz_id, policy).await
-    {
+    if let Err(error) = apply_default_policy(store, &org, creator_user_id, creator_authz_id).await {
         let _ = store.delete_org(&org.id).await;
         return Err(error);
     }
@@ -96,7 +53,6 @@ async fn apply_default_policy<S>(
     org: &Org,
     creator_user_id: &str,
     creator_authz_id: &str,
-    policy: OrgPolicy,
 ) -> Result<(), StoreError>
 where
     S: IdentityRepository + AuthzRepository + ObjectRepository + ?Sized,
@@ -280,10 +236,10 @@ where
     )
     .await?;
 
-    // Clients create their node and then keep it updated through the
-    // self-update rule in the node handlers; the container grants read and
-    // create only, as upstream does. `data` needs the write ACEs because
-    // cookbooks save bag items during a converge (`acme_persistence`).
+    // Clients create their node and inherit the creator grant from that, so the
+    // container needs read and create only. `data` is read-only as upstream:
+    // bag writes come from ACEs on the bag objects themselves, which the
+    // goiardi importer seeds and an admin can set by hand.
     grant(
         store,
         &container(&containers, "nodes")?.authz_id,
@@ -292,20 +248,10 @@ where
         Some(&clients.authz_id),
     )
     .await?;
-    let data_permissions: &[Permission] = if policy.client_data_bag_writes {
-        &[
-            Permission::Create,
-            Permission::Read,
-            Permission::Update,
-            Permission::Delete,
-        ]
-    } else {
-        &[Permission::Read]
-    };
     grant(
         store,
         &container(&containers, "data")?.authz_id,
-        data_permissions,
+        &[Permission::Read],
         None,
         Some(&clients.authz_id),
     )

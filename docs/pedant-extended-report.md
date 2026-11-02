@@ -18,9 +18,10 @@ contract suites `environments` and `roles` run 610 examples (587 passed, 23 pend
 examples (78 passed), both with zero failures. Every failure is gone; the pending examples are
 pedant's own skips.
 
-A later `acls` run on 2026-11-02 (server at `42e77e9` plus the client data bag write grant) has two
-failures, both from the one deliberate `data` ACL deviation described in item 11 of the quirks
-list. The other 1,638 `acls` examples still pass.
+A later full `scripts/run-pedant.sh strict` run on 2026-11-02 (server at `ea8af37` plus the
+per-bag client ACEs) is green across all nineteen tags: **4,639 examples, 0 failures, 38 pending**.
+Data bag and node writes became ordinary ACL checks on the way, so the ACL bodies match the
+upstream matrices and the two former `acls` body diffs are gone.
 
 ## Environment
 
@@ -191,11 +192,11 @@ built-in-index list). The extended tags add no direct database writes.
    they were pre-existing, so a shared instance produces spurious 401s after the first tag.
 10. **`Gemfile.lock` is restored after each run.** Bundler adds the local `arm64-darwin-25` platform
     and drops the `rack` floor because the omnibus `safe_versions.rb` is missing from this checkout.
-11. **Client data bag writes deviate from the upstream ACL matrix.** Upstream grants the `clients`
-    group only `read` on the `data` container, so `GET /data/<name>/_acl` there lists `clients`
-    under `read` alone. Microwave also grants `create`, `update`, and `delete`, because cookbooks
-    such as `acme_persistence` save certificates into a bag during a converge and fail with `403`
-    otherwise. Two `acls` examples compare that body exactly and fail by the three extra entries;
-    `org.client_data_bag_writes = false` restores the upstream body. Node saves are unaffected:
-    the `nodes` matrix stays upstream-exact because the importer hands every imported node a
-    creator grant for the client named like it, which is the same ACE `create_node` writes.
+11. **Client bag writes ride on object ACEs, not on the container.** Upstream grants the `clients`
+    group only `read` on the `data` container, and `GET /data/<name>/_acl` renders client write
+    access next to the bag. Microwave keeps that container ACL and grants every client
+    create/update/delete on each bag object instead, because cookbooks such as `acme_persistence`
+    save certificates into a bag during a converge and fail with `403` without it. The importer
+    writes those ACEs for imported bags; the `acl` examples create their own bag and stay green
+    either way. Node saves follow the same pattern: a node carries a creator ACE for the client
+    named like it, the ACE `create_node` writes.

@@ -191,12 +191,19 @@ creates, with deterministic ids:
 - one object ACL per imported object, copied from its container ACL plus a
   creator grant for `admin`
 
-The `clients` group gets create, read, update and delete on `data`, so
-node-written bag items (`chef_data_bag_item`) keep working as on the source.
-Node saves need no container grant: the importer writes the creator ACE on
-every node for the client named like it, the same grant `create_node` adds, so
-`nodes` keeps the upstream read/create matrix. `--no-client-data-bag-writes` narrows `data` to
-read, mirroring `org.client_data_bag_writes = false`.
+Container ACLs stay upstream: clients get read on `data` and read/create on
+`nodes`, nothing more. Two object-level grants carry what a converge needs
+instead, both of them ACEs on single objects rather than container-wide:
+
+- every node gets a creator ACE for the client named like it, the same grant
+  `create_node` writes, so the client can save its node;
+- every bag gets create, update and delete for every client, so
+  node-written bag items (`chef_data_bag_item`) keep working as on the source.
+
+`--no-client-data-bag-writes` drops the bag ACEs and leaves read-only access.
+Because the grants are per object, the container ACLs and the `acls` Pedant
+comparisons are unaffected; for bags created after the import an admin adds the
+same ACE by hand (see `docs/deployment.md`, "Organization policy").
 
 A test creates a real org through `create_organization` in a temporary store,
 exports it, and compares the normalized rows against the builder, so server

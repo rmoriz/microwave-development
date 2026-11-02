@@ -7,7 +7,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
-use microwave_authz::{create_organization_with_policy, OrgPolicy};
+use microwave_authz::create_organization;
 use microwave_store::{ActorType, Client, Permission};
 use serde_json::{json, Map, Value};
 
@@ -63,15 +63,12 @@ async fn create_org(
         .await
         .map_err(|_| ApiError::internal())?;
 
-    let org = create_organization_with_policy(
+    let org = create_organization(
         state.store.as_ref(),
         &name,
         &full_name,
         &auth.principal.actor_id,
         &auth.principal.authz_id,
-        OrgPolicy {
-            client_data_bag_writes: state.config.org.client_data_bag_writes,
-        },
     )
     .await
     .map_err(ApiError::from)?;

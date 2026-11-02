@@ -13,7 +13,6 @@ pub struct Config {
     pub search: SearchConfig,
     pub object_store: ObjectStoreConfig,
     pub auth: AuthConfig,
-    pub org: OrgConfig,
     pub mail: MailConfig,
     pub keygen: KeygenConfig,
     pub depsolver: DepsolverConfig,
@@ -201,7 +200,6 @@ impl Config {
     /// - `MW_AUTH__SKEW_SECONDS`, `MW_AUTH__SUPERUSER_NAME`,
     ///   `MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE`,
     ///   `MW_AUTH__PASSWORD_RESET_TTL_SECONDS`
-    /// - `MW_ORG__CLIENT_DATA_BAG_WRITES`
     /// - `MW_MAIL__ENABLED`, `MW_MAIL__HOST`, `MW_MAIL__PORT`,
     ///   `MW_MAIL__SECURITY`, `MW_MAIL__USERNAME`, `MW_MAIL__PASSWORD`,
     ///   `MW_MAIL__AUTH`, `MW_MAIL__FROM`, `MW_MAIL__REPLY_TO`,
@@ -359,9 +357,6 @@ impl Config {
         if let Ok(value) = std::env::var("MW_AUTH__PASSWORD_RESET_TTL_SECONDS") {
             self.auth.password_reset_ttl_seconds =
                 parse_value("MW_AUTH__PASSWORD_RESET_TTL_SECONDS", value)?;
-        }
-        if let Ok(value) = std::env::var("MW_ORG__CLIENT_DATA_BAG_WRITES") {
-            self.org.client_data_bag_writes = parse_bool("MW_ORG__CLIENT_DATA_BAG_WRITES", &value)?;
         }
         if let Ok(value) = std::env::var("MW_MAIL__ENABLED") {
             self.mail.enabled = parse_bool("MW_MAIL__ENABLED", &value)?;
@@ -915,26 +910,6 @@ impl Default for AuthConfig {
             superuser_name: "pivotal".into(),
             password_reset_token_in_response: false,
             password_reset_ttl_seconds: 3600,
-        }
-    }
-}
-
-/// Default policy for organizations created through the API or `microwave-ctl`.
-/// Editing it only affects organizations created afterwards.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct OrgConfig {
-    /// Let the `clients` group create, update, and delete data bags and items.
-    /// Cookbooks such as `acme_persistence` save certificates into a bag
-    /// during a converge, which needs more than the read access every client
-    /// always gets.
-    pub client_data_bag_writes: bool,
-}
-
-impl Default for OrgConfig {
-    fn default() -> Self {
-        Self {
-            client_data_bag_writes: true,
         }
     }
 }

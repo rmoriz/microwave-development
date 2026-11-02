@@ -1267,10 +1267,9 @@ pub fn apply_default_policy(
     }
     grant_group(data, &org.authz_id, &[Permission::Read], users);
 
-    // Clients create their node and then keep it updated through the
-    // self-update rule in the node handlers; the container grants read and
-    // create only, as upstream does. `data` needs the write ACEs because
-    // cookbooks save bag items during a converge (`acme_persistence`).
+    // Clients create their node and inherit the creator grant from that, so
+    // `nodes` needs read and create only. `data` stays read-only as upstream;
+    // the bag write ACEs are per object and follow below.
     grant_group(
         data,
         container_authz(&containers, "nodes"),
@@ -1280,16 +1279,7 @@ pub fn apply_default_policy(
     grant_group(
         data,
         container_authz(&containers, "data"),
-        if client_data_bag_writes {
-            &[
-                Permission::Create,
-                Permission::Read,
-                Permission::Update,
-                Permission::Delete,
-            ]
-        } else {
-            &[Permission::Read]
-        },
+        &[Permission::Read],
         clients,
     );
     for name in [
@@ -1382,6 +1372,31 @@ pub fn apply_default_policy(
         .collect();
     for (node, client) in own_nodes {
         grant_actor_all(data, &node, &client);
+    }
+
+    // Cookbooks save certificates into a bag during a converge
+    // (`acme_persistence`). The source server let them, so every client gets
+    // create/update/delete on every imported bag. Granting it per bag object
+    // instead of on the `data` container keeps that container's ACL, and with
+    // it the rendered ACL bodies, at the upstream shape.
+    if client_data_bag_writes {
+        let mut bags: Vec<String> = object_authz
+            .iter()
+            .filter(|(container, _)| container == "data")
+            .map(|(_, target)| target.clone())
+            .collect();
+        bags.sort_unstable();
+        let mut clients: Vec<&str> = client_authz
+            .iter()
+            .map(|(authz_id, _)| authz_id.as_str())
+            .collect();
+        clients.sort_unstable();
+        let bag_writes = [Permission::Create, Permission::Update, Permission::Delete];
+        for bag in bags {
+            for client in &clients {
+                grant_actor(data, &bag, &bag_writes, client);
+            }
+        }
     }
 
     // A client is an object of the `clients` container and inherits its ACL.

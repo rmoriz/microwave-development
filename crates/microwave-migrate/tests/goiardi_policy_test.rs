@@ -606,27 +606,23 @@ fn object_acls_copy_the_container_acl_and_add_the_creator() {
     assert_eq!(canonical_grants(&again, &[]), canonical_grants(&built, &[]));
 }
 
-/// Without client data bag writes, clients keep read access only, and the
-/// importer still produces exactly the policy the server writes.
+/// The `data` container is read-only for clients, with or without client data
+/// bag writes; only the bag objects gain write ACEs, and this fixture has none.
 #[test]
-fn read_only_data_bags_match_create_organization() {
+fn data_container_matches_create_organization() {
     let dir = tempdir();
     let store = SqliteStore::open(&dir.path().join("read-only.db")).unwrap();
     let creator = store
         .create_user("admin", "ops@example.com", "bcrypt", "", "", true)
         .unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let policy = microwave_authz::OrgPolicy {
-        client_data_bag_writes: false,
-    };
     let org = runtime
-        .block_on(microwave_authz::create_organization_with_policy(
+        .block_on(microwave_authz::create_organization(
             &store,
             "acme",
             "Acme",
             &creator.id,
             &creator.authz_id,
-            policy,
         ))
         .unwrap();
     let client = store
@@ -675,8 +671,7 @@ fn read_only_data_bags_match_create_organization() {
 
     assert_eq!(canonical_grants(&built, &[]), reference);
 
-    // Only `read` on the data container; the create/update/delete ACEs that
-    // client data bag writes would add are absent.
+    // Only `read` on the data container, even with client data bag writes on.
     let data = built
         .containers
         .iter()
@@ -698,4 +693,81 @@ fn read_only_data_bags_match_create_organization() {
         .map(|row| row.permission.clone())
         .collect();
     assert_eq!(grants, vec!["read".to_string()]);
+    assert!(!built
+        .authz_acl_actor
+        .iter()
+        .any(|row| row.target_authz_id == data && row.actor_authz_id == client.authz_id));
+}
+
+/// A converge writes bag items, so the importer hands every client write ACEs
+/// on every imported bag object - never on the `data` container, whose ACL has
+/// to keep the upstream shape.
+#[test]
+fn client_data_bag_writes_grant_each_bag_object() {
+    let build = |writes: bool| {
+        let mut built = StoreSnapshot::default();
+        let org = empty_org("acme", "Acme");
+        built.orgs.push(org.clone());
+        let bag = "bag-authz";
+        let object_authz = vec![("data".to_string(), bag.to_string())];
+        built.users.push(microwave_store::UserRow {
+            id: "creator-id".to_string(),
+            authz_id: "creator-authz".to_string(),
+            username: "admin".to_string(),
+            admin: true,
+            ..Default::default()
+        });
+        apply_default_policy(
+            &mut built,
+            &org,
+            "creator-authz",
+            &[
+                ("client-a".to_string(), false),
+                ("client-b".to_string(), true),
+            ],
+            &object_authz,
+            NOW,
+            writes,
+        );
+        built
+    };
+
+    let grants = |built: &StoreSnapshot, bag: &str| -> BTreeSet<(String, String)> {
+        built
+            .authz_acl_actor
+            .iter()
+            .filter(|row| row.target_authz_id == bag)
+            .map(|row| (row.permission.clone(), row.actor_authz_id.clone()))
+            .collect()
+    };
+
+    let built = build(true);
+    for client in ["client-a", "client-b"] {
+        for permission in ["create", "update", "delete"] {
+            assert!(
+                grants(&built, "bag-authz").contains(&(permission.to_string(), client.to_string())),
+                "bag is missing {permission} for {client}"
+            );
+        }
+    }
+    // The creator grant on the bag is untouched.
+    for permission in ["create", "read", "update", "delete", "grant"] {
+        assert!(grants(&built, "bag-authz")
+            .contains(&(permission.to_string(), "creator-authz".to_string())));
+    }
+
+    // Without the flag the clients keep read-only access, which the bag
+    // inherits from the container.
+    let built = build(false);
+    for client in ["client-a", "client-b"] {
+        assert!(!grants(&built, "bag-authz")
+            .iter()
+            .any(|(_, actor)| actor == client));
+    }
+
+    // Deterministic either way.
+    assert_eq!(
+        canonical_grants(&build(true), &[]),
+        canonical_grants(&build(true), &[])
+    );
 }
