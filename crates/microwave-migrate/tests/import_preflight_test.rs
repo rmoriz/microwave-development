@@ -69,10 +69,48 @@ fn snapshot(layout: Option<&str>) -> Snapshot {
     }
 }
 
+fn snapshot_with_user(layout: Option<&str>, username: &str) -> Snapshot {
+    let mut snapshot = snapshot(layout);
+    snapshot.data.users[0].username = username.to_string();
+    snapshot.data.users[0].id = format!("user-{username}");
+    snapshot.data.users[0].authz_id = format!("authz-user-{username}");
+    for entity in &mut snapshot.data.authz_entities {
+        if entity.authz_id == "authz-user-1" {
+            entity.authz_id = format!("authz-user-{username}");
+        }
+    }
+    for row in &mut snapshot.data.authz_group_actors {
+        if row.actor_authz_id == "authz-user-1" {
+            row.actor_authz_id = format!("authz-user-{username}");
+        }
+    }
+    for row in &mut snapshot.data.authz_acl_actor {
+        if row.actor_authz_id == "authz-user-1" {
+            row.actor_authz_id = format!("authz-user-{username}");
+        }
+    }
+    snapshot
+}
+
 fn write(dir: &Path, snapshot: &Snapshot) -> PathBuf {
     let path = dir.join("snapshot.json");
     write_snapshot(snapshot, &path).unwrap();
     path
+}
+
+fn bootstrap_user(dir: &Path, username: &str) {
+    let database = dir.join("microwave.db");
+    let store = microwave_store::SqliteStore::open(&database).unwrap();
+    store
+        .create_user(
+            username,
+            "superuser@example.com",
+            "bcrypt",
+            "superuser-hash",
+            "superuser-salt",
+            true,
+        )
+        .unwrap();
 }
 
 #[test]
@@ -151,6 +189,48 @@ fn accepts_a_target_with_only_the_bootstrap_superuser() {
         )
         .unwrap();
     assert_eq!(rewritten_acl, 1);
+}
+
+#[test]
+fn refuses_a_target_superuser_that_collides_with_a_snapshot_user() {
+    let target = tempfile::tempdir().unwrap();
+    bootstrap_user(target.path(), "admin");
+    let input = write(target.path(), &snapshot_with_user(Some("goiardi"), "admin"));
+
+    let error = import(target.path(), &input).unwrap_err();
+    assert!(matches!(
+        error,
+        MigrateError::SuperuserCollision { ref user } if user == "admin"
+    ));
+    assert!(error.to_string().contains("auth.superuser_name"));
+}
+
+#[test]
+fn imports_into_a_target_superuser_named_admin_when_the_snapshot_uses_another_name() {
+    let target = tempfile::tempdir().unwrap();
+    bootstrap_user(target.path(), "admin");
+    let input = write(
+        target.path(),
+        &snapshot_with_user(Some("goiardi"), "someone"),
+    );
+
+    import(target.path(), &input).unwrap();
+
+    let store = microwave_store::SqliteStore::open(&target.path().join("microwave.db")).unwrap();
+    assert!(store.find_user("admin").unwrap().is_some());
+    assert!(store.find_user("someone").unwrap().is_some());
+}
+
+#[test]
+fn accepts_any_single_target_user_when_the_names_differ() {
+    let target = tempfile::tempdir().unwrap();
+    bootstrap_user(target.path(), "renamed-superuser");
+    let input = write(
+        target.path(),
+        &snapshot_with_user(Some("goiardi"), "someone"),
+    );
+
+    import(target.path(), &input).unwrap();
 }
 
 #[test]

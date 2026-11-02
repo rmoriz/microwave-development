@@ -31,7 +31,7 @@
 use chrono::{SecondsFormat, Utc};
 pub use microwave_store::Compression;
 use microwave_store::{
-    AuthzRepository, ImportTargetCounts, SqliteStore, StoreError, StoreSnapshot,
+    AuthzRepository, IdentityRepository, ImportTargetCounts, SqliteStore, StoreError, StoreSnapshot,
 };
 use microwave_store_postgres::PostgresStore;
 use serde::{Deserialize, Serialize};
@@ -189,6 +189,8 @@ pub enum MigrateError {
         "target already contains data (orgs: {orgs}, users: {users}); goiardi imports do not merge, use a fresh data directory or database"
     )]
     TargetNotEmpty { orgs: i64, users: i64 },
+    #[error("target superuser {user:?} is also a user in the snapshot; import with the default superuser name and set auth.superuser_name afterwards")]
+    SuperuserCollision { user: String },
     #[error("crypto error: {0}")]
     Crypto(#[from] microwave_crypto::CryptoError),
     #[error("failed to build tokio runtime: {0}")]
@@ -298,8 +300,27 @@ pub fn import_database_with_compression(
         }
     }
     let store = SqliteStore::open_with_compression(database, compression)?;
+    let counts = store.import_target_counts()?;
+    let target_users = if goiardi_preflight_allows_users(&counts, snapshot.source.layout.as_deref())
+    {
+        store
+            .list_users()?
+            .into_iter()
+            .map(|user| user.username)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let snapshot_users: Vec<String> = snapshot
+        .data
+        .users
+        .iter()
+        .map(|user| user.username.clone())
+        .collect();
     ensure_empty_goiardi_target(
-        &store.import_target_counts()?,
+        &counts,
+        &target_users,
+        &snapshot_users,
         snapshot.source.layout.as_deref(),
     )?;
     if !snapshot.data.global_groups.is_empty() {
@@ -384,7 +405,28 @@ pub fn import_postgres_with_compression(
         compression,
     ))?;
     let counts = runtime.block_on(store.import_target_counts())?;
-    ensure_empty_goiardi_target(&counts, snapshot.source.layout.as_deref())?;
+    let target_users = if goiardi_preflight_allows_users(&counts, snapshot.source.layout.as_deref())
+    {
+        runtime
+            .block_on(store.list_users())?
+            .into_iter()
+            .map(|user| user.username)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let snapshot_users: Vec<String> = snapshot
+        .data
+        .users
+        .iter()
+        .map(|user| user.username.clone())
+        .collect();
+    ensure_empty_goiardi_target(
+        &counts,
+        &target_users,
+        &snapshot_users,
+        snapshot.source.layout.as_deref(),
+    )?;
     if !snapshot.data.global_groups.is_empty() {
         let existing = existing_global_groups(runtime.block_on(store.list_global_groups())?);
         reconcile_global_groups(&mut snapshot.data, &existing);
@@ -393,10 +435,22 @@ pub fn import_postgres_with_compression(
     Ok(())
 }
 
+/// Whether the goiardi preflight has to look at the target user names at all.
+fn goiardi_preflight_allows_users(counts: &ImportTargetCounts, layout: Option<&str>) -> bool {
+    layout == Some("goiardi") && counts.orgs == 0 && counts.users <= 1
+}
+
 /// Goiardi snapshots carry a fresh-install layout and are imported without
 /// merging, so the target may hold at most the bootstrap superuser.
+///
+/// A bootstrap superuser named like a snapshot user collides on the unique
+/// username. Only a name the snapshot does not carry is safe — normally the
+/// default `pivotal` — so the import refuses and points at renaming
+/// `auth.superuser_name` afterwards.
 fn ensure_empty_goiardi_target(
     target: &ImportTargetCounts,
+    target_users: &[String],
+    snapshot_users: &[String],
     layout: Option<&str>,
 ) -> Result<(), MigrateError> {
     if layout != Some("goiardi") {
@@ -407,6 +461,14 @@ fn ensure_empty_goiardi_target(
             orgs: target.orgs,
             users: target.users,
         });
+    }
+    if target.users == 1 {
+        if let Some(user) = target_users
+            .first()
+            .filter(|user| snapshot_users.contains(user))
+        {
+            return Err(MigrateError::SuperuserCollision { user: user.clone() });
+        }
     }
     Ok(())
 }
