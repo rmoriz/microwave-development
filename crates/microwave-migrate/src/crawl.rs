@@ -259,8 +259,12 @@ impl Fetcher {
 /// The reference is resolved against the base URL. Absolute bookshelf/S3 URLs
 /// are fetched unsigned; a relative reference points at the API server, whose
 /// blob route is signed like every other request. The body is rejected unless
-/// it is non-empty, matches the expected MD5, and stays inside the total
-/// download budget.
+/// it matches the expected MD5 and stays inside the total download budget.
+///
+/// Empty bodies are legitimate: their MD5 is
+/// `d41d8cd98f00b204e9800998ecf8427e`, and an empty cookbook file must copy
+/// like any other. A truncated response for a non-empty file still fails the
+/// MD5 comparison.
 pub(crate) fn store_blob(
     store: &LocalObjectStore,
     org_id: &str,
@@ -283,12 +287,6 @@ pub(crate) fn store_blob(
             url: redacted,
             status,
             message: format!("cookbook blob download failed with HTTP {status}"),
-        });
-    }
-    if bytes.is_empty() {
-        return Err(MigrateError::InvalidApiResponse {
-            url: redacted,
-            message: "cookbook blob response was empty".to_string(),
         });
     }
 

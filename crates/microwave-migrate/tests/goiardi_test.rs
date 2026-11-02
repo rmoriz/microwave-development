@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    cookbook_routes, json_route, options, raw_route, start_server, Route, BAG_ITEM, CLIENT,
-    DEFAULT_ENV, ENV, NODE, ROLE, USER,
+    bytes_route, cookbook_routes, json_route, options, raw_route, start_server, Route, BAG_ITEM,
+    CLIENT, DEFAULT_ENV, ENV, NODE, ROLE, USER,
 };
 use microwave_migrate::{
     crawl_from_goiardi, from_goiardi_with_options, validate_snapshot, GoiardiOptions,
@@ -234,6 +234,48 @@ fn derives_a_missing_blob_url_from_base_and_copies_the_blob() {
         .path()
         .join(format!("organization-{org_id}/checksum-{checksum}"));
     assert_eq!(std::fs::read(blob).unwrap(), body);
+}
+
+#[test]
+fn an_empty_cookbook_file_copies_the_empty_blob() {
+    let out = tempdir();
+    let bookshelf = tempdir();
+    let checksum = "d41d8cd98f00b204e9800998ecf8427e";
+    let versions = json!([{"version": "2.0.0", "url": "/cookbooks/empty/2.0.0"}]);
+    let cookbook = json!({"empty": {"url": "/cookbooks/empty", "versions": versions}});
+    let version = json!({
+        "name": "empty-2.0.0",
+        "cookbook": "empty",
+        "version": "2.0.0",
+        "metadata": {"name": "empty", "version": "2.0.0"},
+        "recipes": [{"name": "default.rb", "path": "recipes/default.rb", "checksum": checksum}],
+    });
+    let routes = vec![
+        (
+            "/cookbooks",
+            json_route(json!({"empty": cookbook["empty"]})),
+        ),
+        ("/cookbooks/empty", json_route(cookbook)),
+        ("/cookbooks/empty/2.0.0", json_route(version)),
+        (
+            "/file_store/d41d8cd98f00b204e9800998ecf8427e",
+            bytes_route(200, Vec::new()),
+        ),
+    ];
+    let (url, _) = start_server(routes);
+    let options = GoiardiOptions {
+        bookshelf_dir: Some(bookshelf.path().to_path_buf()),
+        ..options(&url, out.path())
+    };
+    let (snapshot, summary) = crawl_from_goiardi(&options).unwrap();
+    assert_eq!(summary.blobs_downloaded, 1);
+    assert_eq!(summary.checksums, 1);
+
+    let org_id = &snapshot.data.orgs[0].id;
+    let blob = bookshelf
+        .path()
+        .join(format!("organization-{org_id}/checksum-{checksum}"));
+    assert_eq!(std::fs::read(blob).unwrap(), Vec::<u8>::new());
 }
 
 #[test]
