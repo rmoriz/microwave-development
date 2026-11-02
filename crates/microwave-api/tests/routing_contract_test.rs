@@ -152,6 +152,33 @@ async fn verifies_signatures_against_the_original_short_path() {
 }
 
 #[tokio::test]
+async fn rewrites_the_short_required_recipe_path() {
+    use std::io::Write;
+
+    let mut temp = tempfile::NamedTempFile::new().unwrap();
+    temp.write_all(b"include_recipe 'base'\n").unwrap();
+
+    let mut config = default_org_config();
+    config.required_recipe.enabled = true;
+    config.required_recipe.path = Some(temp.path().display().to_string());
+    let app = support::app(support::state_with_config(config));
+    create_org(&app).await;
+
+    // A client with a bare `chef_server_url` asks for the short path and only
+    // treats 404 as "no required recipe"; an unauthenticated 401 aborts the
+    // whole run.
+    let response = request(&app, "GET", "/required_recipe", b"").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(body.as_ref(), b"include_recipe 'base'\n");
+
+    let response = request(&app, "GET", "/organizations/acme/required_recipe", b"").await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn accepts_exactly_one_trailing_slash_on_routes() {
     let app = support::app(support::state_with_config(default_org_config()));
     create_org(&app).await;

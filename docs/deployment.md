@@ -1865,7 +1865,10 @@ org-user-add acme <user>` and grant what they need.
 The search index is derived data: run `microwave-ctl reindex` after the import
 and after the password reset, as for the other migration paths. Clients keep
 their existing keys, so moving their `client.rb`/`knife.rb` server URL to the
-new host needs no re-registration.
+new host needs no re-registration. A goiardi install is single-org and its
+`client.rb` files usually name the server without an organization path; set
+`server.default_orgname` to the imported organization so those clients keep
+working, or add `/organizations/<org>` to their URL.
 
 Server-owned secrets (`pivotal.pem`, the object-store secret, TLS material),
 OAuth applications, policies, policy groups, and cookbook artifacts are not

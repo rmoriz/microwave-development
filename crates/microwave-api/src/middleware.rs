@@ -478,7 +478,7 @@ pub async fn authenticate(
 pub(crate) struct OriginalRequestPath(pub(crate) String);
 
 /// Top-level compatibility endpoints upstream nginx maps to `default_orgname`.
-const DEFAULT_ORG_ENDPOINTS: [&str; 11] = [
+const DEFAULT_ORG_ENDPOINTS: [&str; 12] = [
     "search",
     "nodes",
     "cookbooks",
@@ -490,6 +490,7 @@ const DEFAULT_ORG_ENDPOINTS: [&str; 11] = [
     "principals",
     "groups",
     "containers",
+    "required_recipe",
 ];
 
 /// Compute the path used for routing.
