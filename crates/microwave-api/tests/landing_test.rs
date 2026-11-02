@@ -295,3 +295,16 @@ async fn maintenance_mode_still_shows_the_page() {
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
+
+#[test]
+fn every_surface_serves_the_same_favicon() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let source =
+        std::fs::read(root.join("crates/microwave-api/assets/landing/favicon.svg")).unwrap();
+    for copy in [
+        "website/homepage/public/favicon.svg",
+        "website/docs/static/img/favicon.svg",
+    ] {
+        assert_eq!(std::fs::read(root.join(copy)).unwrap(), source, "{copy}");
+    }
+}

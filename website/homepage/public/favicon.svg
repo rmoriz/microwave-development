@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Microwave">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+    <linearGradient id="mw-favicon-gradient" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0" stop-color="#ff3ea5" />
       <stop offset="0.35" stop-color="#ffe14d" />
       <stop offset="0.7" stop-color="#4dff9e" />
@@ -8,8 +8,9 @@
     </linearGradient>
   </defs>
   <rect width="64" height="64" rx="16" fill="#2a4d6e" />
-  <rect x="12" y="18" width="40" height="28" rx="7" fill="none" stroke="url(#g)" stroke-width="3" />
-  <rect x="18" y="24" width="20" height="16" rx="3" fill="none" stroke="#f4f1e8" stroke-width="2" opacity="0.8" />
-  <circle cx="45" cy="27" r="2.5" fill="#f4f1e8" opacity="0.8" />
-  <rect x="40" y="34" width="8" height="2" rx="1" fill="#f4f1e8" opacity="0.6" />
+  <rect x="10" y="14" width="44" height="32" rx="7" fill="none" stroke="#f7f5ef" stroke-width="2.5" />
+  <rect x="17" y="22" width="21" height="17" rx="3.5" fill="none" stroke="#f7f5ef" stroke-width="2" />
+  <circle cx="47" cy="24" r="2.3" fill="#f7f5ef" />
+  <path d="M20 46v5M44 46v5" stroke="#f7f5ef" stroke-width="2.5" stroke-linecap="round" />
+  <path d="M10 14h44" stroke="url(#mw-favicon-gradient)" stroke-width="4" stroke-linecap="round" />
 </svg>
