@@ -141,11 +141,11 @@ manager. Open a new terminal, then check the setup:
 kache doctor
 ```
 
-It ends with `All checks passed.` A `kache doctor --probe` run goes further by compiling a throwaway
-library twice to prove a restore, but `--probe` only exists in the v2 preview and the stable Homebrew
-formula is still 1.x, so the plain command above is what the documented install gives you. If a
-dotfile manager symlinks `~/.zshrc`, `kache init` skips the shell parts and says so; Cargo caching
-is still configured.
+It should end with `All checks passed.` A `kache doctor --probe` run goes further by compiling a
+throwaway library twice to prove a restore, but `--probe` only exists in the v2 preview and the
+stable Homebrew formula is still 1.x, so the plain command above is what the documented install
+gives you. If a dotfile manager symlinks `~/.zshrc`, `kache init` skips the shell parts and says
+so; Cargo caching is still configured.
 
 Keep using `cargo` as usual; `kache stats` reports hits and misses. Install routes, daemon and
 store settings are in the [Kache documentation](https://kunobi.ninja/docs/kache/getting-started/installation).

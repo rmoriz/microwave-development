@@ -98,16 +98,25 @@ kache init
 ```
 
 Cargo installs need Rust 1.95 or newer, above this workspace's 1.94 floor, so prefer a package
-manager. Open a new terminal, then probe the setup:
+manager. Open a new terminal, then check the setup:
 
 ```sh
-kache doctor --probe
+kache doctor
 ```
+
+It should end with `All checks passed.` A `kache doctor --probe` run goes further by compiling a
+throwaway library twice to prove a restore, but `--probe` only exists in the v2 preview and the
+stable Homebrew formula is still 1.x, so the plain command above is what the documented install
+gives you. If a dotfile manager symlinks `~/.zshrc`, `kache init` skips the shell parts and says
+so; Cargo caching is still configured.
 
 Keep using `cargo` as usual; `kache stats` reports hits and misses. Install routes, daemon and
 store settings are in the [Kache documentation](https://kunobi.ninja/docs/kache/getting-started/installation).
 Disable the cache for one command with `KACHE_DISABLED=1`.
 ````
+
+The block above is the README text verbatim; `--probe` is v2-preview-only, so the stable formula
+gets plain `kache doctor`.
 
 - [ ] **Step 3: Add the claims**
 
@@ -120,7 +129,7 @@ summary = "README: kache is an optional local compiler cache for developers."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "kache doctor --probe" },
+  { path = "README.md", needle = "optional compiler cache" },
 ]
 verify = { kind = "grep", path = "AGENTS.md", pattern = "Local builds may run through" }
 
@@ -146,6 +155,7 @@ Expected: `OK`.
 - [ ] **Step 5: Prove the documented commands exist**
 
 Run: `brew install kunobi-ninja/kunobi/kache && kache --version && kache doctor --probe`
+(the flag is v2-preview-only; the stable formula uses plain `kache doctor`)
 Expected: a version string, then a passing probe report. Record anything the probe says that the
 README should warn about, and fix the copy in Step 2 if needed.
 

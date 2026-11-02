@@ -40,5 +40,6 @@ job changes.
 
 - `python3 scripts/check-claims.py`
 - `python3 -m unittest discover -s scripts/tests`
-- Install Kache on this machine and run `kache doctor --probe`, so the
+- Install Kache on this machine and run `kache doctor --probe` (the flag is
+  v2-preview-only; the stable formula uses plain `kache doctor`), so the
   documented commands are known-good. Kache stays installed afterwards.
