@@ -1,6 +1,6 @@
 # Goiardi Importer Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add `microwave-migrate from-goiardi`, a read-only crawler that turns a flat goiardi API into a Microwave snapshot with the default organization policy, and make goiardi snapshots refuse a non-empty target.
 
@@ -61,11 +61,11 @@
   - `struct BlobSummary { pub downloaded: usize, pub skipped: usize }`
   - `store_blob(store: &LocalObjectStore, org_id: &str, checksum: &str, reference: &str, fetcher: &Fetcher, summary: &mut BlobSummary, downloaded_bytes: &mut u64) -> Result<(), MigrateError>`
 
-- [ ] **Step 1: Add the feature and module**
+- [x] **Step 1: Add the feature and module**
 
 Add `"socks-proxy"` to the workspace `ureq` features and `mod crawl;` next to `mod from_api;`.
 
-- [ ] **Step 2: Move the helpers**
+- [x] **Step 2: Move the helpers**
 
 Move the listed items out of `from_api.rs` into `crawl.rs`. `store_blob` is
 carved out of `Crawler::download_blobs`: resolve the reference, fetch it with
@@ -81,16 +81,16 @@ split on the last `:`; a missing or non-numeric port is
 `proxy(Some(Proxy::new(&format!("socks5://{host_port}"))?))` and map the proxy
 error to `MigrateError::Config`.
 
-- [ ] **Step 3: Delegate from `from_api`**
+- [x] **Step 3: Delegate from `from_api`**
 
 Keep `Crawler`'s field names but replace its transport/parse/id calls with `self.fetcher.*` and the free helpers. `Crawler::new` calls `Fetcher::new(url, client_name, key_path, api_version, None)`.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run: `cargo test -p microwave-migrate --test from_api_test`
 Expected: PASS, byte-identical snapshot assertions to before the split.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Cargo.toml crates/microwave-migrate/src/crawl.rs crates/microwave-migrate/src/from_api.rs crates/microwave-migrate/src/lib.rs
@@ -117,7 +117,7 @@ git commit -m "refactor(migrate): extract shared legacy crawl plumbing"
   - `SqliteStore::import_target_counts(&self) -> Result<ImportTargetCounts, StoreError>`
   - `PostgresStore::import_target_counts(&self) -> Result<ImportTargetCounts, StoreError>`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 // tests/import_preflight_test.rs
@@ -138,20 +138,20 @@ fn chef_snapshot_still_merges() {
 }
 ```
 
-- [ ] **Step 2: Run to fail**
+- [x] **Step 2: Run to fail**
 
 Run: `cargo test -p microwave-migrate --test import_preflight_test`
 Expected: FAIL, no `TargetNotEmpty` and no `layout` field.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add the field, error variant, counts struct and queries (`SELECT (SELECT COUNT(*) FROM orgs), (SELECT COUNT(*) FROM users)`). All three `SnapshotSource` literals keep `layout: None`; only the goiardi crawler sets it. Guard before `import_snapshot`: in `import_database_with_compression` after the store is opened, in `import_postgres_with_compression` after `connect_with_compression`. When `snapshot.source.layout.as_deref() == Some("goiardi")` and `orgs > 0 || users > 1`, return `TargetNotEmpty`. Opening alone still creates an empty database or connects, which is harmless; no row is written before the check.
 
-- [ ] **Step 4: Postgres parity test**
+- [x] **Step 4: Postgres parity test**
 
 In `postgres_migration_test.rs`, add a `#[tokio::test]` that opens a clean schema, asserts `{0,0}`, inserts one org, asserts `{1,0}`. Skip when `MICROWAVE_TEST_POSTGRES_URL` is unset, matching the file's existing guard.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `cargo test -p microwave-migrate --test import_preflight_test && cargo test -p microwave-migrate --test from_api_test`
 Expected: PASS.
@@ -180,7 +180,7 @@ git commit -m "feat(migrate): refuse non-empty targets for goiardi snapshots"
   - `pub fn crawl_from_goiardi(options: &GoiardiOptions) -> Result<(Snapshot, GoiardiSummary), MigrateError>`
   - `pub fn from_goiardi_with_options(options: &GoiardiOptions) -> Result<GoiardiSummary, MigrateError>`
 
-- [ ] **Step 1: Write the fixture and failing test**
+- [x] **Step 1: Write the fixture and failing test**
 
 Copy the axum harness shape from `from_api_test.rs` into `tests/common/mod.rs`: the recording server, `json_route(Value)` and `raw_route(&'static str)` route helpers, `bytes_route`, and `blob_fixture(seed) -> (Vec<u8>, String, &'static str)` returning body, MD5 and the leaked `/file_store/<checksum>` path. Also add `options(url, dir) -> GoiardiOptions` with output `dir/snapshot.json` and org `acme`, so later tasks only override fields, and `mod common;` in `goiardi_test.rs`. Routes are flat. Fixture bodies:
 
@@ -217,12 +217,12 @@ fn crawls_users_and_clients_with_keys_and_marks_the_layout() {
 }
 ```
 
-- [ ] **Step 2: Run to fail**
+- [x] **Step 2: Run to fail**
 
 Run: `cargo test -p microwave-migrate --test goiardi_test`
 Expected: FAIL, module missing.
 
-- [ ] **Step 3: Implement the org and identity crawl**
+- [x] **Step 3: Implement the org and identity crawl**
 
 Validate `org` against `[a-z0-9-]+` (`MigrateError::Config`). Build `OrgRow` with `synthetic_id("org:<org>")`, full name from `org_full_name` or the org, and an `authz_entities` row of type `actor`.
 
@@ -230,7 +230,7 @@ For every user add `UserRow { username: <username>, email, admin, password_hash:
 
 The top-level function crawls users, then clients, builds the snapshot with `source.kind = LegacyApi`, `source.url = Some(url)`, `source.layout = Some("goiardi")`, and writes it unless `dry_run`.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `cargo test -p microwave-migrate --test goiardi_test`
 Expected: PASS.
@@ -252,7 +252,7 @@ git commit -m "feat(migrate): crawl goiardi users and clients"
 - Consumes: the authz maps and summary from Task 3.
 - Produces: `fn crawl_nodes(&mut self, org: &OrgRow) -> Result<(), MigrateError>`, `fn crawl_named_objects(&mut self, org: &OrgRow) -> Result<(), MigrateError>`, `fn crawl_data_bags(&mut self, org: &OrgRow) -> Result<(), MigrateError>`, `fn filter_orphan_clients(&mut self, node_names: &HashSet<String>)` and a `HashSet<String> environment_names` field.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 const NODE: &str = r#"{"name":"web1","chef_environment":"_default","normal":{},"run_list":[]}"#;
@@ -326,12 +326,12 @@ fn skip_orphan_clients_keeps_validator_and_webui() {
 }
 ```
 
-- [ ] **Step 2: Run to fail**
+- [x] **Step 2: Run to fail**
 
 Run: `cargo test -p microwave-migrate --test goiardi_test crawls_objects`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Use `get_collection` on `/nodes`, `/roles`, `/environments`, `/data`, then `/{bag}` for items. Store raw bodies from the detail response, never re-serialize.
 
@@ -341,7 +341,7 @@ Collect every environment name into `environment_names` first, then skip the `_d
 
 With `skip_orphan_clients`, call `filter_orphan_clients` after the node crawl: collect node names, drop clients that have none, always keep `chef-validator` and `chef-webui`, and drop the corresponding authz entity, key and client-authz entry so the later policy does not reference them.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `cargo test -p microwave-migrate --test goiardi_test`
 Expected: PASS.
@@ -363,7 +363,7 @@ git commit -am "feat(migrate): crawl goiardi nodes, roles, environments and data
 - Produces: `fn crawl_cookbooks(&mut self, org: &OrgRow) -> Result<(), MigrateError>`, `fn push_file(&mut self, org: &OrgRow, version_id: &str, checksum: &str, url: Option<&str>)`, field `pending_blobs: HashMap<(String, String), String>`.
 - Reuses `cookbook_files` from `crawl.rs` (moved there in Task 1) and `microwave_store::parse_version`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 fn cookbooks_routes(with_blob: bool) -> (Vec<(&'static str, Route)>, String) {
@@ -441,18 +441,18 @@ fn dry_run_writes_no_snapshot_and_fetches_no_blob() {
 }
 ```
 
-- [ ] **Step 2: Run to fail**
+- [x] **Step 2: Run to fail**
 
 Run: `cargo test -p microwave-migrate --test goiardi_test derives_a_missing_blob_url`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Parse versions from the cookbook list entry (the same `cookbook_versions` helper shape as `from_api`). Reuse `push_cookbook_version` semantics: `parse_version`, `frozen?`, metadata columns, raw body, `ChecksumRow` and `CookbookVersionChecksumRow` per entry in every segment. `push_file` takes the `(checksum, url)` pairs from `cookbook_files`: dedupe the `ChecksumRow` through a seen set, always add the version link, and when a bookshelf is configured record the reference as `url` or, when absent, as `/file_store/<checksum>` (resolved against the base by `store_blob`).
 
 Skip blob work in `dry_run`. After the crawl, sort pending blobs, skip files already present, and write the rest through `crawl::store_blob`. The "requested checksum without a blob" rule only applies when blobs were fetched, because `--dry-run` downloads nothing.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `cargo test -p microwave-migrate --test goiardi_test`
 Expected: PASS.
@@ -475,7 +475,7 @@ git commit -am "feat(migrate): crawl goiardi cookbooks and copy blobs"
 - Consumes: `object_authz`, user and client authz maps from Tasks 3–4.
 - Produces: `pub fn apply_default_policy(data: &mut StoreSnapshot, org: &OrgRow, admin_authz: &str, client_authz: &[String], object_authz: &[(String, String)], generated_at: &str)` and private `fn copy_container_acl(data: &mut StoreSnapshot, container: &str, target: &str, creator: &str)`.
 
-- [ ] **Step 1: Write the comparison test**
+- [x] **Step 1: Write the comparison test**
 
 ```rust
 use microwave_authz::create_organization;
@@ -535,12 +535,12 @@ fn object_acls_copy_the_container_acl_and_add_the_creator() {
 
 `canonical_grants` maps every `target_authz_id`, `actor_authz_id` and `group_authz_id` to its row name and returns a sorted set of `(target, permission, kind, member)`.
 
-- [ ] **Step 2: Run to fail**
+- [x] **Step 2: Run to fail**
 
 Run: `cargo test -p microwave-migrate --test goiardi_policy_test`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Mirror `crates/microwave-authz/src/org.rs` in the same order:
 
@@ -557,7 +557,7 @@ Ids come from `synthetic_id("authz:…")`; `generated_at` fills every timestamp 
 
 `crawl_from_goiardi` calls `apply_default_policy` after the object crawls and before the blob copy, so the object ACLs are in place when Task 7 validates and the snapshot is written.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `cargo test -p microwave-migrate --test goiardi_policy_test`
 Expected: PASS.
@@ -580,7 +580,7 @@ git commit -m "feat(migrate): synthesize the default org policy for goiardi impo
 - Consumes: everything above.
 - Produces: `pub fn validate_snapshot(snapshot: &Snapshot, bookshelf_dir: Option<&Path>) -> Result<(), MigrateError>`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 use microwave_migrate::validate_snapshot;
@@ -617,18 +617,18 @@ fn dry_run_counts_checksums_but_writes_nothing() {
 }
 ```
 
-- [ ] **Step 2: Run to fail**
+- [x] **Step 2: Run to fail**
 
 Run: `cargo test -p microwave-migrate --test goiardi_test an_object_without_acl`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Validation: every `authz_entities` row of type `object` has at least one `authz_acl_actor` or `authz_acl_group` row for its authz id. When blobs were fetched, every pending checksum exists under `bookshelf_dir`, and a requested checksum with no blob is the same hard error. Print the count table and each warning to stderr; the snapshot path goes to stdout.
 
 `dry_run` prints and returns without writing, without fetching blobs and without the blob-existence check.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `cargo test -p microwave-migrate --test goiardi_test`
 Expected: PASS.
@@ -650,7 +650,7 @@ git commit -m "feat(migrate): print the goiardi summary and validate snapshots"
 - Consumes: `from_goiardi_with_options`, `GoiardiOptions`.
 - Produces: `Command::FromGoiardi` with `--url`, `--client-name`, `--key`, `--org`, `--output`, `--org-full-name`, `--bookshelf-dir`, `--socks5`, `--skip-orphan-clients`, `--dry-run`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[test]
@@ -693,16 +693,16 @@ fn from_goiardi_rejects_bad_org_and_socks() {
 }
 ```
 
-- [ ] **Step 2: Run to fail**
+- [x] **Step 2: Run to fail**
 
 Run: `cargo test -p microwave-migrate --bin microwave-migrate --test cli_test from_goiardi`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add the subcommand, build `GoiardiOptions`, call the crawler, print `Wrote goiardi snapshot to <path>` plus the blob counts on success. `--org` and `--socks5` validate through the crawler and `Fetcher::new`, not clap, so each error stays one message. `--socks5` is `value_name = "HOST:PORT"`.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `cargo test -p microwave-migrate --bin microwave-migrate --test cli_test`
 Expected: PASS.
@@ -723,11 +723,11 @@ git commit -m "feat(migrate): add the from-goiardi subcommand"
 - Modify: `docs/claims.toml`
 - Modify: `docs/remaining-work.md` (rendered)
 
-- [ ] **Step 1: Write the deployment section**
+- [x] **Step 1: Write the deployment section**
 
 Cover: fresh empty target and the superuser check, the command example, `--socks5` and the 403 symptom, `--bookshelf-dir`, the password reset, the missing password hashes, `reindex`, and that goiardi snapshots do not merge. Placeholders only.
 
-- [ ] **Step 2: Add the claim**
+- [x] **Step 2: Add the claim**
 
 ```toml
 [[claim]]
@@ -742,12 +742,12 @@ surfaces = [
 verify = { kind = "grep", path = "docs/deployment.md", pattern = "from-goiardi" }
 ```
 
-- [ ] **Step 3: Render and verify**
+- [x] **Step 3: Render and verify**
 
 Run: `python3 scripts/render-remaining-work.py && python3 scripts/check-claims.py`
 Expected: no stale or missing-surface errors.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/deployment.md docs/claims.toml docs/remaining-work.md README.md crates/microwave-migrate/README.md
@@ -764,7 +764,7 @@ git commit -m "docs(migrate): document the goiardi importer"
 **Interfaces:**
 - Consumes: `from_goiardi_with_options`, `import`, `SqliteStore`.
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 Add `full_goiardi_routes()` to `tests/common/mod.rs`: the union of the fixture routes already used by `goiardi_test.rs` (one user `admin`, one client `web1`, one node `web1`, one role, one environment, one bag with one item and one cookbook version whose file has a checksum and no `url`), plus the `/file_store/<checksum>` blob. It returns `(routes, checksum)`.
 
@@ -811,21 +811,21 @@ fn import_roundtrip_keeps_keys_acls_and_blobs_and_refuses_a_second_import() {
 }
 ```
 
-- [ ] **Step 2: Run to fail**
+- [x] **Step 2: Run to fail**
 
 Run: `cargo test -p microwave-migrate --test goiardi_import_test`
 Expected: FAIL until the previous tasks are in.
 
-- [ ] **Step 3: Make it pass**
+- [x] **Step 3: Make it pass**
 
 Adjust only the test harness or a real gap the test exposes.
 
-- [ ] **Step 4: Full gate**
+- [x] **Step 4: Full gate**
 
 Run: `cargo fmt --all && cargo clippy --workspace --all-targets && cargo test --workspace`
 Expected: clean, green.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/microwave-migrate/tests/goiardi_import_test.rs
