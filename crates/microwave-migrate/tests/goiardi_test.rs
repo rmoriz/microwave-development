@@ -33,9 +33,14 @@ fn crawls_users_and_clients_with_keys_and_marks_the_layout() {
     assert_eq!(snapshot.data.clients[0].name, "web1");
     assert_eq!(snapshot.data.actor_keys[0].public_key, PUBLIC_KEY);
     assert_eq!(summary.clients, 1);
-    assert!(records
-        .lock()
-        .unwrap()
-        .iter()
-        .all(|record| record.method == "GET"));
+    let records = records.lock().unwrap();
+    assert!(!records.is_empty());
+    for record in records.iter() {
+        assert_eq!(record.method, "GET");
+        assert!(
+            record.verified,
+            "unsigned or invalid request {} {}: {:?}",
+            record.method, record.path, record.verification_error
+        );
+    }
 }

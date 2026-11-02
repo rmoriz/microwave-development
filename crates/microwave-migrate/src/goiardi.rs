@@ -228,6 +228,8 @@ impl Crawler {
             };
 
             let username = string_field(&value, "username").unwrap_or(entry.name);
+            // Users are global actors in Chef Server and goiardi alike, so the
+            // id is not org-scoped; clients below are org-scoped.
             let id = synthetic_id(&format!("user:{username}"));
             let authz_id = synthetic_id(&format!("authz:user:{username}"));
             self.ensure_entity(&authz_id, "actor", None);
