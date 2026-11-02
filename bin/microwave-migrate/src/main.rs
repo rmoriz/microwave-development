@@ -273,6 +273,11 @@ enum Command {
         /// Drop clients that have no node of the same name.
         #[arg(long)]
         skip_orphan_clients: bool,
+        /// Let imported clients create, update, and delete data bags and items.
+        ///
+        /// On by default; pass this to grant read access only.
+        #[arg(long)]
+        no_client_data_bag_writes: bool,
         /// Crawl and count without writing the snapshot or copying blobs.
         #[arg(long)]
         dry_run: bool,
@@ -395,6 +400,7 @@ fn main() -> ExitCode {
             bookshelf_dir,
             socks5,
             skip_orphan_clients,
+            no_client_data_bag_writes,
             dry_run,
         } => {
             let mut options = GoiardiOptions::new(&url, &client_name, &key, &output, &org);
@@ -402,6 +408,7 @@ fn main() -> ExitCode {
             options.bookshelf_dir = bookshelf_dir;
             options.socks5 = socks5;
             options.skip_orphan_clients = skip_orphan_clients;
+            options.client_data_bag_writes = !no_client_data_bag_writes;
             options.dry_run = dry_run;
             from_goiardi_with_options(&options).map(|_| {
                 // The crawler owns stdout (the snapshot path) and the crawl

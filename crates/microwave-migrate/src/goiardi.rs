@@ -56,6 +56,8 @@ pub struct GoiardiOptions {
     pub socks5: Option<String>,
     /// Drop clients that have no node of the same name.
     pub skip_orphan_clients: bool,
+    /// Let the imported `clients` group write data bags and items.
+    pub client_data_bag_writes: bool,
     /// Crawl and return the snapshot without writing it or copying blobs.
     pub dry_run: bool,
 }
@@ -79,6 +81,7 @@ impl GoiardiOptions {
             bookshelf_dir: None,
             socks5: None,
             skip_orphan_clients: false,
+            client_data_bag_writes: true,
             dry_run: false,
         }
     }
@@ -345,6 +348,7 @@ pub struct Crawler {
     pub(crate) environment_names: HashSet<String>,
     /// Drop clients that have no node of the same name.
     pub(crate) skip_orphan_clients: bool,
+    pub(crate) client_data_bag_writes: bool,
     pub(crate) summary: GoiardiSummary,
 }
 
@@ -393,6 +397,7 @@ impl Crawler {
             downloaded_blob_bytes: 0,
             environment_names: HashSet::new(),
             skip_orphan_clients: options.skip_orphan_clients,
+            client_data_bag_writes: options.client_data_bag_writes,
             summary: GoiardiSummary::default(),
         };
 
@@ -1006,6 +1011,7 @@ impl Crawler {
             &client_authz,
             &object_authz,
             &self.generated_at,
+            self.client_data_bag_writes,
         );
         // The policy appends the `_default` environment the source crawl skips,
         // so the reported count has to come from the snapshot.
@@ -1084,6 +1090,7 @@ pub fn apply_default_policy(
     client_authz: &[(String, bool)],
     object_authz: &[(String, String)],
     generated_at: &str,
+    client_data_bag_writes: bool,
 ) {
     // The source user is literally `admin`; fall back to its synthetic id when
     // the source did not export one.
@@ -1260,18 +1267,35 @@ pub fn apply_default_policy(
     }
     grant_group(data, &org.authz_id, &[Permission::Read], users);
 
-    // Clients may update nodes and read the objects needed for a converge.
+    // Clients create their node and then keep it updated through the
+    // self-update rule in the node handlers; the container grants read and
+    // create only, as upstream does. `data` needs the write ACEs because
+    // cookbooks save bag items during a converge (`acme_persistence`).
     grant_group(
         data,
         container_authz(&containers, "nodes"),
         &[Permission::Read, Permission::Create],
         clients,
     );
+    grant_group(
+        data,
+        container_authz(&containers, "data"),
+        if client_data_bag_writes {
+            &[
+                Permission::Create,
+                Permission::Read,
+                Permission::Update,
+                Permission::Delete,
+            ]
+        } else {
+            &[Permission::Read]
+        },
+        clients,
+    );
     for name in [
         "policies",
         "policy_groups",
         "cookbook_artifacts",
-        "data",
         "cookbooks",
         "environments",
         "roles",

@@ -1,4 +1,6 @@
-use microwave_authz::{create_organization, Permission};
+use microwave_authz::{
+    create_organization, create_organization_with_policy, OrgPolicy, Permission,
+};
 use microwave_store::{SqliteStore, StoreError};
 
 #[tokio::test]
@@ -162,9 +164,35 @@ async fn applies_the_upstream_default_container_and_group_matrices() {
         acl_groups(&store, &nodes.authz_id, Permission::Create),
         vec!["admins", "clients", "users"]
     );
+    // Nodes stay at the upstream matrix: a client updates its own node through
+    // the handler-side self rule, not through the container ACL.
     assert_eq!(
         acl_groups(&store, &nodes.authz_id, Permission::Update),
         vec!["admins", "users"]
+    );
+    assert_eq!(
+        acl_groups(&store, &nodes.authz_id, Permission::Delete),
+        vec!["admins", "users"]
+    );
+
+    // Data is the deliberate deviation: converges write data bag items, so
+    // clients need `data` beyond read.
+    let data = store.find_container(&org.id, "data").unwrap().unwrap();
+    for permission in [
+        Permission::Create,
+        Permission::Read,
+        Permission::Update,
+        Permission::Delete,
+    ] {
+        assert_eq!(
+            acl_groups(&store, &data.authz_id, permission),
+            vec!["admins", "clients", "users"],
+            "{permission:?}"
+        );
+    }
+    assert_eq!(
+        acl_groups(&store, &data.authz_id, Permission::Grant),
+        vec!["admins"]
     );
 
     let clients = store.find_container(&org.id, "clients").unwrap().unwrap();
@@ -221,6 +249,57 @@ async fn applies_the_upstream_default_container_and_group_matrices() {
         .find(|entry| entry.permission == Permission::Read)
         .unwrap();
     assert_eq!(org_read.groups, vec!["admins", "users"]);
+}
+
+#[tokio::test]
+async fn read_only_data_bags_keep_clients_out_of_writes() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    let creator = store
+        .create_user("root", "root@example.com", "bcrypt", "hash", "salt", true)
+        .unwrap();
+    let org = create_organization_with_policy(
+        &store,
+        "acme",
+        "Acme Corp",
+        &creator.id,
+        &creator.authz_id,
+        OrgPolicy {
+            client_data_bag_writes: false,
+        },
+    )
+    .await
+    .unwrap();
+
+    let data = store.find_container(&org.id, "data").unwrap().unwrap();
+    assert_eq!(
+        acl_groups(&store, &data.authz_id, Permission::Read),
+        vec!["admins", "clients", "users"]
+    );
+    for permission in [Permission::Create, Permission::Update, Permission::Delete] {
+        assert_eq!(
+            acl_groups(&store, &data.authz_id, permission),
+            vec!["admins", "users"],
+            "{permission:?}"
+        );
+    }
+
+    // And a real client is denied the write, but keeps read.
+    let clients_group = store.find_group(&org.id, "clients").unwrap().unwrap();
+    let client = store.create_client(&org.id, "node1", false, false).unwrap();
+    store
+        .add_group_member(&clients_group.authz_id, &client.authz_id)
+        .unwrap();
+    assert!(store
+        .check_permission(&client.authz_id, &data.authz_id, Permission::Read)
+        .unwrap());
+    for permission in [Permission::Create, Permission::Update, Permission::Delete] {
+        assert!(
+            !store
+                .check_permission(&client.authz_id, &data.authz_id, permission)
+                .unwrap(),
+            "{permission:?}"
+        );
+    }
 }
 
 #[tokio::test]

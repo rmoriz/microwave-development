@@ -111,6 +111,7 @@ microwave-migrate from-goiardi \
   [--bookshelf-dir ./bookshelf] \
   [--socks5 127.0.0.1:1080] \
   [--skip-orphan-clients] \
+  [--no-client-data-bag-writes] \
   [--dry-run]
 ```
 
@@ -189,6 +190,13 @@ creates, with deterministic ids:
 - the `_default` environment and its ACLs
 - one object ACL per imported object, copied from its container ACL plus a
   creator grant for `admin`
+
+The `clients` group gets create, read, update and delete on `data`, so
+node-written bag items (`chef_data_bag_item`) keep working as on the source.
+Node saves need no container grant: the node handler lets a client update and
+delete the node named like itself, as upstream does, so `nodes` keeps the
+upstream read/create matrix. `--no-client-data-bag-writes` narrows `data` to
+read, mirroring `org.client_data_bag_writes = false`.
 
 A test creates a real org through `create_organization` in a temporary store,
 exports it, and compares the normalized rows against the builder, so server

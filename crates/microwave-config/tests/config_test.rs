@@ -22,6 +22,7 @@ fn defaults_are_safe_and_local() {
     assert_eq!(c.object_store.backend, ObjectStoreBackend::Local);
     assert_eq!(c.auth.skew_seconds, 900);
     assert_eq!(c.auth.superuser_name, "pivotal");
+    assert!(c.org.client_data_bag_writes);
     assert_eq!(c.keygen.size, 3);
     assert_eq!(c.keygen.workers, 1);
     assert!(!c.keygen.warm_up);
@@ -502,6 +503,9 @@ fn toml_configures_data_collector_required_recipe_and_telemetry() {
         enabled = false
         reporting_url = "https://telemetry.example.com/ingest"
         interval_seconds = 3600
+
+        [org]
+        client_data_bag_writes = false
     "#,
     )
     .unwrap();
@@ -524,6 +528,7 @@ fn toml_configures_data_collector_required_recipe_and_telemetry() {
         Some("https://telemetry.example.com/ingest")
     );
     assert_eq!(c.telemetry.interval_seconds, 3600);
+    assert!(!c.org.client_data_bag_writes);
 }
 
 #[test]
@@ -544,6 +549,7 @@ fn env_overrides_data_collector_required_recipe_and_telemetry() {
             "https://telemetry.example.com",
         ),
         ("MW_TELEMETRY__INTERVAL_SECONDS", "120"),
+        ("MW_ORG__CLIENT_DATA_BAG_WRITES", "false"),
     ] {
         std::env::set_var(key, value);
     }
@@ -560,6 +566,7 @@ fn env_overrides_data_collector_required_recipe_and_telemetry() {
         "MW_TELEMETRY__ENABLED",
         "MW_TELEMETRY__REPORTING_URL",
         "MW_TELEMETRY__INTERVAL_SECONDS",
+        "MW_ORG__CLIENT_DATA_BAG_WRITES",
     ] {
         std::env::remove_var(key);
     }
@@ -578,6 +585,7 @@ fn env_overrides_data_collector_required_recipe_and_telemetry() {
         Some("https://telemetry.example.com")
     );
     assert_eq!(c.telemetry.interval_seconds, 120);
+    assert!(!c.org.client_data_bag_writes);
 }
 
 #[test]

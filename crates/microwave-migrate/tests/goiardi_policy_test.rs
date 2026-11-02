@@ -229,6 +229,7 @@ fn builder_matches_create_organization() {
         &client_authz,
         &[],
         NOW,
+        true,
     );
 
     assert_eq!(canonical_grants(&built, &[]), reference);
@@ -428,6 +429,7 @@ fn object_acls_copy_the_container_acl_and_add_the_creator() {
         ],
         &object_authz,
         NOW,
+        true,
     );
 
     let nodes = built
@@ -478,7 +480,7 @@ fn object_acls_copy_the_container_acl_and_add_the_creator() {
 
     // No other container's ACL leaks onto the object: the `sandboxes` container
     // grants users Create only, the `groups` container grants clients nothing,
-    // while `nodes` grants the `clients` group Read+Create.
+    // while `nodes` grants the `clients` group read and create.
     let sandboxes = built
         .containers
         .iter()
@@ -541,6 +543,101 @@ fn object_acls_copy_the_container_acl_and_add_the_creator() {
         ],
         &object_authz,
         NOW,
+        true,
     );
     assert_eq!(canonical_grants(&again, &[]), canonical_grants(&built, &[]));
+}
+
+/// Without client data bag writes, clients keep read access only, and the
+/// importer still produces exactly the policy the server writes.
+#[test]
+fn read_only_data_bags_match_create_organization() {
+    let dir = tempdir();
+    let store = SqliteStore::open(&dir.path().join("read-only.db")).unwrap();
+    let creator = store
+        .create_user("admin", "ops@example.com", "bcrypt", "", "", true)
+        .unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let policy = microwave_authz::OrgPolicy {
+        client_data_bag_writes: false,
+    };
+    let org = runtime
+        .block_on(microwave_authz::create_organization_with_policy(
+            &store,
+            "acme",
+            "Acme",
+            &creator.id,
+            &creator.authz_id,
+            policy,
+        ))
+        .unwrap();
+    let client = store
+        .create_client_with_acl(&org.id, "web1", false, false, Some(&creator.authz_id))
+        .unwrap();
+    let clients_group = store.find_group(&org.id, "clients").unwrap().unwrap();
+    store
+        .add_group_member(&clients_group.authz_id, &client.authz_id)
+        .unwrap();
+
+    let reference = canonical_grants(&store.export_snapshot().unwrap(), &[]);
+
+    let mut built = StoreSnapshot::default();
+    built.orgs.push(empty_org("acme", "Acme"));
+    built.users.push(microwave_store::UserRow {
+        id: creator.id.clone(),
+        authz_id: creator.authz_id.clone(),
+        username: "admin".to_string(),
+        email: creator.email.clone(),
+        hash_type: "bcrypt".to_string(),
+        admin: true,
+        created_at: NOW.to_string(),
+        updated_at: NOW.to_string(),
+        ..Default::default()
+    });
+    built.clients.push(microwave_store::ClientRow {
+        id: client.id.clone(),
+        org_id: built.orgs[0].id.clone(),
+        authz_id: client.authz_id.clone(),
+        name: client.name.clone(),
+        validator: false,
+        created_at: NOW.to_string(),
+        updated_at: NOW.to_string(),
+        ..Default::default()
+    });
+    let org_row = built.orgs[0].clone();
+    apply_default_policy(
+        &mut built,
+        &org_row,
+        &creator.authz_id,
+        &[(client.authz_id.clone(), false)],
+        &[],
+        NOW,
+        false,
+    );
+
+    assert_eq!(canonical_grants(&built, &[]), reference);
+
+    // Only `read` on the data container; the create/update/delete ACEs that
+    // client data bag writes would add are absent.
+    let data = built
+        .containers
+        .iter()
+        .find(|container| container.name == "data")
+        .unwrap()
+        .authz_id
+        .clone();
+    let built_clients = built
+        .groups
+        .iter()
+        .find(|group| group.name == "clients")
+        .unwrap()
+        .authz_id
+        .clone();
+    let grants: Vec<String> = built
+        .authz_acl_group
+        .iter()
+        .filter(|row| row.target_authz_id == data && row.group_authz_id == built_clients)
+        .map(|row| row.permission.clone())
+        .collect();
+    assert_eq!(grants, vec!["read".to_string()]);
 }

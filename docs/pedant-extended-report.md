@@ -18,6 +18,10 @@ contract suites `environments` and `roles` run 610 examples (587 passed, 23 pend
 examples (78 passed), both with zero failures. Every failure is gone; the pending examples are
 pedant's own skips.
 
+A later `acls` run on 2026-11-02 (server at `42e77e9` plus the client data bag write grant) has two
+failures, both from the one deliberate `data` ACL deviation described in item 11 of the quirks
+list. The other 1,638 `acls` examples still pass.
+
 ## Environment
 
 | Component | Version / value |
@@ -187,3 +191,11 @@ built-in-index list). The extended tags add no direct database writes.
    they were pre-existing, so a shared instance produces spurious 401s after the first tag.
 10. **`Gemfile.lock` is restored after each run.** Bundler adds the local `arm64-darwin-25` platform
     and drops the `rack` floor because the omnibus `safe_versions.rb` is missing from this checkout.
+11. **Client data bag writes deviate from the upstream ACL matrix.** Upstream grants the `clients`
+    group only `read` on the `data` container, so `GET /data/<name>/_acl` there lists `clients`
+    under `read` alone. Microwave also grants `create`, `update`, and `delete`, because cookbooks
+    such as `acme_persistence` save certificates into a bag during a converge and fail with `403`
+    otherwise. Two `acls` examples compare that body exactly and fail by the three extra entries;
+    `org.client_data_bag_writes = false` restores the upstream body. Node saves are unaffected: a
+    client may always update and delete the node named like itself, so the `nodes` matrix stays
+    upstream-exact.

@@ -215,6 +215,16 @@ verifies them against the actor's keys.
 | `auth.password_reset_ttl_seconds`<br/>`MW_AUTH__PASSWORD_RESET_TTL_SECONDS` | Default `3600`. Password-reset token lifetime in seconds. Must be greater than zero and at most `604800` (seven days). The reset email derives its expiry text from this value. |
 | `stats.username`<br/>`stats.password`<br/>`MW_STATS__USERNAME`<br/>`MW_STATS__PASSWORD` | Unset by default. Optional Basic auth for `/_stats`; when set, `/_status` remains public. Set both. |
 
+#### Organization policy
+
+Defaults written into every organization created through the API or
+`microwave-ctl org-create`. Changing them does not touch existing
+organizations; edit their ACLs instead.
+
+| Setting | Details |
+|---|---|
+| `org.client_data_bag_writes`<br/>`MW_ORG__CLIENT_DATA_BAG_WRITES` | Default `true`. Let the `clients` group create, update, and delete data bags and items. Cookbooks such as `acme_persistence` save certificates into a bag during a converge; with `false`, clients may only read data bags and those runs fail with `403` unless the ACLs are widened. Upstream Chef Infra Server grants clients read only here, so `false` matches its `acls` Pedant expectations. Node writes need no extra grant either way: a client may always update and delete the node named like itself. |
+
 #### Mail
 
 Outbound password-reset mail. Everything except `mail.enabled` is ignored
@@ -1807,6 +1817,12 @@ policy — containers, groups, ACLs, and the `_default` environment — because
 goiardi exports none. `--org-full-name` sets the display name. `--dry-run`
 crawls and prints the counts without writing a snapshot or fetching blobs;
 `--skip-orphan-clients` drops clients that have no node of the same name.
+
+The imported policy lets clients create, update, and delete data bag items, as
+the source server did; cookbooks such as `acme_persistence` save certificates
+into a bag and fail with `403` without it. Pass
+`--no-client-data-bag-writes` to grant read access only — matching
+`org.client_data_bag_writes = false` on the target.
 
 `--bookshelf-dir DIR` also copies cookbook file blobs, MD5-verified, to
 `DIR/organization-<org_id>/checksum-<md5>`. For a migration that should serve
