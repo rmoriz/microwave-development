@@ -770,12 +770,17 @@ SOCKS5 tunnel; run on the bastion when no tunnel exists. A `403` from a host
 that can resolve the URL usually means the vhost refuses the direct connection
 and `--socks5` is missing. A `401` points at `--client-name` or `--key`. Use
 the source superuser; without ACLs a lesser client sees a partial listing. The
-user must literally be named `admin`: only that name gets an organization
-membership and can be reset with `microwave-ctl password admin`.
+user should literally be named `admin`: only that name gets an organization
+membership and can be reset with `microwave-ctl password admin`. When the source
+has no `admin` user, the crawl synthesizes one with an empty password hash and
+warns, so the snapshot still imports.
 
 `--bookshelf-dir DIR` copies cookbook file blobs to
 `DIR/organization-<org_id>/checksum-<md5>`, MD5-verified before each atomic
-write. The copy runs after the metadata crawl, so an aborted crawl leaves no
+write. For a migration that should serve the blobs afterwards, `DIR` must be the
+target instance's `<data_dir>/bookshelf`, because the server only looks there; a
+SQLite import ignores the flag and expects the blobs at that path already. The
+copy runs after the metadata crawl, so an aborted crawl leaves no
 half-populated bookshelf and a failed blob never appears finally; blobs already
 copied by the run stay and a re-run skips them. Without the flag the snapshot
 keeps metadata and checksum references only. Limits match `from-api`: 64 MiB
@@ -799,6 +804,14 @@ microwave-ctl migrate-from-legacy --input acme.json --yes
 microwave-ctl password admin
 microwave-ctl reindex
 ```
+
+Keep the default `pivotal` superuser through the import. A target superuser
+renamed to a snapshot user name — `admin` included — is refused because the
+import would collide on the unique username. Import with `pivotal` first, then
+set `auth.superuser_name = "admin"` and restart. The imported `admin` is only the
+organization administrator with the default policy, not the platform superuser,
+which follows `principal.name == auth.superuser_name`; the server also refuses
+to start while the configured superuser does not exist.
 
 Importing the same snapshot twice fails like every second goiardi import into
 the same target; re-crawl and import into a fresh target to update. goiardi

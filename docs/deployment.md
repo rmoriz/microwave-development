@@ -1780,7 +1780,7 @@ microwave-migrate from-goiardi \
   --org acme \
   --output acme.json
 
-# on a workstation: ssh -L 1080:chef.example.com:443 <bastion> first
+# on a workstation: ssh -N -D 127.0.0.1:1080 <bastion> first
 microwave-migrate from-goiardi \
   --url https://chef.example.com \
   --client-name admin \
@@ -1793,9 +1793,11 @@ microwave-migrate from-goiardi \
 A `403` from a host that can resolve the URL usually means the vhost is
 refusing the direct connection; retry through `--socks5` or from the bastion. A
 `401` points at `--client-name` or `--key`. Use the source's superuser: goiardi
-has no ACL API, so a lesser client sees a partial listing. The source user must
-literally be named `admin`; only that name receives the organization membership,
-so only it can be reset with `microwave-ctl password admin` after the import.
+has no ACL API, so a lesser client sees a partial listing. The source user
+should literally be named `admin`; only that name receives the organization
+membership, so only it can be reset with `microwave-ctl password admin` after
+the import. If the source has no `admin` user, the crawl synthesizes one (with
+an empty password hash) and warns, so the snapshot still imports.
 
 Every run maps the whole source into the one `--org` organization (lowercase
 letters, digits, and dashes) and rebuilds Microwave's default organization
@@ -1805,11 +1807,14 @@ crawls and prints the counts without writing a snapshot or fetching blobs;
 `--skip-orphan-clients` drops clients that have no node of the same name.
 
 `--bookshelf-dir DIR` also copies cookbook file blobs, MD5-verified, to
-`DIR/organization-<org_id>/checksum-<md5>`. Without it the snapshot keeps
-metadata and checksum references only. Blobs are fetched after the metadata
-crawl, so a failed crawl never leaves a half-populated bookshelf; a failed blob
-is written through a temporary file and never appears finally. Blobs already
-copied by the run do stay, and a re-run skips them.
+`DIR/organization-<org_id>/checksum-<md5>`. For a migration that should serve
+those blobs afterwards, `DIR` must be the target instance's
+`<data_dir>/bookshelf` (the server only looks there); a SQLite import ignores
+the flag and expects the blobs at that path already. Without the flag the
+snapshot keeps metadata and checksum references only. Blobs are fetched after
+the metadata crawl, so a failed crawl never leaves a half-populated bookshelf; a
+failed blob is written through a temporary file and never appears finally. Blobs
+already copied by the run do stay, and a re-run skips them.
 
 **The import needs a fresh target.** A goiardi snapshot carries a fresh-install
 policy and the snapshot importer does not merge it into existing data. Start the
@@ -1823,6 +1828,24 @@ microwave-ctl --config /etc/microwave/microwave.toml \
 microwave-ctl --config /etc/microwave/microwave.toml password admin
 microwave-ctl --config /etc/microwave/microwave.toml reindex
 ```
+
+Keep the default `pivotal` superuser through the import. A target superuser
+renamed to a name the snapshot also carries — including `admin` — is refused,
+because the import would collide on the unique username. Import first with
+`pivotal`, then rename:
+
+```sh
+microwave-ctl --config /etc/microwave/microwave.toml password admin
+# after the import and password reset, in microwave.toml:
+# auth.superuser_name = "admin"
+# then restart the server
+```
+
+The imported `admin` is the organization administrator with the default policy;
+it is not the platform superuser. Superuser status follows
+`principal.name == auth.superuser_name`, so keep `pivotal` until the import is
+done. Only after that set `auth.superuser_name = "admin"` and restart — the
+server refuses to start while the configured superuser does not exist.
 
 The import refuses a target with an organization or more than one user and
 names both counts; start over with an empty data directory or database rather
