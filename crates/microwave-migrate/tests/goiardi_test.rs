@@ -1,7 +1,7 @@
 mod common;
 
-use common::{json_route, options, raw_route, start_server, Route};
-use microwave_migrate::crawl_from_goiardi;
+use common::{blob_fixture, bytes_route, json_route, options, raw_route, start_server, Route};
+use microwave_migrate::{crawl_from_goiardi, from_goiardi_with_options, GoiardiOptions};
 use serde_json::json;
 
 const PUBLIC_KEY: &str = include_str!("../../microwave-crypto/tests/fixtures/test_key_pub.pem");
@@ -195,4 +195,78 @@ fn crawls_users_and_clients_with_keys_and_marks_the_layout() {
             record.method, record.path, record.verification_error
         );
     }
+}
+
+fn cookbooks_routes(with_blob: bool) -> (Vec<(&'static str, Route)>, String) {
+    let (body, checksum, path) = blob_fixture("blob");
+    let cookbook = json!({
+        "name": "app",
+        "versions": [{"version": "1.2.3", "url": "/cookbooks/app/1.2.3"}],
+    });
+    let version = json!({
+        "name": "app-1.2.3",
+        "cookbook": "app",
+        "version": "1.2.3",
+        "frozen?": false,
+        "metadata": {"name": "app", "version": "1.2.3"},
+        "recipes": [{"name": "default.rb", "path": "recipes/default.rb", "checksum": checksum}],
+    });
+    let mut routes = vec![
+        ("/cookbooks", json_route(json!({"app": "/cookbooks/app"}))),
+        ("/cookbooks/app", json_route(cookbook)),
+        ("/cookbooks/app/1.2.3", json_route(version)),
+    ];
+    if with_blob {
+        routes.push((path, bytes_route(200, body)));
+    }
+    (routes, checksum)
+}
+
+#[test]
+fn derives_a_missing_blob_url_from_base_and_copies_the_blob() {
+    let out = tempdir();
+    let bookshelf = tempdir();
+    let (routes, checksum) = cookbooks_routes(true);
+    let (url, _) = start_server(routes);
+    let options = GoiardiOptions {
+        bookshelf_dir: Some(bookshelf.path().to_path_buf()),
+        ..options(&url, out.path())
+    };
+    let (snapshot, _) = crawl_from_goiardi(&options).unwrap();
+    let org_id = &snapshot.data.orgs[0].id;
+    assert!(bookshelf
+        .path()
+        .join(format!("organization-{org_id}/checksum-{checksum}"))
+        .exists());
+}
+
+#[test]
+fn a_checksum_without_a_blob_is_an_error_when_blobs_are_requested() {
+    let out = tempdir();
+    let bookshelf = tempdir();
+    let (routes, _) = cookbooks_routes(false);
+    let (url, _) = start_server(routes);
+    let options = GoiardiOptions {
+        bookshelf_dir: Some(bookshelf.path().to_path_buf()),
+        ..options(&url, out.path())
+    };
+    assert!(crawl_from_goiardi(&options).is_err());
+}
+
+#[test]
+fn dry_run_writes_no_snapshot_and_fetches_no_blob() {
+    let dir = tempdir();
+    let output = dir.path().join("snapshot.json");
+    let (routes, _) = cookbooks_routes(true);
+    let (url, records) = start_server(routes);
+    let mut options = options(&url, dir.path());
+    options.dry_run = true;
+    let summary = from_goiardi_with_options(&options).unwrap();
+    assert_eq!(summary.checksums, 1);
+    assert!(!output.exists());
+    assert!(records
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|record| !record.path.starts_with("/file_store/")));
 }

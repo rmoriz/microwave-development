@@ -15,16 +15,19 @@
 //! scheme, so repeated crawls produce the same snapshot.
 
 use crate::crawl::{
-    bool_field, encode_segment, string_field, synthetic_id, BlobSummary, CollectionEntry, Fetcher,
+    bool_field, cookbook_files, encode_segment, store_blob, string_field, synthetic_i64,
+    synthetic_id, url_field, BlobSummary, CollectionEntry, Fetcher,
 };
 use crate::{
     write_snapshot, MigrateError, Snapshot, SnapshotSource, SnapshotSourceKind, SNAPSHOT_FORMAT,
     SNAPSHOT_VERSION,
 };
 use chrono::{SecondsFormat, Utc};
+use microwave_objectstore::{LocalObjectStore, ObjectStore};
 use microwave_store::{
-    ActorKeyRow, AuthzEntityRow, ClientRow, DataBagItemRow, NamedObjectRow, NodeRow, OrgRow,
-    OrgUserAssociationRow, StoreSnapshot, UserRow,
+    parse_version, ActorKeyRow, AuthzEntityRow, ChecksumRow, ClientRow, CookbookRow,
+    CookbookVersionChecksumRow, CookbookVersionRow, DataBagItemRow, NamedObjectRow, NodeRow,
+    OrgRow, OrgUserAssociationRow, StoreSnapshot, UserRow,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -108,6 +111,13 @@ pub fn crawl_from_goiardi(
     let mut crawler = Crawler::new(options)?;
     crawler.crawl_identity()?;
     crawler.crawl_objects()?;
+    let org = crawler.org.clone();
+    crawler.crawl_cookbooks(&org)?;
+    // Blob work runs last so a failed metadata crawl never leaves a
+    // half-populated bookshelf behind, and a dry run downloads nothing.
+    if !options.dry_run {
+        crawler.download_blobs()?;
+    }
     crawler.summary.blobs_downloaded = crawler.blob_summary.downloaded;
     crawler.summary.blobs_skipped = crawler.blob_summary.skipped;
 
@@ -118,7 +128,10 @@ pub fn crawl_from_goiardi(
         source: SnapshotSource {
             kind: SnapshotSourceKind::LegacyApi,
             url: Some(options.url.trim_end_matches('/').to_string()),
-            data_dir: None,
+            data_dir: crawler
+                .bookshelf_dir
+                .as_ref()
+                .map(|path| path.display().to_string()),
             layout: Some("goiardi".to_string()),
         },
         secrets_included: false,
@@ -156,8 +169,13 @@ pub struct Crawler {
     pub(crate) object_authz: Vec<(String, String)>,
     pub(crate) seen_authz: HashSet<String>,
     pub(crate) seen_checksums: HashSet<String>,
+    /// `(cookbook name, version)` of every imported version.
+    pub(crate) seen_cookbook_versions: HashSet<(String, String)>,
     /// `(org id, checksum)` to the first URL that advertised the blob.
     pub(crate) pending_blobs: HashMap<(String, String), String>,
+    /// Local object store root used to copy cookbook blobs.
+    pub(crate) bookshelf_dir: Option<PathBuf>,
+    pub(crate) bookshelf: Option<LocalObjectStore>,
     pub(crate) blob_summary: BlobSummary,
     pub(crate) downloaded_blob_bytes: u64,
     /// Every environment name in the source, for node validation.
@@ -201,7 +219,13 @@ impl Crawler {
             object_authz: Vec::new(),
             seen_authz: HashSet::new(),
             seen_checksums: HashSet::new(),
+            seen_cookbook_versions: HashSet::new(),
             pending_blobs: HashMap::new(),
+            bookshelf_dir: options.bookshelf_dir.clone(),
+            bookshelf: options
+                .bookshelf_dir
+                .as_ref()
+                .map(|dir| LocalObjectStore::new(dir.clone(), "", "http://localhost")),
             blob_summary: BlobSummary::default(),
             downloaded_blob_bytes: 0,
             environment_names: HashSet::new(),
@@ -397,6 +421,195 @@ impl Crawler {
                 });
                 self.summary.data_bag_items += 1;
             }
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Cookbooks and blobs
+    // ------------------------------------------------------------------
+
+    fn crawl_cookbooks(&mut self, org: &OrgRow) -> Result<(), MigrateError> {
+        let entries = self.fetcher.get_collection("/cookbooks")?;
+        for entry in entries {
+            let list_name = entry.name.clone();
+            let value = match &entry.url {
+                Some(url) => self.fetcher.get_optional_json(&self.fetcher.resolve(url))?,
+                None => Some(entry.value.clone()),
+            };
+            let Some(value) = value else { continue };
+            let name = string_field(&value, "name").unwrap_or(list_name);
+
+            let cookbook_id = synthetic_i64(&format!("cookbook:{}:{name}", org.name));
+            let authz_id = synthetic_id(&format!("authz:cookbook:{}:{name}", org.name));
+            self.ensure_entity(&authz_id, "object", Some(&org.id));
+            if !self
+                .data
+                .cookbooks
+                .iter()
+                .any(|cookbook| cookbook.id == cookbook_id)
+            {
+                self.data.cookbooks.push(CookbookRow {
+                    id: cookbook_id,
+                    org_id: org.id.clone(),
+                    name: name.clone(),
+                    authz_id,
+                });
+                self.summary.cookbooks += 1;
+            }
+
+            for (version, version_url) in cookbook_versions(&value) {
+                if !self
+                    .seen_cookbook_versions
+                    .insert((name.clone(), version.clone()))
+                {
+                    continue;
+                }
+                let version_path = version_url.unwrap_or_else(|| {
+                    format!(
+                        "/cookbooks/{}/{}",
+                        encode_segment(&name),
+                        encode_segment(&version)
+                    )
+                });
+                let version_url = self.fetcher.resolve(&version_path);
+                let Some((version_value, raw)) = self.fetcher.get_optional_raw(&version_url)?
+                else {
+                    continue;
+                };
+                if self.push_cookbook_version(
+                    org,
+                    &name,
+                    cookbook_id,
+                    &version,
+                    &version_value,
+                    raw,
+                ) {
+                    self.summary.cookbook_versions += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn push_cookbook_version(
+        &mut self,
+        org: &OrgRow,
+        name: &str,
+        cookbook_id: i64,
+        fallback_version: &str,
+        value: &Value,
+        raw: String,
+    ) -> bool {
+        let version =
+            string_field(value, "version").unwrap_or_else(|| fallback_version.to_string());
+        let Ok((major, minor, patch)) = parse_version(&version) else {
+            return false;
+        };
+        let metadata = value.get("metadata").cloned().unwrap_or(Value::Null);
+        let metadata_text = if metadata.is_null() {
+            None
+        } else {
+            serde_json::to_string(&metadata).ok()
+        };
+        let meta_attributes = metadata
+            .get("attributes")
+            .filter(|value| !value.is_null())
+            .and_then(|value| serde_json::to_string(value).ok());
+        let meta_deps = metadata
+            .get("dependencies")
+            .filter(|value| !value.is_null())
+            .and_then(|value| serde_json::to_string(value).ok());
+        let meta_long_desc = match metadata.get("long_description") {
+            Some(Value::String(text)) => Some(text.clone()),
+            Some(value) if !value.is_null() => serde_json::to_string(value).ok(),
+            _ => None,
+        };
+
+        let version_id = synthetic_id(&format!("cookbook_version:{}:{name}:{version}", org.name));
+        self.data.cookbook_versions.push(CookbookVersionRow {
+            id: version_id.clone(),
+            cookbook_id,
+            org_id: org.id.clone(),
+            name: name.to_string(),
+            major,
+            minor,
+            patch,
+            frozen: bool_field(value, "frozen?").unwrap_or(false),
+            meta_attributes,
+            meta_deps,
+            meta_long_desc,
+            metadata: metadata_text,
+            serialized_object: Some(raw),
+            last_updated_by: String::new(),
+            created_at: self.generated_at.clone(),
+            updated_at: self.generated_at.clone(),
+        });
+
+        for (checksum, file_url) in cookbook_files(value) {
+            self.push_file(org, &version_id, &checksum, file_url.as_deref());
+        }
+        true
+    }
+
+    /// Link one cookbook file checksum to a version.
+    ///
+    /// A manifest entry without a URL (or with a relative one) is fetched from
+    /// the API host's `/file_store/<checksum>` route once blobs are copied;
+    /// `store_blob` resolves the reference against the base URL.
+    fn push_file(&mut self, org: &OrgRow, version_id: &str, checksum: &str, url: Option<&str>) {
+        if self.seen_checksums.insert(checksum.to_string()) {
+            self.data.checksums.push(ChecksumRow {
+                org_id: org.id.clone(),
+                checksum: checksum.to_string(),
+                created_at: self.generated_at.clone(),
+            });
+            self.summary.checksums += 1;
+        }
+        self.data
+            .cookbook_version_checksums
+            .push(CookbookVersionChecksumRow {
+                cookbook_version_id: version_id.to_string(),
+                org_id: org.id.clone(),
+                checksum: checksum.to_string(),
+            });
+        if self.bookshelf.is_some() {
+            let reference = url
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("/file_store/{checksum}"));
+            self.pending_blobs
+                .entry((org.id.clone(), checksum.to_string()))
+                .or_insert(reference);
+        }
+    }
+
+    /// Copy every collected cookbook blob that is not already in the target
+    /// local object store. Runs after the metadata crawl so a failed crawl
+    /// never leaves a half-populated bookshelf behind.
+    fn download_blobs(&mut self) -> Result<(), MigrateError> {
+        let Some(store) = self.bookshelf.clone() else {
+            return Ok(());
+        };
+        let mut pending: Vec<((String, String), String)> = std::mem::take(&mut self.pending_blobs)
+            .into_iter()
+            .collect();
+        pending.sort_by(|left, right| left.0.cmp(&right.0));
+
+        for ((org_id, checksum), reference) in pending {
+            if store.exists(&org_id, &checksum) {
+                self.blob_summary.skipped += 1;
+                continue;
+            }
+
+            store_blob(
+                &store,
+                &org_id,
+                &checksum,
+                &reference,
+                &self.fetcher,
+                &mut self.blob_summary,
+                &mut self.downloaded_blob_bytes,
+            )?;
         }
         Ok(())
     }
@@ -615,4 +828,57 @@ fn validate_org(org: &str) -> Result<(), MigrateError> {
 
 fn non_empty_string(value: &Value, key: &str) -> Option<String> {
     string_field(value, key).filter(|text| !text.is_empty())
+}
+
+/// Read the version list of a cookbook resource.
+///
+/// goiardi's flat API returns `versions: [{version, url}]`, but the same
+/// helper also accepts the object and single-version shapes so a variant
+/// response does not drop versions.
+fn cookbook_versions(value: &Value) -> Vec<(String, Option<String>)> {
+    if let Value::Array(items) = value {
+        return items
+            .iter()
+            .filter_map(|item| {
+                let version = string_field(item, "version")?;
+                Some((version, url_field(item)))
+            })
+            .collect();
+    }
+    let Some(versions) = value.get("versions") else {
+        return string_field(value, "version")
+            .map(|version| vec![(version, url_field(value))])
+            .unwrap_or_default();
+    };
+
+    let mut output = Vec::new();
+    match versions {
+        Value::Object(map) => {
+            for (version, entries) in map {
+                match entries {
+                    Value::Array(items) => {
+                        for item in items {
+                            let version =
+                                string_field(item, "version").unwrap_or_else(|| version.clone());
+                            output.push((version, url_field(item)));
+                        }
+                    }
+                    Value::Object(_) => output.push((
+                        string_field(entries, "version").unwrap_or_else(|| version.clone()),
+                        url_field(entries),
+                    )),
+                    _ => output.push((version.clone(), None)),
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                if let Some(version) = string_field(item, "version") {
+                    output.push((version, url_field(item)));
+                }
+            }
+        }
+        _ => {}
+    }
+    output
 }
