@@ -1365,6 +1365,25 @@ pub fn apply_default_policy(
         copy_container_acl(data, container, target, admin_authz);
     }
 
+    // A node created by a client holds a creator grant for it, which is how the
+    // client saves the node at the end of every converge. The crawl creates all
+    // nodes as the admin, so replay that grant for imported nodes whose name
+    // matches a client. `nodes` keeps the upstream container ACL (read and
+    // create for the `clients` group) and needs no handler-side exception.
+    let own_nodes: Vec<(String, String)> = data
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            data.clients
+                .iter()
+                .find(|client| client.name == node.name)
+                .map(|client| (node.authz_id.clone(), client.authz_id.clone()))
+        })
+        .collect();
+    for (node, client) in own_nodes {
+        grant_actor_all(data, &node, &client);
+    }
+
     // A client is an object of the `clients` container and inherits its ACL.
     // Non-validator clients may also manage themselves; validators have no
     // self-service grants, matching `create_client_with_acl`.

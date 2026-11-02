@@ -410,7 +410,11 @@ fn object_acls_copy_the_container_acl_and_add_the_creator() {
     built.orgs.push(org.clone());
     let creator = "creator-authz";
     let node = "node-authz";
-    let object_authz = vec![("nodes".to_string(), node.to_string())];
+    let other_node = "other-node-authz";
+    let object_authz = vec![
+        ("nodes".to_string(), node.to_string()),
+        ("nodes".to_string(), other_node.to_string()),
+    ];
     built.users.push(microwave_store::UserRow {
         id: "creator-id".to_string(),
         authz_id: creator.to_string(),
@@ -418,6 +422,30 @@ fn object_acls_copy_the_container_acl_and_add_the_creator() {
         admin: true,
         ..Default::default()
     });
+    // `client-a` owns the node named like itself; `client-b` owns nothing.
+    for (name, authz_id) in [("client-a", node), ("other-node", other_node)] {
+        built.nodes.push(microwave_store::NodeRow {
+            id: format!("node-id-{name}"),
+            authz_id: authz_id.to_string(),
+            org_id: org.id.clone(),
+            name: name.to_string(),
+            environment: "_default".to_string(),
+            created_at: NOW.to_string(),
+            updated_at: NOW.to_string(),
+            ..Default::default()
+        });
+    }
+    for name in ["client-a", "client-b"] {
+        built.clients.push(microwave_store::ClientRow {
+            id: format!("client-id-{name}"),
+            org_id: org.id.clone(),
+            authz_id: name.to_string(),
+            name: name.to_string(),
+            created_at: NOW.to_string(),
+            updated_at: NOW.to_string(),
+            ..Default::default()
+        });
+    }
 
     apply_default_policy(
         &mut built,
@@ -476,7 +504,42 @@ fn object_acls_copy_the_container_acl_and_add_the_creator() {
             "node is missing creator {permission}"
         );
     }
-    assert_eq!(rows_for(node), container_actors);
+    assert_eq!(
+        rows_for(node)
+            .into_iter()
+            .filter(|(_, actor)| actor != "client-a")
+            .collect::<BTreeSet<_>>(),
+        container_actors
+    );
+
+    // The node named like a client gets that client's creator grant, so the
+    // client can save it during a converge without an extra container ACE.
+    for permission in ["create", "read", "update", "delete", "grant"] {
+        assert!(
+            rows_for(node).contains(&(permission.to_string(), "client-a".to_string())),
+            "node is missing its client's {permission}"
+        );
+    }
+    assert!(!rows_for(other_node)
+        .iter()
+        .any(|(_, actor)| actor == "client-a" || actor == "client-b"));
+    // The `nodes` container itself stays at read and create for clients.
+    let clients_group = built
+        .groups
+        .iter()
+        .find(|group| group.name == "clients")
+        .unwrap()
+        .authz_id
+        .clone();
+    let node_client_grants: BTreeSet<String> = groups_for(&nodes)
+        .into_iter()
+        .filter(|(_, group)| group == &clients_group)
+        .map(|(permission, _)| permission)
+        .collect();
+    assert_eq!(
+        node_client_grants,
+        BTreeSet::from(["read".to_string(), "create".to_string()])
+    );
 
     // No other container's ACL leaks onto the object: the `sandboxes` container
     // grants users Create only, the `groups` container grants clients nothing,
@@ -492,13 +555,6 @@ fn object_acls_copy_the_container_acl_and_add_the_creator() {
         .containers
         .iter()
         .find(|container| container.name == "groups")
-        .unwrap()
-        .authz_id
-        .clone();
-    let clients_group = built
-        .groups
-        .iter()
-        .find(|group| group.name == "clients")
         .unwrap()
         .authz_id
         .clone();
@@ -526,6 +582,8 @@ fn object_acls_copy_the_container_acl_and_add_the_creator() {
     // Deterministic ids: the same input builds the same rows twice.
     let mut again = StoreSnapshot::default();
     again.orgs.push(org.clone());
+    again.nodes = built.nodes.clone();
+    again.clients = built.clients.clone();
     again.users.push(microwave_store::UserRow {
         id: "creator-id".to_string(),
         authz_id: creator.to_string(),

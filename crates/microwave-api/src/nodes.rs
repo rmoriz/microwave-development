@@ -7,7 +7,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
-use microwave_store::{ActorType, NewNode, Org, Permission, StoredNode};
+use microwave_store::{NewNode, Org, Permission, StoredNode};
 use serde_json::{json, Map, Value};
 
 /// Top-level keys accepted on node payloads, mirroring `?VALID_KEYS` in
@@ -212,7 +212,7 @@ pub(crate) async fn update_node_object(
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| node_not_found(name))?;
-    require_node_permission(state, auth, &existing.authz_id, name, Permission::Update).await?;
+    require_permission(state, auth, &existing.authz_id, Permission::Update).await?;
 
     let node = state
         .store
@@ -253,7 +253,7 @@ pub(crate) async fn delete_node_object(
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| node_not_found(name))?;
-    require_node_permission(state, auth, &node.authz_id, name, Permission::Delete).await?;
+    require_permission(state, auth, &node.authz_id, Permission::Delete).await?;
     state
         .store
         .delete_node(&org.id, name)
@@ -261,23 +261,6 @@ pub(crate) async fn delete_node_object(
         .map_err(ApiError::from)?;
     crate::search::index::delete_document(state, &org.id, &node.id).await;
     Ok(node)
-}
-
-/// A client may always update or delete the node that carries its own name,
-/// even without an ACE on the object. Upstream Chef Infra Server special-cases
-/// this, which is why the `clients` group needs only read and create on the
-/// `nodes` container.
-async fn require_node_permission(
-    state: &AppState,
-    auth: &AuthContext,
-    authz_id: &str,
-    name: &str,
-    permission: Permission,
-) -> Result<(), ApiError> {
-    if auth.principal.actor_type == ActorType::Client && auth.principal.name == name {
-        return Ok(());
-    }
-    require_permission(state, auth, authz_id, permission).await
 }
 
 fn node_not_found(name: &str) -> ApiError {

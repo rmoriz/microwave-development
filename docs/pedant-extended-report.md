@@ -196,6 +196,6 @@ built-in-index list). The extended tags add no direct database writes.
     under `read` alone. Microwave also grants `create`, `update`, and `delete`, because cookbooks
     such as `acme_persistence` save certificates into a bag during a converge and fail with `403`
     otherwise. Two `acls` examples compare that body exactly and fail by the three extra entries;
-    `org.client_data_bag_writes = false` restores the upstream body. Node saves are unaffected: a
-    client may always update and delete the node named like itself, so the `nodes` matrix stays
-    upstream-exact.
+    `org.client_data_bag_writes = false` restores the upstream body. Node saves are unaffected:
+    the `nodes` matrix stays upstream-exact because the importer hands every imported node a
+    creator grant for the client named like it, which is the same ACE `create_node` writes.

@@ -235,40 +235,48 @@ async fn client_can_read_roles_and_nodes_needed_for_a_converge() {
         .contains(&json!("normal")));
 }
 
-/// A node saves itself at the end of every converge without holding an ACE on
-/// the object: upstream special-cases the node whose name matches the client.
+/// A node saves itself at the end of every converge. Creating the node leaves a
+/// creator grant for the client, which is all a converge needs; a node created
+/// by somebody else stays closed without an explicit ACE.
 #[tokio::test]
-async fn client_may_update_and_delete_its_own_node_without_an_ace() {
+async fn client_may_update_and_delete_the_node_it_created() {
     let state = support::state_with_pivotal();
     let app = support::app(state.clone());
     create_org(&app).await;
     create_client(&app, "node1").await;
 
-    for name in ["node1", "node2"] {
-        let body = json!({"name": name}).to_string();
-        let (status, _) = request(
-            &app,
-            "POST",
-            "/organizations/acme/nodes",
-            body.as_bytes(),
-            "pivotal",
-        )
-        .await;
-        assert_eq!(status, StatusCode::CREATED);
-    }
+    let body = json!({"name": "node1", "run_list": []}).to_string();
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/organizations/acme/nodes",
+        body.as_bytes(),
+        "node1",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
 
-    let own = json!({"name": "node1", "run_list": []}).to_string();
+    let other = json!({"name": "node2", "run_list": []}).to_string();
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/organizations/acme/nodes",
+        other.as_bytes(),
+        "pivotal",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
     let (status, _) = request(
         &app,
         "PUT",
         "/organizations/acme/nodes/node1",
-        own.as_bytes(),
+        body.as_bytes(),
         "node1",
     )
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let other = json!({"name": "node2", "run_list": []}).to_string();
     let (status, _) = request(
         &app,
         "PUT",

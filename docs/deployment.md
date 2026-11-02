@@ -223,7 +223,7 @@ organizations; edit their ACLs instead.
 
 | Setting | Details |
 |---|---|
-| `org.client_data_bag_writes`<br/>`MW_ORG__CLIENT_DATA_BAG_WRITES` | Default `true`. Let the `clients` group create, update, and delete data bags and items. Cookbooks such as `acme_persistence` save certificates into a bag during a converge; with `false`, clients may only read data bags and those runs fail with `403` unless the ACLs are widened. Upstream Chef Infra Server grants clients read only here, so `false` matches its `acls` Pedant expectations. Node writes need no extra grant either way: a client may always update and delete the node named like itself. |
+| `org.client_data_bag_writes`<br/>`MW_ORG__CLIENT_DATA_BAG_WRITES` | Default `true`. Let the `clients` group create, update, and delete data bags and items. Cookbooks such as `acme_persistence` save certificates into a bag during a converge; with `false`, clients may only read data bags and those runs fail with `403` unless the ACLs are widened. Upstream Chef Infra Server grants clients read only here, so `false` matches its `acls` Pedant expectations. Node saves need no extra grant either way: a node carries a creator grant for the client named like it, and the goiardi importer seeds that grant for imported nodes. |
 
 #### Mail
 
