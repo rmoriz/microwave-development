@@ -104,10 +104,12 @@ pub struct GoiardiSummary {
 
 /// Crawl a goiardi server and write a snapshot unless `dry_run` is set.
 ///
-/// Counts and warnings go to stderr as they are collected, so an aborted run
-/// still reports what it saw; the snapshot path alone goes to stdout. The
-/// written snapshot is validated first: every imported object needs an ACL and
-/// every copied blob must exist. The snapshot is returned either way, but a
+/// The metadata counts and warnings print to stderr in one block after the
+/// metadata phase, before any blob work, so a failed metadata crawl still
+/// reports what it saw; the blob counters close the block after the copy. The
+/// snapshot path alone goes to stdout. The written snapshot is validated first:
+/// every imported object needs an ACL and every copied blob must exist. The
+/// snapshot is returned either way, but a
 /// dry run leaves the output path untouched, copies no blobs and skips the
 /// blob half of the validation.
 pub fn crawl_from_goiardi(
@@ -676,6 +678,9 @@ impl Crawler {
         let version =
             string_field(value, "version").unwrap_or_else(|| fallback_version.to_string());
         let Ok((major, minor, patch)) = parse_version(&version) else {
+            self.summary.warnings.push(format!(
+                "cookbook {name:?} version {version:?} is not x.y.z; skipped"
+            ));
             return false;
         };
         let metadata = value.get("metadata").cloned().unwrap_or(Value::Null);
@@ -1532,11 +1537,19 @@ fn non_empty_string(value: &Value, key: &str) -> Option<String> {
 /// descended into before it looks like a cookbook. A body that already is the
 /// resource passes through unchanged.
 fn unwrap_cookbook(value: Value, name: &str) -> Value {
-    if value.get("versions").is_some() || value.get("version").is_some() {
-        return value;
-    }
-    if let Some(inner) = value.get(name).cloned() {
-        return inner;
+    // Derive the resource shape from the name first: a cookbook literally named
+    // `versions` has to be unwrapped before its own `versions` key is mistaken
+    // for the resource. Only a sole name key is an envelope.
+    if let Value::Object(map) = &value {
+        if map.len() == 1 {
+            if let Some(inner) = map.get(name) {
+                if inner.is_object()
+                    && (inner.get("versions").is_some() || inner.get("version").is_some())
+                {
+                    return inner.clone();
+                }
+            }
+        }
     }
     value
 }
@@ -1592,4 +1605,41 @@ fn cookbook_versions(value: &Value) -> Vec<(String, Option<String>)> {
         _ => {}
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cookbook_versions, unwrap_cookbook};
+    use serde_json::json;
+
+    #[test]
+    fn a_cookbook_named_versions_is_unwrapped_before_its_payload() {
+        let value = json!({
+            "versions": {
+                "url": "/cookbooks/versions",
+                "versions": [{"version": "1.0.0", "url": "/cookbooks/versions/1.0.0"}],
+            }
+        });
+        let unwrapped = unwrap_cookbook(value, "versions");
+        assert_eq!(
+            cookbook_versions(&unwrapped),
+            vec![(
+                "1.0.0".to_string(),
+                Some("/cookbooks/versions/1.0.0".to_string())
+            )]
+        );
+    }
+
+    #[test]
+    fn a_normal_cookbook_envelope_still_unwraps() {
+        let value = json!({"app": {"url": "/cookbooks/app", "versions": []}});
+        let unwrapped = unwrap_cookbook(value, "app");
+        assert_eq!(unwrapped["url"], "/cookbooks/app");
+    }
+
+    #[test]
+    fn a_plain_resource_passes_through() {
+        let value = json!({"name": "app", "versions": []});
+        assert_eq!(unwrap_cookbook(value.clone(), "app"), value);
+    }
 }
