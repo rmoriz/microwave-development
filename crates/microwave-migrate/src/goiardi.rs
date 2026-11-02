@@ -23,11 +23,13 @@ use crate::{
     SNAPSHOT_VERSION,
 };
 use chrono::{SecondsFormat, Utc};
+use microwave_authz::{Permission, DEFAULT_CONTAINERS, DEFAULT_GROUPS};
 use microwave_objectstore::{LocalObjectStore, ObjectStore};
 use microwave_store::{
-    parse_version, ActorKeyRow, AuthzEntityRow, ChecksumRow, ClientRow, CookbookRow,
-    CookbookVersionChecksumRow, CookbookVersionRow, DataBagItemRow, NamedObjectRow, NodeRow,
-    OrgRow, OrgUserAssociationRow, StoreSnapshot, UserRow,
+    parse_version, ActorKeyRow, AuthzAclActorRow, AuthzAclGroupRow, AuthzEntityRow,
+    AuthzGroupActorRow, AuthzGroupGroupRow, ChecksumRow, ClientRow, ContainerRow, CookbookRow,
+    CookbookVersionChecksumRow, CookbookVersionRow, DataBagItemRow, GlobalGroupRow, GroupRow,
+    NamedObjectRow, NodeRow, OrgRow, OrgUserAssociationRow, StoreSnapshot, UserRow,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -113,6 +115,10 @@ pub fn crawl_from_goiardi(
     crawler.crawl_objects()?;
     let org = crawler.org.clone();
     crawler.crawl_cookbooks(&org)?;
+    // The policy owns every ACL the snapshot carries: container, group and org
+    // grants plus one object ACL per imported object. It has to be complete
+    // before the blob copy, so a failure never leaves a half-described store.
+    crawler.apply_policy();
     // Blob work runs last so a failed metadata crawl never leaves a
     // half-populated bookshelf behind, and a dry run downloads nothing.
     if !options.dry_run {
@@ -454,8 +460,9 @@ impl Crawler {
                     id: cookbook_id,
                     org_id: org.id.clone(),
                     name: name.clone(),
-                    authz_id,
+                    authz_id: authz_id.clone(),
                 });
+                self.object_authz.push(("cookbooks".to_string(), authz_id));
                 self.summary.cookbooks += 1;
             }
 
@@ -771,6 +778,37 @@ impl Crawler {
     }
 
     // ------------------------------------------------------------------
+    // Default policy
+    // ------------------------------------------------------------------
+
+    /// Synthesize the default organization policy over the crawled rows.
+    ///
+    /// goiardi exports neither organizations nor ACLs, so the whole source is
+    /// mapped into the one target org and the policy the server would have
+    /// written is rebuilt here. `admin` is the creator; it is the source
+    /// superuser and the only user the migration needs.
+    fn apply_policy(&mut self) {
+        let admin_authz = self
+            .user_authz
+            .get("admin")
+            .cloned()
+            .unwrap_or_else(|| synthetic_id("authz:user:admin"));
+        // Sorted so repeated crawls write the same rows in the same order.
+        let mut client_authz: Vec<String> = self.client_authz.values().cloned().collect();
+        client_authz.sort_unstable();
+        let object_authz = self.object_authz.clone();
+        let org = self.org.clone();
+        apply_default_policy(
+            &mut self.data,
+            &org,
+            &admin_authz,
+            &client_authz,
+            &object_authz,
+            &self.generated_at,
+        );
+    }
+
+    // ------------------------------------------------------------------
     // JSON helpers
     // ------------------------------------------------------------------
 
@@ -820,6 +858,445 @@ impl Crawler {
             });
         }
     }
+}
+
+/// The upstream body of the `_default` environment, verbatim from
+/// `microwave-authz`'s policy so an imported environment is indistinguishable
+/// from a created one.
+const DEFAULT_ENVIRONMENT_BODY: &str = r#"{"name":"_default","description":"The default Chef environment","json_class":"Chef::Environment","chef_type":"environment","cookbook_versions":{},"default_attributes":{},"override_attributes":{}}"#;
+
+/// Write the default organization policy into a snapshot.
+///
+/// goiardi has no organizations, groups or ACL endpoints, so the importer maps
+/// the whole source into one organization and synthesizes the policy the
+/// server would have written. The rows, their order and their ids mirror
+/// `microwave_authz::org`, with `synthetic_id` instead of random uuids:
+/// `tests/goiardi_policy_test.rs` compares the result against a real
+/// `create_organization` so server policy drift fails the suite.
+pub fn apply_default_policy(
+    data: &mut StoreSnapshot,
+    org: &OrgRow,
+    admin_authz: &str,
+    client_authz: &[String],
+    object_authz: &[(String, String)],
+    generated_at: &str,
+) {
+    // The source user is literally `admin`; fall back to its synthetic id when
+    // the source did not export one.
+    let admin_user_id = data
+        .users
+        .iter()
+        .find(|user| user.authz_id == admin_authz)
+        .map(|user| user.id.clone())
+        .unwrap_or_else(|| synthetic_id("user:admin"));
+    ensure_entity(data, admin_authz, "actor", None, generated_at);
+
+    let mut containers = Vec::with_capacity(DEFAULT_CONTAINERS.len());
+    for name in DEFAULT_CONTAINERS {
+        let authz_id = synthetic_id(&format!("authz:container:{}:{name}", org.name));
+        ensure_entity(data, &authz_id, "container", Some(&org.id), generated_at);
+        data.containers.push(ContainerRow {
+            id: synthetic_id(&format!("container:{}:{name}", org.name)),
+            org_id: org.id.clone(),
+            authz_id: authz_id.clone(),
+            name: name.to_string(),
+            created_at: generated_at.to_string(),
+            updated_at: generated_at.to_string(),
+        });
+        containers.push((name, authz_id));
+    }
+
+    let mut groups = Vec::with_capacity(DEFAULT_GROUPS.len());
+    for name in DEFAULT_GROUPS {
+        let authz_id = synthetic_id(&format!("authz:group:{}:{name}", org.name));
+        ensure_entity(data, &authz_id, "group", Some(&org.id), generated_at);
+        data.groups.push(GroupRow {
+            id: synthetic_id(&format!("group:{}:{name}", org.name)),
+            org_id: org.id.clone(),
+            authz_id: authz_id.clone(),
+            name: name.to_string(),
+            created_at: generated_at.to_string(),
+            updated_at: generated_at.to_string(),
+        });
+        groups.push((name, authz_id));
+    }
+
+    // Upstream creates a global `<org>_read_access_group` and makes the org's
+    // admins and users groups members of it. It is rendered as
+    // `::<org>_read_access_group` in ACL responses. `server-admins` is kept
+    // available for the superuser bootstrap path.
+    let read_access = push_global_group(
+        data,
+        &format!("{}_read_access_group", org.name),
+        generated_at,
+    );
+    let server_admins = push_global_group(data, "server-admins", generated_at);
+
+    // `create_user` gives every user ALL on itself and hands `server-admins`
+    // create/read/update/delete on it; admins also join that group.
+    let users_acls: Vec<(String, bool)> = data
+        .users
+        .iter()
+        .map(|user| (user.authz_id.clone(), user.admin))
+        .collect();
+    for (authz_id, admin) in users_acls {
+        grant_actor_all(data, &authz_id, &authz_id);
+        grant_group(
+            data,
+            &authz_id,
+            &[
+                Permission::Create,
+                Permission::Read,
+                Permission::Update,
+                Permission::Delete,
+            ],
+            &server_admins,
+        );
+        if admin {
+            add_group_member(data, &server_admins, &authz_id);
+        }
+    }
+
+    let admins = group_authz(&groups, "admins");
+    let users = group_authz(&groups, "users");
+    let clients = group_authz(&groups, "clients");
+    let public_key_read_access = group_authz(&groups, "public_key_read_access");
+
+    if !data
+        .org_user_associations
+        .iter()
+        .any(|row| row.org_id == org.id && row.user_id == admin_user_id)
+    {
+        data.org_user_associations.push(OrgUserAssociationRow {
+            org_id: org.id.clone(),
+            user_id: admin_user_id,
+            last_updated_by: "admin".to_string(),
+            created_at: generated_at.to_string(),
+            updated_at: generated_at.to_string(),
+        });
+    }
+    // `associate_user_org` also lets the read-access group read the user.
+    push_acl_group(data, admin_authz, "read", &read_access);
+
+    add_group_member(data, admins, admin_authz);
+    add_group_member(data, users, admin_authz);
+    for client in client_authz {
+        add_group_member(data, clients, client);
+    }
+    add_group_child(data, &read_access, admins);
+    add_group_child(data, &read_access, users);
+    add_group_child(data, public_key_read_access, users);
+    add_group_child(data, public_key_read_access, clients);
+
+    // The creator gets every permission on every object created by the policy.
+    for (_, container) in &containers {
+        grant_actor_all(data, container, admin_authz);
+        grant_group_all(data, container, admins);
+    }
+    for (_, group) in &groups {
+        grant_actor_all(data, group, admin_authz);
+    }
+    grant_actor_all(data, &read_access, admin_authz);
+    for name in ["admins", "clients", "users"] {
+        grant_group_all(data, group_authz(&groups, name), admins);
+    }
+    grant_group(
+        data,
+        public_key_read_access,
+        &[Permission::Read, Permission::Update],
+        admins,
+    );
+    grant_actor_all(data, &org.authz_id, admin_authz);
+    grant_group_all(data, &org.authz_id, admins);
+
+    // Normal users can manage cookbooks, data, nodes, roles, environments and
+    // policies.
+    const USERS_MANAGE: [&str; 8] = [
+        "cookbooks",
+        "data",
+        "nodes",
+        "roles",
+        "environments",
+        "policies",
+        "policy_groups",
+        "cookbook_artifacts",
+    ];
+    for name in USERS_MANAGE {
+        grant_group(
+            data,
+            container_authz(&containers, name),
+            &[
+                Permission::Create,
+                Permission::Read,
+                Permission::Update,
+                Permission::Delete,
+            ],
+            users,
+        );
+    }
+    grant_group(
+        data,
+        container_authz(&containers, "clients"),
+        &[Permission::Read, Permission::Delete],
+        users,
+    );
+    grant_group(
+        data,
+        container_authz(&containers, "sandboxes"),
+        &[Permission::Create],
+        users,
+    );
+    for name in ["groups", "containers"] {
+        grant_group(
+            data,
+            container_authz(&containers, name),
+            &[Permission::Read],
+            users,
+        );
+    }
+    grant_group(data, &org.authz_id, &[Permission::Read], users);
+
+    // Clients may update nodes and read the objects needed for a converge.
+    grant_group(
+        data,
+        container_authz(&containers, "nodes"),
+        &[Permission::Read, Permission::Create],
+        clients,
+    );
+    for name in [
+        "policies",
+        "policy_groups",
+        "cookbook_artifacts",
+        "data",
+        "cookbooks",
+        "environments",
+        "roles",
+    ] {
+        grant_group(
+            data,
+            container_authz(&containers, name),
+            &[Permission::Read],
+            clients,
+        );
+    }
+
+    // Billing admins can read and update the billing-admins group.
+    let billing_admins = group_authz(&groups, "billing-admins");
+    grant_actor(
+        data,
+        billing_admins,
+        &[Permission::Read, Permission::Update],
+        admin_authz,
+    );
+    grant_group(
+        data,
+        billing_admins,
+        &[Permission::Read, Permission::Update],
+        billing_admins,
+    );
+
+    // Create the default environment only after every container ACL is in
+    // place: object ACLs are copied from their container, and creating it
+    // earlier would leave clients without the read grant they need.
+    let environment_authz = synthetic_id(&format!("authz:environment:{}:_default", org.name));
+    ensure_entity(
+        data,
+        &environment_authz,
+        "object",
+        Some(&org.id),
+        generated_at,
+    );
+    data.environments.push(NamedObjectRow {
+        id: synthetic_id(&format!("environment:{}:_default", org.name)),
+        authz_id: environment_authz.clone(),
+        org_id: org.id.clone(),
+        name: "_default".to_string(),
+        serialized_object: Some(DEFAULT_ENVIRONMENT_BODY.to_string()),
+        last_updated_by: "admin".to_string(),
+        created_at: generated_at.to_string(),
+        updated_at: generated_at.to_string(),
+    });
+    copy_container_acl(data, "environments", &environment_authz, admin_authz);
+    grant_group_all(data, &environment_authz, admins);
+    grant_group(
+        data,
+        &environment_authz,
+        &[
+            Permission::Create,
+            Permission::Read,
+            Permission::Update,
+            Permission::Delete,
+        ],
+        users,
+    );
+    grant_group(data, &environment_authz, &[Permission::Read], clients);
+
+    // Every imported object inherits its container ACL plus the creator grant.
+    for (container, target) in object_authz {
+        ensure_entity(data, target, "object", Some(&org.id), generated_at);
+        copy_container_acl(data, container, target, admin_authz);
+    }
+}
+
+/// Copy every ACE of `container` onto `target` and add `creator` `ALL`.
+fn copy_container_acl(data: &mut StoreSnapshot, container: &str, target: &str, creator: &str) {
+    let Some(source) = data
+        .containers
+        .iter()
+        .find(|row| row.name == container)
+        .map(|row| row.authz_id.clone())
+    else {
+        return;
+    };
+    let actors: Vec<(String, String)> = data
+        .authz_acl_actor
+        .iter()
+        .filter(|row| row.target_authz_id == source)
+        .map(|row| (row.permission.clone(), row.actor_authz_id.clone()))
+        .collect();
+    for (permission, actor) in actors {
+        push_acl_actor(data, target, &permission, &actor);
+    }
+    let groups: Vec<(String, String)> = data
+        .authz_acl_group
+        .iter()
+        .filter(|row| row.target_authz_id == source)
+        .map(|row| (row.permission.clone(), row.group_authz_id.clone()))
+        .collect();
+    for (permission, group) in groups {
+        push_acl_group(data, target, &permission, &group);
+    }
+    grant_actor_all(data, target, creator);
+}
+
+fn ensure_entity(
+    data: &mut StoreSnapshot,
+    authz_id: &str,
+    entity_type: &str,
+    org_id: Option<&str>,
+    generated_at: &str,
+) {
+    if data
+        .authz_entities
+        .iter()
+        .any(|entity| entity.authz_id == authz_id)
+    {
+        return;
+    }
+    data.authz_entities.push(AuthzEntityRow {
+        authz_id: authz_id.to_string(),
+        entity_type: entity_type.to_string(),
+        org_id: org_id.map(str::to_string),
+        created_at: generated_at.to_string(),
+    });
+}
+
+/// Create a global group and its upstream self-grants, as
+/// `ensure_global_group` does.
+fn push_global_group(data: &mut StoreSnapshot, name: &str, generated_at: &str) -> String {
+    let authz_id = synthetic_id(&format!("authz:global_group:{name}"));
+    ensure_entity(data, &authz_id, "group", None, generated_at);
+    data.global_groups.push(GlobalGroupRow {
+        id: synthetic_id(&format!("global_group:{name}")),
+        authz_id: authz_id.clone(),
+        name: name.to_string(),
+        created_at: generated_at.to_string(),
+        updated_at: generated_at.to_string(),
+    });
+    for permission in Permission::ALL {
+        push_acl_group(data, &authz_id, permission.as_str(), &authz_id);
+    }
+    authz_id
+}
+
+fn add_group_member(data: &mut StoreSnapshot, group: &str, actor: &str) {
+    if data
+        .authz_group_actors
+        .iter()
+        .any(|row| row.group_authz_id == group && row.actor_authz_id == actor)
+    {
+        return;
+    }
+    data.authz_group_actors.push(AuthzGroupActorRow {
+        group_authz_id: group.to_string(),
+        actor_authz_id: actor.to_string(),
+    });
+}
+
+fn add_group_child(data: &mut StoreSnapshot, parent: &str, child: &str) {
+    if data
+        .authz_group_groups
+        .iter()
+        .any(|row| row.parent_group_authz_id == parent && row.child_group_authz_id == child)
+    {
+        return;
+    }
+    data.authz_group_groups.push(AuthzGroupGroupRow {
+        parent_group_authz_id: parent.to_string(),
+        child_group_authz_id: child.to_string(),
+    });
+}
+
+fn push_acl_actor(data: &mut StoreSnapshot, target: &str, permission: &str, actor: &str) {
+    if data.authz_acl_actor.iter().any(|row| {
+        row.target_authz_id == target && row.permission == permission && row.actor_authz_id == actor
+    }) {
+        return;
+    }
+    data.authz_acl_actor.push(AuthzAclActorRow {
+        target_authz_id: target.to_string(),
+        permission: permission.to_string(),
+        actor_authz_id: actor.to_string(),
+    });
+}
+
+fn push_acl_group(data: &mut StoreSnapshot, target: &str, permission: &str, group: &str) {
+    if data.authz_acl_group.iter().any(|row| {
+        row.target_authz_id == target && row.permission == permission && row.group_authz_id == group
+    }) {
+        return;
+    }
+    data.authz_acl_group.push(AuthzAclGroupRow {
+        target_authz_id: target.to_string(),
+        permission: permission.to_string(),
+        group_authz_id: group.to_string(),
+    });
+}
+
+fn grant_actor(data: &mut StoreSnapshot, target: &str, permissions: &[Permission], actor: &str) {
+    for permission in permissions {
+        push_acl_actor(data, target, permission.as_str(), actor);
+    }
+}
+
+fn grant_group(data: &mut StoreSnapshot, target: &str, permissions: &[Permission], group: &str) {
+    for permission in permissions {
+        push_acl_group(data, target, permission.as_str(), group);
+    }
+}
+
+fn grant_actor_all(data: &mut StoreSnapshot, target: &str, actor: &str) {
+    grant_actor(data, target, &Permission::ALL, actor);
+}
+
+fn grant_group_all(data: &mut StoreSnapshot, target: &str, group: &str) {
+    grant_group(data, target, &Permission::ALL, group);
+}
+
+fn container_authz<'a>(containers: &'a [(&'static str, String)], name: &str) -> &'a str {
+    containers
+        .iter()
+        .find(|(container, _)| *container == name)
+        .map(|(_, authz_id)| authz_id.as_str())
+        .expect("default container")
+}
+
+fn group_authz<'a>(groups: &'a [(&'static str, String)], name: &str) -> &'a str {
+    groups
+        .iter()
+        .find(|(group, _)| *group == name)
+        .map(|(_, authz_id)| authz_id.as_str())
+        .expect("default group")
 }
 
 /// Organizations are Chef names: lowercase letters, digits and dashes.

@@ -1,0 +1,402 @@
+use microwave_authz::create_organization;
+use microwave_migrate::apply_default_policy;
+use microwave_store::{OrgRow, SqliteStore, StoreSnapshot};
+use std::collections::{BTreeSet, HashMap};
+
+const NOW: &str = "2026-11-02T00:00:00Z";
+
+fn tempdir() -> tempfile::TempDir {
+    tempfile::tempdir().unwrap()
+}
+
+/// Map every authz id in a snapshot to the name of the row that owns it, so
+/// random uuids from the live server and synthetic ids from the builder compare
+/// equal.
+fn name_map(snapshot: &StoreSnapshot, extra: &[(&str, &str)]) -> HashMap<String, String> {
+    let mut names = HashMap::new();
+    for (authz_id, name) in extra {
+        names.insert((*authz_id).to_string(), (*name).to_string());
+    }
+    for org in &snapshot.orgs {
+        names.insert(org.authz_id.clone(), org.name.clone());
+    }
+    for user in &snapshot.users {
+        names.insert(user.authz_id.clone(), user.username.clone());
+    }
+    for client in &snapshot.clients {
+        names.insert(client.authz_id.clone(), client.name.clone());
+    }
+    for container in &snapshot.containers {
+        names.insert(container.authz_id.clone(), container.name.clone());
+    }
+    for group in &snapshot.groups {
+        names.insert(group.authz_id.clone(), group.name.clone());
+    }
+    for group in &snapshot.global_groups {
+        names.insert(group.authz_id.clone(), group.name.clone());
+    }
+    for node in &snapshot.nodes {
+        names.insert(node.authz_id.clone(), node.name.clone());
+    }
+    for role in &snapshot.roles {
+        names.insert(role.authz_id.clone(), role.name.clone());
+    }
+    for environment in &snapshot.environments {
+        names.insert(environment.authz_id.clone(), environment.name.clone());
+    }
+    for data_bag in &snapshot.data_bags {
+        names.insert(data_bag.authz_id.clone(), data_bag.name.clone());
+    }
+    for cookbook in &snapshot.cookbooks {
+        names.insert(cookbook.authz_id.clone(), cookbook.name.clone());
+    }
+    names
+}
+
+fn name(names: &HashMap<String, String>, authz_id: &str) -> String {
+    names
+        .get(authz_id)
+        .cloned()
+        .unwrap_or_else(|| authz_id.to_string())
+}
+
+/// Every ACE as `(target, permission, kind, member)` with ids replaced by
+/// names, sorted so row order does not matter.
+fn canonical_grants(
+    snapshot: &StoreSnapshot,
+    extra: &[(&str, &str)],
+) -> BTreeSet<(String, String, &'static str, String)> {
+    let names = name_map(snapshot, extra);
+    let mut grants = BTreeSet::new();
+    for row in &snapshot.authz_acl_actor {
+        grants.insert((
+            name(&names, &row.target_authz_id),
+            row.permission.clone(),
+            "actor",
+            name(&names, &row.actor_authz_id),
+        ));
+    }
+    for row in &snapshot.authz_acl_group {
+        grants.insert((
+            name(&names, &row.target_authz_id),
+            row.permission.clone(),
+            "group",
+            name(&names, &row.group_authz_id),
+        ));
+    }
+    grants
+}
+
+/// Every group membership as `(group, member)` names, sorted.
+fn canonical_memberships(
+    snapshot: &StoreSnapshot,
+    extra: &[(&str, &str)],
+) -> BTreeSet<(String, String)> {
+    let names = name_map(snapshot, extra);
+    let mut memberships = BTreeSet::new();
+    for row in &snapshot.authz_group_actors {
+        memberships.insert((
+            name(&names, &row.group_authz_id),
+            name(&names, &row.actor_authz_id),
+        ));
+    }
+    for row in &snapshot.authz_group_groups {
+        memberships.insert((
+            name(&names, &row.parent_group_authz_id),
+            name(&names, &row.child_group_authz_id),
+        ));
+    }
+    memberships
+}
+
+fn created_org() -> (
+    tempfile::TempDir,
+    SqliteStore,
+    microwave_store::User,
+    microwave_store::Org,
+) {
+    let dir = tempdir();
+    let store = SqliteStore::open(&dir.path().join("policy.db")).unwrap();
+    let creator = store
+        .create_user("admin", "ops@example.com", "bcrypt", "", "", true)
+        .unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let org = runtime
+        .block_on(create_organization(
+            &store,
+            "acme",
+            "Acme",
+            &creator.id,
+            &creator.authz_id,
+        ))
+        .unwrap();
+    (dir, store, creator, org)
+}
+
+/// The builder's deterministic id for a scope, mirroring the crawl scheme.
+fn test_id(scope: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("microwave-migrate/from-api/v1/{scope}").as_bytes());
+    hex::encode(&digest[..16])
+}
+
+fn empty_org(name: &str, full_name: &str) -> OrgRow {
+    OrgRow {
+        id: test_id(&format!("org:{name}")),
+        authz_id: test_id(&format!("authz:org:{name}")),
+        name: name.to_string(),
+        full_name: full_name.to_string(),
+        created_at: NOW.to_string(),
+        updated_at: NOW.to_string(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn builder_matches_create_organization() {
+    let (_dir, store, creator, org) = created_org();
+
+    // The reference is the real server policy, canonicalized from uuids to names.
+    let reference_snapshot = store.export_snapshot().unwrap();
+    let reference = canonical_grants(&reference_snapshot, &[]);
+
+    let mut built = StoreSnapshot::default();
+    built.orgs.push(OrgRow {
+        id: org.id.clone(),
+        authz_id: org.authz_id.clone(),
+        name: "acme".to_string(),
+        full_name: "Acme".to_string(),
+        created_at: NOW.to_string(),
+        updated_at: NOW.to_string(),
+        ..Default::default()
+    });
+    // The crawler imports `admin` before the policy runs; the builder needs the
+    // same row to derive the creator's user id.
+    built.users.push(microwave_store::UserRow {
+        id: creator.id.clone(),
+        authz_id: creator.authz_id.clone(),
+        username: "admin".to_string(),
+        email: Some("ops@example.com".to_string()),
+        hash_type: "bcrypt".to_string(),
+        admin: true,
+        created_at: NOW.to_string(),
+        updated_at: NOW.to_string(),
+        ..Default::default()
+    });
+
+    let org_row = built.orgs[0].clone();
+    apply_default_policy(&mut built, &org_row, &creator.authz_id, &[], &[], NOW);
+
+    assert_eq!(canonical_grants(&built, &[]), reference);
+    assert_eq!(
+        canonical_memberships(&built, &[]),
+        canonical_memberships(&reference_snapshot, &[])
+    );
+    // `associate_user_org` links the creator to the org.
+    let associations: BTreeSet<(String, String)> = built
+        .org_user_associations
+        .iter()
+        .map(|row| (row.org_id.clone(), row.user_id.clone()))
+        .collect();
+    assert_eq!(
+        associations,
+        BTreeSet::from([(org.id.clone(), creator.id.clone())])
+    );
+    assert_eq!(built.containers.len(), 12);
+    assert_eq!(built.groups.len(), 5);
+    assert_eq!(built.environments.len(), 1);
+    assert!(built.environments[0].name == "_default");
+    // No object rows in this fixture, so no creator object grants yet.
+    assert!(built.authz_acl_actor.iter().all(|row| {
+        !built
+            .containers
+            .iter()
+            .any(|container| container.authz_id == row.target_authz_id)
+            || row.actor_authz_id == creator.authz_id
+    }));
+
+    // The container, group and global group names are the upstream defaults,
+    // not just the right count of anonymous rows.
+    let mut containers: Vec<_> = built
+        .containers
+        .iter()
+        .map(|container| container.name.as_str())
+        .collect();
+    containers.sort_unstable();
+    let mut expected: Vec<_> = microwave_authz::DEFAULT_CONTAINERS.to_vec();
+    expected.sort_unstable();
+    assert_eq!(containers, expected);
+
+    let mut groups: Vec<_> = built
+        .groups
+        .iter()
+        .map(|group| group.name.as_str())
+        .collect();
+    groups.sort_unstable();
+    let mut expected: Vec<_> = microwave_authz::DEFAULT_GROUPS.to_vec();
+    expected.sort_unstable();
+    assert_eq!(groups, expected);
+
+    let mut globals: Vec<_> = built
+        .global_groups
+        .iter()
+        .map(|group| group.name.as_str())
+        .collect();
+    globals.sort_unstable();
+    assert_eq!(globals, ["acme_read_access_group", "server-admins"]);
+
+    // Every ACL target has an authz entity, so an import can resolve it.
+    for authz_id in built
+        .containers
+        .iter()
+        .map(|row| &row.authz_id)
+        .chain(built.groups.iter().map(|row| &row.authz_id))
+        .chain(built.global_groups.iter().map(|row| &row.authz_id))
+        .chain(built.environments.iter().map(|row| &row.authz_id))
+    {
+        assert!(
+            built
+                .authz_entities
+                .iter()
+                .any(|entity| entity.authz_id == *authz_id),
+            "missing authz entity for {authz_id}"
+        );
+    }
+}
+
+#[test]
+fn object_acls_copy_the_container_acl_and_add_the_creator() {
+    let mut built = StoreSnapshot::default();
+    let org = empty_org("acme", "Acme");
+    built.orgs.push(org.clone());
+    let creator = "creator-authz";
+    let node = "node-authz";
+    let object_authz = vec![("nodes".to_string(), node.to_string())];
+    built.users.push(microwave_store::UserRow {
+        id: "creator-id".to_string(),
+        authz_id: creator.to_string(),
+        username: "admin".to_string(),
+        admin: true,
+        ..Default::default()
+    });
+
+    apply_default_policy(
+        &mut built,
+        &org,
+        creator,
+        &["client-a".to_string(), "client-b".to_string()],
+        &object_authz,
+        NOW,
+    );
+
+    let nodes = built
+        .containers
+        .iter()
+        .find(|container| container.name == "nodes")
+        .unwrap()
+        .authz_id
+        .clone();
+
+    let rows_for = |target: &str| -> BTreeSet<(String, String)> {
+        built
+            .authz_acl_actor
+            .iter()
+            .filter(|row| row.target_authz_id == target)
+            .map(|row| (row.permission.clone(), row.actor_authz_id.clone()))
+            .collect()
+    };
+    let groups_for = |target: &str| -> BTreeSet<(String, String)> {
+        built
+            .authz_acl_group
+            .iter()
+            .filter(|row| row.target_authz_id == target)
+            .map(|row| (row.permission.clone(), row.group_authz_id.clone()))
+            .collect()
+    };
+
+    // The node carries a copy of every `nodes` container ACE.
+    let container_actors = rows_for(&nodes);
+    assert!(!container_actors.is_empty());
+    for (permission, actor) in &container_actors {
+        assert!(
+            rows_for(node).contains(&(permission.clone(), actor.clone())),
+            "node is missing nodes container ACE ({permission}, {actor})"
+        );
+    }
+    assert_eq!(groups_for(node), groups_for(&nodes));
+
+    // ...plus Grant/Read/Update/Delete/Create for the creator, already part of
+    // the copied container ACL.
+    for permission in ["grant", "read", "update", "delete", "create"] {
+        assert!(
+            rows_for(node).contains(&(permission.to_string(), creator.to_string())),
+            "node is missing creator {permission}"
+        );
+    }
+    assert_eq!(rows_for(node), container_actors);
+
+    // No other container's ACL leaks onto the object: the `sandboxes` container
+    // grants users Create only, the `groups` container grants clients nothing,
+    // while `nodes` grants the `clients` group Read+Create.
+    let sandboxes = built
+        .containers
+        .iter()
+        .find(|container| container.name == "sandboxes")
+        .unwrap()
+        .authz_id
+        .clone();
+    let groups_container = built
+        .containers
+        .iter()
+        .find(|container| container.name == "groups")
+        .unwrap()
+        .authz_id
+        .clone();
+    let clients_group = built
+        .groups
+        .iter()
+        .find(|group| group.name == "clients")
+        .unwrap()
+        .authz_id
+        .clone();
+    assert!(groups_for(node).contains(&("read".to_string(), clients_group.clone())));
+    assert!(!groups_for(&sandboxes).contains(&("read".to_string(), clients_group.clone())));
+    assert!(!groups_for(&groups_container).contains(&("create".to_string(), clients_group.clone())));
+
+    // The object authz entity exists and is an org-scoped object.
+    let entity = built
+        .authz_entities
+        .iter()
+        .find(|entity| entity.authz_id == node)
+        .expect("object authz entity");
+    assert_eq!(entity.entity_type, "object");
+    assert_eq!(entity.org_id.as_deref(), Some(org.id.as_str()));
+
+    // Both clients are members of the `clients` group.
+    for client in ["client-a", "client-b"] {
+        assert!(built
+            .authz_group_actors
+            .iter()
+            .any(|row| { row.group_authz_id == clients_group && row.actor_authz_id == client }));
+    }
+
+    // Deterministic ids: the same input builds the same rows twice.
+    let mut again = StoreSnapshot::default();
+    again.orgs.push(org.clone());
+    again.users.push(microwave_store::UserRow {
+        id: "creator-id".to_string(),
+        authz_id: creator.to_string(),
+        username: "admin".to_string(),
+        admin: true,
+        ..Default::default()
+    });
+    apply_default_policy(
+        &mut again,
+        &org,
+        creator,
+        &["client-a".to_string(), "client-b".to_string()],
+        &object_authz,
+        NOW,
+    );
+    assert_eq!(canonical_grants(&again, &[]), canonical_grants(&built, &[]));
+}

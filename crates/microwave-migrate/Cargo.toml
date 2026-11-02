@@ -11,6 +11,7 @@ chrono.workspace = true
 clap.workspace = true
 flate2.workspace = true
 hex.workspace = true
+microwave-authz = { path = "../microwave-authz" }
 microwave-crypto = { path = "../microwave-crypto" }
 microwave-objectstore = { path = "../microwave-objectstore" }
 microwave-store = { path = "../microwave-store" }
@@ -28,6 +29,5 @@ url.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
-microwave-authz = { path = "../microwave-authz" }
 rusqlite.workspace = true
 tempfile.workspace = true

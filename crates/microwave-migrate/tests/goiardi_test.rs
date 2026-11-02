@@ -56,8 +56,10 @@ fn crawls_objects_raw_and_skips_default_environment() {
         Some(NODE)
     );
     assert_eq!(snapshot.data.roles[0].name, "web");
-    assert_eq!(snapshot.data.environments.len(), 1); // production only
+    // The source `_default` row is skipped, then the policy synthesizes one.
+    assert_eq!(snapshot.data.environments.len(), 2);
     assert_eq!(snapshot.data.environments[0].name, "production");
+    assert_eq!(snapshot.data.environments[1].name, "_default");
     assert_eq!(snapshot.data.data_bags[0].name, "secrets");
     assert_eq!(snapshot.data.data_bag_items[0].item_name, "db");
     assert_eq!(summary.data_bag_items, 1);
