@@ -19,6 +19,7 @@ pub mod health;
 pub mod helpers;
 pub mod internal_api;
 pub mod keys;
+pub mod landing;
 pub mod mcp;
 pub mod membership;
 pub mod metrics;
@@ -34,7 +35,7 @@ pub mod search;
 pub mod state;
 pub mod users;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -54,6 +55,14 @@ pub fn router(state: AppState) -> Router {
     let mut inner = Router::new()
         .route("/_status", get(status))
         .route("/_stats", get(stats))
+        // The landing assets are mounted inside, next to the auth middleware
+        // rather than on the outer router, so they match the trailing-slash
+        // normalization that runs in front of this router. They pass the
+        // middleware through unauthenticated (see `authenticate_request`).
+        .route("/index.html", get(|| async { landing::page() }))
+        .route("/favicon.svg", get(|| async { landing::favicon() }))
+        .route("/css/{file}", get(stylesheet_handler))
+        .route("/fonts/{file}", get(font_handler))
         .route("/server_api_version", get(server_api_version))
         .route("/license", get(license))
         .merge(users::routes())
@@ -134,6 +143,14 @@ pub fn router(state: AppState) -> Router {
             request_state,
             middleware::observe_request,
         ))
+}
+
+async fn stylesheet_handler(Path(file): Path<String>) -> Response {
+    landing::stylesheet(&file).unwrap_or_else(landing::not_found)
+}
+
+async fn font_handler(Path(file): Path<String>) -> Response {
+    landing::font(&file).unwrap_or_else(landing::not_found)
 }
 
 async fn status(State(state): State<AppState>) -> (StatusCode, Json<Value>) {

@@ -789,6 +789,13 @@ async fn authenticate_request(
         || path == "/id"
         || path.starts_with("/id/")
         || path.starts_with("/bookshelf/")
+        // nginx serves the landing page and its assets from their own static
+        // locations before `location /`, so they never reach erchef
+        // authentication and need no version header.
+        || path == "/index.html"
+        || path == "/favicon.svg"
+        || path.starts_with("/css/")
+        || path.starts_with("/fonts/")
     {
         let response = next.run(request).await;
         return with_version_header(
