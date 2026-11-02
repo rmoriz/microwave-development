@@ -56,11 +56,12 @@ minimum of 10 and produces the existing `400` message. `X-Cinc-Version` is new
 code: today the middleware reads `x-chef-version` only and a headerless request
 simply skips the gate.
 
-Before the plan is executed, verify on `docker-e2e` that an actual Cinc Client
-converge sends one of the two headers (`tcpdump` on the client container, or
-the access log with the header filtered out of the signature). If Cinc Client
-in the pinned version sends neither, the signing guard above still keeps those
-converges on the API, and the plan records it.
+`X-Cinc-Version` is new code: today the middleware reads `x-chef-version` only
+and a headerless request simply skips the gate. Cinc Client is built from the
+same source as Chef Infra Client, which stamps `X-Chef-Version` on every
+request, and the Cinc fork carries its own header — but whether a given Cinc
+build sends both is not verified here, so the signing guard below is what keeps
+a converge on the API either way.
 
 The page is served before the maintenance-mode check, because upstream never
 reaches erchef for it: during a drain a browser still gets the page while API

@@ -40,8 +40,9 @@ homepage; Docusaurus `headTags` on the docs.
 
 ## Review Focus
 
-1. A request with only *some* `X-Ops-*` headers sends a partial signature, not a
-   browser — it must keep its JSON `401`, not receive HTML.
+1. A request with only *some* `X-Ops-*` headers sends a partial signature, and a
+   request with a complete signature but no version header is a working client:
+   neither may receive HTML.
 2. `/id/...` is oc-id's own login surface, not `location /` — a headerless
    browser must reach it, never the page.
 3. A trailing slash on a static path (`/css/tokens.css/`) must still work,
@@ -293,46 +294,7 @@ git commit -m "feat(api): embed a landing page with a hardening header block"
 
 ---
 
-### Task 2: Confirm what Cinc Client actually sends
-
-**Files:**
-- Modify: `docs/superpowers/plans/2026-11-02-server-landing-page.md` (record
-  the outcome under this task)
-
-**Interfaces:**
-- Consumes: nothing.
-- Produces: the fact the next task relies on — whether a real Cinc Client
-  converge sends `X-Cinc-Version`, `X-Chef-Version`, or neither.
-
-- [ ] **Step 1: Capture the headers of a real converge**
-
-From `docker-e2e/`, build and start the stack for one node, then capture the
-client's requests:
-
-```bash
-docker compose build node-debian
-docker compose up -d node-debian
-docker compose exec node-debian sh -c 'command -v tcpdump >/dev/null || (apt-get update && apt-get install -y tcpdump)'
-docker compose exec node-debian tcpdump -A -s0 -i any 'tcp port 8000 and tcp[((tcp[12]&0xf0)>>2):4] = 0x47455420 or tcp port 8000' | grep -ai 'cinc-version\|chef-version'
-```
-
-- [ ] **Step 2: Record the outcome and clean up**
-
-Append one line to this task, either
-`Outcome: Cinc Client sends X-Cinc-Version.` or
-`Outcome: Cinc Client sends no version header; the signing guard carries the converge.`
-Then tear the stack down: `docker compose down -v --rmi local`.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add docs/superpowers/plans/2026-11-02-server-landing-page.md
-git commit -m "docs(plans): record the Cinc client version header"
-```
-
----
-
-### Task 3: Browser branch and `X-Cinc-Version`
+### Task 2: Browser branch and `X-Cinc-Version`
 
 **Files:**
 - Modify: `crates/microwave-api/src/middleware.rs` (top of
@@ -438,6 +400,19 @@ async fn a_partial_signature_is_not_a_browser() {
 }
 
 #[tokio::test]
+async fn a_complete_signature_without_a_version_header_stays_on_the_api() {
+    let app = support::app(support::state_with_pivotal());
+    let request = support::signed_request("GET", "/users", b"", SignVersion::V1_3, "pivotal");
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let request = support::signed_request("GET", "/nope", b"", SignVersion::V1_3, "pivotal");
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_ne!(response.headers()[header::CONTENT_TYPE], "text/html; charset=utf-8");
+}
+
+#[tokio::test]
 async fn exempt_paths_never_serve_the_page() {
     let app = support::app(support::state_with_pivotal());
     for path in ["/_status", "/_stats", "/server_api_version", "/id", "/organizations/o/mcp"] {
@@ -538,7 +513,7 @@ git commit -m "feat(api): serve the landing page to browser requests"
 
 ---
 
-### Task 4: Favicon copies and the drift test
+### Task 3: Favicon copies and the drift test
 
 **Files:**
 - Modify: `website/homepage/public/favicon.svg`
@@ -591,7 +566,7 @@ git commit -m "feat(website): use the logo mark as the single favicon"
 
 ---
 
-### Task 5: Playwright coverage for the page
+### Task 4: Playwright coverage for the page
 
 **Files:**
 - Create: `website/homepage/scripts/stage-landing.mjs`
@@ -656,7 +631,7 @@ git commit -m "test(website): render the landing page in the browser suite"
 
 ---
 
-### Task 6: Homepage meta policy
+### Task 5: Homepage meta policy
 
 **Files:**
 - Modify: `website/homepage/src/layouts/Base.astro` (directly after `<meta charset>`)
@@ -729,7 +704,7 @@ git commit -m "feat(website): add the security policy metas"
 
 ---
 
-### Task 7: Docs policy and favicon test
+### Task 6: Docs policy and favicon test
 
 **Files:**
 - Modify: `website/docs/docusaurus.config.ts` (`headTags`)
@@ -738,7 +713,7 @@ git commit -m "feat(website): add the security policy metas"
 - Modify: `.github/workflows/pages.yml` (a `npm test` step after the docs build)
 
 **Interfaces:**
-- Consumes: the meta values from Task 6.
+- Consumes: the meta values from Task 5.
 - Produces: nothing.
 
 - [ ] **Step 1: Write the failing test**
@@ -804,7 +779,7 @@ git commit -m "feat(docs): add the security policy metas"
 
 ---
 
-### Task 8: Documentation and full suites
+### Task 7: Documentation and full suites
 
 **Files:**
 - Modify: `AGENTS.md` (layout table, Rust notes)
