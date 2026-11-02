@@ -26,6 +26,11 @@ Authorization uses recursive ACL/group checks with cycle rejection, the default
 organization policy, and ACL read/write endpoints with granular `users` and
 `clients` responses.
 
+Data bag item writes take either the bare item or the `Chef::DataBagItem`
+wrapper that search rows and DELETE return; the bare item is what gets stored.
+GET returns the stored item unchanged and DELETE returns it wrapped, both as
+upstream does.
+
 ## Dual-backend store matrix
 
 [`crates/microwave-store/tests/dual_backend.rs`](../crates/microwave-store/tests/dual_backend.rs)

@@ -1855,7 +1855,7 @@ every client create, update, and delete on every imported bag object. Those are
 ACEs on the bags, not on the `data` container, so the container ACL keeps the
 upstream shape and the `acls` Pedant suite stays green. Pass
 `--no-client-data-bag-writes` to skip them and leave clients with read access
-only; lifts are then manual (see "Letting clients write a data bag").
+only; lifts are then manual (see "Organization policy").
 
 `--bookshelf-dir DIR` also copies cookbook file blobs, MD5-verified, to
 `DIR/organization-<org_id>/checksum-<md5>`. For a migration that should serve

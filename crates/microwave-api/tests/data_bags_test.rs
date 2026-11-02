@@ -185,6 +185,109 @@ async fn item_creation_returns_the_item_document() {
 }
 
 #[tokio::test]
+async fn wrapped_item_bodies_are_stored_unwrapped() {
+    let app = support::app(support::state_with_pivotal());
+    create_org(&app).await;
+
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/organizations/acme/data",
+        br#"{"name":"secrets"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // `Chef::DataBagItem` posts the wrapped document its DELETE returned.
+    let wrapped = br#"{
+        "name": "data_bag_item_secrets_database",
+        "json_class": "Chef::DataBagItem",
+        "chef_type": "data_bag_item",
+        "data_bag": "secrets",
+        "raw_data": {"id": "database", "password": "one"}
+    }"#;
+    let (status, item) = request(&app, "POST", "/organizations/acme/data/secrets", wrapped).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        item,
+        json!({
+            "id": "database",
+            "password": "one",
+            "chef_type": "data_bag_item",
+            "data_bag": "secrets"
+        })
+    );
+
+    // Only the unwrapped item is stored, never the wrapper.
+    let (status, item) = request(
+        &app,
+        "GET",
+        "/organizations/acme/data/secrets/database",
+        b"",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(item, json!({"id": "database", "password": "one"}));
+
+    let wrapped = br#"{
+        "name": "data_bag_item_secrets_database",
+        "json_class": "Chef::DataBagItem",
+        "chef_type": "data_bag_item",
+        "data_bag": "secrets",
+        "raw_data": {"id": "database", "password": "two"}
+    }"#;
+    let (status, item) = request(
+        &app,
+        "PUT",
+        "/organizations/acme/data/secrets/database",
+        wrapped,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        item,
+        json!({
+            "id": "database",
+            "password": "two",
+            "chef_type": "data_bag_item",
+            "data_bag": "secrets"
+        })
+    );
+
+    let (status, item) = request(
+        &app,
+        "GET",
+        "/organizations/acme/data/secrets/database",
+        b"",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(item, json!({"id": "database", "password": "two"}));
+
+    // `raw_data` without the `json_class` marker is plain item content.
+    let (status, item) = request(
+        &app,
+        "POST",
+        "/organizations/acme/data/secrets",
+        br#"{"id":"other","raw_data":{"nested":true}}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        item,
+        json!({
+            "id": "other",
+            "raw_data": {"nested": true},
+            "chef_type": "data_bag_item",
+            "data_bag": "secrets"
+        })
+    );
+    let (status, item) = request(&app, "GET", "/organizations/acme/data/secrets/other", b"").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(item, json!({"id": "other", "raw_data": {"nested": true}}));
+}
+
+#[tokio::test]
 async fn validates_item_ids_and_missing_bags() {
     let app = support::app(support::state_with_pivotal());
     create_org(&app).await;

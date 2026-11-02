@@ -51,8 +51,24 @@ fn item_not_found_from_delete(bag: &str, item: &str) -> ApiError {
     ApiError::not_found(format!("Cannot load data bag {bag} item {item}"))
 }
 
+/// Erchef stores the bare item, never the `Chef::DataBagItem` wrapper that
+/// DELETE returns and clients may post back. A body is a wrapper when it
+/// carries `raw_data` and the `json_class` marker, exactly like upstream's
+/// `chef_data_bag_item:unwrap_item/1`; everything else is plain item content.
+fn unwrap_item(mut body: Value) -> Value {
+    let is_wrapped = body.get("raw_data").is_some()
+        && body.get("json_class").and_then(Value::as_str) == Some("Chef::DataBagItem");
+    if !is_wrapped {
+        return body;
+    }
+    match body.as_object_mut().and_then(|map| map.remove("raw_data")) {
+        Some(raw_data) => raw_data,
+        None => body,
+    }
+}
+
 /// Erchef force-adds `chef_type` and `data_bag` to POST/PUT responses while
-/// storing the item body as posted.
+/// storing the unwrapped item.
 fn item_response(bag: &str, item: &Value) -> Value {
     let mut map = item.as_object().cloned().unwrap_or_default();
     map.insert("chef_type".into(), json!("data_bag_item"));
@@ -190,6 +206,7 @@ async fn create_data_bag_item(
     ChefJson(body): ChefJson<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
     let org = organization(&auth)?;
+    let body = unwrap_item(body);
     let bag = state
         .store
         .find_data_bag(&org.id, &bag_name).await
@@ -291,7 +308,7 @@ async fn update_data_bag_item(
     }
     require_permission(&state, &auth, &bag.authz_id, Permission::Update).await?;
 
-    let mut body = match body {
+    let mut body = match unwrap_item(body) {
         Value::Object(map) => Value::Object(map),
         _ => {
             return Err(ApiError::bad_request(
