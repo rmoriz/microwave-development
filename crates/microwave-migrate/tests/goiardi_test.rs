@@ -1,23 +1,15 @@
 mod common;
 
-use common::{blob_fixture, bytes_route, json_route, options, raw_route, start_server, Route};
+use common::{
+    cookbook_routes, json_route, options, raw_route, start_server, Route, BAG_ITEM, CLIENT,
+    DEFAULT_ENV, ENV, NODE, ROLE, USER,
+};
 use microwave_migrate::{
     crawl_from_goiardi, from_goiardi_with_options, validate_snapshot, GoiardiOptions,
 };
 use serde_json::json;
 
 const PUBLIC_KEY: &str = include_str!("../../microwave-crypto/tests/fixtures/test_key_pub.pem");
-
-const USER: &str = r#"{"username":"admin","name":"admin","email":"ops@example.com","admin":true,"public_key":"<PUBLIC_KEY>"}"#;
-const CLIENT: &str =
-    r#"{"name":"web1","admin":false,"validator":false,"public_key":"<PUBLIC_KEY>"}"#;
-
-const NODE: &str = r#"{"name":"web1","chef_environment":"_default","normal":{},"run_list":[]}"#;
-const ROLE: &str =
-    r#"{"name":"web","run_list":[],"default_attributes":{},"override_attributes":{}}"#;
-const ENV: &str = r#"{"name":"production","cookbook_versions":{},"default_attributes":{},"override_attributes":{}}"#;
-const DEFAULT_ENV: &str = r#"{"name":"_default","cookbook_versions":{},"default_attributes":{},"override_attributes":{}}"#;
-const BAG_ITEM: &str = r#"{"id":"db","password":"x"}"#;
 
 fn tempdir() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
@@ -203,36 +195,11 @@ fn crawls_users_and_clients_with_keys_and_marks_the_layout() {
     }
 }
 
-fn cookbooks_routes(with_blob: bool) -> (Vec<(&'static str, Route)>, String, Vec<u8>) {
-    let (body, checksum, path) = blob_fixture("blob");
-    let versions = json!([{"version": "1.2.3", "url": "/cookbooks/app/1.2.3"}]);
-    // goiardi wraps both the list entry and the detail body under the
-    // cookbook name; only the detail route carries every version.
-    let cookbook = json!({"app": {"url": "/cookbooks/app", "versions": versions}});
-    let version = json!({
-        "name": "app-1.2.3",
-        "cookbook": "app",
-        "version": "1.2.3",
-        "frozen?": false,
-        "metadata": {"name": "app", "version": "1.2.3"},
-        "recipes": [{"name": "default.rb", "path": "recipes/default.rb", "checksum": checksum}],
-    });
-    let mut routes = vec![
-        ("/cookbooks", json_route(json!({"app": cookbook["app"]}))),
-        ("/cookbooks/app", json_route(cookbook)),
-        ("/cookbooks/app/1.2.3", json_route(version)),
-    ];
-    if with_blob {
-        routes.push((path, bytes_route(200, body.clone())));
-    }
-    (routes, checksum, body)
-}
-
 #[test]
 fn derives_a_missing_blob_url_from_base_and_copies_the_blob() {
     let out = tempdir();
     let bookshelf = tempdir();
-    let (routes, checksum, body) = cookbooks_routes(true);
+    let (routes, checksum, body) = cookbook_routes(true);
     let (url, _) = start_server(routes);
     let options = GoiardiOptions {
         bookshelf_dir: Some(bookshelf.path().to_path_buf()),
@@ -271,7 +238,7 @@ fn derives_a_missing_blob_url_from_base_and_copies_the_blob() {
 fn a_checksum_without_a_blob_is_an_error_when_blobs_are_requested() {
     let out = tempdir();
     let bookshelf = tempdir();
-    let (routes, _, _) = cookbooks_routes(false);
+    let (routes, _, _) = cookbook_routes(false);
     let (url, _) = start_server(routes);
     let options = GoiardiOptions {
         bookshelf_dir: Some(bookshelf.path().to_path_buf()),
@@ -285,7 +252,7 @@ fn dry_run_writes_no_snapshot_and_fetches_no_blob() {
     let dir = tempdir();
     let bookshelf = tempdir();
     let output = dir.path().join("snapshot.json");
-    let (routes, _, _) = cookbooks_routes(true);
+    let (routes, _, _) = cookbook_routes(true);
     let (url, records) = start_server(routes);
     let mut options = options(&url, dir.path());
     options.bookshelf_dir = Some(bookshelf.path().to_path_buf());
@@ -303,7 +270,7 @@ fn dry_run_writes_no_snapshot_and_fetches_no_blob() {
 #[test]
 fn a_real_run_without_a_bookshelf_counts_checksums_but_copies_no_blob() {
     let dir = tempdir();
-    let (routes, _, _) = cookbooks_routes(false);
+    let (routes, _, _) = cookbook_routes(false);
     let (url, records) = start_server(routes);
     let summary = from_goiardi_with_options(&options(&url, dir.path())).unwrap();
     assert_eq!(summary.checksums, 1);
@@ -338,7 +305,7 @@ fn an_object_without_acl_is_rejected() {
 fn a_missing_blob_is_rejected_by_validation_and_names_the_checksum() {
     let dir = tempdir();
     let bookshelf = tempdir();
-    let (routes, checksum, _) = cookbooks_routes(false);
+    let (routes, checksum, _) = cookbook_routes(false);
     let (url, _) = start_server(routes);
     let mut options = options(&url, dir.path());
     options.dry_run = true;
@@ -352,7 +319,7 @@ fn a_missing_blob_is_rejected_by_validation_and_names_the_checksum() {
 fn dry_run_counts_checksums_but_writes_nothing() {
     let dir = tempdir();
     let output = dir.path().join("snapshot.json");
-    let (routes, _, _) = cookbooks_routes(false);
+    let (routes, _, _) = cookbook_routes(false);
     let (url, _) = start_server(routes);
     let mut options = options(&url, dir.path());
     options.dry_run = true;

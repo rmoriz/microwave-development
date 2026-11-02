@@ -6,7 +6,7 @@ use microwave_store::{ActorType, Permission, SqliteStore};
 
 #[test]
 fn import_roundtrip_keeps_keys_acls_and_blobs_and_refuses_a_second_import() {
-    let (routes, checksum) = full_goiardi_routes();
+    let (routes, checksum, body) = full_goiardi_routes();
     let (url, records) = start_server(routes);
     let data = tempfile::tempdir().unwrap();
     let snapshot = data.path().join("snapshot.json");
@@ -32,9 +32,17 @@ fn import_roundtrip_keeps_keys_acls_and_blobs_and_refuses_a_second_import() {
         .check_permission(&client.authz_id, &nodes.authz_id, Permission::Read)
         .unwrap());
     assert!(store.find_node(&org.id, "web1").unwrap().is_some());
-    assert!(bookshelf
-        .join(format!("organization-{}/checksum-{checksum}", org.id))
-        .exists());
+    assert!(store
+        .find_data_bag_item(&org.id, "secrets", "db")
+        .unwrap()
+        .is_some());
+    let cookbook = store
+        .find_cookbook_version(&org.id, "app", "1.2.3")
+        .unwrap()
+        .unwrap();
+    assert_eq!(cookbook.checksums, vec![checksum.clone()]);
+    let blob = bookshelf.join(format!("organization-{}/checksum-{checksum}", org.id));
+    assert_eq!(std::fs::read(blob).unwrap(), body);
 
     let error = import(data.path(), &snapshot).unwrap_err();
     assert!(matches!(error, MigrateError::TargetNotEmpty { .. }));
