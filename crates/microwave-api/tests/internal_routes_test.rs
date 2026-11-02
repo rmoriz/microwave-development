@@ -72,12 +72,15 @@ async fn body_json(response: Response) -> Value {
     support::response_json(response).await
 }
 
+/// An anonymous API client: a browser sends no client version header and is
+/// answered with the landing page instead of reaching the router.
 async fn anon_request(app: &axum::Router, method: &str, path: &str) -> Response {
     app.clone()
         .oneshot(
             Request::builder()
                 .method(method)
                 .uri(path)
+                .header("x-chef-version", "19.0.0")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -273,8 +276,8 @@ async fn identifiers_gate_does_not_shadow_mutating_routes() {
     create_org(&app).await;
 
     // These paths share the generic `_identifiers` shape but are real
-    // mutating routes. Without auth headers they must be rejected before
-    // routing (400), and with a signature they must reach their handlers
+    // mutating routes. Without `X-Ops-Userid` they must be rejected before
+    // routing (401), and with a signature they must reach their handlers
     // instead of being forwarded without an AuthContext (500).
     for (method, path) in [
         ("PUT", "/organizations/acme/data/secrets/_identifiers"),
@@ -296,7 +299,7 @@ async fn identifiers_gate_does_not_shadow_mutating_routes() {
         let response = anon_request(&app, method, path).await;
         assert_eq!(
             response.status(),
-            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
             "{method} {path}"
         );
     }
@@ -532,6 +535,7 @@ async fn controls_is_gone_for_every_method_and_credential() {
             Request::builder()
                 .method("GET")
                 .uri("/organizations/acme/controls")
+                .header("x-chef-version", "19.0.0")
                 .body(Body::empty())
                 .unwrap(),
         )

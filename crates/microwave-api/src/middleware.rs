@@ -1,4 +1,5 @@
 use crate::error::ApiError;
+use crate::landing;
 use axum::body::{Body, HttpBody};
 use axum::extract::connect_info::ConnectInfo;
 use axum::http::header::{
@@ -590,11 +591,20 @@ async fn authenticate_request(
         Err(value) => return version_error(&value),
     };
 
-    if let Some(version) = request
-        .headers()
-        .get("x-chef-version")
-        .and_then(|value| value.to_str().ok())
-    {
+    // A browser sends no client-version header and no signature. Upstream nginx
+    // answers those requests from `location /` with the static `index.html`
+    // instead of handing them to erchef's `401`.
+    if serves_landing_page(&path, request.headers()) {
+        let mut response = landing::page();
+        // `location /` serves the file directly, so `HEAD` is not answered by
+        // a handler that strips the body.
+        if request.method() == Method::HEAD {
+            *response.body_mut() = Body::empty();
+        }
+        return response;
+    }
+
+    if let Some(version) = client_version(request.headers()) {
         if !chef_version_supported(version, MIN_CHEF_VERSION) {
             return with_version_header(
                 chef_version_error(version),
@@ -608,13 +618,7 @@ async fn authenticate_request(
     // blocks before `location /`, so they never reach erchef: they bypass
     // maintenance mode and signature authentication alike. The page is exactly
     // what an operator wants to see during a drain.
-    if path == "/index.html"
-        || path == "/favicon.svg"
-        || path == "/css"
-        || path.starts_with("/css/")
-        || path == "/fonts"
-        || path.starts_with("/fonts/")
-    {
+    if is_static_asset_path(&path) {
         let response = next.run(request).await;
         return with_version_header(
             response,
@@ -812,6 +816,18 @@ async fn authenticate_request(
         let response = next.run(request).await;
         return with_version_header(
             response,
+            &requested_version.to_string(),
+            &requested_version.to_string(),
+        );
+    }
+
+    // Upstream `dispatch.lua` stops with `401` as soon as a client version
+    // marker arrives without `X-Ops-Userid`, before it resolves a route.
+    if client_version(request.headers()).is_some()
+        && !request.headers().contains_key("x-ops-userid")
+    {
+        return with_version_header(
+            ApiError::unauthorized().into_response(),
             &requested_version.to_string(),
             &requested_version.to_string(),
         );
@@ -1096,6 +1112,8 @@ fn authentication_failure(user_id: &str) -> ApiError {
     ))
 }
 
+/// A missing or empty signing header means the request is unauthenticated; it
+/// never reaches signature verification.
 fn required_header(headers: &HeaderMap, name: &str) -> Result<String, ApiError> {
     headers
         .get(name)
@@ -1103,7 +1121,7 @@ fn required_header(headers: &HeaderMap, name: &str) -> Result<String, ApiError> 
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
-        .ok_or_else(|| ApiError::bad_request("Failed to authenticate"))
+        .ok_or_else(ApiError::unauthorized)
 }
 
 fn authorization_lines(headers: &HeaderMap) -> Result<Vec<&str>, ApiError> {
@@ -1289,6 +1307,52 @@ fn has_signing_headers(headers: &HeaderMap) -> bool {
         && headers
             .keys()
             .any(|name| name.as_str().starts_with("x-ops-authorization-"))
+}
+
+/// The client version headers, `X-Chef-Version` first.
+fn client_version(headers: &HeaderMap) -> Option<&str> {
+    ["x-chef-version", "x-cinc-version"]
+        .iter()
+        .find_map(|name| headers.get(*name).and_then(|value| value.to_str().ok()))
+}
+
+/// The landing page's static surface, answered by a dedicated nginx `location`.
+fn is_static_asset_path(path: &str) -> bool {
+    path == "/index.html"
+        || path == "/favicon.svg"
+        || path == "/css"
+        || path.starts_with("/css/")
+        || path == "/fonts"
+        || path.starts_with("/fonts/")
+}
+
+/// Paths upstream answers from their own nginx `location`, before
+/// `location /` can serve `index.html`.
+fn is_nginx_only_path(path: &str) -> bool {
+    is_static_asset_path(path)
+        || path == "/_status"
+        || path == "/_stats"
+        || path == "/server_api_version"
+        || path == "/id"
+        || path.starts_with("/id/")
+        || path.starts_with("/bookshelf/")
+        || validate_signed_path(path).is_some()
+        || is_required_recipe_path(path)
+        || is_data_collector_path(path)
+        || is_mcp_path(path)
+        || is_compliance_proxy_path(path)
+}
+
+/// Any `X-Ops-*` header marks a Chef client, even an incomplete signature.
+fn has_api_headers(headers: &HeaderMap) -> bool {
+    headers
+        .keys()
+        .any(|name| name.as_str().starts_with("x-ops-"))
+}
+
+/// No client marker and no signature header, on a path `location /` owns.
+fn serves_landing_page(path: &str, headers: &HeaderMap) -> bool {
+    client_version(headers).is_none() && !has_api_headers(headers) && !is_nginx_only_path(path)
 }
 
 fn organization_name_from_path(path: &str) -> Option<String> {

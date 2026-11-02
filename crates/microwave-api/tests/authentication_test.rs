@@ -214,6 +214,8 @@ async fn malformed_credential_bodies_are_rejected_before_authentication() {
             .oneshot(
                 Request::post(path)
                     .header("content-type", "application/json")
+                    .header("x-chef-version", "19.0.0")
+                    .header("x-ops-userid", "pivotal")
                     .body(Body::from(body))
                     .unwrap(),
             )
@@ -230,18 +232,20 @@ async fn malformed_credential_bodies_are_rejected_before_authentication() {
         );
     }
 
-    // A well-formed body reaches authentication. Missing required auth
-    // headers are a bad request, matching the generic auth-header contract.
+    // A well-formed body reaches authentication. Missing required signing
+    // headers are unauthenticated.
     let response = app
         .oneshot(
             Request::post("/authenticate_user")
                 .header("content-type", "application/json")
+                .header("x-chef-version", "19.0.0")
+                .header("x-ops-userid", "pivotal")
                 .body(Body::from(r#"{"username":"alice","password":"foobar"}"#))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -259,6 +263,7 @@ async fn unsupported_credential_methods_return_405_without_authenticating() {
                     Request::builder()
                         .method(method)
                         .uri(path)
+                        .header("x-chef-version", "19.0.0")
                         .body(Body::empty())
                         .unwrap(),
                 )

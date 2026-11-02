@@ -26,7 +26,10 @@ pub const FONT_FILES: [&str; 2] = ["inter-latin.woff2", "space-grotesk-latin.wof
 
 const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const CACHE_PUBLIC: &str = "public, max-age=3600";
-const CACHE_PAGE: &str = "no-cache";
+/// `no-transform` keeps the compression middleware from appending
+/// `Accept-Encoding` to the page's `Vary`, so that header names exactly the
+/// negotiation that matters here: the client version headers.
+const CACHE_PAGE: &str = "no-cache, no-transform";
 
 const PAGE: &str = include_str!("../assets/landing/index.html");
 const FAVICON: &[u8] = include_bytes!("../assets/landing/favicon.svg");
@@ -38,13 +41,21 @@ const COMPONENTS_CSS: &str = include_str!("../../../website/homepage/src/styles/
 const INTER_WOFF2: &[u8] = include_bytes!("../assets/fonts/inter-latin.woff2");
 const SPACE_GROTESK_WOFF2: &[u8] = include_bytes!("../assets/fonts/space-grotesk-latin.woff2");
 
+/// The client version headers decide between the page and the JSON API, so a
+/// shared cache must key on them.
+const VARY_PAGE: &str = "X-Chef-Version, X-Cinc-Version";
+
 /// The landing page itself.
 pub fn page() -> Response {
-    static_response(
+    let mut response = static_response(
         "text/html; charset=utf-8",
         CACHE_PAGE,
         Body::from(page_body()),
-    )
+    );
+    response
+        .headers_mut()
+        .insert(header::VARY, HeaderValue::from_static(VARY_PAGE));
+    response
 }
 
 /// The page with the site URL substituted. The URL lives in one constant so
