@@ -59,22 +59,6 @@ async fn every_stylesheet_and_font_is_served_by_exact_name() {
             "public, max-age=3600"
         );
     }
-    // The loop is headerless, so these are browser requests. Spell the two
-    // cacheable paths out by name so a regression that answers them with the
-    // page fails here instead of only showing up as a content-type mismatch
-    // inside the loop.
-    for (path, content_type) in [
-        ("/css/tokens.css", "text/css; charset=utf-8"),
-        ("/favicon.svg", "image/svg+xml"),
-    ] {
-        let response = app.clone().oneshot(headerless("GET", path)).await.unwrap();
-        assert_static_headers(&response, content_type);
-        assert_eq!(
-            response.headers()[header::CACHE_CONTROL],
-            "public, max-age=3600",
-            "{path}"
-        );
-    }
 }
 
 #[tokio::test]

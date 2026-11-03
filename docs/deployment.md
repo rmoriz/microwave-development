@@ -450,9 +450,10 @@ A reverse proxy or load balancer in front of the server may replace or extend
 them, and its policy wins — keep the values at least as strict when you
 terminate TLS or add a cache in front of the server.
 
-A static path answered with a method other than `GET` or `HEAD` is a plain-text
-`405` with `Allow: GET`; it keeps the header block and never falls back to the
-JSON `404`.
+A static asset path (`/index.html`, `/favicon.svg`, `/css/*`, `/fonts/*`)
+answered with a method other than `GET` or `HEAD` is a plain-text `405` with
+`Allow: GET`; it keeps the header block and never falls back to the JSON `404`.
+The page itself is answered for every method, like `location /` upstream.
 
 The page is sent `Cache-Control: no-cache, no-transform` with `Vary:
 X-Chef-Version, X-Cinc-Version`, so a shared cache keys on the headers that
