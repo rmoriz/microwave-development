@@ -1,8 +1,9 @@
 # Collector for the `observability` compose profile.
 #
 # OTLP/HTTP in from the microwave service, Prometheus exposition out for the
-# prometheus service. This is the reference topology the OpenTelemetry guide
-# describes; it is not a production default.
+# prometheus service, plus the collector's own metrics for the
+# `otel-collector-self` scrape job. This is the reference topology the
+# OpenTelemetry guide describes; it is not a production default.
 
 receivers:
   otlp:
@@ -19,7 +20,9 @@ exporters:
   prometheus:
     endpoint: 0.0.0.0:8889
     send_timestamps: true
-    add_metric_suffixes: true
+    # Replaces the deprecated, default-on `add_metric_suffixes`; keeps the unit
+    # and `_total` suffixes and still escapes dots to underscores.
+    translation_strategy: UnderscoreEscapingWithSuffixes
 
 extensions:
   health_check:
@@ -32,3 +35,13 @@ service:
       receivers: [otlp]
       processors: [batch]
       exporters: [prometheus]
+  # Self-telemetry on :8888 for the `otel-collector-self` job, so dropped and
+  # refused points and exporter errors show up as series next to the data.
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888

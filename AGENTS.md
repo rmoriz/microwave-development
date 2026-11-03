@@ -7,6 +7,8 @@
   Embedded into the binary and shared with the homepage and the docs site;
   verified by `cargo test --workspace`.
 - `website/homepage`: the static Astro marketing site for `microwave.io`.
+- `docker/`: the pinned collector and Prometheus configs behind the root
+  compose `observability` profile.
 - `docs/`: operator and contributor documentation. `docs/mcp.md` is the guide
   the homepage links to.
 - `docs/superpowers/`: specs and implementation plans.
