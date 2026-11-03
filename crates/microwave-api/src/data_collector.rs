@@ -90,6 +90,7 @@ async fn forward(
 
         match crate::report_ingest::prepare_node_run(&body) {
             Ok(Some(run)) => {
+                state.metrics.record_converge(&org.name, &run.status);
                 let new_run = microwave_store::NewNodeRun {
                     node_name: &run.node_name,
                     run_id: &run.run_id,
