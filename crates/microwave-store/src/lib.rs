@@ -47,6 +47,6 @@ pub use reports::{normalize_rfc3339, NodeRunSummary, StoredNodeRun};
 pub use sandboxes::SandboxCheck;
 pub use secrets::{
     secret_kv_key, BOOKSHELF_ACCESS_KEY_ID, BOOKSHELF_SECRET_ACCESS_KEY, BOOKSHELF_SECRET_GROUP,
-    OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME,
+    OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME, OTEL_SECRET_GROUP, OTEL_SECRET_NAME,
 };
 pub use sqlite::{SqliteStore, StoreError};

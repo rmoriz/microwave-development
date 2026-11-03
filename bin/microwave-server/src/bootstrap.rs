@@ -2,7 +2,8 @@ use microwave_config::Config;
 use microwave_crypto::{generate_rsa_keypair, hash_password};
 use microwave_store::{
     ActorType, MetadataStore, StoreError, BOOKSHELF_ACCESS_KEY_ID, BOOKSHELF_SECRET_ACCESS_KEY,
-    BOOKSHELF_SECRET_GROUP, OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME,
+    BOOKSHELF_SECRET_GROUP, OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME, OTEL_SECRET_GROUP,
+    OTEL_SECRET_NAME,
 };
 use std::path::Path;
 use uuid::Uuid;
@@ -201,7 +202,10 @@ pub async fn apply_otel_secrets(
     if !config.otel.headers.is_empty() {
         return Ok(());
     }
-    let Some(secret) = store.get_secret("otel", "headers").await? else {
+    let Some(secret) = store
+        .get_secret(OTEL_SECRET_GROUP, OTEL_SECRET_NAME)
+        .await?
+    else {
         return Ok(());
     };
     config.otel.headers = secret
@@ -234,8 +238,8 @@ mod tests {
         let store = SqliteStore::open_in_memory().unwrap();
         store
             .set_secret(
-                "otel",
-                "headers",
+                OTEL_SECRET_GROUP,
+                OTEL_SECRET_NAME,
                 "Authorization: Bearer s3cr3t\n\nX-Scope: metrics",
             )
             .unwrap();
@@ -253,7 +257,11 @@ mod tests {
     async fn configured_otel_headers_win_over_the_secret() {
         let store = SqliteStore::open_in_memory().unwrap();
         store
-            .set_secret("otel", "headers", "Authorization: Bearer stored")
+            .set_secret(
+                OTEL_SECRET_GROUP,
+                OTEL_SECRET_NAME,
+                "Authorization: Bearer stored",
+            )
             .unwrap();
         let mut config = Config::default();
         config.otel.headers = vec!["Authorization: Bearer configured".into()];
@@ -279,7 +287,9 @@ mod tests {
     #[tokio::test]
     async fn rejects_a_malformed_otel_headers_secret() {
         let store = SqliteStore::open_in_memory().unwrap();
-        store.set_secret("otel", "headers", "malformed").unwrap();
+        store
+            .set_secret(OTEL_SECRET_GROUP, OTEL_SECRET_NAME, "malformed")
+            .unwrap();
         let mut config = Config::default();
 
         let error = apply_otel_secrets(&mut config, &store)

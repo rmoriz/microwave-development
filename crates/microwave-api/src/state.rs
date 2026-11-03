@@ -123,7 +123,6 @@ impl AppState {
             object_store,
             Arc::new(Metrics::new()),
         )?;
-        state.store = store.clone();
         state.sqlite = Some(store);
         Ok(state)
     }

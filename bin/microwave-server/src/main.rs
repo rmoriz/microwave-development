@@ -143,9 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Configuration and environment win over the stored header
             // secret; loading it here fails startup when the stored value is
             // malformed instead of failing the first export.
-            if config.otel.headers.is_empty() {
-                bootstrap::apply_otel_secrets(&mut config, store.as_ref()).await?;
-            }
+            bootstrap::apply_otel_secrets(&mut config, store.as_ref()).await?;
             let secret = match config.object_store.backend {
                 ObjectStoreBackend::Local => {
                     let secret =
@@ -188,6 +186,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
 
+            let bind = config.server.bind.clone();
+            let gauge_refresh_seconds = config.otel.gauge_refresh_seconds;
+            // Bind before the provider exists: a bind failure must not leave an
+            // initialized exporter behind with nothing to serve.
+            let listener = tokio::net::TcpListener::bind(&bind).await?;
+            let local_addr = listener.local_addr()?;
+
             let indexing_mode = indexing_mode(config.search.backend);
             let otel = if config.otel.enabled {
                 Some(microwave_otel::init(
@@ -200,56 +205,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None
             };
 
-            let bind = config.server.bind.clone();
-            let gauge_refresh_seconds = config.otel.gauge_refresh_seconds;
             let state = match sqlite {
                 Some(sqlite) => {
-                    AppState::with_metrics(sqlite, Arc::new(config), object_store, metrics.clone())?
+                    AppState::with_metrics(sqlite, Arc::new(config), object_store, metrics.clone())
                 }
                 None => {
-                    AppState::with_metrics(store, Arc::new(config), object_store, metrics.clone())?
+                    AppState::with_metrics(store, Arc::new(config), object_store, metrics.clone())
                 }
             };
-            let listener = tokio::net::TcpListener::bind(&bind).await?;
-            let local_addr = listener.local_addr()?;
+            let state = match state {
+                Ok(state) => state,
+                Err(error) => {
+                    if let Some(otel) = otel {
+                        if let Err(error) = otel.shutdown().await {
+                            tracing::warn!(%error, "OTLP metric shutdown did not complete");
+                        }
+                    }
+                    return Err(error.into());
+                }
+            };
             tracing::info!(%bind, %local_addr, scheme, "microwave-server listening");
             let gauge_refresh = otel
                 .as_ref()
                 .map(|_| spawn_gauge_refresh(state.clone(), metrics, gauge_refresh_seconds));
-            match tls_config {
-                Some(rustls_config) => {
-                    let listener = listener.into_std()?;
-                    let handle = axum_server::Handle::new();
-                    let shutdown_handle = handle.clone();
-                    tokio::spawn(async move {
-                        shutdown.notified().await;
-                        shutdown_handle.graceful_shutdown(Some(SHUTDOWN_GRACE));
-                    });
-                    axum_server::from_tcp_rustls(listener, rustls_config)?
-                        .handle(handle)
-                        .serve(
-                            router(state)
-                                .into_make_service_with_connect_info::<std::net::SocketAddr>(),
-                        )
-                        .await?;
-                }
-                None => {
-                    let shutdown = shutdown.clone();
-                    axum::serve(
-                        listener,
-                        router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
-                    )
-                    .with_graceful_shutdown(async move {
-                        shutdown.notified().await;
-                    })
-                    .await?;
-                }
-            }
+            let served = serve(state, listener, tls_config, shutdown).await;
 
             // Stop sampling before the final flush, so the last export is not
             // raced by a tick that still writes gauge values.
             if let Some(gauge_refresh) = gauge_refresh {
                 gauge_refresh.abort();
+                let _ = gauge_refresh.await;
             }
             if let Some(otel) = otel {
                 // The guard applies `shutdown_timeout_ms` itself.
@@ -257,9 +242,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tracing::warn!(%error, "OTLP metric shutdown did not complete");
                 }
             }
+            served?;
         }
     }
 
+    Ok(())
+}
+
+/// Serve until shutdown, returning the accept-loop or TLS-serve error.
+///
+/// The caller keeps ownership of the metric guard and the refresh task, so an
+/// early return here still reaches the flush path.
+async fn serve(
+    state: AppState,
+    listener: tokio::net::TcpListener,
+    tls_config: Option<axum_server::tls_rustls::RustlsConfig>,
+    shutdown: Arc<tokio::sync::Notify>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match tls_config {
+        Some(rustls_config) => {
+            let listener = listener.into_std()?;
+            let handle = axum_server::Handle::new();
+            let shutdown_handle = handle.clone();
+            tokio::spawn(async move {
+                shutdown.notified().await;
+                shutdown_handle.graceful_shutdown(Some(SHUTDOWN_GRACE));
+            });
+            axum_server::from_tcp_rustls(listener, rustls_config)?
+                .handle(handle)
+                .serve(router(state).into_make_service_with_connect_info::<std::net::SocketAddr>())
+                .await?;
+        }
+        None => {
+            let shutdown = shutdown.clone();
+            axum::serve(
+                listener,
+                router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move {
+                shutdown.notified().await;
+            })
+            .await?;
+        }
+    }
     Ok(())
 }
 
@@ -283,7 +308,9 @@ fn spawn_gauge_refresh(
     interval_seconds: u64,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(interval_seconds));
+        // `Config::validate` rejects zero, but an env-only config can still
+        // reach this point with one; the interval panics on zero.
+        let mut ticker = tokio::time::interval(Duration::from_secs(interval_seconds.max(1)));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
@@ -708,11 +735,16 @@ async fn reload_tls(
 mod tests {
     use super::{
         local_object_store_base_url, redact_config_for_output, redact_database_url,
-        warn_implicit_mcp_superuser,
+        spawn_gauge_refresh, warn_implicit_mcp_superuser, PoolGauges,
     };
+    use microwave_api::AppState;
     use microwave_config::{Config, McpOrgConfig};
+    use microwave_metrics::Metrics;
+    use microwave_objectstore::{LocalObjectStore, ObjectStore};
+    use microwave_store::{NewNode, SqliteStore};
     use std::io::Write;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use tracing_subscriber::fmt::MakeWriter;
 
     #[derive(Clone, Default)]
@@ -793,6 +825,73 @@ mod tests {
         capture.0.lock().unwrap().clear();
         warn_implicit_mcp_superuser(&disabled);
         assert!(capture.0.lock().unwrap().is_empty());
+    }
+
+    /// The interval is set to an hour, so only the immediate first tick can
+    /// fill the gauges; a regression to a delayed first tick would time out.
+    #[tokio::test]
+    async fn gauge_refresh_populates_every_gauge_on_the_first_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SqliteStore::open(&dir.path().join("test.db")).unwrap());
+        let org = store.create_org("gauge-org", "Gauge Org").unwrap();
+        let creator = store.create_actor().unwrap();
+        store
+            .create_container_for_org_with_acl(&org.id, "nodes", &creator)
+            .unwrap();
+        store
+            .create_node(
+                &org.id,
+                NewNode {
+                    name: "node-1",
+                    body: r#"{"name":"node-1"}"#,
+                    environment: "_default",
+                    policy_name: None,
+                    policy_group: None,
+                    creator_authz_id: &creator,
+                },
+            )
+            .unwrap();
+        store.set_maintenance_enabled(true).unwrap();
+
+        let config = Arc::new(Config::default());
+        let object_store: Arc<dyn ObjectStore + Send + Sync> = Arc::new(LocalObjectStore::new(
+            dir.path().join("objects"),
+            "secret",
+            "http://0.0.0.0:8000",
+        ));
+        let metrics = Arc::new(Metrics::new());
+        let state = AppState::with_metrics(store, config, object_store, metrics.clone()).unwrap();
+
+        let gauge_refresh = spawn_gauge_refresh(state.clone(), metrics.clone(), 3600);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if metrics.maintenance()
+                    && metrics.nodes() == 1
+                    && metrics.keygen().capacity > 0
+                    && !metrics.dependencies().is_empty()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the refresh task must populate the gauges on its first tick");
+        gauge_refresh.abort();
+        let _ = gauge_refresh.await;
+
+        assert_eq!(metrics.nodes(), 1);
+        assert!(metrics.maintenance());
+        assert_eq!(metrics.keygen().capacity, state.config.keygen.size);
+        assert!(!metrics.dependencies().is_empty());
+        assert_eq!(
+            metrics.pool(),
+            state.store.pool_stats().await.map(|pool| PoolGauges {
+                idle: pool.idle,
+                in_use: pool.in_use,
+                max: pool.max,
+            })
+        );
     }
 
     #[test]
