@@ -1459,6 +1459,105 @@ fn shipped_example_config_parses_with_safe_defaults() {
     assert_eq!(c.mcp.max_result_bytes, 1_048_576);
     assert_eq!(c.mcp.max_upload_bytes, 10_485_760);
     assert!(c.mcp.organizations.is_empty());
+    assert!(!c.otel.enabled);
+    assert_eq!(c.otel.protocol, "http/protobuf");
+    assert!(c.otel.headers.is_empty());
     assert_eq!(c.data_collector.store, DataCollectorStore::Forward);
     assert_eq!(c.data_collector.keep_runs, 50);
+}
+
+#[test]
+fn otel_is_disabled_by_default() {
+    let config = Config::default();
+    assert!(!config.otel.enabled);
+    assert_eq!(config.otel.protocol, "http/protobuf");
+    assert_eq!(config.otel.interval_seconds, 60);
+    assert_eq!(config.otel.shutdown_timeout_ms, 5_000);
+    assert!(config.otel.headers.is_empty());
+}
+
+#[test]
+fn otel_rejects_bad_values() {
+    for (toml, key) in [
+        ("[otel]\nenabled = true\n", "otel.endpoint"),
+        (
+            "[otel]\nenabled = true\nendpoint = \"ftp://x\"\n",
+            "otel.endpoint",
+        ),
+        (
+            "[otel]\nendpoint = \"http://x\"\nprotocol = \"grpc\"\n",
+            "otel.protocol",
+        ),
+        (
+            "[otel]\nenabled = true\nendpoint = \"http://x\"\ninterval_seconds = 0\n",
+            "otel.interval_seconds",
+        ),
+        (
+            "[otel]\nenabled = true\nendpoint = \"http://x\"\ngauge_refresh_seconds = 0\n",
+            "otel.gauge_refresh_seconds",
+        ),
+        (
+            "[otel]\nenabled = true\nendpoint = \"http://x\"\ntls_ca_path = \"/nope.pem\"\n",
+            "otel.tls_ca_path",
+        ),
+        (
+            "[otel]\nenabled = true\nendpoint = \"http://x\"\nheaders = [\"NoColon\"]\n",
+            "otel.headers",
+        ),
+        (
+            "[otel]\nenabled = true\nendpoint = \"http://x\"\nheaders = [\": value\"]\n",
+            "otel.headers",
+        ),
+        (
+            "[otel]\nenabled = true\nendpoint = \"http://x\"\ninsecure_skip_tls_verify = true\n",
+            "otel.insecure_skip_tls_verify",
+        ),
+    ] {
+        let error = Config::from_toml_str(toml).expect_err(toml);
+        assert!(format!("{error}").contains(key), "{error}");
+    }
+}
+
+#[test]
+fn otel_accepts_a_valid_block() {
+    let config = Config::from_toml_str(
+        "[otel]\nenabled = true\nendpoint = \"https://collector:4318\"\nheaders = [\"Authorization: Bearer t\"]\n",
+    )
+    .unwrap();
+    assert_eq!(
+        config.otel.headers_parsed().unwrap(),
+        vec![("Authorization".to_string(), "Bearer t".to_string())]
+    );
+}
+
+#[test]
+fn otel_settings_can_be_overridden_from_env() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("MW_OTEL__ENABLED", "yes");
+    std::env::set_var("MW_OTEL__ENDPOINT", "http://collector:4318");
+    std::env::set_var(
+        "MW_OTEL__HEADERS",
+        "Authorization: Bearer t, X-Scope: metrics",
+    );
+    std::env::set_var("MW_OTEL__INTERVAL_SECONDS", "30");
+    let mut config = Config::default();
+    config.apply_env().unwrap();
+    assert!(config.otel.enabled);
+    assert_eq!(
+        config.otel.endpoint.as_deref(),
+        Some("http://collector:4318")
+    );
+    assert_eq!(config.otel.interval_seconds, 30);
+    assert_eq!(
+        config.otel.headers,
+        vec!["Authorization: Bearer t", "X-Scope: metrics"]
+    );
+
+    std::env::set_var("MW_OTEL__INTERVAL_SECONDS", "not-a-number");
+    assert!(Config::default().apply_env().is_err());
+
+    std::env::remove_var("MW_OTEL__ENABLED");
+    std::env::remove_var("MW_OTEL__ENDPOINT");
+    std::env::remove_var("MW_OTEL__HEADERS");
+    std::env::remove_var("MW_OTEL__INTERVAL_SECONDS");
 }

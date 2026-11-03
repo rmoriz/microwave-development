@@ -270,6 +270,15 @@ fn redact_config_for_output(config: &mut Config) {
         .secret_key
         .as_ref()
         .map(|_| "***".to_string());
+    config.otel.headers = config
+        .otel
+        .headers
+        .iter()
+        .map(|header| match header.split_once(':') {
+            Some((name, _)) => format!("{name}: ***"),
+            None => header.clone(),
+        })
+        .collect();
 }
 
 /// Hide the password in a database URL before printing configuration.
@@ -726,6 +735,23 @@ mod tests {
         assert_eq!(config.object_store.secret.as_deref(), Some("***"));
         assert_eq!(config.object_store.access_key.as_deref(), Some("***"));
         assert_eq!(config.object_store.secret_key.as_deref(), Some("***"));
+    }
+
+    #[test]
+    fn redacts_otel_header_values_and_keeps_names() {
+        let mut config = Config::default();
+        config.otel.headers = vec![
+            "Authorization: Bearer s3cr3t".to_string(),
+            "X-Scope:".to_string(),
+            "malformed".to_string(),
+        ];
+
+        redact_config_for_output(&mut config);
+
+        assert_eq!(
+            config.otel.headers,
+            vec!["Authorization: ***", "X-Scope: ***", "malformed"]
+        );
     }
 
     #[test]

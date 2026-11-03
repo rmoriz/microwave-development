@@ -18,6 +18,7 @@ pub struct Config {
     pub depsolver: DepsolverConfig,
     pub license: LicenseConfig,
     pub stats: StatsConfig,
+    pub otel: OtelConfig,
     pub data_collector: DataCollectorConfig,
     pub compliance_proxy: ComplianceProxyConfig,
     pub required_recipe: RequiredRecipeConfig,
@@ -121,6 +122,12 @@ impl Config {
                 key: "mail".into(),
                 value: message,
             })?;
+        self.otel
+            .validate()
+            .map_err(|(key, message)| ConfigError::InvalidValue {
+                key: key.into(),
+                value: message,
+            })?;
         let public_url = self
             .server
             .public_url
@@ -208,6 +215,12 @@ impl Config {
     /// - `MW_DEPSOLVER__TIMEOUT_MS`, `MW_DEPSOLVER__MAX_CONCURRENT`
     /// - `MW_LICENSE__NODE_LICENSE`, `MW_LICENSE__UPGRADE_URL`
     /// - `MW_STATS__USERNAME`, `MW_STATS__PASSWORD`
+    /// - `MW_OTEL__ENABLED`, `MW_OTEL__ENDPOINT`, `MW_OTEL__PROTOCOL`,
+    ///   `MW_OTEL__INTERVAL_SECONDS`, `MW_OTEL__TIMEOUT_MS`,
+    ///   `MW_OTEL__GAUGE_REFRESH_SECONDS`, `MW_OTEL__SHUTDOWN_TIMEOUT_MS`,
+    ///   `MW_OTEL__SERVICE_NAME`, `MW_OTEL__ENVIRONMENT`, `MW_OTEL__HEADERS`
+    ///   (comma-separated), `MW_OTEL__TLS_CA_PATH`,
+    ///   `MW_OTEL__INSECURE_SKIP_TLS_VERIFY`
     /// - `MW_DATA_COLLECTOR__ROOT_URL`, `MW_DATA_COLLECTOR__TOKEN`,
     ///   `MW_DATA_COLLECTOR__TIMEOUT` (alias `MW_DATA_COLLECTOR__TIMEOUT_MS`),
     ///   `MW_DATA_COLLECTOR__ACTIONS_ENABLED`, `MW_DATA_COLLECTOR__SERVICE_HOSTNAME`,
@@ -441,6 +454,43 @@ impl Config {
         }
         if let Ok(value) = std::env::var("MW_STATS__PASSWORD") {
             self.stats.password = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_OTEL__ENABLED") {
+            self.otel.enabled = parse_bool("MW_OTEL__ENABLED", &value)?;
+        }
+        if let Ok(value) = std::env::var("MW_OTEL__ENDPOINT") {
+            self.otel.endpoint = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_OTEL__PROTOCOL") {
+            self.otel.protocol = value;
+        }
+        if let Ok(value) = std::env::var("MW_OTEL__INTERVAL_SECONDS") {
+            self.otel.interval_seconds = parse_value("MW_OTEL__INTERVAL_SECONDS", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_OTEL__TIMEOUT_MS") {
+            self.otel.timeout_ms = parse_value("MW_OTEL__TIMEOUT_MS", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_OTEL__GAUGE_REFRESH_SECONDS") {
+            self.otel.gauge_refresh_seconds = parse_value("MW_OTEL__GAUGE_REFRESH_SECONDS", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_OTEL__SHUTDOWN_TIMEOUT_MS") {
+            self.otel.shutdown_timeout_ms = parse_value("MW_OTEL__SHUTDOWN_TIMEOUT_MS", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_OTEL__SERVICE_NAME") {
+            self.otel.service_name = value;
+        }
+        if let Ok(value) = std::env::var("MW_OTEL__ENVIRONMENT") {
+            self.otel.environment = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_OTEL__HEADERS") {
+            self.otel.headers = parse_string_list(value);
+        }
+        if let Ok(value) = std::env::var("MW_OTEL__TLS_CA_PATH") {
+            self.otel.tls_ca_path = non_empty(value).map(PathBuf::from);
+        }
+        if let Ok(value) = std::env::var("MW_OTEL__INSECURE_SKIP_TLS_VERIFY") {
+            self.otel.insecure_skip_tls_verify =
+                parse_bool("MW_OTEL__INSECURE_SKIP_TLS_VERIFY", &value)?;
         }
         if let Ok(value) = std::env::var("MW_DATA_COLLECTOR__ROOT_URL") {
             self.data_collector.root_url = non_empty(value);
@@ -1191,6 +1241,159 @@ impl Default for LicenseConfig {
 pub struct StatsConfig {
     pub username: Option<String>,
     pub password: Option<String>,
+}
+
+/// Optional OpenTelemetry OTLP metric export.
+///
+/// Export is off by default: enabling this is the first outbound connection
+/// Microwave makes. `endpoint` is a base URL; the signal path is appended.
+/// Header values are secrets, so they are redacted wherever configuration is
+/// printed and may also be stored with `microwave-ctl set-secret otel headers`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct OtelConfig {
+    pub enabled: bool,
+    /// Base collector URL, for example `http://127.0.0.1:4318`.
+    pub endpoint: Option<String>,
+    /// Only `http/protobuf` is supported.
+    pub protocol: String,
+    /// Export interval for the periodic reader.
+    pub interval_seconds: u64,
+    /// Upper bound for one export attempt.
+    pub timeout_ms: u64,
+    /// How often the gauge refresh task samples store, keygen, and dependencies.
+    pub gauge_refresh_seconds: u64,
+    /// Budget for the final flush on shutdown.
+    pub shutdown_timeout_ms: u64,
+    /// `service.name` resource attribute.
+    pub service_name: String,
+    /// `deployment.environment` resource attribute; omitted when unset.
+    pub environment: Option<String>,
+    /// `Name: value` entries, for example an `Authorization` header.
+    pub headers: Vec<String>,
+    /// Extra PEM CA certificate for an `https` collector with a private CA.
+    pub tls_ca_path: Option<PathBuf>,
+    /// Skip certificate-chain verification for an `https` collector.
+    pub insecure_skip_tls_verify: bool,
+}
+
+impl Default for OtelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: None,
+            protocol: "http/protobuf".into(),
+            interval_seconds: 60,
+            timeout_ms: 10_000,
+            gauge_refresh_seconds: 60,
+            shutdown_timeout_ms: 5_000,
+            service_name: "microwave-server".into(),
+            environment: None,
+            headers: Vec::new(),
+            tls_ca_path: None,
+            insecure_skip_tls_verify: false,
+        }
+    }
+}
+
+impl OtelConfig {
+    /// Validate the block. Called by [`Config::validate`] so a bad block fails
+    /// startup instead of failing silently after the first export attempt.
+    ///
+    /// The failing key is returned alongside the message because one block can
+    /// fail on several keys; [`Config::validate`] maps it onto
+    /// [`ConfigError::InvalidValue`].
+    pub fn validate(&self) -> Result<(), (&'static str, String)> {
+        let endpoint = self
+            .endpoint
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if self.enabled && endpoint.is_none() {
+            return Err(("otel.endpoint", "required when otel is enabled".to_string()));
+        }
+        let mut https = false;
+        if let Some(endpoint) = endpoint {
+            match url::Url::parse(endpoint) {
+                Ok(url) if url.scheme() == "http" => {}
+                Ok(url) if url.scheme() == "https" => https = true,
+                _ => {
+                    return Err((
+                        "otel.endpoint",
+                        format!("{endpoint:?} must be an http or https URL"),
+                    ))
+                }
+            }
+        }
+        for (key, value) in [
+            ("otel.interval_seconds", self.interval_seconds),
+            ("otel.timeout_ms", self.timeout_ms),
+            ("otel.gauge_refresh_seconds", self.gauge_refresh_seconds),
+            ("otel.shutdown_timeout_ms", self.shutdown_timeout_ms),
+        ] {
+            if value == 0 {
+                return Err((key, "must be greater than zero".to_string()));
+            }
+        }
+        if self.protocol != "http/protobuf" {
+            return Err((
+                "otel.protocol",
+                format!(
+                    "unsupported protocol {:?}; only \"http/protobuf\" is supported",
+                    self.protocol
+                ),
+            ));
+        }
+        for header in &self.headers {
+            match header.split_once(':') {
+                Some((name, _)) if !name.trim().is_empty() => {}
+                _ => {
+                    return Err((
+                        "otel.headers",
+                        format!("header {header:?} must be \"Name: value\""),
+                    ))
+                }
+            }
+        }
+        if self.tls_ca_path.is_some() && !https {
+            return Err(("otel.tls_ca_path", "requires an https endpoint".to_string()));
+        }
+        if self.insecure_skip_tls_verify && !https {
+            return Err((
+                "otel.insecure_skip_tls_verify",
+                "requires an https endpoint".to_string(),
+            ));
+        }
+        if let Some(path) = &self.tls_ca_path {
+            if !path.is_file() {
+                return Err((
+                    "otel.tls_ca_path",
+                    format!("{} does not exist", path.display()),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Split `headers` into `(name, value)` pairs.
+    ///
+    /// Every entry must contain a colon and a non-empty name; the value may be
+    /// empty. Later entries win when a collector receives duplicates.
+    pub fn headers_parsed(&self) -> Result<Vec<(String, String)>, String> {
+        self.headers
+            .iter()
+            .map(|header| {
+                let Some((name, value)) = header.split_once(':') else {
+                    return Err(format!("header {header:?} must be \"Name: value\""));
+                };
+                let name = name.trim();
+                if name.is_empty() {
+                    return Err(format!("header {header:?} must have a non-empty name"));
+                }
+                Ok((name.to_string(), value.trim().to_string()))
+            })
+            .collect()
+    }
 }
 
 /// Experimental per-organization MCP endpoint configuration.
