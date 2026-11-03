@@ -74,6 +74,8 @@ lettre = { version = "0.11", default-features = false, features = ["builder", "s
 opentelemetry = "=0.33.1"
 opentelemetry_sdk = "=0.33.1"
 opentelemetry-otlp = { version = "=0.33.1", default-features = false }
+opentelemetry-proto = { version = "=0.33.1", default-features = false, features = ["gen-tonic-messages", "metrics"] }
+prost = "0.14"
 
 [workspace.dependencies.microwave-config]
 path = "crates/microwave-config"

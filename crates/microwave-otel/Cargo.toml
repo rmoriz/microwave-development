@@ -19,4 +19,7 @@ uuid.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
+opentelemetry-proto.workspace = true
+prost.workspace = true
 tokio.workspace = true
