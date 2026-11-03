@@ -11,6 +11,7 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use flate2::write::{GzEncoder, ZlibEncoder};
 use flate2::Compression;
+use microwave_metrics::{metrics_route, organization_label};
 use microwave_store::ActorType;
 use serde_json::json;
 use std::io::Write;
@@ -37,6 +38,35 @@ pub struct RequestId(pub String);
 /// [`authenticate`] re-enters [`crate::router`] to rewrite a path.
 #[derive(Clone, Copy, Debug)]
 pub struct RequestContextApplied;
+
+/// The matched route template, carried from the request into the response so
+/// [`observe_request`] can label the histogram without the object names.
+#[derive(Clone, Debug)]
+pub struct RouteTemplate(pub String);
+
+/// Capture the matched route template and carry it to the response.
+///
+/// The template has to be read before `next` runs: [`authenticate`] answers a
+/// number of requests (including the plain `401`) without ever reaching a
+/// handler, and the request is consumed on the way. `Router::layer` only runs
+/// once a route has been selected, so this layer must sit outside
+/// [`authenticate`] to see it. Paths without a template (the fallback,
+/// `/version`, the landing page) keep their `404`/`401`/`200` and are
+/// normalized by [`observe_request`] instead.
+pub async fn record_route(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let template = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|path| RouteTemplate(path.as_str().to_string()));
+    let mut response = next.run(request).await;
+    if let Some(template) = template {
+        response.extensions_mut().insert(template);
+    }
+    response
+}
 
 /// Access log and request-id middleware.
 ///
@@ -71,7 +101,21 @@ pub async fn observe_request(
     let path = request.uri().path().to_string();
     let started = Instant::now();
     let mut response = next.run(request).await;
-    let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let elapsed = started.elapsed();
+    let route = response
+        .extensions()
+        .get::<RouteTemplate>()
+        .map(|template| template.0.clone())
+        .unwrap_or_else(|| metrics_route(&path));
+    let org = organization_label(&path);
+    state.metrics.record_http(
+        &route,
+        method.as_str(),
+        &org,
+        response.status().as_u16(),
+        elapsed,
+    );
+    let latency_ms = elapsed.as_secs_f64() * 1000.0;
 
     if let Ok(value) = HeaderValue::from_str(&request_id) {
         response.headers_mut().insert("x-request-id", value);

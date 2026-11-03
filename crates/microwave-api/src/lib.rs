@@ -112,6 +112,11 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             middleware::authenticate,
         ))
+        // Captures the matched route template for the request histogram. It
+        // wraps `authenticate` (later layers wrap earlier ones), so the `401`
+        // that auth answers without reaching a handler still carries its
+        // template.
+        .layer(axum::middleware::from_fn(middleware::record_route))
         // HTTP/2 carries the request authority in the URI rather than a
         // `Host` header. Normalize it before handlers generate absolute URLs.
         .layer(axum::middleware::from_fn(middleware::ensure_host_header))
