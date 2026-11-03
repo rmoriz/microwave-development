@@ -61,12 +61,41 @@ pub fn router(state: AppState) -> Router {
         // middleware through unauthenticated (see `authenticate_request`).
         // The bare `/css` and `/fonts` spellings (what `/css/` normalizes to)
         // answer 404 with the header block instead of the JSON API fallback.
-        .route("/index.html", get(|| async { landing::page() }))
-        .route("/favicon.svg", get(|| async { landing::favicon() }))
-        .route("/css", get(|| async { landing::not_found() }))
-        .route("/css/{file}", get(stylesheet_handler))
-        .route("/fonts", get(|| async { landing::not_found() }))
-        .route("/fonts/{file}", get(font_handler))
+        // The catch-all routes do the same for nested names, so only the
+        // embedded names resolve and everything else keeps the static answer.
+        // An unsupported method on a static path is a plain-text 405 with the
+        // header block, not the JSON API answer.
+        .route(
+            "/index.html",
+            get(|| async { landing::page() }).fallback(|| async { landing::method_not_allowed() }),
+        )
+        .route(
+            "/favicon.svg",
+            get(|| async { landing::favicon() })
+                .fallback(|| async { landing::method_not_allowed() }),
+        )
+        .route(
+            "/css",
+            get(|| async { landing::not_found() })
+                .fallback(|| async { landing::method_not_allowed() }),
+        )
+        .route(
+            "/css/{*file}",
+            get(stylesheet_handler).fallback(|| async { landing::method_not_allowed() }),
+        )
+        .route(
+            "/fonts",
+            get(|| async { landing::not_found() })
+                .fallback(|| async { landing::method_not_allowed() }),
+        )
+        .route(
+            "/fonts/{*file}",
+            get(font_handler).fallback(|| async { landing::method_not_allowed() }),
+        )
+        // `/version` is answered by nginx upstream. The outer router owns the
+        // exact spelling; this copy lets `/version/` reach the handler after
+        // the trailing slash has been normalized away.
+        .route("/version", get(version))
         .route("/server_api_version", get(server_api_version))
         .route("/license", get(license))
         .merge(users::routes())

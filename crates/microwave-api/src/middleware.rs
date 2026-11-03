@@ -586,6 +586,25 @@ async fn authenticate_request(
     next: axum::middleware::Next,
 ) -> Response {
     let path = request.uri().path().to_string();
+    let mut response = authenticate_path(&path, state, request, next).await;
+    // The same path may answer the page or the JSON API depending on the client
+    // headers, so a shared cache has to key on them for the API branch as well
+    // as for the page. Paths with their own upstream `location` never serve the
+    // page and keep their own `Vary` handling.
+    if !is_nginx_only_path(&path) {
+        response
+            .headers_mut()
+            .insert(VARY, HeaderValue::from_static(landing::VARY_VALUE));
+    }
+    response
+}
+
+async fn authenticate_path(
+    path: &str,
+    state: crate::AppState,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
     let requested_version = match parse_api_version(request.headers()) {
         Ok(version) => version,
         Err(value) => return version_error(&value),
@@ -594,7 +613,7 @@ async fn authenticate_request(
     // A browser sends no client-version header and no signature. Upstream nginx
     // answers those requests from `location /` with the static `index.html`
     // instead of handing them to erchef's `401`.
-    if serves_landing_page(&path, request.headers()) {
+    if serves_landing_page(path, request.headers()) {
         let mut response = landing::page();
         // `location /` serves the file directly, so `HEAD` is not answered by
         // a handler that strips the body.
@@ -618,7 +637,7 @@ async fn authenticate_request(
     // blocks before `location /`, so they never reach erchef: they bypass
     // maintenance mode and signature authentication alike. The page is exactly
     // what an operator wants to see during a drain.
-    if is_static_asset_path(&path) {
+    if is_static_asset_path(path) {
         let response = next.run(request).await;
         return with_version_header(
             response,
@@ -630,7 +649,7 @@ async fn authenticate_request(
     // Maintenance mode rejects normal API traffic before authentication runs,
     // so an unauthenticated request during a drain cannot mutate the store.
     // Health checks stay reachable.
-    if !is_maintenance_exempt(&path) {
+    if !is_maintenance_exempt(path) {
         match state.store.maintenance_enabled().await {
             Ok(true) => {
                 return with_version_header(
@@ -655,7 +674,7 @@ async fn authenticate_request(
     // but webmachine still answers an unsupported method with 405 first. Let
     // those requests through to the router so the `Allow` header is generated
     // there without requiring a valid signature.
-    if let Some(allowed) = internal_allowed_methods(&path) {
+    if let Some(allowed) = internal_allowed_methods(path) {
         if !allowed.contains(&request.method().as_str()) {
             let response = next.run(request).await;
             return with_version_header(
@@ -669,7 +688,7 @@ async fn authenticate_request(
     // The org-scoped user key resources are read-only. Upstream reports 405
     // before attempting authentication, so a request with an unsupported
     // method must not fail signature verification first.
-    if is_org_user_keys_path(&path) && request.method() != axum::http::Method::GET {
+    if is_org_user_keys_path(path) && request.method() != axum::http::Method::GET {
         let response = next.run(request).await;
         return with_version_header(
             response,
@@ -697,7 +716,7 @@ async fn authenticate_request(
     // required recipe is always 404 for every method, a non-GET is 405 before
     // authentication, and data collector requests may authenticate with the
     // configured shared token instead of a Chef signature.
-    if is_required_recipe_path(&path) {
+    if is_required_recipe_path(path) {
         let enabled = state.config.required_recipe.enabled;
         let method = request.method();
         // Axum's `get()` also serves HEAD. Treat HEAD like GET for the auth
@@ -721,7 +740,7 @@ async fn authenticate_request(
         }
     }
 
-    if is_controls_path(&path) {
+    if is_controls_path(path) {
         // Upstream `oc_chef_wm_controls` halts in `service_available/2`, so it
         // answers 410 before authentication or organization resolution.
         let response = next.run(request).await;
@@ -732,7 +751,7 @@ async fn authenticate_request(
         );
     }
 
-    if is_mcp_path(&path) {
+    if is_mcp_path(path) {
         let response = next.run(request).await;
         return with_version_header(
             response,
@@ -741,7 +760,7 @@ async fn authenticate_request(
         );
     }
 
-    if is_data_collector_path(&path) {
+    if is_data_collector_path(path) {
         let enabled = state.config.data_collector.is_enabled();
         // Upstream rejects non-POST before authentication. Do the same while
         // the route is enabled, even when the caller forgot the token.
@@ -774,7 +793,7 @@ async fn authenticate_request(
         }
     }
 
-    if is_compliance_proxy_path(&path) {
+    if is_compliance_proxy_path(path) {
         let enabled = state.config.compliance_proxy.is_configured();
         let method = request.method();
         // The proxy is GET-only upstream. A disabled proxy is absent from the
@@ -791,7 +810,7 @@ async fn authenticate_request(
         }
     }
 
-    if is_principal_path(&path) {
+    if is_principal_path(path) {
         // The principal resource is unauthenticated upstream but still needs
         // the negotiated API version to choose the v0 vs v1+ response shape.
         let mut request = request;
@@ -806,13 +825,12 @@ async fn authenticate_request(
         );
     }
 
-    if path == "/_status"
-        || path == "/_stats"
-        || path == "/server_api_version"
-        || path == "/id"
-        || path.starts_with("/id/")
-        || path.starts_with("/bookshelf/")
-    {
+    // Paths with their own upstream nginx `location` never reach `location /`,
+    // so they bypass signature authentication. The compatibility surfaces among
+    // them that still read the authenticated principal (validation, required
+    // recipe, data collector, compliance proxy) fall through to the signed path
+    // below.
+    if is_unauthenticated_path(path) {
         let response = next.run(request).await;
         return with_version_header(
             response,
@@ -1139,9 +1157,9 @@ fn authorization_lines(headers: &HeaderMap) -> Result<Vec<&str>, ApiError> {
 }
 
 /// Liveness and metrics endpoints remain available while the API is drained
-/// for maintenance.
+/// for maintenance, and so does the version manifest nginx answers itself.
 fn is_maintenance_exempt(path: &str) -> bool {
-    path == "/_status" || path == "/_stats"
+    path == "/_status" || path == "/_stats" || path == "/version"
 }
 
 /// `/organizations/:org/users/:user/keys` exposes only GET handlers.
@@ -1330,6 +1348,7 @@ fn is_static_asset_path(path: &str) -> bool {
 /// `location /` can serve `index.html`.
 fn is_nginx_only_path(path: &str) -> bool {
     is_static_asset_path(path)
+        || path == "/version"
         || path == "/_status"
         || path == "/_stats"
         || path == "/server_api_version"
@@ -1341,6 +1360,20 @@ fn is_nginx_only_path(path: &str) -> bool {
         || is_data_collector_path(path)
         || is_mcp_path(path)
         || is_compliance_proxy_path(path)
+}
+
+/// `is_nginx_only_path` members that answer without any authenticated
+/// principal.
+///
+/// The rest of them still verify a signature, because their handlers read the
+/// authenticated principal or the nginx-owned token is only one part of the
+/// gate.
+fn is_unauthenticated_path(path: &str) -> bool {
+    is_nginx_only_path(path)
+        && validate_signed_path(path).is_none()
+        && !is_required_recipe_path(path)
+        && !is_data_collector_path(path)
+        && !is_compliance_proxy_path(path)
 }
 
 /// Any `X-Ops-*` header marks a Chef client, even an incomplete signature.

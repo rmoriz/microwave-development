@@ -43,7 +43,7 @@ const SPACE_GROTESK_WOFF2: &[u8] = include_bytes!("../assets/fonts/space-grotesk
 
 /// The client version headers decide between the page and the JSON API, so a
 /// shared cache must key on them.
-const VARY_PAGE: &str = "X-Chef-Version, X-Cinc-Version";
+pub const VARY_VALUE: &str = "X-Chef-Version, X-Cinc-Version";
 
 /// The landing page itself.
 pub fn page() -> Response {
@@ -54,7 +54,7 @@ pub fn page() -> Response {
     );
     response
         .headers_mut()
-        .insert(header::VARY, HeaderValue::from_static(VARY_PAGE));
+        .insert(header::VARY, HeaderValue::from_static(VARY_VALUE));
     response
 }
 
@@ -108,6 +108,23 @@ pub fn not_found() -> Response {
         Body::from("Not Found\n"),
     );
     *response.status_mut() = StatusCode::NOT_FOUND;
+    response
+}
+
+/// Answer for a static path whose route only accepts `GET` and `HEAD`.
+///
+/// The static surface never mutates, so an unsupported method is a plain `405`
+/// that keeps the hardening header block instead of the JSON API shape.
+pub fn method_not_allowed() -> Response {
+    let mut response = static_response(
+        "text/plain; charset=utf-8",
+        CACHE_PAGE,
+        Body::from("Method Not Allowed\n"),
+    );
+    *response.status_mut() = StatusCode::METHOD_NOT_ALLOWED;
+    response
+        .headers_mut()
+        .insert(header::ALLOW, HeaderValue::from_static("GET, HEAD"));
     response
 }
 
