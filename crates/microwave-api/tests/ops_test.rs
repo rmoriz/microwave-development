@@ -217,6 +217,48 @@ async fn stats_renders_request_histograms() {
     assert!(body.contains("# TYPE microwave_server_request_duration_seconds histogram"));
     assert!(body.contains("microwave_server_request_duration_seconds_count{route=\"/organizations/{organization}/nodes\",method=\"GET\",org=\"acme\",status=\"401\"} 1"));
     assert!(body.contains("le=\"+Inf\""));
+    let sum = body
+        .lines()
+        .find(|line| line.starts_with("microwave_server_request_duration_seconds_sum{route="))
+        .expect("a sum sample");
+    let sum: f64 = sum.rsplit(' ').next().unwrap().parse().unwrap();
+    assert!(sum > 0.0, "the recorded duration is summed");
+    let labels = sum_labels(&body);
+    let infinity = bucket_value(&body, &labels, "+Inf");
+    assert_eq!(
+        infinity,
+        count_value(&body, &labels),
+        "the +Inf slot is the count"
+    );
+}
+
+fn sum_labels(body: &str) -> String {
+    body.lines()
+        .find_map(|line| {
+            line.strip_prefix("microwave_server_request_duration_seconds_sum{")?
+                .split_once("} ")
+                .map(|(labels, _)| labels.to_string())
+        })
+        .expect("a sum sample")
+}
+
+fn bucket_value(body: &str, labels: &str, le: &str) -> u64 {
+    let prefix =
+        format!("microwave_server_request_duration_seconds_bucket{{{labels},le=\"{le}\"}} ");
+    let line = body
+        .lines()
+        .find(|line| line.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("bucket {le}"));
+    line[prefix.len()..].parse().unwrap()
+}
+
+fn count_value(body: &str, labels: &str) -> u64 {
+    let prefix = format!("microwave_server_request_duration_seconds_count{{{labels}}} ");
+    let line = body
+        .lines()
+        .find(|line| line.starts_with(&prefix))
+        .expect("a count sample");
+    line[prefix.len()..].parse().unwrap()
 }
 
 #[tokio::test]
@@ -245,6 +287,13 @@ async fn collapsed_series_render_one_label_set_each() {
         );
     }
     assert!(body.contains("route=\"_other\""));
+    // One 1 ms record: the sum is exact and `+Inf` equals the count.
+    let labels = "route=\"/r0\",method=\"GET\",org=\"_default\",status=\"200\"";
+    assert!(body.contains(&format!(
+        "microwave_server_request_duration_seconds_sum{{{labels}}} 0.001"
+    )));
+    assert_eq!(bucket_value(&body, labels, "+Inf"), 1);
+    assert_eq!(count_value(&body, labels), 1);
 }
 
 #[tokio::test]
