@@ -9,10 +9,12 @@ durations per route template and status code, MCP tool calls and durations,
 converge outcomes, store, search and object-store latency, and the keygen,
 dependency and pool gauges.
 
-The export is a second sink. `/_stats` keeps rendering the same numbers in
-Prometheus text form and stays the scrape surface when no collector exists;
-both surfaces come from one instrument catalogue
-([`crates/microwave-otel/src/lib.rs`](../crates/microwave-otel/src/lib.rs)).
+The export is a second sink. `/_stats` keeps rendering *some* of the same
+numbers — the request histogram, the legacy counters, uptime, maintenance,
+build info, dependencies, keygen and pool — in Prometheus text form, and stays
+the scrape surface when no collector exists; MCP, converge, store, search and
+object store go out over OTLP only. Both surfaces come from one instrument
+catalogue ([`crates/microwave-otel/src/lib.rs`](../crates/microwave-otel/src/lib.rs)).
 
 Metrics are opt-in and **off by default**. A default deployment makes no
 outbound connection.
@@ -59,14 +61,33 @@ interval after the start.
    exporters:
      prometheus:
        endpoint: 0.0.0.0:8889
+       send_timestamps: true
+       translation_strategy: UnderscoreEscapingWithSuffixes
+
+   extensions:
+     health_check:
+       endpoint: 0.0.0.0:13133
 
    service:
+     extensions: [health_check]
      pipelines:
        metrics:
          receivers: [otlp]
          processors: [batch]
          exporters: [prometheus]
+     telemetry:
+       metrics:
+         readers:
+           - pull:
+               exporter:
+                 prometheus:
+                   host: 0.0.0.0
+                   port: 8888
    ```
+
+   The `batch` processor only batches. Neither a `memory_limiter` processor nor
+   an exporter `sending_queue` is part of this reference config, and the
+   Prometheus exporter keeps no retention of its own.
 
 2. Point the server at the collector's base URL and switch the export on:
 
@@ -90,6 +111,7 @@ interval after the start.
 
    ```sh
    microwave-ctl --config /etc/microwave/microwave.toml check-config
+   systemctl restart microwave
    ```
 
    `check-config` and `serve --check` validate the block without dialing the
@@ -97,7 +119,8 @@ interval after the start.
    interval, timeout, gauge refresh and shutdown budget, the header syntax, and
    the `https`-only TLS keys (below).
 
-5. Confirm the export. `GET /_stats` grows an `otel` object:
+5. Confirm the export. `GET /_stats` always carries an `otel` object, so it
+   reports the state:
 
    ```json
    "otel": { "enabled": true, "endpoint": "http://otel-collector:4318", "last_export_error": null }
@@ -125,8 +148,8 @@ The secret holds one `Name: value` entry per line; a value may be empty and the
 name may not. The stored headers are used only when `otel.headers` is empty, so
 a TOML list or `MW_OTEL__HEADERS` wins. The block is validated again after the
 secret is read, so a malformed stored header fails startup rather than the first
-export. `microwave-server config` and the log lines print header names with
-`***` values.
+export. `microwave-server config` prints header names with `***` values; no log
+line includes them.
 
 ### TLS
 
@@ -147,32 +170,32 @@ rejected on a plain `http` one. TLS goes through rustls.
 
 ## Metric reference
 
-The left column is the OTLP instrument name and its attributes; the right column
-is the Prometheus spelling the same instrument gets from the collector's
-Prometheus exporter, and which `/_stats` uses for the instruments it renders.
-Names with a `_total` suffix are monotonic counters and are queried with
-`rate()`.
+The two name columns are the two surfaces. `OTLP/Prometheus (collector)` is the
+instrument name and the spelling the collector's Prometheus exporter gives it;
+`/_stats` is the name on the local scrape surface, and `—` where `/_stats` does
+not render the instrument at all. Names with a `_total` suffix are monotonic
+counters and are queried with `rate()`.
 
-| Instrument | Type | Attributes | Prometheus name |
-|---|---|---|---|
-| `http.server.request.duration` | histogram (s) | `http.request.method`, `http.route`, `http.response.status_code`, `url.scheme`, `microwave.organization` | `microwave_server_request_duration_seconds` |
-| `microwave.server.requests` | observable counter | — | `microwave_server_requests_total` |
-| `microwave.server.responses` | observable counter | `class` = `2xx`/`4xx`/`5xx` | `microwave_server_responses_total` |
-| `microwave.server.authentication.failures` | observable counter | — | `microwave_server_authentication_failures_total` |
-| `microwave.server.uptime` | observable gauge | — | `microwave_server_uptime_seconds` |
-| `microwave.server.maintenance` | observable gauge | — | `microwave_server_maintenance` |
-| `microwave.server.nodes` | observable gauge | — | `microwave_server_nodes` |
-| `microwave.server.db.pool.connections` | observable gauge | `state` = `idle`/`in_use` | `microwave_server_db_pool_connections` |
-| `microwave.server.db.pool.connections.max` | observable gauge | — | `microwave_server_db_pool_connections_max` |
-| `microwave.server.build.info` | observable gauge (1) | `service.version`, `indexing.mode` | `microwave_server_build_info` |
-| `microwave.server.dependencies` | observable gauge | `dependency`, `state` = `up`/`down` | `microwave_server_dependency_up` |
-| `microwave.keygen.capacity`, `microwave.keygen.cached`, `microwave.keygen.workers`, `microwave.keygen.worker_failures`, `microwave.keygen.warm_up_failures`, `microwave.keygen.generated_on_demand`, `microwave.keygen.worker_healthy` | observable gauges | — | `microwave_server_keygen_*` |
-| `microwave.mcp.tool.calls` | counter | `tool`, `outcome`, `microwave.organization` | `microwave_server_mcp_tool_calls_total` |
-| `microwave.mcp.tool.duration` | histogram (s) | `tool`, `outcome`, `microwave.organization` | `microwave_server_mcp_tool_duration_seconds` |
-| `microwave.converge.runs` | counter | `status`, `microwave.organization` | `microwave_server_converge_runs_total` |
-| `microwave.store.operation.duration` | histogram (s) | `db.system`, `db.operation`, `outcome` | `microwave_server_store_operation_duration_seconds` |
-| `microwave.search.request.duration` | histogram (s) | `backend`, `outcome` | `microwave_server_search_request_duration_seconds` |
-| `microwave.object_store.request.duration` | histogram (s) | `backend`, `operation`, `outcome` | `microwave_server_object_store_request_duration_seconds` |
+| Instrument | Type | Attributes | OTLP/Prometheus (collector) | `/_stats` |
+|---|---|---|---|---|
+| `http.server.request.duration` | histogram (s) | `http.request.method`, `http.route`, `http.response.status_code`, `url.scheme`, `microwave.organization` | `http_server_request_duration_seconds` | `microwave_server_request_duration_seconds` (short `org` label) |
+| `microwave.server.requests` | observable counter | — | `microwave_server_requests_total` | `microwave_server_requests_total` |
+| `microwave.server.responses` | observable counter | `class` = `2xx`/`4xx`/`5xx` | `microwave_server_responses_total` | `microwave_server_responses_total` |
+| `microwave.server.authentication.failures` | observable counter | — | `microwave_server_authentication_failures_total` | `microwave_server_authentication_failures_total` |
+| `microwave.server.uptime` | observable gauge | — | `microwave_server_uptime_seconds` | `microwave_server_uptime_seconds` |
+| `microwave.server.maintenance` | observable gauge | — | `microwave_server_maintenance` | `microwave_server_maintenance` |
+| `microwave.server.nodes` | observable gauge | — | `microwave_server_nodes` | `microwave_server_nodes` |
+| `microwave.server.db.pool.connections` | observable gauge | `state` = `idle`/`in_use` | `microwave_server_db_pool_connections` | `microwave_server_db_pool_connections` |
+| `microwave.server.db.pool.connections.max` | observable gauge | — | `microwave_server_db_pool_connections_max` | `microwave_server_db_pool_connections_max` |
+| `microwave.server.build.info` | observable gauge (1) | `service.version`, `indexing.mode` | `microwave_server_build_info` | `microwave_server_build_info` |
+| `microwave.server.dependencies` | observable gauge | `dependency`, `state` = `up`/`down` | `microwave_server_dependencies` | `microwave_server_dependency_up` |
+| `microwave.keygen.capacity`, `microwave.keygen.cached`, `microwave.keygen.workers`, `microwave.keygen.worker_failures`, `microwave.keygen.warm_up_failures`, `microwave.keygen.generated_on_demand`, `microwave.keygen.worker_healthy` | observable gauges | — | `microwave_keygen_*` | `microwave_server_keygen_*` |
+| `microwave.mcp.tool.calls` | counter | `tool`, `outcome`, `microwave.organization` | `microwave_mcp_tool_calls_total` | — |
+| `microwave.mcp.tool.duration` | histogram (s) | `tool`, `outcome`, `microwave.organization` | `microwave_mcp_tool_duration_seconds` | — |
+| `microwave.converge.runs` | counter | `status`, `microwave.organization` | `microwave_converge_runs_total` | — |
+| `microwave.store.operation.duration` | histogram (s) | `db.system`, `db.operation`, `outcome` | `microwave_store_operation_duration_seconds` | — |
+| `microwave.search.request.duration` | histogram (s) | `backend`, `outcome` | `microwave_search_request_duration_seconds` | — |
+| `microwave.object_store.request.duration` | histogram (s) | `backend`, `operation`, `outcome` | `microwave_object_store_request_duration_seconds` | — |
 
 `http.route` is a route template, never a path with IDs, so the label set stays
 bounded. `http.response.status_code` is the exact code, so `401`, `403`, `404`
@@ -199,6 +222,10 @@ same outcome and duration values; the endpoint itself is described in
 `microwave.organization` is on the request histogram because the server is
 multi-org: the same route can be slow for one organization and fine for another.
 Aggregate it away for the whole-server view and group by it for the per-org one.
+Requests on a default-org compatibility path (`/nodes`, `/environments`, …)
+carry no organization segment and are reported as `_default`
+([`crates/microwave-metrics/src/route.rs`](../crates/microwave-metrics/src/route.rs)),
+so a chef-client fleet lands in that bucket.
 
 Prometheus escapes the dots to underscores, so the label is
 `microwave_organization` there. Whole-server, the p95 per route:
@@ -212,7 +239,7 @@ histogram_quantile(
 )
 ```
 
-Per organization, the same quantile:
+Per organization across all routes, the same quantile:
 
 ```promql
 histogram_quantile(
@@ -235,9 +262,10 @@ probes and every gauge-refresh tick hit the search and object-store clients too,
 so both add to the count at the probe and refresh cadence.
 
 `/_stats` spells the same request histogram
-`microwave_server_request_duration_seconds`, with the short `org` label. The
-exported series use the OTel semconv name and the dotted attribute, so a
-dashboard that reads both should not mix them up.
+`microwave_server_request_duration_seconds`, with the short `org` label; read it
+with `curl -s 'http://127.0.0.1:8080/_stats?format=prometheus'`, because a plain
+`/_stats` is JSON. The exported series use the OTel semconv name and the dotted
+attribute, so a dashboard that reads both should not mix them up.
 
 ## Cardinality
 
@@ -246,26 +274,34 @@ Method and status are bounded by the protocol, the route is a template, and the
 organization count is bounded by the deployment. Object names, node names,
 client names and cookbook names are never labels for that reason.
 
-Both sinks enforce a hard per-instrument limit:
+Both sinks enforce a hard per-instrument limit: `2,000` series for every
+instrument, `10,000` for `http.server.request.duration`, which multiplies route
+by org. What happens at the limit differs per sink:
 
-- `2,000` series for every instrument, `10,000` for
-  `http.server.request.duration`, which multiplies route by org;
-- once an instrument is at its limit, a new label set is not stored. It
-  collapses into one overflow series whose unbounded label reads `_other` —
-  `route="_other"` on the request histogram, `tool="_other"` for MCP,
-  `operation="_other"` for the store and object store, `backend="_other"` for
-  search — counted once per remaining label combination.
+- `/_stats` keeps the series it already has and does not store a new label set;
+  the new set collapses onto one series whose unbounded label reads `_other` —
+  `route="_other"` on the request histogram. The local store collapses the same
+  way on `tool`, `operation` and `backend`, which `/_stats` does not render.
+- The export collapses the *whole attribute set* into a single overflow series
+  per instrument, so it adds one series, not one per remaining label
+  combination, and that series carries `otel.metric.overflow="true"`
+  (`otel_metric_overflow="true"` in Prometheus).
 
-`_other` in a busy dashboard is the symptom: the deployment is over budget,
-usually through an organization count that grew or a client generating unusual
-routes. The rule for adding a label is that you can prove it is bounded.
+`_other` on `/_stats` is the symptom: the deployment is over budget, usually
+through an organization count that grew or a client generating unusual routes.
+In the export the symptom is an `otel_metric_overflow="true"` series whose count
+keeps rising. Both mean the same thing, and the rule for adding a label is that
+you can prove it is bounded.
 
 ## Watching it locally
 
 The root `docker-compose.yml` carries an `observability` profile: an OTLP
 collector on `4318`, its Prometheus exporter on `8889`, and a Prometheus on
-`9090`. The compose `microwave` service already sets `MW_OTEL__ENABLED=true` and
-points the endpoint at the collector, so the profile is the only switch:
+`9090`. Only `4318`, `13133` and `9090` are published on the host; `8889` and
+the collector's own telemetry on `8888` stay inside the compose network, where
+Prometheus reaches them. The compose `microwave` service already sets
+`MW_OTEL__ENABLED=true` and points the endpoint at the collector, so the profile
+is the only switch:
 
 ```sh
 docker compose --profile observability up -d --build
@@ -289,7 +325,11 @@ curl -s http://127.0.0.1:9090/api/v1/query \
 ```
 
 `/_stats` stays reachable next to it and shows the same histogram under its
-`microwave_server_*` name, so a single request appears on both surfaces.
+`microwave_server_*` name, so a single request appears on both surfaces:
+
+```sh
+curl -s 'http://127.0.0.1:8080/_stats?format=prometheus'
+```
 
 Tear the profile down again when you are done; `down -v --rmi local` removes
 the containers and volumes, and the two pulled images keep their upstream tags:
@@ -316,13 +356,16 @@ protocol mismatch (gRPC listener, protobuf disabled), a wrong signal path, or a
 extension answers `curl -fsS http://<collector>:13133/`.
 
 **Series are dropped at the collector.** Memory limiters and the exporter queue
-drop data under pressure before it ever reaches the backend. In the reference
-profile the collector publishes its own telemetry on `8888` and Prometheus
-scrapes it, so `otelcol_receiver_refused_metric_points` and
+drop data under pressure before it ever reaches the backend. Neither a
+`memory_limiter` processor nor an exporter `sending_queue` is in the reference
+config, so add a limiter or a queue when you need them. In the reference profile
+the collector publishes its own telemetry on `8888` and Prometheus scrapes it,
+so `otelcol_receiver_refused_metric_points` and
 `otelcol_exporter_send_failed_metric_points` are visible next to the data. Raise
-the limiter, the queue, or shorten the retention — but check
-[Cardinality](#cardinality) first: a `_other` series set that grew is usually a
-label problem, not a collector problem.
+the limiter or the queue — the reference config keeps no retention of its own —
+but check [Cardinality](#cardinality) first: an overflow series set that grew
+(`_other` on `/_stats`, `otel_metric_overflow="true"` in the export) is usually
+a label problem, not a collector problem.
 
 **Nothing arrives at all.** Confirm the export is on in the running process, not
 just in the file: `/_stats` must show `"enabled": true`, and a restart is

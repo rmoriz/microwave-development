@@ -300,8 +300,7 @@ enabled = false
 # reporting_url = "https://telemetry.example.com/ingest"
 interval_seconds = 86400
 
-# OpenTelemetry metrics (experimental). See docs/opentelemetry.md for the
-# operator guide.
+# OpenTelemetry metrics. See docs/opentelemetry.md for the operator guide.
 # [otel]
 # # Off by default: enabling this is the first outbound connection Microwave makes.
 # enabled = false

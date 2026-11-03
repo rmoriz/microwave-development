@@ -2005,12 +2005,15 @@ step.
 
 ## 12. Health, status, and logs
 
+Metric export to an OpenTelemetry collector, and the `otel` object of
+`/_stats`, are covered in [`./opentelemetry.md`](./opentelemetry.md).
+
 ### Endpoints
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
 | `GET /_status` | none | `{"status":"pong","upstreams":{"chef_sql":"pong","chef_index":"pong","bookshelf":"pong"},"upstream_details":{...},"keygen":{"status":"ok","cached":3,"capacity":3,"workers":1,"worker_healthy":true,"worker_failures":0,"warm_up_failures":0,"generated_on_demand":0},"indexing":{"mode":"embedded"}}`. |
-| `GET /_stats` | none | Request counters, authentication failures, uptime, maintenance state, and node count. JSON by default, Prometheus text with `Accept: text/plain` or `?format=prometheus`. |
+| `GET /_stats` | none | Request counters, authentication failures, uptime, maintenance state, node count, and the `otel` object: `enabled`, the endpoint without credentials (`null` while disabled), and `last_export_error`. JSON by default, Prometheus text with `Accept: text/plain` or `?format=prometheus`. |
 | `GET /server_api_version` | none | `min_api_version` / `max_api_version` (`0`/`2`). |
 | `GET /license` | `signed` | Node license counters: configured limit, current node count, `limit_exceeded`, and the upgrade URL. Telemetry is disabled by default. |
 | `POST /organizations/:org/data-collector` | `signed` or `x-data-collector-token` | Present when `data_collector.root_url` is configured or `data_collector.store` is `local`/`both`. When `store` is `forward`/`both` and `root_url` is configured, forwards the JSON body and preserves the collector's status and body. `local` returns `200 {}` without forwarding while still storing `run_converge` reports; `both` also stores them. Timeouts map to `504`, other upstream failures to `502`; a disabled endpoint returns `404`. |

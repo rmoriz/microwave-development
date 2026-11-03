@@ -2207,7 +2207,7 @@ summary = "OpenTelemetry export is configured in `[otel]`, off by default, and f
 area = "deployment"
 status = "verified"
 surfaces = [ { path = "docs/opentelemetry.md", needle = "off by default" } ]
-verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "pub struct OtelConfig" }
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "enabled: false" }
 
 [[claim]]
 id = "otel-guide-published"
@@ -2230,7 +2230,7 @@ verify = { kind = "grep", path = "crates/microwave-otel/src/recorder.rs", patter
 
 [[claim]]
 id = "otel-cardinality-cap"
-summary = "Per-instrument series caps collapse overflow into an `_other` series."
+summary = "Per-instrument series caps collapse overflow instead of storing new label sets: `_other` on `/_stats` and `otel_metric_overflow=\"true\"` in the export."
 area = "docs"
 status = "verified"
 surfaces = [ { path = "docs/opentelemetry.md", needle = "_other" } ]
@@ -2242,4 +2242,4 @@ summary = "Collector headers are supplied through the secret store, not the conf
 area = "deployment"
 status = "verified"
 surfaces = [ { path = "docs/opentelemetry.md", needle = "set-secret otel headers" } ]
-verify = { kind = "grep", path = "crates/microwave-ctl/src/secrets.rs", pattern = "\\[\"headers\"\\]" }
+verify = { kind = "grep", path = "crates/microwave-ctl/src/secrets.rs", pattern = "\"otel\", &\\[\"headers\"\\]" }
