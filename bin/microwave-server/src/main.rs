@@ -163,12 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     config.object_store.secret.clone().unwrap_or_default()
                 }
             };
-            let object_store = build_object_store(&config, &secret)?;
-            let object_store: Arc<dyn ObjectStore + Send + Sync> = Arc::new(TimedObjectStore::new(
-                object_store,
-                metrics.clone(),
-                object_store_backend_label(config.object_store.backend),
-            ));
+            let object_store = build_timed_object_store(&config, &secret, metrics.clone())?;
 
             if check {
                 // Never print the database URL: it may contain credentials.
@@ -480,6 +475,36 @@ fn object_store_backend_label(backend: ObjectStoreBackend) -> &'static str {
     }
 }
 
+/// Wrap a built object store in the timing decorator. The label comes from the
+/// configured backend, not from the store itself, so it never leaks a path.
+fn timed_object_store(
+    store: Arc<dyn ObjectStore + Send + Sync>,
+    metrics: Arc<Metrics>,
+    backend: ObjectStoreBackend,
+) -> Arc<dyn ObjectStore + Send + Sync> {
+    Arc::new(TimedObjectStore::new(
+        store,
+        metrics,
+        object_store_backend_label(backend),
+    ))
+}
+
+/// Build the configured object store and wrap it in the timing decorator.
+///
+/// The wrap lives here, next to the build, so the one call site cannot drop it
+/// while the store keeps working silently unmeasured.
+fn build_timed_object_store(
+    config: &Config,
+    secret: &str,
+    metrics: Arc<Metrics>,
+) -> Result<Arc<dyn ObjectStore + Send + Sync>, Box<dyn std::error::Error>> {
+    Ok(timed_object_store(
+        build_object_store(config, secret)?,
+        metrics,
+        config.object_store.backend,
+    ))
+}
+
 fn build_object_store(
     config: &Config,
     secret: &str,
@@ -753,11 +778,12 @@ async fn reload_tls(
 #[cfg(test)]
 mod tests {
     use super::{
-        local_object_store_base_url, redact_config_for_output, redact_database_url,
-        spawn_gauge_refresh, warn_implicit_mcp_superuser, PoolGauges,
+        build_timed_object_store, local_object_store_base_url, object_store_backend_label,
+        redact_config_for_output, redact_database_url, spawn_gauge_refresh,
+        warn_implicit_mcp_superuser, PoolGauges,
     };
     use microwave_api::AppState;
-    use microwave_config::{Config, McpOrgConfig};
+    use microwave_config::{Config, McpOrgConfig, ObjectStoreBackend};
     use microwave_metrics::Metrics;
     use microwave_objectstore::{LocalObjectStore, ObjectStore};
     use microwave_store::{NewNode, SqliteStore};
@@ -911,6 +937,40 @@ mod tests {
                 max: pool.max,
             })
         );
+    }
+
+    /// One label per configured backend, and never the path or endpoint.
+    #[test]
+    fn object_store_backend_labels_are_bounded() {
+        for (backend, expected) in [
+            (ObjectStoreBackend::Local, "local"),
+            (ObjectStoreBackend::S3, "s3"),
+            (ObjectStoreBackend::Garage, "garage"),
+        ] {
+            assert_eq!(object_store_backend_label(backend), expected);
+        }
+    }
+
+    /// The built object store reaches the metrics through the timer, and the
+    /// label comes from the configured backend rather than the store. This goes
+    /// through the same helper the `serve` path uses, so dropping the wrap
+    /// there fails here.
+    #[test]
+    fn timed_object_store_wraps_the_store_with_the_backend_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.object_store.backend = ObjectStoreBackend::Local;
+        config.paths.data_dir = dir.path().to_string_lossy().into_owned();
+        let metrics = Arc::new(Metrics::new());
+
+        let store = build_timed_object_store(&config, "secret", metrics.clone()).unwrap();
+        store.health_check().unwrap();
+
+        let series = metrics.object_store_series();
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0].backend, "local");
+        assert_eq!(series[0].operation, "health_check");
+        assert_eq!(series[0].outcome, "ok");
     }
 
     #[test]

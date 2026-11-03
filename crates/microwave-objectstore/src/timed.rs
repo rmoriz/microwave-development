@@ -97,8 +97,6 @@ impl ObjectStore for TimedObjectStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use microwave_metrics::Metrics;
-    use std::sync::Arc;
 
     /// A store whose only interesting answer is an error.
     struct FailingStore;
@@ -165,7 +163,10 @@ mod tests {
         let metrics = Arc::new(Metrics::new());
         let store = TimedObjectStore::new(Arc::new(FailingStore), metrics.clone(), "local");
         assert!(store.metadata("org", "checksum").unwrap().is_none());
-        assert_eq!(metrics.object_store_series()[0].operation, "metadata");
+        let entry = &metrics.object_store_series()[0];
+        assert_eq!(entry.backend, "local");
+        assert_eq!(entry.operation, "metadata");
+        assert_eq!(entry.outcome, "ok");
     }
 
     #[test]
@@ -173,7 +174,10 @@ mod tests {
         let metrics = Arc::new(Metrics::new());
         let store = TimedObjectStore::new(Arc::new(FailingStore), metrics.clone(), "local");
         store.health_check().unwrap();
-        assert_eq!(metrics.object_store_series()[0].operation, "health_check");
+        let entry = &metrics.object_store_series()[0];
+        assert_eq!(entry.backend, "local");
+        assert_eq!(entry.operation, "health_check");
+        assert_eq!(entry.outcome, "ok");
     }
 
     #[test]

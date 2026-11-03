@@ -351,4 +351,51 @@ mod tests {
         assert!(state.mailer.is_enabled());
         assert!(state.oauth_state().mailer.is_enabled());
     }
+
+    /// The configured backend is wrapped in the timing decorator, so a search
+    /// through the state lands in the registry while `name()` still reports the
+    /// real backend.
+    #[tokio::test]
+    async fn with_metrics_wraps_the_search_backend_in_the_timer() {
+        use crate::search::{IndexKind, SearchQuery, SearchRequest};
+        use crate::state::AppState;
+        use microwave_config::Config;
+        use microwave_store::SqliteStore;
+        use std::sync::Arc;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(SqliteStore::open(&temp_dir.path().join("test.db")).unwrap());
+        let config = Arc::new(Config::default());
+        let object_store: Arc<dyn microwave_objectstore::ObjectStore + Send + Sync> =
+            Arc::new(microwave_objectstore::LocalObjectStore::new(
+                temp_dir.path().join("objects"),
+                "secret",
+                "http://0.0.0.0:8000",
+            ));
+
+        let state = AppState::with_metrics(
+            store,
+            config,
+            object_store,
+            Arc::new(microwave_metrics::Metrics::new()),
+        )
+        .unwrap();
+
+        let request = SearchRequest {
+            org_id: "acme".into(),
+            kind: IndexKind::Node,
+            query: SearchQuery::MatchAll,
+            start: 0,
+            rows: 10,
+            actor_authz_id: None,
+        };
+        state.search.search(&request).await.unwrap();
+
+        assert_eq!(state.search.name(), "embedded");
+        let series = state.metrics.search_series();
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0].backend, "embedded");
+        assert_eq!(series[0].outcome, "ok");
+    }
 }

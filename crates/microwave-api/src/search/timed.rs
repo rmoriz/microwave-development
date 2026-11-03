@@ -101,13 +101,13 @@ impl SearchBackend for TimedSearch {
 mod tests {
     use super::*;
     use crate::search::{EmbeddedSearch, IndexKind, SearchQuery};
-    use microwave_metrics::Metrics;
-    use std::sync::Arc;
 
     /// An empty store is enough: the embedded backend answers from the store.
-    fn store() -> Arc<dyn microwave_store::MetadataStore> {
+    /// The guard stays with the caller so the directory outlives the store.
+    fn store() -> (tempfile::TempDir, Arc<dyn microwave_store::MetadataStore>) {
         let dir = tempfile::tempdir().unwrap();
-        Arc::new(microwave_store::SqliteStore::open(&dir.path().join("metrics.db")).unwrap())
+        let store = microwave_store::SqliteStore::open(&dir.path().join("metrics.db")).unwrap();
+        (dir, Arc::new(store))
     }
 
     fn request() -> SearchRequest {
@@ -150,7 +150,8 @@ mod tests {
     #[tokio::test]
     async fn searches_record_backend_and_outcome() {
         let metrics = Arc::new(Metrics::new());
-        let backend = TimedSearch::new(Arc::new(EmbeddedSearch::new(store())), metrics.clone());
+        let (_dir, store) = store();
+        let backend = TimedSearch::new(Arc::new(EmbeddedSearch::new(store)), metrics.clone());
         let _ = backend.search(&request()).await;
         let entry = &metrics.search_series()[0];
         assert_eq!(entry.backend, "embedded");
@@ -168,15 +169,19 @@ mod tests {
     #[tokio::test]
     async fn health_check_reaches_the_inner_default() {
         let metrics = Arc::new(Metrics::new());
-        let backend = TimedSearch::new(Arc::new(EmbeddedSearch::new(store())), metrics.clone());
+        let (_dir, store) = store();
+        let backend = TimedSearch::new(Arc::new(EmbeddedSearch::new(store)), metrics.clone());
         backend.health_check().await.unwrap();
-        assert_eq!(metrics.search_series()[0].outcome, "ok");
+        let entry = &metrics.search_series()[0];
+        assert_eq!(entry.backend, "embedded");
+        assert_eq!(entry.outcome, "ok");
     }
 
     #[test]
     fn name_reports_the_inner_backend() {
         let metrics = Arc::new(Metrics::new());
-        let backend = TimedSearch::new(Arc::new(EmbeddedSearch::new(store())), metrics);
+        let (_dir, store) = store();
+        let backend = TimedSearch::new(Arc::new(EmbeddedSearch::new(store)), metrics);
         assert_eq!(backend.name(), "embedded");
         assert!(!backend.supports_purge());
     }
