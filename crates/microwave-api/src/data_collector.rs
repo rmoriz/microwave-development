@@ -78,6 +78,16 @@ async fn forward(
     let storing = collector.stores_locally();
     let forwarding = collector.is_configured() && collector.forwards();
 
+    // Parsed once for both branches: the converge counter also has to count for
+    // forward-only deployments, which never enter the `storing` block. A parse
+    // error stays fatal for local storage only; forwarding relays the body
+    // verbatim as before. The request path is the org label because the
+    // forwarding branch resolves no organization.
+    let prepared = crate::report_ingest::prepare_node_run(&body);
+    if let Ok(Some(run)) = &prepared {
+        state.metrics.record_converge(&organization, &run.status);
+    }
+
     if storing {
         let org = match state.store.find_org(&organization).await {
             Ok(Some(org)) => org,
@@ -88,9 +98,8 @@ async fn forward(
             }
         };
 
-        match crate::report_ingest::prepare_node_run(&body) {
+        match prepared {
             Ok(Some(run)) => {
-                state.metrics.record_converge(&org.name, &run.status);
                 let new_run = microwave_store::NewNodeRun {
                     node_name: &run.node_name,
                     run_id: &run.run_id,

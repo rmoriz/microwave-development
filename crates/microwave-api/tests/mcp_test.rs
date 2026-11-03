@@ -2203,5 +2203,5 @@ async fn a_failing_mcp_tool_records_an_error_outcome() {
         .metrics
         .mcp_series()
         .iter()
-        .any(|entry| entry.tool == "get_node" && entry.outcome != "ok"));
+        .any(|entry| entry.tool == "get_node" && entry.outcome == "error"));
 }

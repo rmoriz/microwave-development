@@ -129,3 +129,33 @@ async fn converge_runs_record_their_status() {
         .iter()
         .any(|entry| entry.status == "success" && entry.org == "acme"));
 }
+
+/// A throwaway upstream that acknowledges any forwarded payload, so a
+/// forward-only run finishes quickly and answers 2xx.
+async fn stub_collector() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = axum::Router::new().fallback(|| async { "{}" });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{address}/data-collector/v0/")
+}
+
+/// `Forward` is the shipped default and stores nothing locally, so the counter
+/// has to come from the parse instead of the storage branch.
+#[tokio::test]
+async fn converging_forward_only_still_records_the_status() {
+    let mut config = Config::default();
+    assert_eq!(config.data_collector.store, DataCollectorStore::Forward);
+    config.data_collector.root_url = Some(stub_collector().await);
+    config.data_collector.token = Some("t".into());
+    let state = support::state_with_config(config);
+    support::add_org(&state, "acme").await;
+    let app = support::app(state.clone());
+    post_run_converge(&app, "acme", "success").await;
+    let series = state.metrics.converge_series();
+    assert!(series
+        .iter()
+        .any(|entry| entry.status == "success" && entry.org == "acme"));
+}
