@@ -192,7 +192,7 @@ counters and are queried with `rate()`.
 | `microwave.keygen.capacity`, `microwave.keygen.cached`, `microwave.keygen.workers`, `microwave.keygen.worker_failures`, `microwave.keygen.warm_up_failures`, `microwave.keygen.generated_on_demand`, `microwave.keygen.worker_healthy` | observable gauges | — | `microwave_keygen_*` | `microwave_server_keygen_*` |
 | `microwave.mcp.tool.calls` | counter | `tool`, `outcome`, `microwave.organization` | `microwave_mcp_tool_calls_total` | — |
 | `microwave.mcp.tool.duration` | histogram (s) | `tool`, `outcome`, `microwave.organization` | `microwave_mcp_tool_duration_seconds` | — |
-| `microwave.converge.runs` | counter | `status`, `microwave.organization` | `microwave_converge_runs_total` | — |
+| `microwave.converge.runs` | counter | `status`, `microwave.organization` | `microwave_converge_runs_total` | `status` is `success`, `failure`, `unknown` or `other` |
 | `microwave.store.operation.duration` | histogram (s) | `db.system`, `db.operation`, `outcome` | `microwave_store_operation_duration_seconds` | `outcome` is `ok`, `error` or `cancelled` (guard dropped before finishing) |
 | `microwave.search.request.duration` | histogram (s) | `backend`, `outcome` | `microwave_search_request_duration_seconds` | — |
 | `microwave.object_store.request.duration` | histogram (s) | `backend`, `operation`, `outcome` | `microwave_object_store_request_duration_seconds` | — |

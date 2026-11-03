@@ -274,6 +274,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Bound a converge status to the values the ingest knows plus `other`.
+fn converge_status(status: &str) -> &str {
+    match status {
+        "success" | "failure" | "unknown" => status,
+        _ => "other",
+    }
+}
+
 impl Metrics {
     pub fn new() -> Self {
         Self {
@@ -374,7 +382,11 @@ impl Metrics {
     }
 
     /// Count a converge run.
+    ///
+    /// The payload's `status` is client text, so only the three known values
+    /// keep their own series; anything else shares `other`.
     pub fn record_converge(&self, org: &str, status: &str) {
+        let status = converge_status(status);
         self.converge.increment(ConvergeSeries {
             org: org.to_string(),
             status: status.to_string(),
@@ -649,6 +661,20 @@ mod tests {
         assert_eq!(metrics.store_series()[0].operation, "find_node");
         assert_eq!(metrics.search_series()[0].backend, "embedded");
         assert_eq!(metrics.object_store_series()[0].outcome, "error");
+    }
+
+    #[test]
+    fn an_unbounded_converge_status_collapses_to_one_series() {
+        let metrics = Metrics::new();
+        for status in ["success", "failure", "unknown", "aborted"] {
+            metrics.record_converge("acme", status);
+        }
+        metrics.record_converge("acme", "failed with a very long free-form text");
+        let series = metrics.converge_series();
+        assert_eq!(series.len(), 4);
+        let other = series.iter().find(|entry| entry.status == "other").unwrap();
+        assert_eq!(other.count, 2);
+        assert!(series.iter().any(|entry| entry.status == "success"));
     }
 
     #[test]

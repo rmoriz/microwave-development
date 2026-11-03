@@ -124,10 +124,15 @@ async fn converge_runs_record_their_status() {
     support::add_org(&state, "acme").await;
     let app = support::app(state.clone());
     post_run_converge(&app, "acme", "success").await;
+    post_run_converge(&app, "acme", "a status chef might invent").await;
     let series = state.metrics.converge_series();
     assert!(series
         .iter()
         .any(|entry| entry.status == "success" && entry.org == "acme"));
+    assert!(!series.iter().any(|entry| entry.status.contains(' ')));
+    assert!(series
+        .iter()
+        .any(|entry| entry.status == "other" && entry.org == "acme"));
 }
 
 /// A throwaway upstream that acknowledges any forwarded payload, so a
