@@ -118,6 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Path::new(path),
                             compression,
                         )?);
+                        store.set_metrics(metrics.clone());
                         (store.clone(), Some(store))
                     }
                     DatabaseDriver::Postgres => {
@@ -136,6 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             )
                             .await?,
                         );
+                        store.set_metrics(metrics.clone());
                         (store, None)
                     }
                 };

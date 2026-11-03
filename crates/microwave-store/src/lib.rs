@@ -19,6 +19,7 @@ mod reports;
 mod sandboxes;
 mod secrets;
 mod sqlite;
+pub mod timing;
 
 pub use artifacts::{StoredCookbookArtifact, StoredCookbookArtifactVersion};
 pub use authz::{Acl, AclEntry, Container, Group, GroupMembers, Permission};
@@ -50,3 +51,4 @@ pub use secrets::{
     OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME, OTEL_SECRET_GROUP, OTEL_SECRET_NAME,
 };
 pub use sqlite::{SqliteStore, StoreError};
+pub use timing::{DbSystem, StoreTimer};

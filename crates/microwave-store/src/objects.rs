@@ -51,80 +51,110 @@ pub struct NewNode<'a> {
 
 impl SqliteStore {
     pub fn create_node(&self, org_id: &str, node: NewNode<'_>) -> Result<StoredNode, StoreError> {
-        let NewNode {
-            name,
-            body,
-            environment,
-            policy_name,
-            policy_group,
-            creator_authz_id,
-        } = node;
-        let id = new_id();
-        let now = now();
-        let serialized_object = encode_serialized(body, self.compression())?;
-        let mut connection = self.connection();
-        let tx = connection.transaction()?;
-        let authz_id = create_object_authz(&tx, org_id, "nodes", creator_authz_id)?;
-        tx.execute(
-            "INSERT INTO nodes
-             (id, authz_id, org_id, name, environment, policy_name, policy_group,
-              serialized_object, last_updated_by, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
-            params![
-                id,
-                authz_id,
-                org_id,
+        let mut timer = self.timer("create_node");
+        let result = (|| {
+            let NewNode {
                 name,
+                body,
                 environment,
                 policy_name,
                 policy_group,
-                serialized_object,
                 creator_authz_id,
-                now
-            ],
-        )
-        .map_err(|error| crate::identity::conflict(error, "Node already exists".to_string()))?;
-        tx.commit()?;
-        Ok(StoredNode {
-            id,
-            authz_id,
-            name: name.into(),
-            environment: environment.into(),
-            policy_name: policy_name.map(ToString::to_string),
-            policy_group: policy_group.map(ToString::to_string),
-            serialized_object: body.into(),
-            created_at: now.clone(),
-            updated_at: now,
-        })
+            } = node;
+            let id = new_id();
+            let now = now();
+            let serialized_object = encode_serialized(body, self.compression())?;
+            let mut connection = self.connection();
+            let tx = connection.transaction()?;
+            let authz_id = create_object_authz(&tx, org_id, "nodes", creator_authz_id)?;
+            tx.execute(
+                "INSERT INTO nodes
+                 (id, authz_id, org_id, name, environment, policy_name, policy_group,
+                  serialized_object, last_updated_by, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+                params![
+                    id,
+                    authz_id,
+                    org_id,
+                    name,
+                    environment,
+                    policy_name,
+                    policy_group,
+                    serialized_object,
+                    creator_authz_id,
+                    now
+                ],
+            )
+            .map_err(|error| crate::identity::conflict(error, "Node already exists".to_string()))?;
+            tx.commit()?;
+            Ok(StoredNode {
+                id,
+                authz_id,
+                name: name.into(),
+                environment: environment.into(),
+                policy_name: policy_name.map(ToString::to_string),
+                policy_group: policy_group.map(ToString::to_string),
+                serialized_object: body.into(),
+                created_at: now.clone(),
+                updated_at: now,
+            })
+        })();
+        match result {
+            Ok(node) => Ok(node),
+            Err(error) => {
+                timer.failed();
+                Err(error)
+            }
+        }
     }
 
     pub fn find_node(&self, org_id: &str, name: &str) -> Result<Option<StoredNode>, StoreError> {
-        let connection = self.connection();
-        let node = connection
-            .query_row(
-                "SELECT id, authz_id, name, environment, policy_name, policy_group,
-                        serialized_object, created_at, updated_at
-                 FROM nodes WHERE org_id = ?1 AND name = ?2",
-                params![org_id, name],
-                node_from_row,
-            )
-            .optional()?;
-        decode_node_option(node)
+        let mut timer = self.timer("find_node");
+        let result = (|| {
+            let connection = self.connection();
+            let node = connection
+                .query_row(
+                    "SELECT id, authz_id, name, environment, policy_name, policy_group,
+                            serialized_object, created_at, updated_at
+                     FROM nodes WHERE org_id = ?1 AND name = ?2",
+                    params![org_id, name],
+                    node_from_row,
+                )
+                .optional()?;
+            decode_node_option(node)
+        })();
+        match result {
+            Ok(node) => Ok(node),
+            Err(error) => {
+                timer.failed();
+                Err(error)
+            }
+        }
     }
 
     pub fn list_nodes(&self, org_id: &str) -> Result<Vec<StoredNode>, StoreError> {
-        let connection = self.connection();
-        let mut statement = connection.prepare(
-            "SELECT id, authz_id, name, environment, policy_name, policy_group,
-                    serialized_object, created_at, updated_at
-             FROM nodes WHERE org_id = ?1 ORDER BY name",
-        )?;
-        let rows = statement.query_map([org_id], node_from_row)?;
-        let mut nodes = Vec::new();
-        for row in rows {
-            nodes.push(decode_node(row?)?);
+        let mut timer = self.timer("list_nodes");
+        let result = (|| {
+            let connection = self.connection();
+            let mut statement = connection.prepare(
+                "SELECT id, authz_id, name, environment, policy_name, policy_group,
+                        serialized_object, created_at, updated_at
+                 FROM nodes WHERE org_id = ?1 ORDER BY name",
+            )?;
+            let rows = statement.query_map([org_id], node_from_row)?;
+            let mut nodes = Vec::new();
+            for row in rows {
+                nodes.push(decode_node(row?)?);
+            }
+            Ok(nodes)
+        })();
+        match result {
+            Ok(nodes) => Ok(nodes),
+            Err(error) => {
+                timer.failed();
+                Err(error)
+            }
         }
-        Ok(nodes)
     }
 
     /// Loads only the nodes whose ids are in `ids`.
@@ -171,10 +201,20 @@ impl SqliteStore {
     /// Number of nodes across every organization, matching upstream
     /// `chef_db:count_nodes/1` used by the license endpoint.
     pub fn count_nodes(&self) -> Result<u64, StoreError> {
-        let connection = self.connection();
-        let count: i64 =
-            connection.query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get(0))?;
-        Ok(count as u64)
+        let mut timer = self.timer("count_nodes");
+        let result = (|| {
+            let connection = self.connection();
+            let count: i64 =
+                connection.query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get(0))?;
+            Ok(count as u64)
+        })();
+        match result {
+            Ok(count) => Ok(count),
+            Err(error) => {
+                timer.failed();
+                Err(error)
+            }
+        }
     }
 
     pub fn list_nodes_in_environment(
@@ -232,19 +272,29 @@ impl SqliteStore {
     }
 
     pub fn delete_node(&self, org_id: &str, name: &str) -> Result<(), StoreError> {
-        let mut connection = self.connection();
-        let tx = connection.transaction()?;
-        let authz_id: String = tx
-            .query_row(
-                "SELECT authz_id FROM nodes WHERE org_id = ?1 AND name = ?2",
-                params![org_id, name],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or_else(|| StoreError::NotFound(format!("node {name}")))?;
-        tx.execute("DELETE FROM authz_entities WHERE authz_id = ?1", [authz_id])?;
-        tx.commit()?;
-        Ok(())
+        let mut timer = self.timer("delete_node");
+        let result = (|| {
+            let mut connection = self.connection();
+            let tx = connection.transaction()?;
+            let authz_id: String = tx
+                .query_row(
+                    "SELECT authz_id FROM nodes WHERE org_id = ?1 AND name = ?2",
+                    params![org_id, name],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| StoreError::NotFound(format!("node {name}")))?;
+            tx.execute("DELETE FROM authz_entities WHERE authz_id = ?1", [authz_id])?;
+            tx.commit()?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                timer.failed();
+                Err(error)
+            }
+        }
     }
 
     pub fn create_environment(

@@ -1959,6 +1959,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "flate2",
+ "microwave-metrics",
  "microwave-store-postgres",
  "rusqlite",
  "serde",
@@ -1976,6 +1977,7 @@ version = "0.1.1"
 dependencies = [
  "async-trait",
  "chrono",
+ "microwave-metrics",
  "microwave-store",
  "serde_json",
  "sqlx",
