@@ -246,7 +246,7 @@ impl PostgresStore {
 #[async_trait]
 impl ObjectRepository for PostgresStore {
     async fn create_node(&self, org_id: &str, node: NewNode<'_>) -> Result<StoredNode, StoreError> {
-        let mut timer = self.timer("create_node");
+        let timer = self.timer("create_node");
         let result: Result<StoredNode, StoreError> = async {
             let NewNode {
                 name,
@@ -295,17 +295,11 @@ impl ObjectRepository for PostgresStore {
             })
         }
         .await;
-        match result {
-            Ok(node) => Ok(node),
-            Err(error) => {
-                timer.failed();
-                Err(error)
-            }
-        }
+        timer.finish(result)
     }
 
     async fn find_node(&self, org_id: &str, name: &str) -> Result<Option<StoredNode>, StoreError> {
-        let mut timer = self.timer("find_node");
+        let timer = self.timer("find_node");
         let result: Result<Option<StoredNode>, StoreError> = async {
             let row = sqlx::query(
                 "SELECT id, authz_id, name, environment, policy_name, policy_group,
@@ -321,17 +315,11 @@ impl ObjectRepository for PostgresStore {
             decode_node_option(node)
         }
         .await;
-        match result {
-            Ok(node) => Ok(node),
-            Err(error) => {
-                timer.failed();
-                Err(error)
-            }
-        }
+        timer.finish(result)
     }
 
     async fn list_nodes(&self, org_id: &str) -> Result<Vec<StoredNode>, StoreError> {
-        let mut timer = self.timer("list_nodes");
+        let timer = self.timer("list_nodes");
         let result: Result<Vec<StoredNode>, StoreError> = async {
             let rows = sqlx::query(
                 "SELECT id, authz_id, name, environment, policy_name, policy_group,
@@ -350,13 +338,7 @@ impl ObjectRepository for PostgresStore {
             )
         }
         .await;
-        match result {
-            Ok(nodes) => Ok(nodes),
-            Err(error) => {
-                timer.failed();
-                Err(error)
-            }
-        }
+        timer.finish(result)
     }
 
     async fn find_nodes_by_ids(
@@ -396,7 +378,7 @@ impl ObjectRepository for PostgresStore {
     }
 
     async fn count_nodes(&self) -> Result<u64, StoreError> {
-        let mut timer = self.timer("count_nodes");
+        let timer = self.timer("count_nodes");
         let result: Result<u64, StoreError> = async {
             let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes")
                 .fetch_one(self.pool())
@@ -405,13 +387,7 @@ impl ObjectRepository for PostgresStore {
             Ok(count as u64)
         }
         .await;
-        match result {
-            Ok(count) => Ok(count),
-            Err(error) => {
-                timer.failed();
-                Err(error)
-            }
-        }
+        timer.finish(result)
     }
 
     async fn list_nodes_in_environment(
@@ -473,7 +449,7 @@ impl ObjectRepository for PostgresStore {
     }
 
     async fn delete_node(&self, org_id: &str, name: &str) -> Result<(), StoreError> {
-        let mut timer = self.timer("delete_node");
+        let timer = self.timer("delete_node");
         let result: Result<(), StoreError> = async {
             let mut transaction = self.pool().begin().await.map_err(db)?;
             let row = sqlx::query("SELECT authz_id FROM nodes WHERE org_id = $1 AND name = $2")
@@ -493,13 +469,7 @@ impl ObjectRepository for PostgresStore {
             Ok(())
         }
         .await;
-        match result {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                timer.failed();
-                Err(error)
-            }
-        }
+        timer.finish(result)
     }
 
     async fn create_environment(

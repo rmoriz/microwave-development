@@ -51,7 +51,7 @@ pub struct NewNode<'a> {
 
 impl SqliteStore {
     pub fn create_node(&self, org_id: &str, node: NewNode<'_>) -> Result<StoredNode, StoreError> {
-        let mut timer = self.timer("create_node");
+        let timer = self.timer("create_node");
         let result = (|| {
             let NewNode {
                 name,
@@ -99,17 +99,11 @@ impl SqliteStore {
                 updated_at: now,
             })
         })();
-        match result {
-            Ok(node) => Ok(node),
-            Err(error) => {
-                timer.failed();
-                Err(error)
-            }
-        }
+        timer.finish(result)
     }
 
     pub fn find_node(&self, org_id: &str, name: &str) -> Result<Option<StoredNode>, StoreError> {
-        let mut timer = self.timer("find_node");
+        let timer = self.timer("find_node");
         let result = (|| {
             let connection = self.connection();
             let node = connection
@@ -123,17 +117,11 @@ impl SqliteStore {
                 .optional()?;
             decode_node_option(node)
         })();
-        match result {
-            Ok(node) => Ok(node),
-            Err(error) => {
-                timer.failed();
-                Err(error)
-            }
-        }
+        timer.finish(result)
     }
 
     pub fn list_nodes(&self, org_id: &str) -> Result<Vec<StoredNode>, StoreError> {
-        let mut timer = self.timer("list_nodes");
+        let timer = self.timer("list_nodes");
         let result = (|| {
             let connection = self.connection();
             let mut statement = connection.prepare(
@@ -148,13 +136,7 @@ impl SqliteStore {
             }
             Ok(nodes)
         })();
-        match result {
-            Ok(nodes) => Ok(nodes),
-            Err(error) => {
-                timer.failed();
-                Err(error)
-            }
-        }
+        timer.finish(result)
     }
 
     /// Loads only the nodes whose ids are in `ids`.
@@ -201,20 +183,14 @@ impl SqliteStore {
     /// Number of nodes across every organization, matching upstream
     /// `chef_db:count_nodes/1` used by the license endpoint.
     pub fn count_nodes(&self) -> Result<u64, StoreError> {
-        let mut timer = self.timer("count_nodes");
+        let timer = self.timer("count_nodes");
         let result = (|| {
             let connection = self.connection();
             let count: i64 =
                 connection.query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get(0))?;
             Ok(count as u64)
         })();
-        match result {
-            Ok(count) => Ok(count),
-            Err(error) => {
-                timer.failed();
-                Err(error)
-            }
-        }
+        timer.finish(result)
     }
 
     pub fn list_nodes_in_environment(
@@ -272,7 +248,7 @@ impl SqliteStore {
     }
 
     pub fn delete_node(&self, org_id: &str, name: &str) -> Result<(), StoreError> {
-        let mut timer = self.timer("delete_node");
+        let timer = self.timer("delete_node");
         let result = (|| {
             let mut connection = self.connection();
             let tx = connection.transaction()?;
@@ -288,13 +264,7 @@ impl SqliteStore {
             tx.commit()?;
             Ok(())
         })();
-        match result {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                timer.failed();
-                Err(error)
-            }
-        }
+        timer.finish(result)
     }
 
     pub fn create_environment(

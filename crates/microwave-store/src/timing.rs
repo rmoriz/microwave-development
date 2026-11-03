@@ -5,6 +5,7 @@
 //! `StoreTimer::start(None, …)` keeps the instrumentation nearly free while the
 //! server runs without a metrics registry.
 
+use crate::sqlite::StoreError;
 use microwave_metrics::Metrics;
 use std::sync::Arc;
 use std::time::Instant;
@@ -17,7 +18,8 @@ pub enum DbSystem {
 }
 
 impl DbSystem {
-    fn as_str(self) -> &'static str {
+    /// Label used for the `db.system` dimension.
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Sqlite => "sqlite",
             Self::Postgres => "postgres",
@@ -53,6 +55,18 @@ impl StoreTimer {
     /// Record the operation as failed instead of successful.
     pub fn failed(&mut self) {
         self.outcome = "error";
+    }
+
+    /// Finish the operation: record `error` when `result` is an `Err`, then
+    /// drop the guard and hand the result back unchanged.
+    ///
+    /// This is the one-line form of the `match` every instrumented method used
+    /// to spell out, so an error arm cannot forget [`Self::failed`].
+    pub fn finish<T>(mut self, result: Result<T, StoreError>) -> Result<T, StoreError> {
+        if result.is_err() {
+            self.failed();
+        }
+        result
     }
 }
 
@@ -148,6 +162,39 @@ mod tests {
         assert_eq!(entry.db_system, "sqlite");
         assert_eq!(entry.operation, "create_node");
         assert_eq!(entry.outcome, "ok");
+    }
+
+    #[test]
+    fn a_missing_node_is_a_successful_find() {
+        let metrics = Arc::new(Metrics::new());
+        let (store, org_id, _actor) = fixture();
+        store.set_metrics(metrics.clone());
+        assert_eq!(store.find_node(&org_id, "absent").unwrap(), None);
+        let entry = &metrics.store_series()[0];
+        assert_eq!(entry.operation, "find_node");
+        assert_eq!(entry.outcome, "ok");
+    }
+
+    #[test]
+    fn deleting_a_missing_node_is_an_error() {
+        let metrics = Arc::new(Metrics::new());
+        let (store, org_id, _actor) = fixture();
+        store.set_metrics(metrics.clone());
+        assert!(store.delete_node(&org_id, "absent").is_err());
+        let entry = &metrics.store_series()[0];
+        assert_eq!(entry.operation, "delete_node");
+        assert_eq!(entry.outcome, "error");
+    }
+
+    #[test]
+    fn an_unattached_store_runs_without_recording() {
+        // The server builds the store before the registry, so the very first
+        // operations run with no handle attached. They must work unchanged and
+        // must not panic on the missing guard payload.
+        let (store, org_id, actor) = fixture();
+        store.create_node(&org_id, node(&actor)).unwrap();
+        assert_eq!(store.list_nodes(&org_id).unwrap().len(), 1);
+        assert_eq!(store.count_nodes().unwrap(), 1);
     }
 
     #[test]

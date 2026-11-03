@@ -24,7 +24,7 @@ impl ReportRepository for PostgresStore {
         run: NewNodeRun<'_>,
         keep_runs: usize,
     ) -> Result<StoredNodeRun, StoreError> {
-        let mut timer = self.timer("store_node_run");
+        let timer = self.timer("store_node_run");
         let result: Result<StoredNodeRun, StoreError> = async {
             let id = new_id();
             let created_at = now();
@@ -108,13 +108,7 @@ impl ReportRepository for PostgresStore {
             Ok(stored)
         }
         .await;
-        match result {
-            Ok(stored) => Ok(stored),
-            Err(error) => {
-                timer.failed();
-                Err(error)
-            }
-        }
+        timer.finish(result)
     }
 
     async fn list_node_runs(
