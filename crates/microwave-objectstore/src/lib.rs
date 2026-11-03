@@ -18,8 +18,10 @@ use subtle::ConstantTimeEq;
 use thiserror::Error;
 
 mod s3;
+mod timed;
 
 pub use s3::{ObjectEntry, S3Config, S3ObjectStore};
+pub use timed::TimedObjectStore;
 
 type HmacSha256 = Hmac<Sha256>;
 

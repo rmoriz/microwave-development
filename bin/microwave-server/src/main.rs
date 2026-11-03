@@ -6,7 +6,9 @@ use microwave_config::{
     Config, DatabaseDriver, ObjectStoreBackend, SearchBackend, StorageCompression,
 };
 use microwave_metrics::{DependencyState, KeygenGauges, Metrics, PoolGauges};
-use microwave_objectstore::{LocalObjectStore, ObjectStore, S3Config, S3ObjectStore};
+use microwave_objectstore::{
+    LocalObjectStore, ObjectStore, S3Config, S3ObjectStore, TimedObjectStore,
+};
 use microwave_store::{Compression, MetadataStore, SqliteStore};
 use microwave_store_postgres::PostgresStore;
 use std::path::{Path, PathBuf};
@@ -162,6 +164,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
             let object_store = build_object_store(&config, &secret)?;
+            let object_store: Arc<dyn ObjectStore + Send + Sync> = Arc::new(TimedObjectStore::new(
+                object_store,
+                metrics.clone(),
+                object_store_backend_label(config.object_store.backend),
+            ));
 
             if check {
                 // Never print the database URL: it may contain credentials.
@@ -460,6 +467,16 @@ fn local_object_store_base_url(config: &Config) -> String {
     match config.server.public_url.as_deref() {
         Some(url) => url.trim_end_matches('/').to_string(),
         None => format!("{}://{}", listener_scheme(config), config.server.bind),
+    }
+}
+
+/// Store kind for the object-store `backend` metric label. Never a path,
+/// bucket or host.
+fn object_store_backend_label(backend: ObjectStoreBackend) -> &'static str {
+    match backend {
+        ObjectStoreBackend::Local => "local",
+        ObjectStoreBackend::S3 => "s3",
+        ObjectStoreBackend::Garage => "garage",
     }
 }
 

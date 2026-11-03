@@ -1,5 +1,5 @@
 use crate::health::HealthCache;
-use crate::search::{build_search_backend, SearchBackend, SearchError};
+use crate::search::{build_search_backend, SearchBackend, SearchError, TimedSearch};
 use microwave_config::{Config, MailSecurity};
 use microwave_crypto::{CryptoError, KeygenCache};
 use microwave_metrics::Metrics;
@@ -72,6 +72,7 @@ impl AppState {
     ) -> Result<Self, StateError> {
         let mailer = microwave_mail::build_mailer(&config.mail)?;
         let search = build_search_backend(&config.search, store.clone())?;
+        let search: Arc<dyn SearchBackend> = Arc::new(TimedSearch::new(search, metrics.clone()));
         let http_client = build_http_client(&config)?;
         let compliance_client = build_compliance_client(&config)?;
         let keygen = build_keygen_cache(&config);
