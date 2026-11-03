@@ -42,7 +42,7 @@ pub struct RequestContextApplied;
 /// The matched route template, carried from the request into the response so
 /// [`observe_request`] can label the histogram without the object names.
 #[derive(Clone, Debug)]
-pub struct RouteTemplate(pub String);
+pub(crate) struct RouteTemplate(pub(crate) String);
 
 /// Capture the matched route template and carry it to the response.
 ///
@@ -68,12 +68,16 @@ pub async fn record_route(
     response
 }
 
-/// Access log and request-id middleware.
+/// Access log, request histogram and request-id middleware.
 ///
 /// The id is preserved when the client supplies a valid token and generated
 /// otherwise. Forwarded headers are normalized here, before handlers build
 /// absolute URLs, and are dropped entirely unless the direct peer is listed in
 /// `server.trusted_proxies`.
+///
+/// Every request that gets this far also lands in the latency histogram, with
+/// the route template the [`record_route`] layer left on the response and the
+/// normalized path as the fallback, plus the organization from the path.
 pub async fn observe_request(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
     mut request: axum::extract::Request,
@@ -102,14 +106,14 @@ pub async fn observe_request(
     let started = Instant::now();
     let mut response = next.run(request).await;
     let elapsed = started.elapsed();
+    let normalized = metrics_route(&path);
     let route = response
         .extensions()
         .get::<RouteTemplate>()
-        .map(|template| template.0.clone())
-        .unwrap_or_else(|| metrics_route(&path));
+        .map_or(normalized.as_str(), |template| template.0.as_str());
     let org = organization_label(&path);
     state.metrics.record_http(
-        &route,
+        route,
         method.as_str(),
         &org,
         response.status().as_u16(),
