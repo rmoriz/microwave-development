@@ -1,7 +1,8 @@
 //! Timing helpers for hot metadata-store operations.
 //!
-//! A [`StoreTimer`] is a drop guard: it records `ok` when the instrumented
-//! method returns normally and `error` when the caller calls [`StoreTimer::failed`].
+//! A [`StoreTimer`] is a drop guard: [`StoreTimer::finish`] records `ok` or
+//! `error` for the result it is handed, and a guard dropped without finishing
+//! records `cancelled` — the caller dropped the future mid-flight.
 //! `StoreTimer::start(None, …)` keeps the instrumentation nearly free while the
 //! server runs without a metrics registry.
 
@@ -38,6 +39,7 @@ pub struct StoreTimer {
     operation: &'static str,
     started: Instant,
     outcome: &'static str,
+    finished: bool,
 }
 
 impl StoreTimer {
@@ -49,12 +51,15 @@ impl StoreTimer {
             operation,
             started: Instant::now(),
             outcome: "ok",
+            finished: false,
         }
     }
 
-    /// Record the operation as failed instead of successful.
+    /// Record the operation as failed instead of successful and finish the
+    /// timer, so the drop records `error`.
     pub fn failed(&mut self) {
         self.outcome = "error";
+        self.finished = true;
     }
 
     /// Finish the operation: record `error` when `result` is an `Err`, then
@@ -63,8 +68,9 @@ impl StoreTimer {
     /// This is the one-line form of the `match` every instrumented method used
     /// to spell out, so an error arm cannot forget [`Self::failed`].
     pub fn finish<T>(mut self, result: Result<T, StoreError>) -> Result<T, StoreError> {
+        self.finished = true;
         if result.is_err() {
-            self.failed();
+            self.outcome = "error";
         }
         result
     }
@@ -72,14 +78,20 @@ impl StoreTimer {
 
 impl Drop for StoreTimer {
     fn drop(&mut self) {
-        if let Some(metrics) = &self.metrics {
-            metrics.record_store_operation(
-                self.system.as_str(),
-                self.operation,
-                self.outcome,
-                self.started.elapsed(),
-            );
-        }
+        let Some(metrics) = &self.metrics else {
+            return;
+        };
+        let outcome = if self.finished {
+            self.outcome
+        } else {
+            "cancelled"
+        };
+        metrics.record_store_operation(
+            self.system.as_str(),
+            self.operation,
+            outcome,
+            self.started.elapsed(),
+        );
     }
 }
 
@@ -94,11 +106,22 @@ mod tests {
     fn a_finished_timer_records_the_operation() {
         let metrics = Arc::new(Metrics::new());
         {
-            let _timer = StoreTimer::start(Some(metrics.clone()), DbSystem::Sqlite, "create_node");
+            let timer = StoreTimer::start(Some(metrics.clone()), DbSystem::Sqlite, "create_node");
+            timer.finish(Ok(())).unwrap();
         }
         let entry = &metrics.store_series()[0];
         assert_eq!(entry.operation, "create_node");
         assert_eq!(entry.outcome, "ok");
+    }
+
+    #[test]
+    fn a_timer_dropped_before_finish_records_cancelled() {
+        let metrics = Arc::new(Metrics::new());
+        {
+            // No `finish`: the caller dropped the future mid-flight.
+            let _timer = StoreTimer::start(Some(metrics.clone()), DbSystem::Postgres, "find_node");
+        }
+        assert_eq!(metrics.store_series()[0].outcome, "cancelled");
     }
 
     #[test]
