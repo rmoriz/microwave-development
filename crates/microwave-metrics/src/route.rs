@@ -6,7 +6,8 @@
 //!
 //! The `:org`/`:id` fallback spelling deliberately differs from the axum
 //! templates (`{organization}`/`{name}`). It only applies when no template
-//! exists, so the two spellings never collide.
+//! exists, so the two spellings never collide; a path that already carries a
+//! template keeps it unchanged.
 
 /// Literal path segments that stay in the label.
 const KNOWN_SEGMENTS: &[&str] = &[
@@ -37,6 +38,24 @@ const KNOWN_SEGMENTS: &[&str] = &[
     "required_recipe",
     "data-collector",
     "compliance",
+    "_acl",
+    "_identifiers",
+    "association_requests",
+    "authenticate_user",
+    "checksums",
+    "controls",
+    "count",
+    "cookbook_artifacts",
+    "cookbook_versions",
+    "dependencies",
+    "metadata",
+    "owners",
+    "policy_groups",
+    "principals",
+    "recipes",
+    "revisions",
+    "system_recovery",
+    "universe",
     "css",
     "fonts",
     "favicon.svg",
@@ -50,6 +69,11 @@ fn segments(path: &str) -> impl Iterator<Item = &str> {
         .unwrap_or_default()
         .split('/')
         .filter(|segment| !segment.is_empty())
+}
+
+/// Whether a segment is already an axum template, e.g. `{name}`.
+fn is_template(segment: &str) -> bool {
+    segment.len() > 2 && segment.starts_with('{') && segment.ends_with('}')
 }
 
 /// Whether a segment looks like a canonical 8-4-4-4-12 UUID.
@@ -79,7 +103,9 @@ pub fn metrics_route(path: &str) -> String {
     let mut previous = first;
     for segment in segments {
         route.push('/');
-        if previous == "organizations" {
+        if is_template(segment) {
+            route.push_str(segment);
+        } else if previous == "organizations" {
             route.push_str(":org");
         } else if is_uuid(segment) {
             route.push_str(":uuid");
@@ -128,6 +154,35 @@ mod tests {
         assert_eq!(metrics_route("/bookshelf/abc123"), "/bookshelf/:id");
         assert_eq!(metrics_route("/favicon.svg"), "/favicon.svg");
         assert_eq!(metrics_route("/totally-unknown"), "unknown");
+    }
+
+    #[test]
+    fn keeps_templates_that_arrive_already_templated() {
+        assert_eq!(
+            metrics_route("/organizations/{organization}/nodes/{name}"),
+            "/organizations/{organization}/nodes/{name}"
+        );
+        assert_eq!(
+            metrics_route("/users/{username}/keys/{key_name}"),
+            "/users/{username}/keys/{key_name}"
+        );
+        assert_eq!(metrics_route("/_/health"), "unknown");
+    }
+
+    #[test]
+    fn keeps_literal_route_segments_literal() {
+        assert_eq!(
+            metrics_route("/organizations/acme/cookbook_artifacts/apache"),
+            "/organizations/:org/cookbook_artifacts/:id"
+        );
+        assert_eq!(
+            metrics_route("/organizations/acme/environments/production/recipes"),
+            "/organizations/:org/environments/:id/recipes"
+        );
+        assert_eq!(
+            metrics_route("/users/alice/association_requests/count"),
+            "/users/:id/association_requests/count"
+        );
     }
 
     #[test]
