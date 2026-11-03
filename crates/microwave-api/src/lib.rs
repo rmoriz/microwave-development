@@ -41,8 +41,13 @@ use axum::routing::get;
 use axum::{Json, Router};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use microwave_config::OtelConfig;
+use microwave_metrics::{
+    DependencyState, HistogramSeries, HttpSeries, KeygenGauges, LATENCY_BUCKETS_SECONDS,
+};
 use microwave_store::PoolStats;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 use subtle::ConstantTimeEq;
 
 pub use error::ApiError;
@@ -243,7 +248,6 @@ async fn stats(
         }
     };
 
-    let snapshot = state.metrics.snapshot();
     let pool = state.store.pool_stats().await;
     let maintenance = state
         .store
@@ -251,6 +255,44 @@ async fn stats(
         .await
         .map_err(ApiError::from)?;
     let node_count = state.store.count_nodes().await.map_err(ApiError::from)?;
+    let keygen = state.keygen.status();
+    let dependencies: Vec<DependencyState> = state
+        .dependency_states()
+        .await
+        .into_iter()
+        .map(|(name, up)| DependencyState { name, up })
+        .collect();
+
+    // Publish the fresh values before rendering: the text view, the JSON view
+    // and the OTLP callbacks then read one set of numbers per scrape.
+    state.metrics.set_maintenance(maintenance);
+    state.metrics.set_nodes(node_count);
+    state
+        .metrics
+        .set_pool(pool.map(|pool| microwave_metrics::PoolGauges {
+            idle: pool.idle,
+            in_use: pool.in_use,
+            max: pool.max,
+        }));
+    state.metrics.set_keygen(KeygenGauges {
+        cached: keygen.cached,
+        capacity: keygen.capacity,
+        workers: keygen.workers,
+        worker_failures: keygen.worker_failures,
+        warm_up_failures: keygen.warm_up_failures,
+        generated_on_demand: keygen.generated_on_demand,
+        worker_healthy: keygen.worker_healthy,
+    });
+    state.metrics.set_dependencies(dependencies);
+
+    let snapshot = state.metrics.snapshot();
+    let maintenance = state.metrics.maintenance();
+    let node_count = state.metrics.nodes();
+    let pool = state.metrics.pool().map(|pool| PoolStats {
+        idle: pool.idle,
+        in_use: pool.in_use,
+        max: pool.max,
+    });
 
     if format == StatsFormat::Text {
         let mut body = String::new();
@@ -307,6 +349,10 @@ async fn stats(
              # TYPE microwave_server_nodes gauge\n",
         );
         body.push_str(&format!("microwave_server_nodes {node_count}\n"));
+        push_http_histograms(&mut body, state.metrics.http_series());
+        push_build_info(&mut body, state.search.name());
+        push_dependency_gauges(&mut body, &state.metrics.dependencies());
+        push_keygen_gauges(&mut body, &state.metrics.keygen());
         push_pool_gauges(&mut body, pool);
 
         return Ok((
@@ -319,7 +365,169 @@ async fn stats(
             .into_response());
     }
 
-    Ok(Json(stats_json(&snapshot, maintenance, node_count, pool)).into_response())
+    Ok(Json(stats_json(
+        &state.metrics,
+        &state.config.otel,
+        &snapshot,
+        maintenance,
+        node_count,
+        pool,
+    ))
+    .into_response())
+}
+
+/// Escape a label value for the Prometheus text exposition.
+fn escape_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
+/// Render one label set for the request histogram, in the fixed order route,
+/// method, org, status. `le` is appended by the caller.
+fn http_labels(entry: &HttpSeries) -> String {
+    format!(
+        "route=\"{}\",method=\"{}\",org=\"{}\",status=\"{}\"",
+        escape_label(&entry.route),
+        escape_label(&entry.method),
+        escape_label(&entry.org),
+        entry.status
+    )
+}
+
+/// Merge series that render the same label set, so every label set is printed
+/// exactly once even if the registry ever hands out a duplicate.
+fn collapse_http_series(series: Vec<HttpSeries>) -> Vec<(String, HttpSeries)> {
+    let mut positions: HashMap<String, usize> = HashMap::new();
+    let mut merged: Vec<(String, HttpSeries)> = Vec::new();
+    for entry in series {
+        let labels = http_labels(&entry);
+        match positions.get(&labels) {
+            Some(&position) => {
+                let existing = &mut merged[position].1;
+                existing.count += entry.count;
+                existing.sum += entry.sum;
+                for (slot, count) in existing.buckets.iter_mut().zip(entry.buckets) {
+                    *slot += count;
+                }
+            }
+            None => {
+                positions.insert(labels.clone(), merged.len());
+                merged.push((labels, entry));
+            }
+        }
+    }
+    merged
+}
+
+const REQUEST_DURATION: &str = "microwave_server_request_duration_seconds";
+
+/// Append the request duration histogram, one `_bucket`/`_sum`/`_count` group
+/// per label set, with `le` last and `+Inf` before `_sum`.
+fn push_http_histograms(body: &mut String, series: Vec<HttpSeries>) {
+    body.push_str(
+        "# HELP microwave_server_request_duration_seconds HTTP request duration in seconds.\n\
+         # TYPE microwave_server_request_duration_seconds histogram\n",
+    );
+    for (labels, entry) in collapse_http_series(series) {
+        for (index, bound) in LATENCY_BUCKETS_SECONDS.iter().enumerate() {
+            body.push_str(&format!(
+                "{REQUEST_DURATION}_bucket{{{labels},le=\"{bound}\"}} {}\n",
+                entry.bucket_counts()[index]
+            ));
+        }
+        body.push_str(&format!(
+            "{REQUEST_DURATION}_bucket{{{labels},le=\"+Inf\"}} {}\n",
+            entry.bucket_counts()[LATENCY_BUCKETS_SECONDS.len()]
+        ));
+        body.push_str(&format!(
+            "{REQUEST_DURATION}_sum{{{labels}}} {}\n",
+            entry.sum()
+        ));
+        body.push_str(&format!(
+            "{REQUEST_DURATION}_count{{{labels}}} {}\n",
+            entry.count()
+        ));
+    }
+}
+
+/// Append the `build_info` gauge, which is always 1 and carries the version and
+/// the active indexing mode.
+fn push_build_info(body: &mut String, indexing_mode: &str) {
+    body.push_str(
+        "# HELP microwave_server_build_info Build information.\n\
+         # TYPE microwave_server_build_info gauge\n",
+    );
+    body.push_str(&format!(
+        "microwave_server_build_info{{service_version=\"{}\",indexing_mode=\"{}\"}} 1\n",
+        env!("CARGO_PKG_VERSION"),
+        escape_label(indexing_mode)
+    ));
+}
+
+/// Append one `dependency_up` sample per dependency probe. The raw probe name
+/// stays the `dependency` label; `state` mirrors it as `up`/`down`.
+fn push_dependency_gauges(body: &mut String, dependencies: &[DependencyState]) {
+    body.push_str(
+        "# HELP microwave_server_dependency_up Dependency probes, 1 when up.\n\
+         # TYPE microwave_server_dependency_up gauge\n",
+    );
+    for probe in dependencies {
+        body.push_str(&format!(
+            "microwave_server_dependency_up{{dependency=\"{}\",state=\"{}\"}} {}\n",
+            escape_label(probe.name),
+            if probe.up { "up" } else { "down" },
+            u8::from(probe.up)
+        ));
+    }
+}
+
+/// Append the keygen cache gauges.
+fn push_keygen_gauges(body: &mut String, keygen: &KeygenGauges) {
+    for (name, help, value) in [
+        (
+            "capacity",
+            "Configured maximum cached keypairs.",
+            keygen.capacity as u64,
+        ),
+        (
+            "cached",
+            "Keypairs waiting in the cache.",
+            keygen.cached as u64,
+        ),
+        (
+            "workers",
+            "Background keygen workers that started.",
+            keygen.workers as u64,
+        ),
+        (
+            "worker_failures",
+            "Cumulative background keygen failures.",
+            keygen.worker_failures,
+        ),
+        (
+            "warm_up_failures",
+            "Cumulative keygen warm-up failures.",
+            keygen.warm_up_failures,
+        ),
+        (
+            "generated_on_demand",
+            "Keypairs generated on demand.",
+            keygen.generated_on_demand,
+        ),
+        (
+            "worker_healthy",
+            "Keygen worker healthy (1) or not (0).",
+            u64::from(keygen.worker_healthy),
+        ),
+    ] {
+        body.push_str(&format!(
+            "# HELP microwave_server_keygen_{name} {help}\n\
+             # TYPE microwave_server_keygen_{name} gauge\n\
+             microwave_server_keygen_{name} {value}\n"
+        ));
+    }
 }
 
 /// Append the PostgreSQL pool gauges to a Prometheus text exposition body, if
@@ -362,14 +570,55 @@ fn pool_gauges_json(pool: Option<PoolStats>) -> Option<Value> {
     })
 }
 
+/// The stable `/_stats` key for a dependency probe, if the probe maps onto one.
+fn upstream_key(probe: &str) -> Option<&'static str> {
+    match probe {
+        "chef_sql" => Some("database"),
+        "chef_index" | "chef_opensearch" | "chef_elasticsearch" => Some("search"),
+        "bookshelf" => Some("bookshelf"),
+        _ => None,
+    }
+}
+
+/// The stable `upstreams` document: one key per dependency class, with the
+/// probe status (`pong`/`fail`) as value and `"unknown"` when no probe ran.
+fn upstreams_json(dependencies: &[DependencyState]) -> Map<String, Value> {
+    ["database", "search", "bookshelf"]
+        .into_iter()
+        .map(|key| {
+            let status = dependencies
+                .iter()
+                .find(|probe| upstream_key(probe.name) == Some(key))
+                .map(|probe| if probe.up { "pong" } else { "fail" })
+                .unwrap_or("unknown");
+            (key.to_string(), json!(status))
+        })
+        .collect()
+}
+
+/// The endpoint as it may be printed: the `user:pass@` userinfo is dropped.
+fn endpoint_without_credentials(endpoint: &str) -> String {
+    let Some((scheme, rest)) = endpoint.split_once("://") else {
+        return endpoint.to_string();
+    };
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    let Some(at) = rest[..authority_end].rfind('@') else {
+        return endpoint.to_string();
+    };
+    format!("{scheme}://{}", &rest[at + 1..])
+}
+
 /// Build the `/_stats` JSON document, with `db_pool` only when the backend has
 /// a pool.
 fn stats_json(
+    metrics: &Metrics,
+    otel: &OtelConfig,
     snapshot: &MetricsSnapshot,
     maintenance: bool,
     node_count: u64,
     pool: Option<PoolStats>,
 ) -> Value {
+    let keygen = metrics.keygen();
     let mut body = json!({
         "uptime_seconds": snapshot.uptime_seconds,
         "requests": {
@@ -383,6 +632,26 @@ fn stats_json(
         },
         "maintenance": maintenance,
         "nodes": node_count,
+        "otel": {
+            "enabled": otel.enabled,
+            // `null` while export is off, even if an endpoint is configured.
+            "endpoint": match (otel.enabled, otel.endpoint.as_deref()) {
+                (true, Some(endpoint)) => json!(endpoint_without_credentials(endpoint)),
+                _ => Value::Null,
+            },
+            "last_export_error": metrics.export_error(),
+        },
+        "keygen": {
+            "status": if keygen.worker_healthy { "ok" } else { "degraded" },
+            "cached": keygen.cached,
+            "capacity": keygen.capacity,
+            "workers": keygen.workers,
+            "worker_healthy": keygen.worker_healthy,
+            "worker_failures": keygen.worker_failures,
+            "warm_up_failures": keygen.warm_up_failures,
+            "generated_on_demand": keygen.generated_on_demand,
+        },
+        "upstreams": upstreams_json(&metrics.dependencies()),
     });
     if let Some(db_pool) = pool_gauges_json(pool) {
         body["db_pool"] = db_pool;
@@ -566,13 +835,63 @@ mod tests {
 
     #[test]
     fn stats_json_attaches_the_pool_only_when_present() {
-        let with_pool = stats_json(&snapshot(), false, 0, Some(POOL));
+        let metrics = Metrics::new();
+        let otel = OtelConfig::default();
+        let with_pool = stats_json(&metrics, &otel, &snapshot(), false, 0, Some(POOL));
         assert_eq!(with_pool["db_pool"]["idle"], 1);
         assert_eq!(with_pool["db_pool"]["in_use"], 2);
         assert_eq!(with_pool["db_pool"]["max"], 3);
         assert_eq!(with_pool["nodes"], 0);
 
-        let without_pool = stats_json(&snapshot(), false, 0, None);
+        let without_pool = stats_json(&metrics, &otel, &snapshot(), false, 0, None);
         assert!(without_pool.get("db_pool").is_none());
+    }
+
+    #[test]
+    fn endpoint_credentials_are_dropped() {
+        assert_eq!(
+            endpoint_without_credentials("https://user:pass@collector:4318"),
+            "https://collector:4318"
+        );
+        assert_eq!(
+            endpoint_without_credentials("http://collector:4318"),
+            "http://collector:4318"
+        );
+    }
+
+    #[test]
+    fn the_otel_document_hides_credentials_and_off_endpoints() {
+        let metrics = Metrics::new();
+        let mut otel = OtelConfig {
+            enabled: true,
+            endpoint: Some("https://user:pass@collector:4318".into()),
+            ..OtelConfig::default()
+        };
+        let enabled = stats_json(&metrics, &otel, &snapshot(), false, 0, None);
+        assert_eq!(enabled["otel"]["enabled"], true);
+        assert_eq!(enabled["otel"]["endpoint"], "https://collector:4318");
+
+        otel.enabled = false;
+        let disabled = stats_json(&metrics, &otel, &snapshot(), false, 0, None);
+        assert_eq!(disabled["otel"]["enabled"], false);
+        assert!(disabled["otel"]["endpoint"].is_null());
+    }
+
+    #[test]
+    fn upstreams_use_the_stable_keys() {
+        let dependencies = [
+            DependencyState {
+                name: "chef_sql",
+                up: true,
+            },
+            DependencyState {
+                name: "chef_opensearch",
+                up: false,
+            },
+        ];
+        let upstreams = upstreams_json(&dependencies);
+        assert_eq!(upstreams["database"], "pong");
+        assert_eq!(upstreams["search"], "fail");
+        assert_eq!(upstreams["bookshelf"], "unknown");
     }
 }
