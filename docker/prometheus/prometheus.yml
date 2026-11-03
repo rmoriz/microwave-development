@@ -1,0 +1,15 @@
+# Scrape config for the `observability` compose profile: the collector's
+# Prometheus exporter only, so the series the microwave service exports show up
+# here without any other target.
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: otel-collector
+    # The collector serves plain text; do not let Prometheus negotiate
+    # protobuf first and log a failed scrape.
+    scrape_protocols: [PrometheusText0.0.4]
+    static_configs:
+      - targets: ["otel-collector:8889"]

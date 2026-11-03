@@ -13,6 +13,20 @@
 # PostgreSQL metadata is a supported alternative to SQLite: set
 # database.driver = "postgres" (MW_DATABASE__DRIVER) and database.url
 # (MW_DATABASE__URL). See docs/deployment.md.
+#
+# The `observability` profile adds an OTLP collector and a Prometheus, and is
+# opt-in:
+#
+#   docker compose --profile observability up -d
+#   curl -s http://127.0.0.1:9090/api/v1/query \
+#     --data-urlencode 'query=http_server_request_duration_seconds_count'
+#
+# The query uses the OTel semconv instrument name; the `/_stats` scrape surface
+# spells the same histogram `microwave_server_request_duration_seconds`.
+#
+# The MW_OTEL__* entries on `microwave` stay unconditional, so a plain `up`
+# without the profile is the fail-open case: the server serves and `/_stats`
+# reports the export error. See docs/opentelemetry.md.
 
 name: microwave
 
@@ -46,6 +60,11 @@ services:
       # Keep in sync with MW_PORT when the listener port changes; the
       # image healthcheck probes this port.
       MW_HTTP_PORT: "8000"
+      # Opt-in: only reachable with the `observability` profile. Left in place
+      # so the profile needs no override file; without it the export fails
+      # open and `/_stats` reports the error.
+      MW_OTEL__ENABLED: "true"
+      MW_OTEL__ENDPOINT: http://otel-collector:4318
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - microwave-data:/var/lib/microwave
@@ -54,5 +73,50 @@ services:
       - ${MW_CONFIG_FILE:-./packaging/microwave.toml.example}:/etc/microwave/microwave.toml:ro
     stop_grace_period: 30s
 
+  otel-collector:
+    profiles: [observability]
+    image: otel/opentelemetry-collector-contrib:0.164.0
+    restart: unless-stopped
+    volumes:
+      - ./docker/otel/collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "${MW_OTLP_PORT:-4318}:4318"
+    # The image is scratch-based (no shell, no curl), so the probe has to be
+    # the collector binary itself: `validate` fails when the config mount or
+    # the config content is broken.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/otelcol-contrib",
+          "validate",
+          "--config=/etc/otelcol-contrib/config.yaml",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v3.15.1
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=1h"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${MW_PROMETHEUS_PORT:-9090}:9090"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
 volumes:
   microwave-data:
+  prometheus-data:
