@@ -286,7 +286,7 @@ async fn collapsed_series_render_one_label_set_each() {
             "duplicate label set: {labels}"
         );
     }
-    assert!(body.contains("route=\"_other\""));
+    assert!(body.contains("route=\"/_other\""));
     // One 1 ms record: the sum is exact and `+Inf` equals the count.
     let labels = "route=\"/r0\",method=\"GET\",org=\"_default\",status=\"200\"";
     assert!(body.contains(&format!(
