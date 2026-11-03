@@ -16,6 +16,7 @@ members = [
     "crates/microwave-migrate",
     "crates/microwave-mail",
     "crates/microwave-metrics",
+    "crates/microwave-otel",
     "bin/microwave-server",
     "bin/microwave-ctl",
     "bin/microwave-load",
@@ -70,6 +71,15 @@ http = "1"
 schemars = "1"
 rmcp = { version = "3.8", features = ["transport-streamable-http-server"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }
+opentelemetry = "=0.33.1"
+opentelemetry_sdk = "=0.33.1"
+opentelemetry-otlp = "=0.33.1"
+
+[workspace.dependencies.microwave-config]
+path = "crates/microwave-config"
+
+[workspace.dependencies.microwave-metrics]
+path = "crates/microwave-metrics"
 
 # Local dev and test builds carry no debug info and keep no incremental state:
 # DWARF is most of an rlib (four fifths in the biggest one) and incremental
