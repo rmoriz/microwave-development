@@ -28,8 +28,10 @@
 # no shell, so its healthcheck is the collector binary validating
 # `docker/otel/collector.yaml`, and the container names that mount explicitly
 # as its `--config`: a missing mount fails the start instead of silently
-# running the image's built-in default config. Readiness is the collector's
-# `health_check` extension, published on :13133:
+# running the image's built-in default config. Because the image has no client
+# either, `otel-healthz` (a pinned busybox in the collector's network
+# namespace) probes the running process through the `health_check` extension on
+# :13133; Prometheus waits for that probe. Readiness by hand:
 #
 #   curl -fsS http://127.0.0.1:13133/
 #
@@ -114,7 +116,8 @@ services:
       - "${MW_OTEL_HEALTH_PORT:-13133}:13133"
     # The image is scratch-based (no shell, no curl), so the probe has to be
     # the collector binary itself: `validate` fails when the config mount or
-    # the config content is broken.
+    # the config content is broken. `otel-healthz` additionally probes the
+    # running process; see there.
     healthcheck:
       test:
         [
@@ -123,6 +126,26 @@ services:
           "validate",
           "--config=/etc/otelcol/collector.yaml",
         ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Health probe for the collector, which ships no client of its own.
+  #
+  # It shares the collector's network namespace and asks the `health_check`
+  # extension over loopback, so it reports on the running process instead of
+  # the config file. `prometheus` waits for it, which keeps the scrape job from
+  # starting against a collector that is still coming up.
+  otel-healthz:
+    profiles: [observability]
+    image: busybox:1.37.0
+    restart: unless-stopped
+    network_mode: "service:otel-collector"
+    depends_on: [otel-collector]
+    command: ["sleep", "infinity"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:13133/"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -139,6 +162,9 @@ services:
     volumes:
       - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
+    depends_on:
+      otel-healthz:
+        condition: service_healthy
     ports:
       - "${MW_PROMETHEUS_PORT:-9090}:9090"
     healthcheck:

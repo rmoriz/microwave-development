@@ -311,9 +311,16 @@ docker compose --profile observability up -d --build
 Check that the collector is up and that Prometheus found it:
 
 ```sh
+docker compose --profile observability ps
 curl -fsS http://127.0.0.1:13133/
 curl -s http://127.0.0.1:9090/api/v1/targets
 ```
+
+`otel-healthz` is a small pinned probe container in the collector's network
+namespace: the collector image ships neither a shell nor an HTTP client, so the
+readiness check lives there and Prometheus starts only once it passes. A
+collector that stops answering turns that container unhealthy in `compose ps`,
+which is the visible sign the endpoint needs a look.
 
 Then ask the question the export exists for, first as a rate and then as a
 quantile:
