@@ -31,7 +31,7 @@ async fn reaches_a_stub_collector() {
         endpoint: Some(endpoint),
         ..Default::default()
     };
-    let guard = microwave_otel::init(&config, metrics.clone(), "http").unwrap();
+    let guard = microwave_otel::init(&config, metrics.clone(), "http", "embedded").unwrap();
     metrics.record_http("/_status", "GET", "acme", 200, Duration::from_millis(3));
     guard.force_flush().await.unwrap();
     assert_eq!(

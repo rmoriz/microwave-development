@@ -8,7 +8,7 @@ rust-version.workspace = true
 [dependencies]
 opentelemetry.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["metrics", "testing", "experimental_metrics_custom_reader", "experimental_metrics_periodicreader_with_async_runtime", "rt-tokio"] }
-opentelemetry-otlp = { workspace = true, features = ["http-proto", "reqwest-client", "reqwest-rustls", "tls-webpki-roots"] }
+opentelemetry-otlp = { workspace = true, features = ["http-proto", "reqwest-client", "reqwest-rustls"] }
 microwave-config.workspace = true
 microwave-metrics.workspace = true
 tokio.workspace = true
@@ -16,6 +16,7 @@ thiserror.workspace = true
 tracing.workspace = true
 reqwest.workspace = true
 uuid.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

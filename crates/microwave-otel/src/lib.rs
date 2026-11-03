@@ -184,6 +184,9 @@ impl OtelGuard {
     }
 
     /// Flush and release the provider within `shutdown_timeout_ms`.
+    ///
+    /// The inner `shutdown_with_timeout` is the real budget: the outer timeout
+    /// cannot preempt a call that never yields.
     pub async fn shutdown(self) -> Result<(), OtelError> {
         let timeout = self.shutdown_timeout;
         let provider = self.provider;
@@ -267,11 +270,13 @@ impl<E: PushMetricExporter> PushMetricExporter for TrackingExporter<E> {
 /// the provider globally.
 ///
 /// `scheme` becomes the `url.scheme` attribute on the request histogram; only
-/// the binary knows whether the listener terminates TLS.
+/// the binary knows whether the listener terminates TLS. `indexing_mode` is the
+/// resolved search backend, exported on the build-info series.
 pub fn init(
     config: &OtelConfig,
     metrics: Arc<Metrics>,
     scheme: &'static str,
+    indexing_mode: &'static str,
 ) -> Result<OtelGuard, OtelError> {
     config
         .validate()
@@ -285,19 +290,39 @@ pub fn init(
     let signal_endpoint = signal_endpoint(endpoint);
     let exporter = build_exporter(config, endpoint, &signal_endpoint)?;
     let reader = PeriodicReader::builder(
-        TrackingExporter::new(exporter, metrics.clone(), signal_endpoint),
+        TrackingExporter::new(
+            exporter,
+            metrics.clone(),
+            redacted_endpoint(&signal_endpoint),
+        ),
         ReaderRuntime::new()?,
     )
     .with_interval(Duration::from_secs(config.interval_seconds))
     .with_timeout(Duration::from_millis(config.timeout_ms))
     .build();
 
-    build(config, metrics, scheme, reader)
+    build(config, metrics, scheme, indexing_mode, reader)
 }
 
 /// The OTLP/HTTP metrics path below a configured base URL.
+///
+/// An endpoint that already names the signal path is not appended twice.
 fn signal_endpoint(base: &str) -> String {
+    let base = base.trim().trim_end_matches('/');
+    let base = base.strip_suffix("/v1/metrics").unwrap_or(base);
     format!("{}/v1/metrics", base.trim_end_matches('/'))
+}
+
+/// The endpoint as it may be printed: the `user:pass@` userinfo is dropped.
+fn redacted_endpoint(endpoint: &str) -> String {
+    let Some((scheme, rest)) = endpoint.split_once("://") else {
+        return endpoint.to_string();
+    };
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    let Some(at) = rest[..authority_end].rfind('@') else {
+        return endpoint.to_string();
+    };
+    format!("{scheme}://{}", &rest[at + 1..])
 }
 
 fn build_exporter(
@@ -365,6 +390,25 @@ fn resource(config: &OtelConfig) -> Resource {
 }
 
 fn host_name() -> String {
+    // SAFETY: `gethostname` writes at most `buffer.len()` bytes into `buffer`
+    // and does not retain the pointer; the buffer outlives the call.
+    #[allow(unsafe_code)]
+    let probed = unsafe {
+        let mut buffer = [0_u8; 256];
+        let status = libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len());
+        if status != 0 {
+            None
+        } else {
+            let end = buffer
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(buffer.len());
+            std::str::from_utf8(&buffer[..end]).ok().map(str::to_string)
+        }
+    };
+    if let Some(name) = probed.filter(|name| !name.trim().is_empty()) {
+        return name;
+    }
     for path in ["/proc/sys/kernel/hostname", "/etc/hostname"] {
         if let Ok(value) = std::fs::read_to_string(path) {
             let value = value.trim();
@@ -383,6 +427,7 @@ fn build<R: MetricReader>(
     config: &OtelConfig,
     metrics: Arc<Metrics>,
     scheme: &'static str,
+    indexing_mode: &'static str,
     reader: R,
 ) -> Result<OtelGuard, OtelError> {
     let mut builder = SdkMeterProvider::builder()
@@ -413,7 +458,7 @@ fn build<R: MetricReader>(
         tracing::warn!("a metrics recorder is already attached; keeping the existing one");
     }
 
-    gauges::register(&meter, &metrics);
+    gauges::register(&meter, &metrics, indexing_mode);
 
     global::set_meter_provider(provider.clone());
 
@@ -429,22 +474,63 @@ fn build<R: MetricReader>(
 /// blocking call. Running the worker on its own runtime keeps `force_flush`,
 /// `shutdown`, and a plain guard drop working from any caller runtime,
 /// including a current-thread one, and never stalls the server's reactor.
-#[derive(Clone)]
+///
+/// The runtime itself lives on that dedicated thread: dropping a runtime from
+/// async code panics, so [`Drop`] only signals the thread and lets it wind down
+/// on its own.
 struct ReaderRuntime {
-    runtime: Arc<tokio::runtime::Runtime>,
+    handle: tokio::runtime::Handle,
+    stop: Option<std::sync::mpsc::Sender<()>>,
 }
 
 impl ReaderRuntime {
     fn new() -> Result<Self, OtelError> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .thread_name("microwave-otel-reader")
-            .enable_all()
-            .build()
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::Builder::new()
+            .name("microwave-otel-reader".to_string())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(1)
+                    .enable_all()
+                    .build();
+                let runtime = match runtime {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error.to_string()));
+                        return;
+                    }
+                };
+                let _ = ready_tx.send(Ok(runtime.handle().clone()));
+                runtime.block_on(async {
+                    let _ = tokio::task::spawn_blocking(move || stop_rx.recv()).await;
+                });
+                // The runtime drops here, on its own thread.
+            })
             .map_err(|error| OtelError::Reader(error.to_string()))?;
+        let handle = ready_rx
+            .recv()
+            .map_err(|error| OtelError::Reader(error.to_string()))?
+            .map_err(OtelError::Reader)?;
         Ok(Self {
-            runtime: Arc::new(runtime),
+            handle,
+            stop: Some(stop_tx),
         })
+    }
+}
+
+impl Clone for ReaderRuntime {
+    fn clone(&self) -> Self {
+        Self {
+            handle: self.handle.clone(),
+            stop: self.stop.clone(),
+        }
+    }
+}
+
+impl Drop for ReaderRuntime {
+    fn drop(&mut self) {
+        drop(self.stop.take());
     }
 }
 
@@ -453,7 +539,7 @@ impl Runtime for ReaderRuntime {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        self.runtime.spawn(future);
+        self.handle.spawn(future);
     }
 
     fn delay(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'static {
@@ -481,6 +567,32 @@ mod tests {
             signal_endpoint("https://collector.example/"),
             "https://collector.example/v1/metrics"
         );
+        // A path that already names the signal is not appended twice.
+        assert_eq!(
+            signal_endpoint("https://collector.example/v1/metrics"),
+            "https://collector.example/v1/metrics"
+        );
+        assert_eq!(
+            signal_endpoint("https://collector.example/v1/metrics/"),
+            "https://collector.example/v1/metrics"
+        );
+    }
+
+    #[test]
+    fn the_redacted_endpoint_drops_the_userinfo_only() {
+        assert_eq!(
+            redacted_endpoint("https://collector:4318/v1/metrics"),
+            "https://collector:4318/v1/metrics"
+        );
+        assert_eq!(
+            redacted_endpoint("https://otel:secret@collector:4318/v1/metrics"),
+            "https://collector:4318/v1/metrics"
+        );
+        assert_eq!(
+            redacted_endpoint("https://otel:sec@ret@collector/v1/metrics"),
+            "https://collector/v1/metrics"
+        );
+        assert_eq!(redacted_endpoint("collector:4318"), "collector:4318");
     }
 
     #[tokio::test]
@@ -489,7 +601,7 @@ mod tests {
             enabled: true,
             ..Default::default()
         };
-        let error = init(&config, Arc::new(Metrics::new()), "http").unwrap_err();
+        let error = init(&config, Arc::new(Metrics::new()), "http", "embedded").unwrap_err();
         assert!(matches!(error, OtelError::Config(_)), "{error}");
     }
 
@@ -502,7 +614,7 @@ mod tests {
             tls_ca_path: Some(path),
             ..Default::default()
         };
-        let error = init(&config, Arc::new(Metrics::new()), "https").unwrap_err();
+        let error = init(&config, Arc::new(Metrics::new()), "https", "embedded").unwrap_err();
         assert!(matches!(error, OtelError::Config(_)), "{error}");
     }
 
@@ -521,10 +633,29 @@ mod tests {
             tls_ca_path: Some(path.clone()),
             ..Default::default()
         };
-        let error = init(&config, Arc::new(Metrics::new()), "https").unwrap_err();
+        let error = init(&config, Arc::new(Metrics::new()), "https", "embedded").unwrap_err();
         assert!(matches!(error, OtelError::Tls(_)), "{error}");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn a_failed_export_reports_the_endpoint_without_credentials() {
+        let metrics = Arc::new(Metrics::new());
+        let config = OtelConfig {
+            enabled: true,
+            endpoint: Some("http://otel:s3cret@127.0.0.1:1".to_string()),
+            timeout_ms: 500,
+            ..Default::default()
+        };
+        let guard = init(&config, metrics.clone(), "http", "embedded").unwrap();
+        metrics.record_http("/", "GET", "acme", 200, Duration::from_millis(1));
+        let _ = guard.force_flush().await;
+
+        let recorded = metrics.export_error().expect("the failure is recorded");
+        assert!(recorded.contains("127.0.0.1:1"), "{recorded}");
+        assert!(!recorded.contains('@'), "{recorded}");
+        assert!(!recorded.contains("s3cret"), "{recorded}");
     }
 
     #[test]

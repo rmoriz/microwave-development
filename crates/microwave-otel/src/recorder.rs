@@ -202,7 +202,7 @@ impl Recorder for OtelRecorder {
 mod tests {
     use super::*;
     use crate::TrackingExporter;
-    use microwave_metrics::{KeygenGauges, Metrics};
+    use microwave_metrics::{KeygenGauges, Metrics, DEFAULT_SERIES_LIMIT, LATENCY_BUCKETS_SECONDS};
     use opentelemetry_sdk::error::OTelSdkResult;
     use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
     use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
@@ -212,8 +212,9 @@ mod tests {
 
     /// Pull the attributes of one exported histogram's data points.
     fn attributes(exporter: &InMemoryMetricExporter, name: &str) -> Vec<KeyValue> {
-        let finished = exporter.get_finished_metrics().unwrap();
-        finished
+        exporter
+            .get_finished_metrics()
+            .unwrap()
             .iter()
             .flat_map(|resource| resource.scope_metrics())
             .flat_map(|scope| scope.metrics())
@@ -226,6 +227,43 @@ mod tests {
                 _ => Vec::new(),
             })
             .collect()
+    }
+
+    /// The number of exported data points of one histogram.
+    fn point_count(exporter: &InMemoryMetricExporter, name: &str) -> usize {
+        exporter
+            .get_finished_metrics()
+            .unwrap()
+            .iter()
+            .flat_map(|resource| resource.scope_metrics())
+            .flat_map(|scope| scope.metrics())
+            .filter(|metric| metric.name() == name)
+            .map(|metric| match metric.data() {
+                AggregatedMetrics::F64(MetricData::Histogram(histogram)) => {
+                    histogram.data_points().count()
+                }
+                _ => 0,
+            })
+            .sum()
+    }
+
+    /// The exported bucket bounds of the single data point of `name`.
+    fn bounds(exporter: &InMemoryMetricExporter, name: &str) -> Vec<f64> {
+        exporter
+            .get_finished_metrics()
+            .unwrap()
+            .iter()
+            .flat_map(|resource| resource.scope_metrics())
+            .flat_map(|scope| scope.metrics())
+            .find(|metric| metric.name() == name)
+            .and_then(|metric| match metric.data() {
+                AggregatedMetrics::F64(MetricData::Histogram(histogram)) => histogram
+                    .data_points()
+                    .next()
+                    .map(|point| point.bounds().collect()),
+                _ => None,
+            })
+            .expect("the instrument exported a data point")
     }
 
     #[tokio::test]
@@ -301,6 +339,45 @@ mod tests {
         assert_eq!(attributes["http.response.status_code"], "401");
         assert_eq!(attributes["microwave.organization"], "acme");
         assert_eq!(attributes["url.scheme"], "http");
+        // The per-instrument view must keep the shared bucket boundaries.
+        assert_eq!(
+            bounds(&exporter, "http.server.request.duration"),
+            LATENCY_BUCKETS_SECONDS
+        );
+    }
+
+    #[tokio::test]
+    async fn the_views_cap_only_the_request_histogram() {
+        let metrics = Arc::new(Metrics::new());
+        let exporter = InMemoryMetricExporter::default();
+        let guard = testing::init_with_exporter(metrics.clone(), exporter.clone()).unwrap();
+
+        // One series above the default cap: the registry collapses the overflow
+        // itself, so only the view can bring the count back down.
+        for index in 0..=DEFAULT_SERIES_LIMIT {
+            metrics.record_mcp_tool(&format!("tool-{index}"), "acme", "ok", Duration::ZERO);
+        }
+        // Above the default cap but below the raised request cap.
+        let routes = DEFAULT_SERIES_LIMIT + 100;
+        for index in 0..routes {
+            metrics.record_http(
+                &format!("/routes/{index}"),
+                "GET",
+                "acme",
+                200,
+                Duration::ZERO,
+            );
+        }
+        guard.force_flush().await.unwrap();
+
+        assert_eq!(
+            point_count(&exporter, "microwave.mcp.tool.duration"),
+            DEFAULT_SERIES_LIMIT + 1
+        );
+        assert_eq!(
+            point_count(&exporter, "http.server.request.duration"),
+            routes
+        );
     }
 
     async fn exported_names(exporter: &InMemoryMetricExporter) -> Vec<String> {

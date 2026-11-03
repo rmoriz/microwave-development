@@ -73,7 +73,7 @@ rmcp = { version = "3.8", features = ["transport-streamable-http-server"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }
 opentelemetry = "=0.33.1"
 opentelemetry_sdk = "=0.33.1"
-opentelemetry-otlp = "=0.33.1"
+opentelemetry-otlp = { version = "=0.33.1", default-features = false }
 
 [workspace.dependencies.microwave-config]
 path = "crates/microwave-config"

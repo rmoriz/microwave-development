@@ -5,13 +5,12 @@
 //! them, so no store or cache handle is needed here.
 
 use crate::InstrumentSpec;
-use microwave_metrics::Metrics;
+use microwave_metrics::{KeygenGauges, Metrics};
 use opentelemetry::metrics::{AsyncInstrument, Meter};
 use opentelemetry::KeyValue;
 use std::sync::Arc;
 
 /// Observable catalogue rows, one entry per instrument.
-#[allow(dead_code)] // read by the catalogue consistency test
 pub(crate) const INSTRUMENTS: &[InstrumentSpec] = &[
     InstrumentSpec {
         otlp: "microwave.server.requests",
@@ -89,11 +88,34 @@ const CLASS: &str = "class";
 const SERVICE_VERSION: &str = "service.version";
 const INDEXING_MODE: &str = "indexing.mode";
 
+/// The catalogue row for an instrument name.
+fn spec(otlp: &'static str) -> &'static InstrumentSpec {
+    debug_assert!(crate::CATALOGUE.iter().any(|(name, _)| *name == otlp));
+    INSTRUMENTS
+        .iter()
+        .find(|spec| spec.otlp == otlp)
+        .expect("registered gauges are all in the catalogue")
+}
+
+/// The reader behind one keygen gauge, chosen by its catalogue name.
+fn keygen_reader(otlp: &str) -> fn(KeygenGauges) -> u64 {
+    match otlp {
+        "microwave.keygen.capacity" => |gauges| gauges.capacity as u64,
+        "microwave.keygen.cached" => |gauges| gauges.cached as u64,
+        "microwave.keygen.workers" => |gauges| gauges.workers as u64,
+        "microwave.keygen.worker_failures" => |gauges| gauges.worker_failures,
+        "microwave.keygen.warm_up_failures" => |gauges| gauges.warm_up_failures,
+        "microwave.keygen.generated_on_demand" => |gauges| gauges.generated_on_demand,
+        "microwave.keygen.worker_healthy" => |gauges| u64::from(gauges.worker_healthy),
+        other => unreachable!("{other} is not a keygen gauge"),
+    }
+}
+
 /// Register every observable instrument.
-pub(crate) fn register(meter: &Meter, metrics: &Arc<Metrics>) {
+pub(crate) fn register(meter: &Meter, metrics: &Arc<Metrics>, indexing_mode: &'static str) {
     let traffic = metrics.clone();
     meter
-        .u64_observable_counter("microwave.server.requests")
+        .u64_observable_counter(spec("microwave.server.requests").otlp)
         .with_description("HTTP requests seen by the middleware")
         .with_callback(move |observer: &dyn AsyncInstrument<u64>| {
             observer.observe(traffic.snapshot().total_requests, &[]);
@@ -102,7 +124,7 @@ pub(crate) fn register(meter: &Meter, metrics: &Arc<Metrics>) {
 
     let responses = metrics.clone();
     meter
-        .u64_observable_counter("microwave.server.responses")
+        .u64_observable_counter(spec("microwave.server.responses").otlp)
         .with_description("HTTP responses by status class")
         .with_callback(move |observer: &dyn AsyncInstrument<u64>| {
             let snapshot = responses.snapshot();
@@ -118,7 +140,7 @@ pub(crate) fn register(meter: &Meter, metrics: &Arc<Metrics>) {
 
     let authentication = metrics.clone();
     meter
-        .u64_observable_counter("microwave.server.authentication.failures")
+        .u64_observable_counter(spec("microwave.server.authentication.failures").otlp)
         .with_description("Authentication failures")
         .with_callback(move |observer: &dyn AsyncInstrument<u64>| {
             observer.observe(authentication.snapshot().authentication_failures, &[]);
@@ -127,7 +149,7 @@ pub(crate) fn register(meter: &Meter, metrics: &Arc<Metrics>) {
 
     let uptime = metrics.clone();
     meter
-        .u64_observable_gauge("microwave.server.uptime")
+        .u64_observable_gauge(spec("microwave.server.uptime").otlp)
         .with_unit("s")
         .with_description("Process uptime")
         .with_callback(move |observer: &dyn AsyncInstrument<u64>| {
@@ -137,7 +159,7 @@ pub(crate) fn register(meter: &Meter, metrics: &Arc<Metrics>) {
 
     let maintenance = metrics.clone();
     meter
-        .u64_observable_gauge("microwave.server.maintenance")
+        .u64_observable_gauge(spec("microwave.server.maintenance").otlp)
         .with_description("Maintenance mode is on")
         .with_callback(move |observer: &dyn AsyncInstrument<u64>| {
             observer.observe(u64::from(maintenance.maintenance()), &[]);
@@ -146,7 +168,7 @@ pub(crate) fn register(meter: &Meter, metrics: &Arc<Metrics>) {
 
     let nodes = metrics.clone();
     meter
-        .u64_observable_gauge("microwave.server.nodes")
+        .u64_observable_gauge(spec("microwave.server.nodes").otlp)
         .with_description("Stored nodes")
         .with_callback(move |observer: &dyn AsyncInstrument<u64>| {
             observer.observe(nodes.nodes(), &[]);
@@ -155,7 +177,7 @@ pub(crate) fn register(meter: &Meter, metrics: &Arc<Metrics>) {
 
     let pool = metrics.clone();
     meter
-        .u64_observable_gauge("microwave.server.db.pool.connections")
+        .u64_observable_gauge(spec("microwave.server.db.pool.connections").otlp)
         .with_description("Database pool connections by state")
         .with_callback(move |observer: &dyn AsyncInstrument<u64>| {
             if let Some(gauges) = pool.pool() {
@@ -167,7 +189,7 @@ pub(crate) fn register(meter: &Meter, metrics: &Arc<Metrics>) {
 
     let pool_max = metrics.clone();
     meter
-        .u64_observable_gauge("microwave.server.db.pool.connections.max")
+        .u64_observable_gauge(spec("microwave.server.db.pool.connections.max").otlp)
         .with_description("Database pool maximum connections")
         .with_callback(move |observer: &dyn AsyncInstrument<u64>| {
             if let Some(gauges) = pool_max.pool() {
@@ -177,14 +199,14 @@ pub(crate) fn register(meter: &Meter, metrics: &Arc<Metrics>) {
         .build();
 
     meter
-        .u64_observable_gauge("microwave.server.build.info")
+        .u64_observable_gauge(spec("microwave.server.build.info").otlp)
         .with_description("Build information")
-        .with_callback(|observer: &dyn AsyncInstrument<u64>| {
+        .with_callback(move |observer: &dyn AsyncInstrument<u64>| {
             observer.observe(
                 1,
                 &[
                     KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
-                    KeyValue::new(INDEXING_MODE, indexing_mode()),
+                    KeyValue::new(INDEXING_MODE, indexing_mode),
                 ],
             );
         })
@@ -192,7 +214,7 @@ pub(crate) fn register(meter: &Meter, metrics: &Arc<Metrics>) {
 
     let dependencies = metrics.clone();
     meter
-        .u64_observable_gauge("microwave.server.dependencies")
+        .u64_observable_gauge(spec("microwave.server.dependencies").otlp)
         .with_description("Dependency probes, 1 when up")
         .with_callback(move |observer: &dyn AsyncInstrument<u64>| {
             for dependency in dependencies.dependencies() {
@@ -208,43 +230,18 @@ pub(crate) fn register(meter: &Meter, metrics: &Arc<Metrics>) {
         .build();
 
     let keygen = metrics.clone();
-    for (name, read) in [
-        (
-            "microwave.keygen.capacity",
-            (|gauges: microwave_metrics::KeygenGauges| gauges.capacity as u64)
-                as fn(microwave_metrics::KeygenGauges) -> u64,
-        ),
-        ("microwave.keygen.cached", |gauges| gauges.cached as u64),
-        ("microwave.keygen.workers", |gauges| gauges.workers as u64),
-        ("microwave.keygen.worker_failures", |gauges| {
-            gauges.worker_failures
-        }),
-        ("microwave.keygen.warm_up_failures", |gauges| {
-            gauges.warm_up_failures
-        }),
-        ("microwave.keygen.generated_on_demand", |gauges| {
-            gauges.generated_on_demand
-        }),
-        ("microwave.keygen.worker_healthy", |gauges| {
-            u64::from(gauges.worker_healthy)
-        }),
-    ] {
+    for spec in INSTRUMENTS
+        .iter()
+        .filter(|spec| spec.otlp.starts_with("microwave.keygen."))
+    {
         let keygen = keygen.clone();
+        let read = keygen_reader(spec.otlp);
         meter
-            .u64_observable_gauge(name)
+            .u64_observable_gauge(spec.otlp)
             .with_description("Keygen cache state")
             .with_callback(move |observer: &dyn AsyncInstrument<u64>| {
                 observer.observe(read(keygen.keygen()), &[]);
             })
             .build();
     }
-}
-
-/// Indexing backend name for the build-info series.
-///
-/// `init` only receives the `[otel]` block, so the environment copy of
-/// `MW_SEARCH__BACKEND` is the best available source; the embedded backend is
-/// the default.
-fn indexing_mode() -> String {
-    std::env::var("MW_SEARCH__BACKEND").unwrap_or_else(|_| "embedded".to_string())
 }

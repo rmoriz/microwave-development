@@ -25,5 +25,5 @@ pub fn init_with_exporter(
     // Long enough that only an explicit force_flush exports.
     .with_interval(Duration::from_secs(3_600))
     .build();
-    build(&config, metrics, "http", reader)
+    build(&config, metrics, "http", "embedded", reader)
 }
