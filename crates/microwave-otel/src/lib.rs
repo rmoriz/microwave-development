@@ -154,6 +154,10 @@ pub enum OtelError {
     /// The HTTP client for the private CA or the skip-verify flag failed.
     #[error("could not build the TLS HTTP client: {0}")]
     Tls(String),
+    /// The registry already has a recorder, so a second provider would export
+    /// nothing.
+    #[error("a metrics recorder is already attached")]
+    AlreadyAttached,
     /// The reader's own runtime could not be created.
     #[error("could not start the metric reader runtime: {0}")]
     Reader(String),
@@ -272,6 +276,10 @@ impl<E: PushMetricExporter> PushMetricExporter for TrackingExporter<E> {
 /// `scheme` becomes the `url.scheme` attribute on the request histogram; only
 /// the binary knows whether the listener terminates TLS. `indexing_mode` is the
 /// resolved search backend, exported on the build-info series.
+///
+/// A registry takes one recorder, so a second call on the same [`Metrics`]
+/// fails with [`OtelError::AlreadyAttached`] after shutting the fresh provider
+/// down again.
 pub fn init(
     config: &OtelConfig,
     metrics: Arc<Metrics>,
@@ -455,7 +463,14 @@ fn build<R: MetricReader>(
 
     let recorder = OtelRecorder::new(&meter, scheme);
     if !metrics.attach(Arc::new(recorder)) {
-        tracing::warn!("a metrics recorder is already attached; keeping the existing one");
+        // The fresh provider has no recorder to feed and nothing was installed
+        // globally yet: shut it down instead of leaving a second, empty export
+        // path behind.
+        tracing::warn!("a metrics recorder is already attached; dropping the new provider");
+        if let Err(error) = provider.shutdown() {
+            tracing::warn!(%error, "shutting down the unused provider failed");
+        }
+        return Err(OtelError::AlreadyAttached);
     }
 
     gauges::register(&meter, &metrics, indexing_mode);
@@ -593,6 +608,19 @@ mod tests {
             "https://collector/v1/metrics"
         );
         assert_eq!(redacted_endpoint("collector:4318"), "collector:4318");
+    }
+
+    #[tokio::test]
+    async fn a_second_init_reports_the_already_attached_recorder() {
+        use opentelemetry_sdk::metrics::InMemoryMetricExporter;
+
+        let metrics = Arc::new(Metrics::new());
+        let _guard =
+            testing::init_with_exporter(metrics.clone(), InMemoryMetricExporter::default())
+                .unwrap();
+        let error =
+            testing::init_with_exporter(metrics, InMemoryMetricExporter::default()).unwrap_err();
+        assert!(matches!(error, OtelError::AlreadyAttached), "{error}");
     }
 
     #[tokio::test]
