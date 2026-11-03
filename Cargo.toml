@@ -15,6 +15,7 @@ members = [
     "crates/microwave-ctl",
     "crates/microwave-migrate",
     "crates/microwave-mail",
+    "crates/microwave-metrics",
     "bin/microwave-server",
     "bin/microwave-ctl",
     "bin/microwave-load",

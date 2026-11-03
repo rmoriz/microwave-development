@@ -1,8 +1,8 @@
 use crate::health::HealthCache;
-use crate::metrics::Metrics;
 use crate::search::{build_search_backend, SearchBackend, SearchError};
 use microwave_config::{Config, MailSecurity};
 use microwave_crypto::{CryptoError, KeygenCache};
+use microwave_metrics::Metrics;
 use microwave_objectstore::ObjectStore;
 use microwave_store::{MetadataStore, Org, Principal, SqliteStore};
 use std::sync::Arc;

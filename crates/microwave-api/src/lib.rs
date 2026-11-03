@@ -22,7 +22,6 @@ pub mod keys;
 pub mod landing;
 pub mod mcp;
 pub mod membership;
-pub mod metrics;
 pub mod middleware;
 pub mod nodes;
 pub mod organizations;
@@ -47,7 +46,7 @@ use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
 
 pub use error::ApiError;
-pub use metrics::{Metrics, MetricsSnapshot};
+pub use microwave_metrics::{Metrics, MetricsSnapshot};
 pub use microwave_oauth as oauth;
 pub use state::{ApiVersion, AppState, AuthContext, StateError};
 

@@ -1658,6 +1658,7 @@ dependencies = [
  "microwave-crypto",
  "microwave-depsolver",
  "microwave-mail",
+ "microwave-metrics",
  "microwave-oauth",
  "microwave-objectstore",
  "microwave-store",
@@ -1807,6 +1808,14 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "microwave-metrics"
+version = "0.1.1"
+dependencies = [
+ "http",
+ "tokio",
 ]
 
 [[package]]
