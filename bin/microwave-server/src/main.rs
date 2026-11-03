@@ -2,8 +2,13 @@ mod bootstrap;
 
 use clap::{Parser, Subcommand};
 use microwave_api::{router, AppState};
-use microwave_config::{Config, DatabaseDriver, ObjectStoreBackend, StorageCompression};
-use microwave_objectstore::{LocalObjectStore, ObjectStore, S3Config, S3ObjectStore};
+use microwave_config::{
+    Config, DatabaseDriver, ObjectStoreBackend, SearchBackend, StorageCompression,
+};
+use microwave_metrics::{DependencyState, KeygenGauges, Metrics, PoolGauges};
+use microwave_objectstore::{
+    LocalObjectStore, ObjectStore, S3Config, S3ObjectStore, TimedObjectStore,
+};
 use microwave_store::{Compression, MetadataStore, SqliteStore};
 use microwave_store_postgres::PostgresStore;
 use std::path::{Path, PathBuf};
@@ -101,6 +106,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let shutdown = Arc::new(tokio::sync::Notify::new());
             spawn_shutdown_handler(shutdown.clone());
 
+            // One registry for the whole process: the request middleware, the
+            // `/_stats` view and the OTLP recorder all record into it.
+            let metrics = Arc::new(Metrics::new());
+
             let database_url = config.resolved_database_url();
             let compression = store_compression(config.storage.compression);
             let (store, sqlite): (Arc<dyn MetadataStore>, Option<Arc<SqliteStore>>) =
@@ -111,6 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Path::new(path),
                             compression,
                         )?);
+                        store.set_metrics(metrics.clone());
                         (store.clone(), Some(store))
                     }
                     DatabaseDriver::Postgres => {
@@ -129,10 +139,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             )
                             .await?,
                         );
+                        store.set_metrics(metrics.clone());
                         (store, None)
                     }
                 };
             bootstrap::ensure_superuser(store.as_ref(), &config).await?;
+            // Configuration and environment win over the stored header
+            // secret; loading it here fails startup when the stored value is
+            // malformed instead of failing the first export.
+            bootstrap::apply_otel_secrets(&mut config, store.as_ref()).await?;
             let secret = match config.object_store.backend {
                 ObjectStoreBackend::Local => {
                     let secret =
@@ -148,7 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     config.object_store.secret.clone().unwrap_or_default()
                 }
             };
-            let object_store = build_object_store(&config, &secret)?;
+            let object_store = build_timed_object_store(&config, &secret, metrics.clone())?;
 
             if check {
                 // Never print the database URL: it may contain credentials.
@@ -162,50 +177,181 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "serve: configuration ok (bind {}, scheme {scheme}, database backend {backend})",
                     config.server.bind
                 );
+                // Report the state without initializing the provider: `--check`
+                // must never dial the collector.
+                eprintln!(
+                    "otel: {}",
+                    if config.otel.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                );
                 return Ok(());
             }
 
             let bind = config.server.bind.clone();
-            let state = match sqlite {
-                Some(sqlite) => AppState::from_sqlite(sqlite, Arc::new(config), object_store)?,
-                None => AppState::new(store, Arc::new(config), object_store)?,
-            };
+            let gauge_refresh_seconds = config.otel.gauge_refresh_seconds;
+            // Bind before the provider exists: a bind failure must not leave an
+            // initialized exporter behind with nothing to serve.
             let listener = tokio::net::TcpListener::bind(&bind).await?;
             let local_addr = listener.local_addr()?;
-            tracing::info!(%bind, %local_addr, scheme, "microwave-server listening");
-            match tls_config {
-                Some(rustls_config) => {
-                    let listener = listener.into_std()?;
-                    let handle = axum_server::Handle::new();
-                    let shutdown_handle = handle.clone();
-                    tokio::spawn(async move {
-                        shutdown.notified().await;
-                        shutdown_handle.graceful_shutdown(Some(SHUTDOWN_GRACE));
-                    });
-                    axum_server::from_tcp_rustls(listener, rustls_config)?
-                        .handle(handle)
-                        .serve(
-                            router(state)
-                                .into_make_service_with_connect_info::<std::net::SocketAddr>(),
-                        )
-                        .await?;
+
+            let indexing_mode = indexing_mode(config.search.backend);
+            let otel = if config.otel.enabled {
+                Some(microwave_otel::init(
+                    &config.otel,
+                    metrics.clone(),
+                    scheme,
+                    indexing_mode,
+                )?)
+            } else {
+                None
+            };
+
+            let state = match sqlite {
+                Some(sqlite) => {
+                    AppState::with_metrics(sqlite, Arc::new(config), object_store, metrics.clone())
                 }
                 None => {
-                    let shutdown = shutdown.clone();
-                    axum::serve(
-                        listener,
-                        router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
-                    )
-                    .with_graceful_shutdown(async move {
-                        shutdown.notified().await;
-                    })
-                    .await?;
+                    AppState::with_metrics(store, Arc::new(config), object_store, metrics.clone())
+                }
+            };
+            let state = match state {
+                Ok(state) => state,
+                Err(error) => {
+                    if let Some(otel) = otel {
+                        if let Err(error) = otel.shutdown().await {
+                            tracing::warn!(%error, "OTLP metric shutdown did not complete");
+                        }
+                    }
+                    return Err(error.into());
+                }
+            };
+            tracing::info!(%bind, %local_addr, scheme, "microwave-server listening");
+            let gauge_refresh = otel
+                .as_ref()
+                .map(|_| spawn_gauge_refresh(state.clone(), metrics, gauge_refresh_seconds));
+            let served = serve(state, listener, tls_config, shutdown).await;
+
+            // Stop sampling before the final flush, so the last export is not
+            // raced by a tick that still writes gauge values.
+            if let Some(gauge_refresh) = gauge_refresh {
+                gauge_refresh.abort();
+                let _ = gauge_refresh.await;
+            }
+            if let Some(otel) = otel {
+                // The guard applies `shutdown_timeout_ms` itself.
+                if let Err(error) = otel.shutdown().await {
+                    tracing::warn!(%error, "OTLP metric shutdown did not complete");
                 }
             }
+            served?;
         }
     }
 
     Ok(())
+}
+
+/// Serve until shutdown, returning the accept-loop or TLS-serve error.
+///
+/// The caller keeps ownership of the metric guard and the refresh task, so an
+/// early return here still reaches the flush path.
+async fn serve(
+    state: AppState,
+    listener: tokio::net::TcpListener,
+    tls_config: Option<axum_server::tls_rustls::RustlsConfig>,
+    shutdown: Arc<tokio::sync::Notify>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match tls_config {
+        Some(rustls_config) => {
+            let listener = listener.into_std()?;
+            let handle = axum_server::Handle::new();
+            let shutdown_handle = handle.clone();
+            tokio::spawn(async move {
+                shutdown.notified().await;
+                shutdown_handle.graceful_shutdown(Some(SHUTDOWN_GRACE));
+            });
+            axum_server::from_tcp_rustls(listener, rustls_config)?
+                .handle(handle)
+                .serve(router(state).into_make_service_with_connect_info::<std::net::SocketAddr>())
+                .await?;
+        }
+        None => {
+            let shutdown = shutdown.clone();
+            axum::serve(
+                listener,
+                router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move {
+                shutdown.notified().await;
+            })
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// The `indexing.mode` attribute on the build-info series.
+fn indexing_mode(backend: SearchBackend) -> &'static str {
+    match backend {
+        SearchBackend::Embedded => "embedded",
+        SearchBackend::OpenSearch => "opensearch",
+        SearchBackend::Elasticsearch => "elasticsearch",
+    }
+}
+
+/// Sample the store, keygen and dependency probes into the registry once per
+/// interval. The first tick fires immediately.
+///
+/// Backend errors are logged and skipped so one failing read does not stop the
+/// loop; the next tick retries.
+fn spawn_gauge_refresh(
+    state: AppState,
+    metrics: Arc<Metrics>,
+    interval_seconds: u64,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        // `Config::validate` rejects zero, but an env-only config can still
+        // reach this point with one; the interval panics on zero.
+        let mut ticker = tokio::time::interval(Duration::from_secs(interval_seconds.max(1)));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            let dependencies = state
+                .dependency_states()
+                .await
+                .into_iter()
+                .map(|(name, up)| DependencyState { name, up })
+                .collect();
+            metrics.set_dependencies(dependencies);
+            metrics.set_pool(state.store.pool_stats().await.map(|pool| PoolGauges {
+                idle: pool.idle,
+                in_use: pool.in_use,
+                max: pool.max,
+            }));
+            match state.store.maintenance_enabled().await {
+                Ok(enabled) => metrics.set_maintenance(enabled),
+                Err(error) => {
+                    tracing::warn!(%error, "failed to read maintenance mode for metrics")
+                }
+            }
+            match state.store.count_nodes().await {
+                Ok(nodes) => metrics.set_nodes(nodes),
+                Err(error) => tracing::warn!(%error, "failed to count nodes for metrics"),
+            }
+            let keygen = state.keygen.status();
+            metrics.set_keygen(KeygenGauges {
+                cached: keygen.cached,
+                capacity: keygen.capacity,
+                workers: keygen.workers,
+                worker_failures: keygen.worker_failures,
+                warm_up_failures: keygen.warm_up_failures,
+                generated_on_demand: keygen.generated_on_demand,
+                worker_healthy: keygen.worker_healthy,
+            });
+        }
+    })
 }
 
 fn sqlite_path(database_url: &str) -> &str {
@@ -270,6 +416,15 @@ fn redact_config_for_output(config: &mut Config) {
         .secret_key
         .as_ref()
         .map(|_| "***".to_string());
+    config.otel.headers = config
+        .otel
+        .headers
+        .iter()
+        .map(|header| match header.split_once(':') {
+            Some((name, _)) => format!("{name}: ***"),
+            None => header.clone(),
+        })
+        .collect();
 }
 
 /// Hide the password in a database URL before printing configuration.
@@ -308,6 +463,46 @@ fn local_object_store_base_url(config: &Config) -> String {
         Some(url) => url.trim_end_matches('/').to_string(),
         None => format!("{}://{}", listener_scheme(config), config.server.bind),
     }
+}
+
+/// Store kind for the object-store `backend` metric label. Never a path,
+/// bucket or host.
+fn object_store_backend_label(backend: ObjectStoreBackend) -> &'static str {
+    match backend {
+        ObjectStoreBackend::Local => "local",
+        ObjectStoreBackend::S3 => "s3",
+        ObjectStoreBackend::Garage => "garage",
+    }
+}
+
+/// Wrap a built object store in the timing decorator. The label comes from the
+/// configured backend, not from the store itself, so it never leaks a path.
+fn timed_object_store(
+    store: Arc<dyn ObjectStore + Send + Sync>,
+    metrics: Arc<Metrics>,
+    backend: ObjectStoreBackend,
+) -> Arc<dyn ObjectStore + Send + Sync> {
+    Arc::new(TimedObjectStore::new(
+        store,
+        metrics,
+        object_store_backend_label(backend),
+    ))
+}
+
+/// Build the configured object store and wrap it in the timing decorator.
+///
+/// The wrap lives here, next to the build, so the one call site cannot drop it
+/// while the store keeps working silently unmeasured.
+fn build_timed_object_store(
+    config: &Config,
+    secret: &str,
+    metrics: Arc<Metrics>,
+) -> Result<Arc<dyn ObjectStore + Send + Sync>, Box<dyn std::error::Error>> {
+    Ok(timed_object_store(
+        build_object_store(config, secret)?,
+        metrics,
+        config.object_store.backend,
+    ))
 }
 
 fn build_object_store(
@@ -583,12 +778,18 @@ async fn reload_tls(
 #[cfg(test)]
 mod tests {
     use super::{
-        local_object_store_base_url, redact_config_for_output, redact_database_url,
-        warn_implicit_mcp_superuser,
+        build_timed_object_store, local_object_store_base_url, object_store_backend_label,
+        redact_config_for_output, redact_database_url, spawn_gauge_refresh,
+        warn_implicit_mcp_superuser, PoolGauges,
     };
-    use microwave_config::{Config, McpOrgConfig};
+    use microwave_api::AppState;
+    use microwave_config::{Config, McpOrgConfig, ObjectStoreBackend};
+    use microwave_metrics::Metrics;
+    use microwave_objectstore::{LocalObjectStore, ObjectStore};
+    use microwave_store::{NewNode, SqliteStore};
     use std::io::Write;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use tracing_subscriber::fmt::MakeWriter;
 
     #[derive(Clone, Default)]
@@ -671,6 +872,107 @@ mod tests {
         assert!(capture.0.lock().unwrap().is_empty());
     }
 
+    /// The interval is set to an hour, so only the immediate first tick can
+    /// fill the gauges; a regression to a delayed first tick would time out.
+    #[tokio::test]
+    async fn gauge_refresh_populates_every_gauge_on_the_first_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SqliteStore::open(&dir.path().join("test.db")).unwrap());
+        let org = store.create_org("gauge-org", "Gauge Org").unwrap();
+        let creator = store.create_actor().unwrap();
+        store
+            .create_container_for_org_with_acl(&org.id, "nodes", &creator)
+            .unwrap();
+        store
+            .create_node(
+                &org.id,
+                NewNode {
+                    name: "node-1",
+                    body: r#"{"name":"node-1"}"#,
+                    environment: "_default",
+                    policy_name: None,
+                    policy_group: None,
+                    creator_authz_id: &creator,
+                },
+            )
+            .unwrap();
+        store.set_maintenance_enabled(true).unwrap();
+
+        let config = Arc::new(Config::default());
+        let object_store: Arc<dyn ObjectStore + Send + Sync> = Arc::new(LocalObjectStore::new(
+            dir.path().join("objects"),
+            "secret",
+            "http://0.0.0.0:8000",
+        ));
+        let metrics = Arc::new(Metrics::new());
+        let state = AppState::with_metrics(store, config, object_store, metrics.clone()).unwrap();
+
+        let gauge_refresh = spawn_gauge_refresh(state.clone(), metrics.clone(), 3600);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if metrics.maintenance()
+                    && metrics.nodes() == 1
+                    && metrics.keygen().capacity > 0
+                    && !metrics.dependencies().is_empty()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the refresh task must populate the gauges on its first tick");
+        gauge_refresh.abort();
+        let _ = gauge_refresh.await;
+
+        assert_eq!(metrics.nodes(), 1);
+        assert!(metrics.maintenance());
+        assert_eq!(metrics.keygen().capacity, state.config.keygen.size);
+        assert!(!metrics.dependencies().is_empty());
+        assert_eq!(
+            metrics.pool(),
+            state.store.pool_stats().await.map(|pool| PoolGauges {
+                idle: pool.idle,
+                in_use: pool.in_use,
+                max: pool.max,
+            })
+        );
+    }
+
+    /// One label per configured backend, and never the path or endpoint.
+    #[test]
+    fn object_store_backend_labels_are_bounded() {
+        for (backend, expected) in [
+            (ObjectStoreBackend::Local, "local"),
+            (ObjectStoreBackend::S3, "s3"),
+            (ObjectStoreBackend::Garage, "garage"),
+        ] {
+            assert_eq!(object_store_backend_label(backend), expected);
+        }
+    }
+
+    /// The built object store reaches the metrics through the timer, and the
+    /// label comes from the configured backend rather than the store. This goes
+    /// through the same helper the `serve` path uses, so dropping the wrap
+    /// there fails here.
+    #[test]
+    fn timed_object_store_wraps_the_store_with_the_backend_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.object_store.backend = ObjectStoreBackend::Local;
+        config.paths.data_dir = dir.path().to_string_lossy().into_owned();
+        let metrics = Arc::new(Metrics::new());
+
+        let store = build_timed_object_store(&config, "secret", metrics.clone()).unwrap();
+        store.health_check().unwrap();
+
+        let series = metrics.object_store_series();
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0].backend, "local");
+        assert_eq!(series[0].operation, "health_check");
+        assert_eq!(series[0].outcome, "ok");
+    }
+
     #[test]
     fn local_object_store_uses_https_only_when_tls_is_enabled() {
         let plain = Config::default();
@@ -726,6 +1028,23 @@ mod tests {
         assert_eq!(config.object_store.secret.as_deref(), Some("***"));
         assert_eq!(config.object_store.access_key.as_deref(), Some("***"));
         assert_eq!(config.object_store.secret_key.as_deref(), Some("***"));
+    }
+
+    #[test]
+    fn redacts_otel_header_values_and_keeps_names() {
+        let mut config = Config::default();
+        config.otel.headers = vec![
+            "Authorization: Bearer s3cr3t".to_string(),
+            "X-Scope:".to_string(),
+            "malformed".to_string(),
+        ];
+
+        redact_config_for_output(&mut config);
+
+        assert_eq!(
+            config.otel.headers,
+            vec!["Authorization: ***", "X-Scope: ***", "malformed"]
+        );
     }
 
     #[test]

@@ -299,3 +299,29 @@ enabled = false
 enabled = false
 # reporting_url = "https://telemetry.example.com/ingest"
 interval_seconds = 86400
+
+# OpenTelemetry metrics. See docs/opentelemetry.md for the operator guide.
+# [otel]
+# # Off by default: enabling this is the first outbound connection Microwave makes.
+# enabled = false
+# endpoint = "http://127.0.0.1:4318"
+# # Base URL only; the signal path (/v1/metrics) is appended.
+# # Only "http/protobuf" is supported.
+# protocol = "http/protobuf"
+# # Export interval for the periodic reader.
+# interval_seconds = 60
+# # Upper bound for one export attempt.
+# timeout_ms = 10000
+# # How often the gauge refresh task samples store, keygen, and dependencies.
+# gauge_refresh_seconds = 60
+# # Budget for the final flush on shutdown.
+# shutdown_timeout_ms = 5000
+# # service.name resource attribute.
+# service_name = "microwave-server"
+# # deployment.environment resource attribute; omitted when unset.
+# environment = "production"
+# # "Name: value" entries, e.g. an Authorization header for the collector.
+# headers = []
+# # https collectors behind a private CA:
+# # tls_ca_path = "/etc/microwave/collector-ca.pem"
+# # insecure_skip_tls_verify = false

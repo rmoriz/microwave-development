@@ -75,89 +75,93 @@ impl SqliteStore {
         run: NewNodeRun<'_>,
         keep_runs: usize,
     ) -> Result<StoredNodeRun, StoreError> {
-        let id = new_id();
-        let created_at = now();
-        let start_time = match run.start_time {
-            Some(value) => value.to_string(),
-            None => chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        };
-        let report = encode_serialized(run.report, self.compression())?;
-        let mut connection = self.connection();
-        let tx = connection.transaction()?;
+        let timer = self.timer("store_node_run");
+        let result = (|| {
+            let id = new_id();
+            let created_at = now();
+            let start_time = match run.start_time {
+                Some(value) => value.to_string(),
+                None => chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            };
+            let report = encode_serialized(run.report, self.compression())?;
+            let mut connection = self.connection();
+            let tx = connection.transaction()?;
 
-        tx.execute(
-            "INSERT INTO node_runs
-             (id, org_id, node_name, run_id, status, start_time, end_time,
-              resource_count, updated_resource_count, error_count, report, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-             ON CONFLICT(org_id, node_name, run_id) DO UPDATE SET
-                status = excluded.status,
-                start_time = excluded.start_time,
-                end_time = excluded.end_time,
-                resource_count = excluded.resource_count,
-                updated_resource_count = excluded.updated_resource_count,
-                error_count = excluded.error_count,
-                report = excluded.report",
-            rusqlite::params![
-                id,
-                org_id,
-                run.node_name,
-                run.run_id,
-                run.status,
-                start_time,
-                run.end_time,
-                run.resource_count,
-                run.updated_resource_count,
-                run.error_count,
-                report,
-                created_at,
-            ],
-        )?;
-
-        // Read the row before pruning: a retried run that is older than the
-        // retained window is inserted (or refreshed) and then intentionally
-        // pruned, but the caller still needs the stored value.
-        let stored = tx.query_row(
-            "SELECT id, org_id, node_name, run_id, status, start_time, end_time,
-                    resource_count, updated_resource_count, error_count, report, created_at
-             FROM node_runs WHERE org_id = ?1 AND node_name = ?2 AND run_id = ?3",
-            rusqlite::params![org_id, run.node_name, run.run_id],
-            |row| {
-                Ok(StoredNodeRun {
-                    id: row.get(0)?,
-                    org_id: row.get(1)?,
-                    node_name: row.get(2)?,
-                    run_id: row.get(3)?,
-                    status: row.get(4)?,
-                    start_time: row.get(5)?,
-                    end_time: row.get(6)?,
-                    resource_count: row.get(7)?,
-                    updated_resource_count: row.get(8)?,
-                    error_count: row.get(9)?,
-                    report: decode_serialized(&row.get::<_, String>(10)?).map_err(|error| {
-                        rusqlite::Error::ToSqlConversionFailure(Box::new(error))
-                    })?,
-                    created_at: row.get(11)?,
-                })
-            },
-        )?;
-
-        if keep_runs > 0 {
             tx.execute(
-                "DELETE FROM node_runs
-                 WHERE org_id = ?1 AND node_name = ?2
-                   AND id NOT IN (
-                     SELECT id FROM node_runs
-                     WHERE org_id = ?1 AND node_name = ?2
-                     ORDER BY start_time DESC, created_at DESC
-                     LIMIT ?3
-                   )",
-                rusqlite::params![org_id, run.node_name, keep_runs as i64],
+                "INSERT INTO node_runs
+                 (id, org_id, node_name, run_id, status, start_time, end_time,
+                  resource_count, updated_resource_count, error_count, report, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                 ON CONFLICT(org_id, node_name, run_id) DO UPDATE SET
+                    status = excluded.status,
+                    start_time = excluded.start_time,
+                    end_time = excluded.end_time,
+                    resource_count = excluded.resource_count,
+                    updated_resource_count = excluded.updated_resource_count,
+                    error_count = excluded.error_count,
+                    report = excluded.report",
+                rusqlite::params![
+                    id,
+                    org_id,
+                    run.node_name,
+                    run.run_id,
+                    run.status,
+                    start_time,
+                    run.end_time,
+                    run.resource_count,
+                    run.updated_resource_count,
+                    run.error_count,
+                    report,
+                    created_at,
+                ],
             )?;
-        }
 
-        tx.commit()?;
-        Ok(stored)
+            // Read the row before pruning: a retried run that is older than the
+            // retained window is inserted (or refreshed) and then intentionally
+            // pruned, but the caller still needs the stored value.
+            let stored = tx.query_row(
+                "SELECT id, org_id, node_name, run_id, status, start_time, end_time,
+                        resource_count, updated_resource_count, error_count, report, created_at
+                 FROM node_runs WHERE org_id = ?1 AND node_name = ?2 AND run_id = ?3",
+                rusqlite::params![org_id, run.node_name, run.run_id],
+                |row| {
+                    Ok(StoredNodeRun {
+                        id: row.get(0)?,
+                        org_id: row.get(1)?,
+                        node_name: row.get(2)?,
+                        run_id: row.get(3)?,
+                        status: row.get(4)?,
+                        start_time: row.get(5)?,
+                        end_time: row.get(6)?,
+                        resource_count: row.get(7)?,
+                        updated_resource_count: row.get(8)?,
+                        error_count: row.get(9)?,
+                        report: decode_serialized(&row.get::<_, String>(10)?).map_err(|error| {
+                            rusqlite::Error::ToSqlConversionFailure(Box::new(error))
+                        })?,
+                        created_at: row.get(11)?,
+                    })
+                },
+            )?;
+
+            if keep_runs > 0 {
+                tx.execute(
+                    "DELETE FROM node_runs
+                     WHERE org_id = ?1 AND node_name = ?2
+                       AND id NOT IN (
+                         SELECT id FROM node_runs
+                         WHERE org_id = ?1 AND node_name = ?2
+                         ORDER BY start_time DESC, created_at DESC
+                         LIMIT ?3
+                       )",
+                    rusqlite::params![org_id, run.node_name, keep_runs as i64],
+                )?;
+            }
+
+            tx.commit()?;
+            Ok(stored)
+        })();
+        timer.finish(result)
     }
 
     pub fn list_node_runs(

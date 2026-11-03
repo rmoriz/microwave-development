@@ -16,6 +16,7 @@ pub(crate) const KNOWN_CREDENTIALS: &[(&str, &[&str])] = &[
         ],
     ),
     ("data_collector", &["token"]),
+    ("otel", &["headers"]),
     ("redis_lb", &["password"]),
     ("postgresql", &["db_superuser_password"]),
     ("ldap", &["bind_password"]),
@@ -140,7 +141,22 @@ fn validate_credential(group: &str, name: &str) -> Result<(), CtlError> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_credential;
+    use super::{set_secret, show_secret, validate_credential};
+    use crate::context::Context;
+    use std::path::Path;
+
+    fn context_with_store(dir: &Path) -> Context {
+        let config_path = dir.join("microwave.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "[paths]\ndata_dir = '{}'\n\n[database]\ndriver = \"sqlite\"\n",
+                dir.join("data").display()
+            ),
+        )
+        .unwrap();
+        Context::load(Some(&config_path)).unwrap()
+    }
 
     #[test]
     fn mcp_group_accepts_org_names_and_rejects_bad_names() {
@@ -149,5 +165,31 @@ mod tests {
         assert!(validate_credential("mcp", "Acme").is_err());
         assert!(validate_credential("mcp", "").is_err());
         assert!(validate_credential("mcp", "with/slash").is_err());
+    }
+
+    /// `otel headers` stores the newline-separated header lines that
+    /// `bootstrap::apply_otel_secrets` later reads back.
+    #[test]
+    fn otel_group_stores_and_shows_the_headers_secret() {
+        assert!(validate_credential("otel", "headers").is_ok());
+        assert!(validate_credential("otel", "endpoint").is_err());
+
+        let dir = tempfile::tempdir().unwrap();
+        let context = context_with_store(dir.path());
+        set_secret(
+            &context,
+            "otel",
+            "headers",
+            "Authorization: Bearer s3cr3t\nX-Scope: metrics",
+        )
+        .unwrap();
+        show_secret(&context, "otel", "headers").unwrap();
+
+        let store = context.open_metadata_store().unwrap();
+        let value = store
+            .run(store.store().get_secret("otel", "headers"))
+            .unwrap()
+            .expect("stored otel headers secret");
+        assert_eq!(value, "Authorization: Bearer s3cr3t\nX-Scope: metrics");
     }
 }

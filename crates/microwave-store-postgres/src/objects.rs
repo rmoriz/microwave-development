@@ -246,84 +246,99 @@ impl PostgresStore {
 #[async_trait]
 impl ObjectRepository for PostgresStore {
     async fn create_node(&self, org_id: &str, node: NewNode<'_>) -> Result<StoredNode, StoreError> {
-        let NewNode {
-            name,
-            body,
-            environment,
-            policy_name,
-            policy_group,
-            creator_authz_id,
-        } = node;
-        let id = new_id();
-        let timestamp = now();
-        let serialized_object = encode_serialized(body, self.compression())?;
-        let mut transaction = self.pool().begin().await.map_err(db)?;
-        let authz_id =
-            create_object_authz(&mut transaction, org_id, "nodes", creator_authz_id).await?;
-        sqlx::query(
-            "INSERT INTO nodes
-             (id, authz_id, org_id, name, environment, policy_name, policy_group,
-              serialized_object, last_updated_by, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)",
-        )
-        .bind(&id)
-        .bind(&authz_id)
-        .bind(org_id)
-        .bind(name)
-        .bind(environment)
-        .bind(policy_name)
-        .bind(policy_group)
-        .bind(&serialized_object)
-        .bind(creator_authz_id)
-        .bind(&timestamp)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| unique(error, "Node already exists".to_string()))?;
-        transaction.commit().await.map_err(db)?;
-        Ok(StoredNode {
-            id,
-            authz_id,
-            name: name.into(),
-            environment: environment.into(),
-            policy_name: policy_name.map(ToString::to_string),
-            policy_group: policy_group.map(ToString::to_string),
-            serialized_object: body.into(),
-            created_at: timestamp.clone(),
-            updated_at: timestamp,
-        })
+        let timer = self.timer("create_node");
+        let result: Result<StoredNode, StoreError> = async {
+            let NewNode {
+                name,
+                body,
+                environment,
+                policy_name,
+                policy_group,
+                creator_authz_id,
+            } = node;
+            let id = new_id();
+            let timestamp = now();
+            let serialized_object = encode_serialized(body, self.compression())?;
+            let mut transaction = self.pool().begin().await.map_err(db)?;
+            let authz_id =
+                create_object_authz(&mut transaction, org_id, "nodes", creator_authz_id).await?;
+            sqlx::query(
+                "INSERT INTO nodes
+                 (id, authz_id, org_id, name, environment, policy_name, policy_group,
+                  serialized_object, last_updated_by, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)",
+            )
+            .bind(&id)
+            .bind(&authz_id)
+            .bind(org_id)
+            .bind(name)
+            .bind(environment)
+            .bind(policy_name)
+            .bind(policy_group)
+            .bind(&serialized_object)
+            .bind(creator_authz_id)
+            .bind(&timestamp)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| unique(error, "Node already exists".to_string()))?;
+            transaction.commit().await.map_err(db)?;
+            Ok(StoredNode {
+                id,
+                authz_id,
+                name: name.into(),
+                environment: environment.into(),
+                policy_name: policy_name.map(ToString::to_string),
+                policy_group: policy_group.map(ToString::to_string),
+                serialized_object: body.into(),
+                created_at: timestamp.clone(),
+                updated_at: timestamp,
+            })
+        }
+        .await;
+        timer.finish(result)
     }
 
     async fn find_node(&self, org_id: &str, name: &str) -> Result<Option<StoredNode>, StoreError> {
-        let row = sqlx::query(
-            "SELECT id, authz_id, name, environment, policy_name, policy_group,
-                    serialized_object, created_at, updated_at
-             FROM nodes WHERE org_id = $1 AND name = $2",
-        )
-        .bind(org_id)
-        .bind(name)
-        .fetch_optional(self.pool())
-        .await
-        .map_err(db)?;
-        let node = row.map(|row| node_from_row(&row)).transpose().map_err(db)?;
-        decode_node_option(node)
+        let timer = self.timer("find_node");
+        let result: Result<Option<StoredNode>, StoreError> = async {
+            let row = sqlx::query(
+                "SELECT id, authz_id, name, environment, policy_name, policy_group,
+                            serialized_object, created_at, updated_at
+                     FROM nodes WHERE org_id = $1 AND name = $2",
+            )
+            .bind(org_id)
+            .bind(name)
+            .fetch_optional(self.pool())
+            .await
+            .map_err(db)?;
+            let node = row.map(|row| node_from_row(&row)).transpose().map_err(db)?;
+            decode_node_option(node)
+        }
+        .await;
+        timer.finish(result)
     }
 
     async fn list_nodes(&self, org_id: &str) -> Result<Vec<StoredNode>, StoreError> {
-        let rows = sqlx::query(
-            "SELECT id, authz_id, name, environment, policy_name, policy_group,
-                    serialized_object, created_at, updated_at
-             FROM nodes WHERE org_id = $1 ORDER BY name",
-        )
-        .bind(org_id)
-        .fetch_all(self.pool())
-        .await
-        .map_err(db)?;
-        decode_nodes(
-            rows.iter()
-                .map(node_from_row)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?,
-        )
+        let timer = self.timer("list_nodes");
+        let result: Result<Vec<StoredNode>, StoreError> = async {
+            let rows = sqlx::query(
+                "SELECT id, authz_id, name, environment, policy_name, policy_group,
+                            serialized_object, created_at, updated_at
+                     FROM nodes WHERE org_id = $1 ORDER BY name",
+            )
+            .bind(org_id)
+            .fetch_all(self.pool())
+            .await
+            .map_err(db)?;
+            decode_nodes(
+                rows.iter()
+                    .map(node_from_row)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(db)?,
+            )
+        }
+        .await;
+        timer.finish(result)
     }
 
     async fn find_nodes_by_ids(
@@ -363,11 +378,16 @@ impl ObjectRepository for PostgresStore {
     }
 
     async fn count_nodes(&self) -> Result<u64, StoreError> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes")
-            .fetch_one(self.pool())
-            .await
-            .map_err(db)?;
-        Ok(count as u64)
+        let timer = self.timer("count_nodes");
+        let result: Result<u64, StoreError> = async {
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes")
+                .fetch_one(self.pool())
+                .await
+                .map_err(db)?;
+            Ok(count as u64)
+        }
+        .await;
+        timer.finish(result)
     }
 
     async fn list_nodes_in_environment(
@@ -429,22 +449,27 @@ impl ObjectRepository for PostgresStore {
     }
 
     async fn delete_node(&self, org_id: &str, name: &str) -> Result<(), StoreError> {
-        let mut transaction = self.pool().begin().await.map_err(db)?;
-        let row = sqlx::query("SELECT authz_id FROM nodes WHERE org_id = $1 AND name = $2")
-            .bind(org_id)
-            .bind(name)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(db)?
-            .ok_or_else(|| StoreError::NotFound(format!("node {name}")))?;
-        let authz_id: String = row.try_get(0).map_err(db)?;
-        sqlx::query("DELETE FROM authz_entities WHERE authz_id = $1")
-            .bind(&authz_id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(db)?;
-        transaction.commit().await.map_err(db)?;
-        Ok(())
+        let timer = self.timer("delete_node");
+        let result: Result<(), StoreError> = async {
+            let mut transaction = self.pool().begin().await.map_err(db)?;
+            let row = sqlx::query("SELECT authz_id FROM nodes WHERE org_id = $1 AND name = $2")
+                .bind(org_id)
+                .bind(name)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(db)?
+                .ok_or_else(|| StoreError::NotFound(format!("node {name}")))?;
+            let authz_id: String = row.try_get(0).map_err(db)?;
+            sqlx::query("DELETE FROM authz_entities WHERE authz_id = $1")
+                .bind(&authz_id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(db)?;
+            transaction.commit().await.map_err(db)?;
+            Ok(())
+        }
+        .await;
+        timer.finish(result)
     }
 
     async fn create_environment(

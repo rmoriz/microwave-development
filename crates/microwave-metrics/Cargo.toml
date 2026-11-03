@@ -1,0 +1,12 @@
+[package]
+name = "microwave-metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+http.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

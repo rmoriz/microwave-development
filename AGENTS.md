@@ -7,6 +7,8 @@
   Embedded into the binary and shared with the homepage and the docs site;
   verified by `cargo test --workspace`.
 - `website/homepage`: the static Astro marketing site for `microwave.io`.
+- `docker/`: the pinned collector and Prometheus configs behind the root
+  compose `observability` profile.
 - `docs/`: operator and contributor documentation. `docs/mcp.md` is the guide
   the homepage links to.
 - `docs/superpowers/`: specs and implementation plans.
@@ -118,6 +120,10 @@ committing Rust. The homepage has no linter beyond `astro check`.
   down through it, never with ad-hoc `docker build`, and always
   `down -v --rmi local`; `run.sh` ends on that, so no container, volume or
   locally built image survives a run.
+- The root `docker-compose.yml` `observability` profile (collector, Prometheus)
+  is opt-in; the `MW_OTEL__*` entries on `microwave` stay unconditional, so a
+  plain `up` without the profile is the fail-open case where the server serves
+  and `/_stats` reports the export error.
 
 ## cookbook (kitchen) notes
 

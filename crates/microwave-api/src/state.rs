@@ -1,8 +1,8 @@
 use crate::health::HealthCache;
-use crate::metrics::Metrics;
-use crate::search::{build_search_backend, SearchBackend, SearchError};
+use crate::search::{build_search_backend, SearchBackend, SearchError, TimedSearch};
 use microwave_config::{Config, MailSecurity};
 use microwave_crypto::{CryptoError, KeygenCache};
+use microwave_metrics::Metrics;
 use microwave_objectstore::ObjectStore;
 use microwave_store::{MetadataStore, Org, Principal, SqliteStore};
 use std::sync::Arc;
@@ -57,8 +57,22 @@ impl AppState {
         config: Arc<Config>,
         object_store: Arc<dyn ObjectStore + Send + Sync>,
     ) -> Result<Self, StateError> {
+        Self::with_metrics(store, config, object_store, Arc::new(Metrics::new()))
+    }
+
+    /// Build application state around an existing metrics registry.
+    ///
+    /// The server creates the registry before the OTLP provider, so the
+    /// provider's recorder and the `/_stats` view share one catalogue.
+    pub fn with_metrics(
+        store: Arc<dyn MetadataStore>,
+        config: Arc<Config>,
+        object_store: Arc<dyn ObjectStore + Send + Sync>,
+        metrics: Arc<Metrics>,
+    ) -> Result<Self, StateError> {
         let mailer = microwave_mail::build_mailer(&config.mail)?;
         let search = build_search_backend(&config.search, store.clone())?;
+        let search: Arc<dyn SearchBackend> = Arc::new(TimedSearch::new(search, metrics.clone()));
         let http_client = build_http_client(&config)?;
         let compliance_client = build_compliance_client(&config)?;
         let keygen = build_keygen_cache(&config);
@@ -83,7 +97,7 @@ impl AppState {
             config,
             object_store,
             search,
-            metrics: Arc::new(Metrics::new()),
+            metrics,
             keygen,
             actions,
             health: Arc::new(HealthCache::new()),
@@ -104,41 +118,31 @@ impl AppState {
         config: Arc<Config>,
         object_store: Arc<dyn ObjectStore + Send + Sync>,
     ) -> Result<Self, StateError> {
-        let mailer = microwave_mail::build_mailer(&config.mail)?;
-        let search = build_search_backend(&config.search, store.clone())?;
-        let http_client = build_http_client(&config)?;
-        let compliance_client = build_compliance_client(&config)?;
-        let keygen = build_keygen_cache(&config);
-        let actions =
-            crate::actions::ActionDispatcher::new(&config, http_client.clone(), store.clone());
-        let depsolver = build_depsolver_semaphore(&config);
-        if config.mail.is_enabled() {
-            if let Some(url) = config.server.public_url.as_deref() {
-                if url.trim().starts_with("http://") {
-                    tracing::warn!(
-                        "mail is enabled with an http public_url; use https in production"
-                    );
-                }
-            }
-            if config.mail.security == MailSecurity::None {
-                tracing::warn!("mail uses plaintext SMTP (security = none); use this only for trusted local relays");
-            }
-        }
-        Ok(Self {
-            store: store.clone(),
-            sqlite: Some(store),
-            actions,
+        let mut state = Self::with_metrics(
+            store.clone(),
             config,
             object_store,
-            search,
-            metrics: Arc::new(Metrics::new()),
-            keygen,
-            health: Arc::new(HealthCache::new()),
-            http_client,
-            compliance_client,
-            depsolver,
-            mailer,
-        })
+            Arc::new(Metrics::new()),
+        )?;
+        state.sqlite = Some(store);
+        Ok(state)
+    }
+
+    /// Probe every dependency and report `(name, up)` pairs.
+    ///
+    /// The health cache bounds and deduplicates the probes, so the gauge
+    /// refresh task can call this on every tick. A probe that is down is still
+    /// reported, with `up` false.
+    pub async fn dependency_states(&self) -> Vec<(&'static str, bool)> {
+        let snapshot = self
+            .health
+            .snapshot(&self.store, &self.search, &self.object_store)
+            .await;
+        snapshot
+            .probes
+            .iter()
+            .map(|probe| (probe.name, probe.status == "pong"))
+            .collect()
     }
 
     /// Borrow the concrete SQLite store.
@@ -346,5 +350,52 @@ mod tests {
 
         assert!(state.mailer.is_enabled());
         assert!(state.oauth_state().mailer.is_enabled());
+    }
+
+    /// The configured backend is wrapped in the timing decorator, so a search
+    /// through the state lands in the registry while `name()` still reports the
+    /// real backend.
+    #[tokio::test]
+    async fn with_metrics_wraps_the_search_backend_in_the_timer() {
+        use crate::search::{IndexKind, SearchQuery, SearchRequest};
+        use crate::state::AppState;
+        use microwave_config::Config;
+        use microwave_store::SqliteStore;
+        use std::sync::Arc;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let store = Arc::new(SqliteStore::open(&temp_dir.path().join("test.db")).unwrap());
+        let config = Arc::new(Config::default());
+        let object_store: Arc<dyn microwave_objectstore::ObjectStore + Send + Sync> =
+            Arc::new(microwave_objectstore::LocalObjectStore::new(
+                temp_dir.path().join("objects"),
+                "secret",
+                "http://0.0.0.0:8000",
+            ));
+
+        let state = AppState::with_metrics(
+            store,
+            config,
+            object_store,
+            Arc::new(microwave_metrics::Metrics::new()),
+        )
+        .unwrap();
+
+        let request = SearchRequest {
+            org_id: "acme".into(),
+            kind: IndexKind::Node,
+            query: SearchQuery::MatchAll,
+            start: 0,
+            rows: 10,
+            actor_authz_id: None,
+        };
+        state.search.search(&request).await.unwrap();
+
+        assert_eq!(state.search.name(), "embedded");
+        let series = state.metrics.search_series();
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0].backend, "embedded");
+        assert_eq!(series[0].outcome, "ok");
     }
 }

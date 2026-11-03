@@ -20,6 +20,10 @@ pub const BOOKSHELF_SECRET_GROUP: &str = "bookshelf";
 pub const BOOKSHELF_ACCESS_KEY_ID: &str = "access_key_id";
 /// Secret key used by the S3/Garage object-store backend.
 pub const BOOKSHELF_SECRET_ACCESS_KEY: &str = "secret_access_key";
+/// Group used for the OTLP header secret.
+pub const OTEL_SECRET_GROUP: &str = "otel";
+/// Name used for the OTLP header secret.
+pub const OTEL_SECRET_NAME: &str = "headers";
 
 /// Return the raw `kvpair` key for a secret.
 pub fn secret_kv_key(group: &str, name: &str) -> String {

@@ -2171,3 +2171,37 @@ async fn tool_calls_emit_one_structured_log_line_with_the_target() {
         .unwrap_or_else(|| panic!("write log line missing from {logs:?}"));
     assert!(write.contains("target=\"log-probe\""), "log line: {write}");
 }
+
+#[tokio::test]
+async fn mcp_tool_calls_record_outcome_and_duration() {
+    let (state, _org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+    call_tool(&app, "acme", "a", 1, "list_nodes", json!({})).await;
+    let series = state.metrics.mcp_series();
+    let entry = series
+        .iter()
+        .find(|entry| entry.tool == "list_nodes")
+        .unwrap();
+    assert_eq!(entry.outcome, "ok");
+    assert_eq!(entry.org, "acme");
+}
+
+#[tokio::test]
+async fn a_failing_mcp_tool_records_an_error_outcome() {
+    let (state, _org, app) = fixture(mcp_config(&[("acme", "a")])).await;
+    // `call_tool` parses the result as JSON, but an error result carries the
+    // plain message, so the raw body is the one to use here.
+    call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        1,
+        "get_node",
+        json!({ "name": "missing" }),
+    )
+    .await;
+    assert!(state
+        .metrics
+        .mcp_series()
+        .iter()
+        .any(|entry| entry.tool == "get_node" && entry.outcome == "error"));
+}

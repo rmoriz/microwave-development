@@ -1,0 +1,21 @@
+# Scrape config for the `observability` compose profile: the collector's
+# Prometheus exporter carries the series the microwave service exports, and the
+# collector's own :8888 self-telemetry shows dropped and refused points. No
+# other target.
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: otel-collector
+    # The collector serves plain text; do not let Prometheus negotiate
+    # protobuf first and log a failed scrape.
+    scrape_protocols: [PrometheusText0.0.4]
+    static_configs:
+      - targets: ["otel-collector:8889"]
+
+  - job_name: otel-collector-self
+    scrape_protocols: [PrometheusText0.0.4]
+    static_configs:
+      - targets: ["otel-collector:8888"]

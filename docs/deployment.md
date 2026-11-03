@@ -331,6 +331,47 @@ yourself to apply configuration changes. It is safe to run repeatedly.
 `microwave-server config` prints the **resolved configuration as JSON,
 including object-store credentials** — treat its output as a secret.
 
+#### OpenTelemetry metrics
+
+Optional OTLP/HTTP metric export. It is off by default and enabling it opens the
+first outbound connection the server makes, so an egress rule or
+`NetworkPolicy` has to allow the collector address. `[telemetry]` is unrelated:
+that block is the Chef compatibility stub. The how-to, the metric reference and
+the cardinality rules are in
+[the OpenTelemetry guide](./opentelemetry.md).
+
+| Setting | Details |
+|---|---|
+| `otel.enabled`<br/>`MW_OTEL__ENABLED` | Default `false`. Turns the export on. Enabled without a non-empty `otel.endpoint` fails validation. |
+| `otel.endpoint`<br/>`MW_OTEL__ENDPOINT` | Unset by default. Collector base URL, e.g. `http://127.0.0.1:4318`. Must parse as `http` or `https`. The signal path `/v1/metrics` is appended; an endpoint already ending in it is not appended twice. `user:pass@` credentials are printed without the userinfo. |
+| `otel.protocol`<br/>`MW_OTEL__PROTOCOL` | Default `http/protobuf`. The only supported value; anything else fails validation. |
+| `otel.interval_seconds`<br/>`MW_OTEL__INTERVAL_SECONDS` | Default `60`. Export interval. Must be greater than zero. |
+| `otel.timeout_ms`<br/>`MW_OTEL__TIMEOUT_MS` | Default `10000`. Upper bound for one export attempt. Must be greater than zero. |
+| `otel.gauge_refresh_seconds`<br/>`MW_OTEL__GAUGE_REFRESH_SECONDS` | Default `60`. How often the gauge refresh samples store, keygen and the dependency probes. Must be greater than zero. |
+| `otel.shutdown_timeout_ms`<br/>`MW_OTEL__SHUTDOWN_TIMEOUT_MS` | Default `5000`. Budget for the final flush after the drain; a hung collector costs at most this. Must be greater than zero. |
+| `otel.service_name`<br/>`MW_OTEL__SERVICE_NAME` | Default `microwave-server`. `service.name` resource attribute. |
+| `otel.environment`<br/>`MW_OTEL__ENVIRONMENT` | Unset by default. `deployment.environment` resource attribute; omitted when unset. |
+| `otel.headers`<br/>`MW_OTEL__HEADERS` | Empty by default. Comma-separated `Name: value` entries for the collector. A header without a colon or with an empty name fails validation; a value may be empty. Falls back to the `otel headers` secret while empty. |
+| `otel.tls_ca_path`<br/>`MW_OTEL__TLS_CA_PATH` | Unset by default. Extra PEM CA for an `https` collector behind a private CA. Requires an `https` endpoint; the file must exist. |
+| `otel.insecure_skip_tls_verify`<br/>`MW_OTEL__INSECURE_SKIP_TLS_VERIFY` | Default `false`. Skip certificate-chain verification for an `https` collector. Also requires an `https` endpoint. |
+
+Header values are secrets. Store them instead of the file where possible:
+
+```sh
+microwave-ctl --config /etc/microwave/microwave.toml \
+  set-secret otel headers 'Authorization: Bearer <token>'
+```
+
+The secret holds one `Name: value` line per entry and is only read while
+`otel.headers` is empty, so TOML and `MW_OTEL__HEADERS` win. `microwave-server
+config` prints header names with `***` values.
+
+A failing or unreachable collector never slows the request path: after startup
+the export fails open, one `warn` line per interval lands in the log and
+`/_stats` reports `otel.last_export_error` until the next success. A bad block
+itself fails startup, and `check-config` validates it without dialing the
+collector.
+
 ### TLS listener
 
 Plain HTTP is the default. To serve HTTPS directly from the server, configure a
@@ -1974,12 +2015,15 @@ step.
 
 ## 12. Health, status, and logs
 
+Metric export to an OpenTelemetry collector, and the `otel` object of
+`/_stats`, are covered in [`./opentelemetry.md`](./opentelemetry.md).
+
 ### Endpoints
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
 | `GET /_status` | none | `{"status":"pong","upstreams":{"chef_sql":"pong","chef_index":"pong","bookshelf":"pong"},"upstream_details":{...},"keygen":{"status":"ok","cached":3,"capacity":3,"workers":1,"worker_healthy":true,"worker_failures":0,"warm_up_failures":0,"generated_on_demand":0},"indexing":{"mode":"embedded"}}`. |
-| `GET /_stats` | none | Request counters, authentication failures, uptime, maintenance state, and node count. JSON by default, Prometheus text with `Accept: text/plain` or `?format=prometheus`. |
+| `GET /_stats` | none | Request counters, authentication failures, uptime, maintenance state, node count, and the `otel` object: `enabled`, the endpoint without credentials (`null` while disabled), and `last_export_error`. JSON by default, Prometheus text with `Accept: text/plain` or `?format=prometheus`. |
 | `GET /server_api_version` | none | `min_api_version` / `max_api_version` (`0`/`2`). |
 | `GET /license` | `signed` | Node license counters: configured limit, current node count, `limit_exceeded`, and the upgrade URL. Telemetry is disabled by default. |
 | `POST /organizations/:org/data-collector` | `signed` or `x-data-collector-token` | Present when `data_collector.root_url` is configured or `data_collector.store` is `local`/`both`. When `store` is `forward`/`both` and `root_url` is configured, forwards the JSON body and preserves the collector's status and body. `local` returns `200 {}` without forwarding while still storing `run_converge` reports; `both` also stores them. Timeouts map to `504`, other upstream failures to `502`; a disabled endpoint returns `404`. |

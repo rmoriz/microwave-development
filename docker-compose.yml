@@ -13,6 +13,38 @@
 # PostgreSQL metadata is a supported alternative to SQLite: set
 # database.driver = "postgres" (MW_DATABASE__DRIVER) and database.url
 # (MW_DATABASE__URL). See docs/deployment.md.
+#
+# The `observability` profile adds an OTLP collector and a Prometheus, and is
+# opt-in:
+#
+#   docker compose --profile observability up -d
+#   curl -s http://127.0.0.1:9090/api/v1/query \
+#     --data-urlencode 'query=http_server_request_duration_seconds_count'
+#
+# The query uses the OTel semconv instrument name; the `/_stats` scrape surface
+# spells the same histogram `microwave_server_request_duration_seconds`.
+#
+# Both profile services mount pinned configs from `docker/`. The collector has
+# no shell, so its healthcheck is the collector binary validating
+# `docker/otel/collector.yaml`, and the container names that mount explicitly
+# as its `--config`: a missing mount fails the start instead of silently
+# running the image's built-in default config. Readiness is the collector's
+# `health_check` extension, published on :13133:
+#
+#   curl -fsS http://127.0.0.1:13133/
+#
+# Prometheus additionally scrapes the collector's :8888 self-telemetry, so
+# dropped and refused points and exporter errors show up as series.
+#
+# The MW_OTEL__* entries on `microwave` stay unconditional, so a plain `up`
+# without the profile is the fail-open case: the server serves and `/_stats`
+# reports the export error. See docs/opentelemetry.md.
+#
+# Full teardown, including the two pulled images that `--rmi local` keeps
+# because they carry upstream tags:
+#
+#   docker compose --profile observability down -v --rmi local
+#   docker rmi otel/opentelemetry-collector-contrib:0.164.0 prom/prometheus:v3.15.1
 
 name: microwave
 
@@ -46,6 +78,16 @@ services:
       # Keep in sync with MW_PORT when the listener port changes; the
       # image healthcheck probes this port.
       MW_HTTP_PORT: "8000"
+      # Opt-in: only reachable with the `observability` profile. Left in place
+      # so the profile needs no override file; without it the export fails
+      # open and `/_stats` reports the error. Both stay unconditional; the
+      # defaults keep a plain `up` unchanged.
+      MW_OTEL__ENABLED: "${MW_OTEL_ENABLED:-true}"
+      MW_OTEL__ENDPOINT: "${MW_OTEL_ENDPOINT:-http://otel-collector:4318}"
+      # The Prometheus job scrapes every 5 s; exporting every 60 s would repeat
+      # each point twelve times. The three host-side names below are
+      # MW_OTEL_ENABLED, MW_OTEL_ENDPOINT and MW_OTEL_INTERVAL_SECONDS.
+      MW_OTEL__INTERVAL_SECONDS: "${MW_OTEL_INTERVAL_SECONDS:-15}"
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - microwave-data:/var/lib/microwave
@@ -54,5 +96,58 @@ services:
       - ${MW_CONFIG_FILE:-./packaging/microwave.toml.example}:/etc/microwave/microwave.toml:ro
     stop_grace_period: 30s
 
+  otel-collector:
+    profiles: [observability]
+    image: otel/opentelemetry-collector-contrib:0.164.0
+    restart: unless-stopped
+    # The image's default cmd points at its own
+    # /etc/otelcol-contrib/config.yaml, which it ships. Name our mount instead
+    # so a missing mount is a startup error, not a silent run on the image
+    # default.
+    command: ["--config=/etc/otelcol/collector.yaml"]
+    volumes:
+      - ./docker/otel/collector.yaml:/etc/otelcol/collector.yaml:ro
+    ports:
+      - "${MW_OTLP_PORT:-4318}:4318"
+      # The `health_check` extension: `curl -fsS http://127.0.0.1:13133/` for
+      # readiness.
+      - "${MW_OTEL_HEALTH_PORT:-13133}:13133"
+    # The image is scratch-based (no shell, no curl), so the probe has to be
+    # the collector binary itself: `validate` fails when the config mount or
+    # the config content is broken.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/otelcol-contrib",
+          "validate",
+          "--config=/etc/otelcol/collector.yaml",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v3.15.1
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=1h"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${MW_PROMETHEUS_PORT:-9090}:9090"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
 volumes:
   microwave-data:
+  prometheus-data:

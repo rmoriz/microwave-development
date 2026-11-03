@@ -1196,6 +1196,9 @@ where
     let error = result.is_error == Some(true);
     let result_count = result_count(&result);
     let outcome = if error { "error" } else { "ok" };
+    ctx.state
+        .metrics
+        .record_mcp_tool(tool, &ctx.org.name, outcome, elapsed);
     if let Some(target) = target {
         tracing::info!(
             organization = %ctx.org.name,

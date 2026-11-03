@@ -1,7 +1,9 @@
 use chrono::{SecondsFormat, Utc};
-use microwave_store::{Compression, StoreError};
+use microwave_metrics::Metrics;
+use microwave_store::{Compression, DbSystem, StoreError, StoreTimer};
 use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
+use std::sync::{Arc, RwLock};
 use uuid::Uuid;
 
 /// Advisory lock key used while applying the embedded schema. It serializes
@@ -20,6 +22,7 @@ const DEFAULT_POOL_SIZE: usize = 10;
 pub struct PostgresStore {
     pool: PgPool,
     compression: Compression,
+    metrics: Arc<RwLock<Option<Arc<Metrics>>>>,
 }
 
 impl PostgresStore {
@@ -52,7 +55,11 @@ impl PostgresStore {
             .connect(database_url)
             .await
             .map_err(db)?;
-        let store = Self { pool, compression };
+        let store = Self {
+            pool,
+            compression,
+            metrics: Arc::new(RwLock::new(None)),
+        };
         store.migrate().await?;
         Ok(store)
     }
@@ -96,7 +103,11 @@ impl PostgresStore {
             .connect(database_url)
             .await
             .map_err(db)?;
-        Ok(Self { pool, compression })
+        Ok(Self {
+            pool,
+            compression,
+            metrics: Arc::new(RwLock::new(None)),
+        })
     }
 
     /// Wrap an existing pool. The caller is responsible for calling
@@ -105,12 +116,17 @@ impl PostgresStore {
         Self {
             pool,
             compression: Compression::default(),
+            metrics: Arc::new(RwLock::new(None)),
         }
     }
 
     /// Wrap an existing pool with an explicit compression mode.
     pub fn from_pool_with_compression(pool: PgPool, compression: Compression) -> Self {
-        Self { pool, compression }
+        Self {
+            pool,
+            compression,
+            metrics: Arc::new(RwLock::new(None)),
+        }
     }
 
     pub fn pool(&self) -> &PgPool {
@@ -120,6 +136,29 @@ impl PostgresStore {
     /// Compression mode used for newly written serialized objects.
     pub fn compression(&self) -> Compression {
         self.compression
+    }
+
+    /// Attach the process metrics registry used to time store operations.
+    ///
+    /// The store is built before the registry exists, so this is the only
+    /// attach point. A poisoned lock is treated as "no metrics attached".
+    pub fn set_metrics(&self, metrics: Arc<Metrics>) {
+        let mut slot = self
+            .metrics
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = Some(metrics);
+    }
+
+    /// Start timing one store operation, or a no-op guard when no registry is
+    /// attached.
+    pub(crate) fn timer(&self, operation: &'static str) -> StoreTimer {
+        let metrics = self
+            .metrics
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        StoreTimer::start(metrics, DbSystem::Postgres, operation)
     }
 
     /// Apply the embedded unified schema. Safe to run repeatedly and from

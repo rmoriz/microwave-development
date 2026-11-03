@@ -5,6 +5,7 @@
 //! a clear message so `cargo test --workspace` stays green on developer
 //! machines without Docker.
 
+use microwave_metrics::Metrics;
 use microwave_store::{
     ActorType, ArtifactRepository, AuthzRepository, Compression, CookbookRepository, GroupMembers,
     HealthRepository, IdentityRepository, KvRepository, MembershipRepository, NewNode,
@@ -466,6 +467,51 @@ async fn checks_acls_through_nested_groups() {
         .await
         .expect("find ACL target");
     assert!(found.is_none());
+}
+
+/// The `postgres` label must be produced by the real store, not only by a
+/// hand-built guard: attach metrics, create a node and read the recorded
+/// series back.
+#[tokio::test]
+async fn times_node_operations_with_the_postgres_label() {
+    let Some(store) = test_store().await else {
+        return;
+    };
+    let fixture = fixture(&store).await;
+    let metrics = std::sync::Arc::new(Metrics::new());
+    store.set_metrics(metrics.clone());
+    let node = || NewNode {
+        name: "timed-node",
+        body: r#"{"name":"timed-node"}"#,
+        environment: "_default",
+        policy_name: None,
+        policy_group: None,
+        creator_authz_id: &fixture.creator_authz_id,
+    };
+
+    store
+        .create_node(&fixture.org_id, node())
+        .await
+        .expect("create node");
+    let series = metrics.store_series();
+    let success = series
+        .iter()
+        .find(|entry| entry.outcome == "ok")
+        .expect("ok series");
+    assert_eq!(success.db_system, "postgres");
+    assert_eq!(success.operation, "create_node");
+
+    store
+        .create_node(&fixture.org_id, node())
+        .await
+        .expect_err("duplicate node name");
+    let series = metrics.store_series();
+    let error = series
+        .iter()
+        .find(|entry| entry.outcome == "error")
+        .expect("error series");
+    assert_eq!(error.db_system, "postgres");
+    assert_eq!(error.operation, "create_node");
 }
 
 #[tokio::test]

@@ -24,86 +24,91 @@ impl ReportRepository for PostgresStore {
         run: NewNodeRun<'_>,
         keep_runs: usize,
     ) -> Result<StoredNodeRun, StoreError> {
-        let id = new_id();
-        let created_at = now();
-        // Fall back to a fresh timestamp at millisecond precision so a run
-        // without a reported start time still sorts deterministically.
-        let start_time = match run.start_time {
-            Some(start_time) => start_time.to_string(),
-            None => Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
-        };
-        let report = encode_serialized(run.report, self.compression())?;
-        let mut transaction = self.pool().begin().await.map_err(db)?;
+        let timer = self.timer("store_node_run");
+        let result: Result<StoredNodeRun, StoreError> = async {
+            let id = new_id();
+            let created_at = now();
+            // Fall back to a fresh timestamp at millisecond precision so a run
+            // without a reported start time still sorts deterministically.
+            let start_time = match run.start_time {
+                Some(start_time) => start_time.to_string(),
+                None => Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+            };
+            let report = encode_serialized(run.report, self.compression())?;
+            let mut transaction = self.pool().begin().await.map_err(db)?;
 
-        sqlx::query(
-            "INSERT INTO node_runs
-             (id, org_id, node_name, run_id, status, start_time, end_time,
-              resource_count, updated_resource_count, error_count, report, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-             ON CONFLICT (org_id, node_name, run_id) DO UPDATE SET
-                status = excluded.status,
-                start_time = excluded.start_time,
-                end_time = excluded.end_time,
-                resource_count = excluded.resource_count,
-                updated_resource_count = excluded.updated_resource_count,
-                error_count = excluded.error_count,
-                report = excluded.report",
-        )
-        .bind(&id)
-        .bind(org_id)
-        .bind(run.node_name)
-        .bind(run.run_id)
-        .bind(run.status)
-        .bind(&start_time)
-        .bind(run.end_time)
-        .bind(run.resource_count)
-        .bind(run.updated_resource_count)
-        .bind(run.error_count)
-        .bind(&report)
-        .bind(&created_at)
-        .execute(&mut *transaction)
-        .await
-        .map_err(db)?;
-
-        // Read the row before pruning: a retried run that is older than the
-        // retained window is inserted (or refreshed) and then intentionally
-        // pruned, but the caller still needs the stored value.
-        let row = sqlx::query(
-            "SELECT id, org_id, node_name, run_id, status, start_time, end_time,
-                    resource_count, updated_resource_count, error_count, report, created_at
-             FROM node_runs WHERE org_id = $1 AND node_name = $2 AND run_id = $3",
-        )
-        .bind(org_id)
-        .bind(run.node_name)
-        .bind(run.run_id)
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(db)?;
-        let stored = run_from_row(&row)?;
-
-        if keep_runs > 0 {
-            // `usize` can exceed `i64`; saturate instead of wrapping negative.
-            let limit = i64::try_from(keep_runs).unwrap_or(i64::MAX);
             sqlx::query(
-                "DELETE FROM node_runs
-                 WHERE org_id = $1 AND node_name = $2
-                   AND id NOT IN (
-                     SELECT id FROM node_runs
-                     WHERE org_id = $1 AND node_name = $2
-                     ORDER BY start_time DESC, created_at DESC
-                     LIMIT $3
-                   )",
+                "INSERT INTO node_runs
+                 (id, org_id, node_name, run_id, status, start_time, end_time,
+                  resource_count, updated_resource_count, error_count, report, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                 ON CONFLICT (org_id, node_name, run_id) DO UPDATE SET
+                    status = excluded.status,
+                    start_time = excluded.start_time,
+                    end_time = excluded.end_time,
+                    resource_count = excluded.resource_count,
+                    updated_resource_count = excluded.updated_resource_count,
+                    error_count = excluded.error_count,
+                    report = excluded.report",
             )
+            .bind(&id)
             .bind(org_id)
             .bind(run.node_name)
-            .bind(limit)
+            .bind(run.run_id)
+            .bind(run.status)
+            .bind(&start_time)
+            .bind(run.end_time)
+            .bind(run.resource_count)
+            .bind(run.updated_resource_count)
+            .bind(run.error_count)
+            .bind(&report)
+            .bind(&created_at)
             .execute(&mut *transaction)
             .await
             .map_err(db)?;
-        }
 
-        transaction.commit().await.map_err(db)?;
-        Ok(stored)
+            // Read the row before pruning: a retried run that is older than the
+            // retained window is inserted (or refreshed) and then intentionally
+            // pruned, but the caller still needs the stored value.
+            let row = sqlx::query(
+                "SELECT id, org_id, node_name, run_id, status, start_time, end_time,
+                        resource_count, updated_resource_count, error_count, report, created_at
+                 FROM node_runs WHERE org_id = $1 AND node_name = $2 AND run_id = $3",
+            )
+            .bind(org_id)
+            .bind(run.node_name)
+            .bind(run.run_id)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(db)?;
+            let stored = run_from_row(&row)?;
+
+            if keep_runs > 0 {
+                // `usize` can exceed `i64`; saturate instead of wrapping negative.
+                let limit = i64::try_from(keep_runs).unwrap_or(i64::MAX);
+                sqlx::query(
+                    "DELETE FROM node_runs
+                     WHERE org_id = $1 AND node_name = $2
+                       AND id NOT IN (
+                         SELECT id FROM node_runs
+                         WHERE org_id = $1 AND node_name = $2
+                         ORDER BY start_time DESC, created_at DESC
+                         LIMIT $3
+                       )",
+                )
+                .bind(org_id)
+                .bind(run.node_name)
+                .bind(limit)
+                .execute(&mut *transaction)
+                .await
+                .map_err(db)?;
+            }
+
+            transaction.commit().await.map_err(db)?;
+            Ok(stored)
+        }
+        .await;
+        timer.finish(result)
     }
 
     async fn list_node_runs(

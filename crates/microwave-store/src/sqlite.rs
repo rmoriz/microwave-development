@@ -1,7 +1,9 @@
 use crate::compression::Compression;
+use crate::timing::{DbSystem, StoreTimer};
+use microwave_metrics::Metrics;
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -29,6 +31,7 @@ pub enum StoreError {
 pub struct SqliteStore {
     connection: Arc<Mutex<Connection>>,
     compression: Compression,
+    metrics: Arc<RwLock<Option<Arc<Metrics>>>>,
 }
 
 impl SqliteStore {
@@ -55,6 +58,7 @@ impl SqliteStore {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             compression,
+            metrics: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -71,6 +75,7 @@ impl SqliteStore {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             compression,
+            metrics: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -89,12 +94,36 @@ impl SqliteStore {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             compression: Compression::default(),
+            metrics: Arc::new(RwLock::new(None)),
         })
     }
 
     /// Compression mode used for newly written serialized objects.
     pub fn compression(&self) -> Compression {
         self.compression
+    }
+
+    /// Attach the process metrics registry used to time store operations.
+    ///
+    /// The store is built before the registry exists, so this is the only
+    /// attach point. A poisoned lock is treated as "no metrics attached".
+    pub fn set_metrics(&self, metrics: Arc<Metrics>) {
+        let mut slot = self
+            .metrics
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = Some(metrics);
+    }
+
+    /// Start timing one store operation, or a no-op guard when no registry is
+    /// attached.
+    pub(crate) fn timer(&self, operation: &'static str) -> StoreTimer {
+        let metrics = self
+            .metrics
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        StoreTimer::start(metrics, DbSystem::Sqlite, operation)
     }
 
     pub(crate) fn connection(&self) -> MutexGuard<'_, Connection> {
