@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{PoisonError, RwLock};
 use std::time::Duration;
 
@@ -28,35 +29,72 @@ pub const REQUEST_SERIES_LIMIT: usize = 10_000;
 /// Label value that receives series beyond the cap.
 pub const OVERFLOW_LABEL: &str = "_other";
 
-/// The fixed bucket array of one series.
+/// The counters of one series.
 ///
-/// `buckets` is cumulative: slot `i` counts every observation at or below
-/// `LATENCY_BUCKETS_SECONDS[i]`, and the last slot is `+Inf`.
-#[derive(Debug, Clone, PartialEq)]
+/// The bucket counts are cumulative: slot `i` counts every observation at or
+/// below `LATENCY_BUCKETS_SECONDS[i]`, and the last slot is `+Inf`.
+///
+/// Every counter is atomic, so a recording only needs the map's read lock and
+/// can update the series in place.
+#[derive(Debug)]
 pub(crate) struct Buckets {
+    sum_bits: AtomicU64,
+    count: AtomicU64,
+    buckets: Box<[AtomicU64]>,
+}
+
+/// A point-in-time copy of one [`Buckets`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct BucketSnapshot {
     pub(crate) sum: f64,
     pub(crate) count: u64,
-    pub(crate) buckets: Box<[u64]>,
+    pub(crate) buckets: Vec<u64>,
 }
 
 impl Buckets {
     fn new() -> Self {
         Self {
-            sum: 0.0,
-            count: 0,
-            buckets: vec![0; LATENCY_BUCKETS_SECONDS.len() + 1].into_boxed_slice(),
+            sum_bits: AtomicU64::new(0.0_f64.to_bits()),
+            count: AtomicU64::new(0),
+            buckets: (0..=LATENCY_BUCKETS_SECONDS.len())
+                .map(|_| AtomicU64::new(0))
+                .collect(),
         }
     }
 
-    fn record(&mut self, seconds: f64) {
-        self.count += 1;
-        self.sum += seconds;
+    fn record(&self, seconds: f64) {
+        self.count.fetch_add(1, Ordering::Relaxed);
+        let mut current = self.sum_bits.load(Ordering::Relaxed);
+        loop {
+            let next = (f64::from_bits(current) + seconds).to_bits();
+            match self.sum_bits.compare_exchange_weak(
+                current,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
         let index = LATENCY_BUCKETS_SECONDS
             .iter()
             .position(|bound| seconds <= *bound)
             .unwrap_or(LATENCY_BUCKETS_SECONDS.len());
-        for slot in &mut self.buckets[index..] {
-            *slot += 1;
+        for slot in &self.buckets[index..] {
+            slot.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn snapshot(&self) -> BucketSnapshot {
+        BucketSnapshot {
+            sum: f64::from_bits(self.sum_bits.load(Ordering::Relaxed)),
+            count: self.count.load(Ordering::Relaxed),
+            buckets: self
+                .buckets
+                .iter()
+                .map(|slot| slot.load(Ordering::Relaxed))
+                .collect(),
         }
     }
 }
@@ -93,8 +131,16 @@ impl<K: HistogramKey> Histograms<K> {
 
     pub(crate) fn record(&self, key: K, duration: Duration) {
         let seconds = duration.as_secs_f64();
+        {
+            let series = self.series.read().unwrap_or_else(PoisonError::into_inner);
+            if let Some(buckets) = series.get(&key) {
+                buckets.record(seconds);
+                return;
+            }
+        }
         let mut series = self.series.write().unwrap_or_else(PoisonError::into_inner);
-        if let Some(buckets) = series.get_mut(&key) {
+        // Another thread may have inserted the key while we waited.
+        if let Some(buckets) = series.get(&key) {
             buckets.record(seconds);
             return;
         }
@@ -109,12 +155,12 @@ impl<K: HistogramKey> Histograms<K> {
             .record(seconds);
     }
 
-    pub(crate) fn snapshot(&self) -> Vec<(K, Buckets)> {
+    pub(crate) fn snapshot(&self) -> Vec<(K, BucketSnapshot)> {
         self.series
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
-            .map(|(key, buckets)| (key.clone(), buckets.clone()))
+            .map(|(key, buckets)| (key.clone(), buckets.snapshot()))
             .collect()
     }
 }
@@ -122,7 +168,7 @@ impl<K: HistogramKey> Histograms<K> {
 /// A capped counter family. Counters carry no sum or buckets.
 pub(crate) struct Counters<K> {
     limit: usize,
-    series: RwLock<HashMap<K, u64>>,
+    series: RwLock<HashMap<K, AtomicU64>>,
 }
 
 impl<K: HistogramKey> Counters<K> {
@@ -135,18 +181,27 @@ impl<K: HistogramKey> Counters<K> {
 
     pub(crate) fn increment(&self, key: K) {
         {
-            let mut series = self.series.write().unwrap_or_else(PoisonError::into_inner);
-            if let Some(count) = series.get_mut(&key) {
-                *count += 1;
+            let series = self.series.read().unwrap_or_else(PoisonError::into_inner);
+            if let Some(count) = series.get(&key) {
+                count.fetch_add(1, Ordering::Relaxed);
                 return;
             }
-            let key = if series.len() >= self.limit {
-                key.collapsed()
-            } else {
-                key
-            };
-            *series.entry(key).or_insert(0) += 1;
         }
+        let mut series = self.series.write().unwrap_or_else(PoisonError::into_inner);
+        // Another thread may have inserted the key while we waited.
+        if let Some(count) = series.get(&key) {
+            count.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let key = if series.len() >= self.limit {
+            key.collapsed()
+        } else {
+            key
+        };
+        series
+            .entry(key)
+            .or_insert_with(|| AtomicU64::new(0))
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn snapshot(&self) -> Vec<(K, u64)> {
@@ -154,7 +209,7 @@ impl<K: HistogramKey> Counters<K> {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
-            .map(|(key, count)| (key.clone(), *count))
+            .map(|(key, count)| (key.clone(), count.load(Ordering::Relaxed)))
             .collect()
     }
 }

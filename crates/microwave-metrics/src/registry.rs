@@ -17,335 +17,157 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-/// One request histogram series. `method` and `status` are bounded, `route`
-/// comes from a template or the normalizer, and `org` from the path.
-#[derive(Debug, Clone)]
-pub struct HttpSeries {
-    pub route: String,
-    pub method: String,
-    pub org: String,
-    pub status: u16,
-    pub count: u64,
-    pub sum: f64,
-    pub buckets: Vec<u64>,
-}
-
-impl PartialEq for HttpSeries {
-    fn eq(&self, other: &Self) -> bool {
-        self.route == other.route
-            && self.method == other.method
-            && self.org == other.org
-            && self.status == other.status
-    }
-}
-
-impl Eq for HttpSeries {}
-
-impl Hash for HttpSeries {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.route.hash(state);
-        self.method.hash(state);
-        self.org.hash(state);
-        self.status.hash(state);
-    }
-}
-
-impl HistogramSeries for HttpSeries {
-    fn label_pairs(&self) -> Vec<(&'static str, String)> {
-        vec![
-            ("route", self.route.clone()),
-            ("method", self.method.clone()),
-            ("org", self.org.clone()),
-            ("status", self.status.to_string()),
-        ]
-    }
-
-    fn count(&self) -> u64 {
-        self.count
-    }
-
-    fn sum(&self) -> f64 {
-        self.sum
-    }
-
-    fn bucket_counts(&self) -> &[u64] {
-        &self.buckets
-    }
-}
-
-impl HistogramKey for HttpSeries {
-    fn collapsed(&self) -> Self {
-        Self {
-            route: OVERFLOW_LABEL.to_string(),
-            ..self.clone()
+macro_rules! histogram_series {
+    (
+        $(#[$meta:meta])*
+        $name:ident {
+            $($field:ident : $ty:ty),+ $(,)?
+        } collapsed: $collapsed:ident
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone)]
+        pub struct $name {
+            $(pub $field: $ty,)+
+            pub count: u64,
+            pub sum: f64,
+            pub buckets: Vec<u64>,
         }
-    }
-}
 
-/// One MCP tool-call histogram series.
-#[derive(Debug, Clone)]
-pub struct McpSeries {
-    pub tool: String,
-    pub org: String,
-    pub outcome: String,
-    pub count: u64,
-    pub sum: f64,
-    pub buckets: Vec<u64>,
-}
-
-impl PartialEq for McpSeries {
-    fn eq(&self, other: &Self) -> bool {
-        self.tool == other.tool && self.org == other.org && self.outcome == other.outcome
-    }
-}
-
-impl Eq for McpSeries {}
-
-impl Hash for McpSeries {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.tool.hash(state);
-        self.org.hash(state);
-        self.outcome.hash(state);
-    }
-}
-
-impl HistogramSeries for McpSeries {
-    fn label_pairs(&self) -> Vec<(&'static str, String)> {
-        vec![
-            ("tool", self.tool.clone()),
-            ("org", self.org.clone()),
-            ("outcome", self.outcome.clone()),
-        ]
-    }
-
-    fn count(&self) -> u64 {
-        self.count
-    }
-
-    fn sum(&self) -> f64 {
-        self.sum
-    }
-
-    fn bucket_counts(&self) -> &[u64] {
-        &self.buckets
-    }
-}
-
-impl HistogramKey for McpSeries {
-    fn collapsed(&self) -> Self {
-        Self {
-            tool: OVERFLOW_LABEL.to_string(),
-            ..self.clone()
+        impl PartialEq for $name {
+            fn eq(&self, other: &Self) -> bool {
+                $(self.$field == other.$field)&&+
+            }
         }
-    }
-}
 
-/// One metadata-store operation histogram series.
-#[derive(Debug, Clone)]
-pub struct StoreSeries {
-    pub db_system: String,
-    pub operation: String,
-    pub outcome: String,
-    pub count: u64,
-    pub sum: f64,
-    pub buckets: Vec<u64>,
-}
+        impl Eq for $name {}
 
-impl PartialEq for StoreSeries {
-    fn eq(&self, other: &Self) -> bool {
-        self.db_system == other.db_system
-            && self.operation == other.operation
-            && self.outcome == other.outcome
-    }
-}
-
-impl Eq for StoreSeries {}
-
-impl Hash for StoreSeries {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.db_system.hash(state);
-        self.operation.hash(state);
-        self.outcome.hash(state);
-    }
-}
-
-impl HistogramSeries for StoreSeries {
-    fn label_pairs(&self) -> Vec<(&'static str, String)> {
-        vec![
-            ("db_system", self.db_system.clone()),
-            ("operation", self.operation.clone()),
-            ("outcome", self.outcome.clone()),
-        ]
-    }
-
-    fn count(&self) -> u64 {
-        self.count
-    }
-
-    fn sum(&self) -> f64 {
-        self.sum
-    }
-
-    fn bucket_counts(&self) -> &[u64] {
-        &self.buckets
-    }
-}
-
-impl HistogramKey for StoreSeries {
-    fn collapsed(&self) -> Self {
-        Self {
-            operation: OVERFLOW_LABEL.to_string(),
-            ..self.clone()
+        impl Hash for $name {
+            fn hash<H: Hasher>(&self, state: &mut H) {
+                $(self.$field.hash(state);)+
+            }
         }
-    }
-}
 
-/// One search-backend request histogram series.
-#[derive(Debug, Clone)]
-pub struct SearchSeries {
-    pub backend: String,
-    pub outcome: String,
-    pub count: u64,
-    pub sum: f64,
-    pub buckets: Vec<u64>,
-}
+        impl HistogramSeries for $name {
+            fn label_pairs(&self) -> Vec<(&'static str, String)> {
+                vec![$((stringify!($field), self.$field.to_string()),)+]
+            }
 
-impl PartialEq for SearchSeries {
-    fn eq(&self, other: &Self) -> bool {
-        self.backend == other.backend && self.outcome == other.outcome
-    }
-}
+            fn count(&self) -> u64 {
+                self.count
+            }
 
-impl Eq for SearchSeries {}
+            fn sum(&self) -> f64 {
+                self.sum
+            }
 
-impl Hash for SearchSeries {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.backend.hash(state);
-        self.outcome.hash(state);
-    }
-}
-
-impl HistogramSeries for SearchSeries {
-    fn label_pairs(&self) -> Vec<(&'static str, String)> {
-        vec![
-            ("backend", self.backend.clone()),
-            ("outcome", self.outcome.clone()),
-        ]
-    }
-
-    fn count(&self) -> u64 {
-        self.count
-    }
-
-    fn sum(&self) -> f64 {
-        self.sum
-    }
-
-    fn bucket_counts(&self) -> &[u64] {
-        &self.buckets
-    }
-}
-
-impl HistogramKey for SearchSeries {
-    fn collapsed(&self) -> Self {
-        Self {
-            backend: OVERFLOW_LABEL.to_string(),
-            ..self.clone()
+            fn bucket_counts(&self) -> &[u64] {
+                &self.buckets
+            }
         }
-    }
-}
 
-/// One object-store request histogram series.
-#[derive(Debug, Clone)]
-pub struct ObjectStoreSeries {
-    pub backend: String,
-    pub operation: String,
-    pub outcome: String,
-    pub count: u64,
-    pub sum: f64,
-    pub buckets: Vec<u64>,
-}
-
-impl PartialEq for ObjectStoreSeries {
-    fn eq(&self, other: &Self) -> bool {
-        self.backend == other.backend
-            && self.operation == other.operation
-            && self.outcome == other.outcome
-    }
-}
-
-impl Eq for ObjectStoreSeries {}
-
-impl Hash for ObjectStoreSeries {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.backend.hash(state);
-        self.operation.hash(state);
-        self.outcome.hash(state);
-    }
-}
-
-impl HistogramSeries for ObjectStoreSeries {
-    fn label_pairs(&self) -> Vec<(&'static str, String)> {
-        vec![
-            ("backend", self.backend.clone()),
-            ("operation", self.operation.clone()),
-            ("outcome", self.outcome.clone()),
-        ]
-    }
-
-    fn count(&self) -> u64 {
-        self.count
-    }
-
-    fn sum(&self) -> f64 {
-        self.sum
-    }
-
-    fn bucket_counts(&self) -> &[u64] {
-        &self.buckets
-    }
-}
-
-impl HistogramKey for ObjectStoreSeries {
-    fn collapsed(&self) -> Self {
-        Self {
-            operation: OVERFLOW_LABEL.to_string(),
-            ..self.clone()
+        impl HistogramKey for $name {
+            fn collapsed(&self) -> Self {
+                Self {
+                    $collapsed: OVERFLOW_LABEL.to_string(),
+                    ..self.clone()
+                }
+            }
         }
-    }
+    };
 }
 
-/// One converge counter series. Converge is a counter, so it has no sum or
-/// buckets.
-#[derive(Debug, Clone)]
-pub struct ConvergeSeries {
-    pub org: String,
-    pub status: String,
-    pub count: u64,
-}
-
-impl PartialEq for ConvergeSeries {
-    fn eq(&self, other: &Self) -> bool {
-        self.org == other.org && self.status == other.status
-    }
-}
-
-impl Eq for ConvergeSeries {}
-
-impl Hash for ConvergeSeries {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.org.hash(state);
-        self.status.hash(state);
-    }
-}
-
-impl HistogramKey for ConvergeSeries {
-    fn collapsed(&self) -> Self {
-        Self {
-            org: OVERFLOW_LABEL.to_string(),
-            ..self.clone()
+macro_rules! counter_series {
+    (
+        $(#[$meta:meta])*
+        $name:ident {
+            $($field:ident : $ty:ty),+ $(,)?
+        } collapsed: $collapsed:ident
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone)]
+        pub struct $name {
+            $(pub $field: $ty,)+
+            pub count: u64,
         }
-    }
+
+        impl PartialEq for $name {
+            fn eq(&self, other: &Self) -> bool {
+                $(self.$field == other.$field)&&+
+            }
+        }
+
+        impl Eq for $name {}
+
+        impl Hash for $name {
+            fn hash<H: Hasher>(&self, state: &mut H) {
+                $(self.$field.hash(state);)+
+            }
+        }
+
+        impl HistogramKey for $name {
+            fn collapsed(&self) -> Self {
+                Self {
+                    $collapsed: OVERFLOW_LABEL.to_string(),
+                    ..self.clone()
+                }
+            }
+        }
+    };
+}
+
+histogram_series! {
+    /// One request histogram series. `method` and `status` are bounded, `route`
+    /// comes from a template or the normalizer, and `org` from the path.
+    HttpSeries {
+        route: String,
+        method: String,
+        org: String,
+        status: u16,
+    } collapsed: route
+}
+
+histogram_series! {
+    /// One MCP tool-call histogram series.
+    McpSeries {
+        tool: String,
+        org: String,
+        outcome: String,
+    } collapsed: tool
+}
+
+histogram_series! {
+    /// One metadata-store operation histogram series.
+    StoreSeries {
+        db_system: String,
+        operation: String,
+        outcome: String,
+    } collapsed: operation
+}
+
+histogram_series! {
+    /// One search-backend request histogram series.
+    SearchSeries {
+        backend: String,
+        outcome: String,
+    } collapsed: backend
+}
+
+histogram_series! {
+    /// One object-store request histogram series.
+    ObjectStoreSeries {
+        backend: String,
+        operation: String,
+        outcome: String,
+    } collapsed: operation
+}
+
+counter_series! {
+    /// One converge counter series. Converge is a counter, so it has no sum or
+    /// buckets.
+    ConvergeSeries {
+        org: String,
+        status: String,
+    } collapsed: org
 }
 
 /// Keygen cache gauges, mirroring `microwave_crypto::KeygenStatus`.
@@ -636,7 +458,7 @@ impl Metrics {
                 .map(|(key, buckets)| HttpSeries {
                     count: buckets.count,
                     sum: buckets.sum,
-                    buckets: buckets.buckets.into_vec(),
+                    buckets: buckets.buckets,
                     ..key
                 })
                 .collect(),
@@ -651,7 +473,7 @@ impl Metrics {
                 .map(|(key, buckets)| McpSeries {
                     count: buckets.count,
                     sum: buckets.sum,
-                    buckets: buckets.buckets.into_vec(),
+                    buckets: buckets.buckets,
                     ..key
                 })
                 .collect(),
@@ -666,7 +488,7 @@ impl Metrics {
                 .map(|(key, buckets)| StoreSeries {
                     count: buckets.count,
                     sum: buckets.sum,
-                    buckets: buckets.buckets.into_vec(),
+                    buckets: buckets.buckets,
                     ..key
                 })
                 .collect(),
@@ -681,7 +503,7 @@ impl Metrics {
                 .map(|(key, buckets)| SearchSeries {
                     count: buckets.count,
                     sum: buckets.sum,
-                    buckets: buckets.buckets.into_vec(),
+                    buckets: buckets.buckets,
                     ..key
                 })
                 .collect(),
@@ -696,7 +518,7 @@ impl Metrics {
                 .map(|(key, buckets)| ObjectStoreSeries {
                     count: buckets.count,
                     sum: buckets.sum,
-                    buckets: buckets.buckets.into_vec(),
+                    buckets: buckets.buckets,
                     ..key
                 })
                 .collect(),
@@ -852,5 +674,57 @@ mod tests {
             .windows(2)
             .all(|pair| pair[0] < pair[1]));
         assert!(*LATENCY_BUCKETS_SECONDS.last().unwrap() >= 10.0);
+    }
+
+    #[test]
+    fn buckets_are_cumulative_across_observations() {
+        let metrics = Metrics::new();
+        metrics.record_http("/_status", "GET", "_default", 200, Duration::from_millis(3));
+        metrics.record_http("/_status", "GET", "_default", 200, Duration::from_secs(3));
+        let entry = &metrics.http_series()[0];
+        assert_eq!(entry.count, 2);
+        assert_eq!(entry.buckets.len(), LATENCY_BUCKETS_SECONDS.len() + 1);
+        for (index, count) in entry.buckets.iter().enumerate() {
+            let expected = [0.003_f64, 3.0]
+                .iter()
+                .filter(|seconds| {
+                    index == LATENCY_BUCKETS_SECONDS.len()
+                        || **seconds <= LATENCY_BUCKETS_SECONDS[index]
+                })
+                .count() as u64;
+            assert_eq!(*count, expected, "bucket {index}");
+        }
+        assert_eq!(*entry.buckets.last().unwrap(), 2);
+    }
+
+    #[test]
+    fn non_request_families_cap_at_the_default_limit() {
+        let metrics = Metrics::new();
+        for index in 0..=DEFAULT_SERIES_LIMIT {
+            metrics.record_search_request(&format!("b{index}"), "ok", Duration::from_millis(1));
+        }
+        let series = metrics.search_series();
+        assert_eq!(series.len(), DEFAULT_SERIES_LIMIT + 1);
+        assert!(series.len() < REQUEST_SERIES_LIMIT);
+        assert!(series.iter().any(|entry| entry.backend == OVERFLOW_LABEL));
+    }
+
+    #[test]
+    fn object_store_overflow_collapses_the_operation() {
+        let metrics = Metrics::new();
+        for index in 0..=DEFAULT_SERIES_LIMIT {
+            metrics.record_object_store_request(
+                "local",
+                &format!("op{index}"),
+                "ok",
+                Duration::from_millis(1),
+            );
+        }
+        let series = metrics.object_store_series();
+        let overflow = series
+            .iter()
+            .find(|entry| entry.operation == OVERFLOW_LABEL)
+            .expect("overflow series");
+        assert_eq!(overflow.backend, "local");
     }
 }
