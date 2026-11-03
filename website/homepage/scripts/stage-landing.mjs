@@ -40,4 +40,10 @@ for (const [source, target] of files) {
   fs.copyFileSync(source, destination);
 }
 
+// The server substitutes this placeholder from `landing::WEBSITE_URL`; the
+// staged copy needs the same so its links are real.
+const WEBSITE_URL = 'https://rmoriz.github.io/microwave-development/';
+const page = path.join(preview, 'index.html');
+fs.writeFileSync(page, fs.readFileSync(page, 'utf8').replaceAll('{{website_url}}', WEBSITE_URL));
+
 console.log(`Staged landing page and ${files.length - 1} assets into ${preview}`);

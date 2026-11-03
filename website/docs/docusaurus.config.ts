@@ -18,7 +18,9 @@ const config: Config = {
   // Pages serves its own header defaults and gives no header configuration, so
   // the security policy rides along as `<meta http-equiv>` tags, like the
   // homepage does. `X-Frame-Options` cannot be a meta tag, so `frame-ancestors
-  // 'none'` carries that job. `data:` under `img-src` is needed for the theme's
+  // 'none'` carries that job — but `frame-ancestors` is ignored inside a meta
+  // policy, so framing is only actually enforced with a header layer in front
+  // of the site. `data:` under `img-src` is needed for the theme's
   // inline SVG icons; the site ships no web fonts, so `font-src` stays `'self'`.
   headTags: [
     {

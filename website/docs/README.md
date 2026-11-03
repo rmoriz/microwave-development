@@ -9,6 +9,8 @@ the pages that are published.
 npm install
 npm run dev      # http://localhost:3000/microwave-development/docs/
 npm run build    # static site into build/
+npm test         # content tests against build/
+npm run typecheck
 npm run preview  # serve build/ locally
 ```
 

@@ -22,6 +22,7 @@ test('the docs head carries the security metas and the favicon', () => {
   assert.match(csp, /img-src 'self' data:/);
   assert.match(csp, /frame-ancestors 'none'/);
   assert.doesNotMatch(csp, /'unsafe-eval'/);
+  assert.doesNotMatch(csp, /wasm-unsafe-eval/);
   assert.equal(metaContent('X-Content-Type-Options'), 'nosniff');
   assert.equal(metaContent('X-XSS-Protection'), '1');
   assert.equal(metaContent('Referrer-Policy'), 'no-referrer');

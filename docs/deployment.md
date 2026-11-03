@@ -419,21 +419,23 @@ Operational notes:
 ### Browser landing page and security headers
 
 A browser that opens the server address sends no client-version header and no
-signature. A request like that on a path `location /` owns receives the
+`X-Ops-*` header. A request like that on a path `location /` owns receives the
 embedded landing page instead of the JSON `401`: a static, script-free HTML
 page that links the project website, the documentation and the repository, and
 points to `/version` and `/_status` for machine-readable checks. Paths that
 upstream answers from their own nginx `location` — `/version`, `/_status`,
 `/_stats`, `/server_api_version`, `/id*`, `/bookshelf/*`, `…/validate`,
 `…/required_recipe`, `…/data-collector`, `…/mcp` and the compliance routes —
-keep their normal answer.
+keep their normal answer. The static surface does the same: `/index.html`,
+`/favicon.svg`, `/css/*` and `/fonts/*` always answer with the file or the
+static `404`, never with the page.
 
 A headerless `curl` therefore receives HTML as well. Scripts should send
 `X-Chef-Version` (or `X-Cinc-Version`) to reach the JSON API, and sign the
 request as usual.
 
-Every static response — the page, `/favicon.svg`, `/css/*`, `/fonts/*` and the
-static `404` — carries:
+Every static response — the page, `/favicon.svg`, `/css/*`, `/fonts/*`, the
+static `404` and the `405` — carries:
 
 | Header | Value |
 |---|---|
@@ -448,11 +450,18 @@ A reverse proxy or load balancer in front of the server may replace or extend
 them, and its policy wins — keep the values at least as strict when you
 terminate TLS or add a cache in front of the server.
 
-The page is sent `Cache-Control: no-cache` with `Vary: X-Chef-Version,
-X-Cinc-Version`, so a shared cache keys on the headers that decide between the
-page and the API. Assets and the favicon are `public, max-age=3600`. Page,
-stylesheets, favicon and fonts are compiled into the binary; there is no
-runtime asset directory to mount, keep in sync or back up.
+A static path answered with a method other than `GET` or `HEAD` is a plain-text
+`405` with `Allow: GET`; it keeps the header block and never falls back to the
+JSON `404`.
+
+The page is sent `Cache-Control: no-cache, no-transform` with `Vary:
+X-Chef-Version, X-Cinc-Version`, so a shared cache keys on the headers that
+decide between the page and the API. The JSON answer on the same path carries
+the same `Vary`, so a cache cannot hand the stored JSON to a browser.
+`no-transform` keeps the compression layer out of the page's `Vary`. Assets and
+the favicon are `public, max-age=3600`. Page, stylesheets, favicon and fonts
+are compiled into the binary; there is no runtime asset directory to mount,
+keep in sync or back up.
 
 ### Mail (SMTP)
 
