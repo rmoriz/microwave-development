@@ -8,7 +8,8 @@ use microwave_metrics::Metrics;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Records a timed call for every blob operation that touches the backend.
+/// Records a timed call for every blob operation that performs backend I/O;
+/// `exists` and `presigned_url` delegate untimed.
 pub struct TimedObjectStore {
     inner: Arc<dyn ObjectStore + Send + Sync>,
     metrics: Arc<Metrics>,

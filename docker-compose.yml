@@ -85,8 +85,9 @@ services:
       MW_OTEL__ENABLED: "${MW_OTEL_ENABLED:-true}"
       MW_OTEL__ENDPOINT: "${MW_OTEL_ENDPOINT:-http://otel-collector:4318}"
       # The Prometheus job scrapes every 5 s; exporting every 60 s would repeat
-      # each point twelve times.
-      MW_OTEL__INTERVAL_SECONDS: "15"
+      # each point twelve times. The three host-side names below are
+      # MW_OTEL_ENABLED, MW_OTEL_ENDPOINT and MW_OTEL_INTERVAL_SECONDS.
+      MW_OTEL__INTERVAL_SECONDS: "${MW_OTEL_INTERVAL_SECONDS:-15}"
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - microwave-data:/var/lib/microwave
