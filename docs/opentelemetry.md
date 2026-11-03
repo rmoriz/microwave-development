@@ -280,7 +280,7 @@ by org. What happens at the limit differs per sink:
 
 - `/_stats` keeps the series it already has and does not store a new label set;
   the new set collapses onto one series whose unbounded label reads `_other` —
-  `route="_other"` on the request histogram. The local store collapses the same
+  `route="/_other"` on the request histogram. The local store collapses the same
   way on `tool`, `operation`, `backend` and converge's `org`, none of which
   `/_stats` renders.
 - The export collapses the *whole attribute set* into a single overflow series

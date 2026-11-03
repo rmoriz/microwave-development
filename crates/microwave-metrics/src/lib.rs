@@ -13,7 +13,7 @@ mod registry;
 mod route;
 
 pub use histogram::{
-    HistogramSeries, DEFAULT_SERIES_LIMIT, LATENCY_BUCKETS_SECONDS, OVERFLOW_LABEL,
+    HistogramSeries, DEFAULT_SERIES_LIMIT, LATENCY_BUCKETS_SECONDS, OVERFLOW_LABEL, OVERFLOW_ROUTE,
     REQUEST_SERIES_LIMIT,
 };
 pub use recorder::Recorder;

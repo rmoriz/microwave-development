@@ -7,7 +7,7 @@
 
 use crate::histogram::{
     Counters, HistogramKey, HistogramSeries, Histograms, DEFAULT_SERIES_LIMIT, OVERFLOW_LABEL,
-    REQUEST_SERIES_LIMIT,
+    OVERFLOW_ROUTE, REQUEST_SERIES_LIMIT,
 };
 use crate::Recorder;
 use http::StatusCode;
@@ -22,7 +22,7 @@ macro_rules! histogram_series {
         $(#[$meta:meta])*
         $name:ident {
             $($field:ident : $ty:ty),+ $(,)?
-        } collapsed: $collapsed:ident
+        } collapsed: $collapsed:ident with $overflow:expr
     ) => {
         $(#[$meta])*
         #[derive(Debug, Clone)]
@@ -68,7 +68,7 @@ macro_rules! histogram_series {
         impl HistogramKey for $name {
             fn collapsed(&self) -> Self {
                 Self {
-                    $collapsed: OVERFLOW_LABEL.to_string(),
+                    $collapsed: $overflow.to_string(),
                     ..self.clone()
                 }
             }
@@ -81,7 +81,7 @@ macro_rules! counter_series {
         $(#[$meta:meta])*
         $name:ident {
             $($field:ident : $ty:ty),+ $(,)?
-        } collapsed: $collapsed:ident
+        } collapsed: $collapsed:ident with $overflow:expr
     ) => {
         $(#[$meta])*
         #[derive(Debug, Clone)]
@@ -107,7 +107,7 @@ macro_rules! counter_series {
         impl HistogramKey for $name {
             fn collapsed(&self) -> Self {
                 Self {
-                    $collapsed: OVERFLOW_LABEL.to_string(),
+                    $collapsed: $overflow.to_string(),
                     ..self.clone()
                 }
             }
@@ -123,7 +123,7 @@ histogram_series! {
         method: String,
         org: String,
         status: u16,
-    } collapsed: route
+    } collapsed: route with OVERFLOW_ROUTE
 }
 
 histogram_series! {
@@ -132,7 +132,7 @@ histogram_series! {
         tool: String,
         org: String,
         outcome: String,
-    } collapsed: tool
+    } collapsed: tool with OVERFLOW_LABEL
 }
 
 histogram_series! {
@@ -141,7 +141,7 @@ histogram_series! {
         db_system: String,
         operation: String,
         outcome: String,
-    } collapsed: operation
+    } collapsed: operation with OVERFLOW_LABEL
 }
 
 histogram_series! {
@@ -149,7 +149,7 @@ histogram_series! {
     SearchSeries {
         backend: String,
         outcome: String,
-    } collapsed: backend
+    } collapsed: backend with OVERFLOW_LABEL
 }
 
 histogram_series! {
@@ -158,7 +158,7 @@ histogram_series! {
         backend: String,
         operation: String,
         outcome: String,
-    } collapsed: operation
+    } collapsed: operation with OVERFLOW_LABEL
 }
 
 counter_series! {
@@ -167,7 +167,7 @@ counter_series! {
     ConvergeSeries {
         org: String,
         status: String,
-    } collapsed: org
+    } collapsed: org with OVERFLOW_LABEL
 }
 
 /// Keygen cache gauges, mirroring `microwave_crypto::KeygenStatus`.
@@ -665,7 +665,7 @@ mod tests {
         }
         let series = metrics.http_series();
         assert!(series.len() <= REQUEST_SERIES_LIMIT + 1);
-        assert!(series.iter().any(|entry| entry.route == OVERFLOW_LABEL));
+        assert!(series.iter().any(|entry| entry.route == OVERFLOW_ROUTE));
     }
 
     #[test]

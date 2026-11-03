@@ -29,6 +29,10 @@ pub const REQUEST_SERIES_LIMIT: usize = 10_000;
 /// Label value that receives series beyond the cap.
 pub const OVERFLOW_LABEL: &str = "_other";
 
+/// The same sentinel for the `route` label, whose values always carry a
+/// leading slash.
+pub const OVERFLOW_ROUTE: &str = "/_other";
+
 /// The counters of one series.
 ///
 /// The bucket counts are cumulative: slot `i` counts every observation at or
@@ -100,7 +104,8 @@ impl Buckets {
 }
 
 /// A series struct doubles as the map key; the overflow form replaces its
-/// unbounded label with [`OVERFLOW_LABEL`].
+/// unbounded label with [`OVERFLOW_LABEL`], or [`OVERFLOW_ROUTE`] for the
+/// `route` label.
 pub(crate) trait HistogramKey: Clone + Eq + Hash {
     fn collapsed(&self) -> Self;
 }
