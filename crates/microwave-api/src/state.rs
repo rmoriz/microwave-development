@@ -57,6 +57,19 @@ impl AppState {
         config: Arc<Config>,
         object_store: Arc<dyn ObjectStore + Send + Sync>,
     ) -> Result<Self, StateError> {
+        Self::with_metrics(store, config, object_store, Arc::new(Metrics::new()))
+    }
+
+    /// Build application state around an existing metrics registry.
+    ///
+    /// The server creates the registry before the OTLP provider, so the
+    /// provider's recorder and the `/_stats` view share one catalogue.
+    pub fn with_metrics(
+        store: Arc<dyn MetadataStore>,
+        config: Arc<Config>,
+        object_store: Arc<dyn ObjectStore + Send + Sync>,
+        metrics: Arc<Metrics>,
+    ) -> Result<Self, StateError> {
         let mailer = microwave_mail::build_mailer(&config.mail)?;
         let search = build_search_backend(&config.search, store.clone())?;
         let http_client = build_http_client(&config)?;
@@ -83,7 +96,7 @@ impl AppState {
             config,
             object_store,
             search,
-            metrics: Arc::new(Metrics::new()),
+            metrics,
             keygen,
             actions,
             health: Arc::new(HealthCache::new()),
@@ -104,41 +117,32 @@ impl AppState {
         config: Arc<Config>,
         object_store: Arc<dyn ObjectStore + Send + Sync>,
     ) -> Result<Self, StateError> {
-        let mailer = microwave_mail::build_mailer(&config.mail)?;
-        let search = build_search_backend(&config.search, store.clone())?;
-        let http_client = build_http_client(&config)?;
-        let compliance_client = build_compliance_client(&config)?;
-        let keygen = build_keygen_cache(&config);
-        let actions =
-            crate::actions::ActionDispatcher::new(&config, http_client.clone(), store.clone());
-        let depsolver = build_depsolver_semaphore(&config);
-        if config.mail.is_enabled() {
-            if let Some(url) = config.server.public_url.as_deref() {
-                if url.trim().starts_with("http://") {
-                    tracing::warn!(
-                        "mail is enabled with an http public_url; use https in production"
-                    );
-                }
-            }
-            if config.mail.security == MailSecurity::None {
-                tracing::warn!("mail uses plaintext SMTP (security = none); use this only for trusted local relays");
-            }
-        }
-        Ok(Self {
-            store: store.clone(),
-            sqlite: Some(store),
-            actions,
+        let mut state = Self::with_metrics(
+            store.clone(),
             config,
             object_store,
-            search,
-            metrics: Arc::new(Metrics::new()),
-            keygen,
-            health: Arc::new(HealthCache::new()),
-            http_client,
-            compliance_client,
-            depsolver,
-            mailer,
-        })
+            Arc::new(Metrics::new()),
+        )?;
+        state.store = store.clone();
+        state.sqlite = Some(store);
+        Ok(state)
+    }
+
+    /// Probe every dependency and report `(name, up)` pairs.
+    ///
+    /// The health cache bounds and deduplicates the probes, so the gauge
+    /// refresh task can call this on every tick. A probe that is down is still
+    /// reported, with `up` false.
+    pub async fn dependency_states(&self) -> Vec<(&'static str, bool)> {
+        let snapshot = self
+            .health
+            .snapshot(&self.store, &self.search, &self.object_store)
+            .await;
+        snapshot
+            .probes
+            .iter()
+            .map(|probe| (probe.name, probe.status == "pong"))
+            .collect()
     }
 
     /// Borrow the concrete SQLite store.

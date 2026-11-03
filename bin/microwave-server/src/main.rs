@@ -2,7 +2,10 @@ mod bootstrap;
 
 use clap::{Parser, Subcommand};
 use microwave_api::{router, AppState};
-use microwave_config::{Config, DatabaseDriver, ObjectStoreBackend, StorageCompression};
+use microwave_config::{
+    Config, DatabaseDriver, ObjectStoreBackend, SearchBackend, StorageCompression,
+};
+use microwave_metrics::{DependencyState, KeygenGauges, Metrics, PoolGauges};
 use microwave_objectstore::{LocalObjectStore, ObjectStore, S3Config, S3ObjectStore};
 use microwave_store::{Compression, MetadataStore, SqliteStore};
 use microwave_store_postgres::PostgresStore;
@@ -101,6 +104,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let shutdown = Arc::new(tokio::sync::Notify::new());
             spawn_shutdown_handler(shutdown.clone());
 
+            // One registry for the whole process: the request middleware, the
+            // `/_stats` view and the OTLP recorder all record into it.
+            let metrics = Arc::new(Metrics::new());
+
             let database_url = config.resolved_database_url();
             let compression = store_compression(config.storage.compression);
             let (store, sqlite): (Arc<dyn MetadataStore>, Option<Arc<SqliteStore>>) =
@@ -133,6 +140,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 };
             bootstrap::ensure_superuser(store.as_ref(), &config).await?;
+            // Configuration and environment win over the stored header
+            // secret; loading it here fails startup when the stored value is
+            // malformed instead of failing the first export.
+            if config.otel.headers.is_empty() {
+                bootstrap::apply_otel_secrets(&mut config, store.as_ref()).await?;
+            }
             let secret = match config.object_store.backend {
                 ObjectStoreBackend::Local => {
                     let secret =
@@ -162,17 +175,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "serve: configuration ok (bind {}, scheme {scheme}, database backend {backend})",
                     config.server.bind
                 );
+                // Report the state without initializing the provider: `--check`
+                // must never dial the collector.
+                eprintln!(
+                    "otel: {}",
+                    if config.otel.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                );
                 return Ok(());
             }
 
+            let indexing_mode = indexing_mode(config.search.backend);
+            let otel = if config.otel.enabled {
+                Some(microwave_otel::init(
+                    &config.otel,
+                    metrics.clone(),
+                    scheme,
+                    indexing_mode,
+                )?)
+            } else {
+                None
+            };
+
             let bind = config.server.bind.clone();
+            let gauge_refresh_seconds = config.otel.gauge_refresh_seconds;
             let state = match sqlite {
-                Some(sqlite) => AppState::from_sqlite(sqlite, Arc::new(config), object_store)?,
-                None => AppState::new(store, Arc::new(config), object_store)?,
+                Some(sqlite) => {
+                    AppState::with_metrics(sqlite, Arc::new(config), object_store, metrics.clone())?
+                }
+                None => {
+                    AppState::with_metrics(store, Arc::new(config), object_store, metrics.clone())?
+                }
             };
             let listener = tokio::net::TcpListener::bind(&bind).await?;
             let local_addr = listener.local_addr()?;
             tracing::info!(%bind, %local_addr, scheme, "microwave-server listening");
+            let gauge_refresh = otel
+                .as_ref()
+                .map(|_| spawn_gauge_refresh(state.clone(), metrics, gauge_refresh_seconds));
             match tls_config {
                 Some(rustls_config) => {
                     let listener = listener.into_std()?;
@@ -202,10 +245,82 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .await?;
                 }
             }
+
+            // Stop sampling before the final flush, so the last export is not
+            // raced by a tick that still writes gauge values.
+            if let Some(gauge_refresh) = gauge_refresh {
+                gauge_refresh.abort();
+            }
+            if let Some(otel) = otel {
+                // The guard applies `shutdown_timeout_ms` itself.
+                if let Err(error) = otel.shutdown().await {
+                    tracing::warn!(%error, "OTLP metric shutdown did not complete");
+                }
+            }
         }
     }
 
     Ok(())
+}
+
+/// The `indexing.mode` attribute on the build-info series.
+fn indexing_mode(backend: SearchBackend) -> &'static str {
+    match backend {
+        SearchBackend::Embedded => "embedded",
+        SearchBackend::OpenSearch => "opensearch",
+        SearchBackend::Elasticsearch => "elasticsearch",
+    }
+}
+
+/// Sample the store, keygen and dependency probes into the registry once per
+/// interval. The first tick fires immediately.
+///
+/// Backend errors are logged and skipped so one failing read does not stop the
+/// loop; the next tick retries.
+fn spawn_gauge_refresh(
+    state: AppState,
+    metrics: Arc<Metrics>,
+    interval_seconds: u64,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(interval_seconds));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            let dependencies = state
+                .dependency_states()
+                .await
+                .into_iter()
+                .map(|(name, up)| DependencyState { name, up })
+                .collect();
+            metrics.set_dependencies(dependencies);
+            metrics.set_pool(state.store.pool_stats().await.map(|pool| PoolGauges {
+                idle: pool.idle,
+                in_use: pool.in_use,
+                max: pool.max,
+            }));
+            match state.store.maintenance_enabled().await {
+                Ok(enabled) => metrics.set_maintenance(enabled),
+                Err(error) => {
+                    tracing::warn!(%error, "failed to read maintenance mode for metrics")
+                }
+            }
+            match state.store.count_nodes().await {
+                Ok(nodes) => metrics.set_nodes(nodes),
+                Err(error) => tracing::warn!(%error, "failed to count nodes for metrics"),
+            }
+            let keygen = state.keygen.status();
+            metrics.set_keygen(KeygenGauges {
+                cached: keygen.cached,
+                capacity: keygen.capacity,
+                workers: keygen.workers,
+                worker_failures: keygen.worker_failures,
+                warm_up_failures: keygen.warm_up_failures,
+                generated_on_demand: keygen.generated_on_demand,
+                worker_healthy: keygen.worker_healthy,
+            });
+        }
+    })
 }
 
 fn sqlite_path(database_url: &str) -> &str {

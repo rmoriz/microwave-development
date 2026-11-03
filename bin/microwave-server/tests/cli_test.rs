@@ -102,6 +102,50 @@ fn serve_check_reports_configuration_and_exits_successfully() {
 }
 
 #[test]
+fn serve_check_reports_the_otel_state_without_dialing() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("microwave.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "paths = {{ data_dir = \"{}\" }}\n[otel]\nenabled = true\nendpoint = \"http://127.0.0.1:1\"\n",
+            dir.path().join("data").display()
+        ),
+    )
+    .unwrap();
+    let output = Command::cargo_bin("microwave-server")
+        .unwrap()
+        .args(["serve", "--check", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("otel: enabled"), "{stderr}");
+}
+
+#[test]
+fn serve_check_reports_otel_disabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("microwave.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "paths = {{ data_dir = \"{}\" }}\n",
+            dir.path().join("data").display()
+        ),
+    )
+    .unwrap();
+    let output = Command::cargo_bin("microwave-server")
+        .unwrap()
+        .args(["serve", "--check", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&output.stderr).contains("otel: disabled"));
+}
+
+#[test]
 fn serve_check_accepts_an_s3_object_store() {
     let dir = tempfile::tempdir().unwrap();
     let output = Command::cargo_bin("microwave-server")

@@ -187,6 +187,36 @@ pub async fn apply_bookshelf_secrets(
     Ok(())
 }
 
+/// Fill `otel.headers` from the `otel`/`headers` secret when configuration and
+/// environment do not provide headers.
+///
+/// The secret holds one `Name: value` entry per line, as
+/// `microwave-ctl set-secret otel headers` writes it. The block is validated
+/// again afterwards so a malformed stored value fails closed at startup instead
+/// of failing on the first export. An absent secret is not an error.
+pub async fn apply_otel_secrets(
+    config: &mut Config,
+    store: &dyn MetadataStore,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !config.otel.headers.is_empty() {
+        return Ok(());
+    }
+    let Some(secret) = store.get_secret("otel", "headers").await? else {
+        return Ok(());
+    };
+    config.otel.headers = secret
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect();
+    config
+        .otel
+        .validate()
+        .map_err(|(key, message)| format!("{key}: {message}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +227,67 @@ mod tests {
         config.paths.data_dir = data_dir.to_string_lossy().into_owned();
         config.object_store.secret = None;
         config
+    }
+
+    #[tokio::test]
+    async fn loads_otel_headers_from_the_secret_store() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .set_secret(
+                "otel",
+                "headers",
+                "Authorization: Bearer s3cr3t\n\nX-Scope: metrics",
+            )
+            .unwrap();
+        let mut config = Config::default();
+
+        apply_otel_secrets(&mut config, &store).await.unwrap();
+
+        assert_eq!(
+            config.otel.headers,
+            vec!["Authorization: Bearer s3cr3t", "X-Scope: metrics"]
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_otel_headers_win_over_the_secret() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .set_secret("otel", "headers", "Authorization: Bearer stored")
+            .unwrap();
+        let mut config = Config::default();
+        config.otel.headers = vec!["Authorization: Bearer configured".into()];
+
+        apply_otel_secrets(&mut config, &store).await.unwrap();
+
+        assert_eq!(
+            config.otel.headers,
+            vec!["Authorization: Bearer configured"]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_absent_otel_headers_secret_is_not_an_error() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mut config = Config::default();
+
+        apply_otel_secrets(&mut config, &store).await.unwrap();
+
+        assert!(config.otel.headers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rejects_a_malformed_otel_headers_secret() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store.set_secret("otel", "headers", "malformed").unwrap();
+        let mut config = Config::default();
+
+        let error = apply_otel_secrets(&mut config, &store)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("otel.headers"), "{error}");
     }
 
     #[tokio::test]
