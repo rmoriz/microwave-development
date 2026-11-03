@@ -20,6 +20,10 @@ Progress.
 - **[Point MCP clients at it](./mcp.md)** — the per-organization MCP endpoint
   over the Streamable HTTP transport. MCP is `experimental`: off by default, and
   writes are on by default but switched off with `writes = false`.
+- **[Monitor it with OpenTelemetry](./opentelemetry.md)** — opt-in OTLP/HTTP
+  metric export, off by default: the collector setup, the exact series with
+  their types and attributes, whole-server and per-org queries, and the
+  cardinality caps.
 - **[Install the Debian package](./debian-package.md)** — the local `.deb`
   packaging layer, what it installs, and what it deliberately leaves out.
 - **[HTTP API parity and tests](./http-parity.md)** — the signed API surface,

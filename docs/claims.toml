@@ -32,7 +32,7 @@ id = "packaging-example-complete"
 summary = "The example configuration documents every supported block without stale disabled notes."
 area = "deployment"
 status = "verified"
-surfaces = [ { path = "packaging/microwave.toml.example", needle = "telemetry" } ]
+surfaces = [ { path = "packaging/microwave.toml.example", needle = "telemetry" }, { path = "packaging/microwave.toml.example", needle = "[otel]" } ]
 verify = { kind = "grep", path = "packaging/microwave.toml.example", pattern = "no outbound sender is implemented" }
 
 [[claim]]
@@ -2200,3 +2200,46 @@ surfaces = [
   { path = "README.md", needle = "only exists in the v2 preview" },
 ]
 verify = { kind = "manual", ref = "docs/superpowers/specs/2026-11-02-local-build-cache-design.md", checked = 2026-11-02 }
+
+[[claim]]
+id = "otel-off-by-default"
+summary = "OpenTelemetry export is configured in `[otel]`, off by default, and fails open."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/opentelemetry.md", needle = "off by default" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "pub struct OtelConfig" }
+
+[[claim]]
+id = "otel-guide-published"
+summary = "The OpenTelemetry guide is part of the published docs site."
+area = "docs"
+status = "verified"
+surfaces = [
+  { path = "docs/opentelemetry.md", needle = "OpenTelemetry" },
+  { path = "website/docs/sidebars.ts", needle = "opentelemetry" },
+]
+verify = { kind = "grep", path = "website/docs/docusaurus.config.ts", pattern = "opentelemetry.md" }
+
+[[claim]]
+id = "otel-request-histogram"
+summary = "Requests are measured as a histogram labelled by route, method, org, and status."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/opentelemetry.md", needle = "http.server.request.duration" } ]
+verify = { kind = "grep", path = "crates/microwave-otel/src/recorder.rs", pattern = "http.server.request.duration" }
+
+[[claim]]
+id = "otel-cardinality-cap"
+summary = "Per-instrument series caps collapse overflow into an `_other` series."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/opentelemetry.md", needle = "_other" } ]
+verify = { kind = "grep", path = "crates/microwave-metrics/src/registry.rs", pattern = "REQUEST_SERIES_LIMIT" }
+
+[[claim]]
+id = "otel-header-secret"
+summary = "Collector headers are supplied through the secret store, not the config file."
+area = "deployment"
+status = "verified"
+surfaces = [ { path = "docs/opentelemetry.md", needle = "set-secret otel headers" } ]
+verify = { kind = "grep", path = "crates/microwave-ctl/src/secrets.rs", pattern = "\\[\"headers\"\\]" }

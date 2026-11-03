@@ -331,6 +331,47 @@ yourself to apply configuration changes. It is safe to run repeatedly.
 `microwave-server config` prints the **resolved configuration as JSON,
 including object-store credentials** — treat its output as a secret.
 
+#### OpenTelemetry metrics
+
+Optional OTLP/HTTP metric export. It is off by default and enabling it opens the
+first outbound connection the server makes, so an egress rule or
+`NetworkPolicy` has to allow the collector address. `[telemetry]` is unrelated:
+that block is the Chef compatibility stub. The how-to, the metric reference and
+the cardinality rules are in
+[the OpenTelemetry guide](./opentelemetry.md).
+
+| Setting | Details |
+|---|---|
+| `otel.enabled`<br/>`MW_OTEL__ENABLED` | Default `false`. Turns the export on. Enabled without a non-empty `otel.endpoint` fails validation. |
+| `otel.endpoint`<br/>`MW_OTEL__ENDPOINT` | Unset by default. Collector base URL, e.g. `http://127.0.0.1:4318`. Must parse as `http` or `https`. The signal path `/v1/metrics` is appended; an endpoint already ending in it is not appended twice. `user:pass@` credentials are printed without the userinfo. |
+| `otel.protocol`<br/>`MW_OTEL__PROTOCOL` | Default `http/protobuf`. The only supported value; anything else fails validation. |
+| `otel.interval_seconds`<br/>`MW_OTEL__INTERVAL_SECONDS` | Default `60`. Export interval. Must be greater than zero. |
+| `otel.timeout_ms`<br/>`MW_OTEL__TIMEOUT_MS` | Default `10000`. Upper bound for one export attempt. Must be greater than zero. |
+| `otel.gauge_refresh_seconds`<br/>`MW_OTEL__GAUGE_REFRESH_SECONDS` | Default `60`. How often the gauge refresh samples store, keygen and the dependency probes. Must be greater than zero. |
+| `otel.shutdown_timeout_ms`<br/>`MW_OTEL__SHUTDOWN_TIMEOUT_MS` | Default `5000`. Budget for the final flush after the drain; a hung collector costs at most this. Must be greater than zero. |
+| `otel.service_name`<br/>`MW_OTEL__SERVICE_NAME` | Default `microwave-server`. `service.name` resource attribute. |
+| `otel.environment`<br/>`MW_OTEL__ENVIRONMENT` | Unset by default. `deployment.environment` resource attribute; omitted when unset. |
+| `otel.headers`<br/>`MW_OTEL__HEADERS` | Empty by default. Comma-separated `Name: value` entries for the collector. A header without a colon or with an empty name fails validation; a value may be empty. Falls back to the `otel headers` secret while empty. |
+| `otel.tls_ca_path`<br/>`MW_OTEL__TLS_CA_PATH` | Unset by default. Extra PEM CA for an `https` collector behind a private CA. Requires an `https` endpoint; the file must exist. |
+| `otel.insecure_skip_tls_verify`<br/>`MW_OTEL__INSECURE_SKIP_TLS_VERIFY` | Default `false`. Skip certificate-chain verification for an `https` collector. Also requires an `https` endpoint. |
+
+Header values are secrets. Store them instead of the file where possible:
+
+```sh
+microwave-ctl --config /etc/microwave/microwave.toml \
+  set-secret otel headers 'Authorization: Bearer <token>'
+```
+
+The secret holds one `Name: value` line per entry and is only read while
+`otel.headers` is empty, so TOML and `MW_OTEL__HEADERS` win. `microwave-server
+config` prints header names with `***` values.
+
+A failing or unreachable collector never slows the request path: after startup
+the export fails open, one `warn` line per interval lands in the log and
+`/_stats` reports `otel.last_export_error` until the next success. A bad block
+itself fails startup, and `check-config` validates it without dialing the
+collector.
+
 ### TLS listener
 
 Plain HTTP is the default. To serve HTTPS directly from the server, configure a
@@ -415,6 +456,44 @@ Operational notes:
   remains fully supported and is still the simplest option when you need
   automatic certificate rotation, multiple hostnames, or centralized TLS
   policy.
+
+### Browser landing page and security headers
+
+A browser that opens the server address sends no client-version header and no
+signature. Such a request on a path `location /` owns receives the embedded
+landing page instead of the JSON `401`: a static, script-free HTML page that
+links the project website, the documentation and the repository, and points to
+`/version` and `/_status` for machine-readable checks. Paths that upstream
+answers from their own nginx `location` — `/version`, `/_status`, `/_stats`,
+`/server_api_version`, `/id*`, `/bookshelf/*`, `…/validate`,
+`…/required_recipe`, `…/data-collector`, `…/mcp` and the compliance routes —
+keep their normal answer.
+
+A headerless `curl` therefore receives HTML as well. Scripts should send
+`X-Chef-Version` (or `X-Cinc-Version`) to reach the JSON API, and sign the
+request as usual.
+
+Every static response — the page, `/favicon.svg`, `/css/*`, `/fonts/*` and the
+static `404` — carries:
+
+| Header | Value |
+|---|---|
+| `Content-Security-Policy` | `default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'` |
+| `X-Frame-Options` | `DENY` |
+| `X-Content-Type-Options` | `nosniff` |
+| `X-XSS-Protection` | `1` |
+| `Referrer-Policy` | `no-referrer` |
+
+The block covers static responses only; API responses keep their own headers.
+A reverse proxy or load balancer in front of the server may replace or extend
+them, and its policy wins — keep the values at least as strict when you
+terminate TLS or add a cache in front of the server.
+
+The page is sent `Cache-Control: no-cache` with `Vary: X-Chef-Version,
+X-Cinc-Version`, so a shared cache keys on the headers that decide between the
+page and the API. Assets and the favicon are `public, max-age=3600`. Page,
+stylesheets, favicon and fonts are compiled into the binary; there is no
+runtime asset directory to mount, keep in sync or back up.
 
 ### Mail (SMTP)
 

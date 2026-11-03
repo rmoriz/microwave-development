@@ -11,6 +11,7 @@ const sidebars: SidebarsConfig = {
         {type: 'doc', id: 'deployment', label: 'Deployment'},
         {type: 'doc', id: 'cookbook', label: 'Chef cookbook'},
         {type: 'doc', id: 'mcp', label: 'MCP endpoint'},
+        {type: 'doc', id: 'opentelemetry', label: 'OpenTelemetry metrics'},
         {type: 'doc', id: 'debian-package', label: 'Debian packages'},
         {type: 'doc', id: 'http-parity', label: 'HTTP API parity'},
         {type: 'doc', id: 'load-test', label: 'Load test'},

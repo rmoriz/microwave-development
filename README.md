@@ -72,6 +72,7 @@ promise.
 | Operations CLI `microwave-ctl` — user/org administration, key rotation, backup/restore, reindex, diagnostics | [`TODO.md`](TODO.md) |
 | Migration — snapshot import and `knife ec backup` import | [`docs/deployment.md`](docs/deployment.md#11-migration-from-a-legacy-server) |
 | MCP endpoint — `experimental`, off by default, writes off with `writes = false` | [`docs/mcp.md`](docs/mcp.md) |
+| Metrics export — OpenTelemetry/OTLP over HTTP, opt-in and off by default, `/_stats` keeps its scrape surface | [`docs/opentelemetry.md`](docs/opentelemetry.md) |
 
 `/validate/*` and `_identifiers` are internal upstream APIs; the API surface, the authorization
 model, and the dual-backend suites are described in the [parity page](https://rmoriz.github.io/microwave-development/docs/http-parity/).
