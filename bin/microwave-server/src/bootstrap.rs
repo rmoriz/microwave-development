@@ -173,7 +173,7 @@ async fn ensure_webui_key_with<S: microwave_store::SecretsRepository + ?Sized>(
     };
     let invalid = |source: &str, error: &dyn std::fmt::Display| {
         format!(
-            "invalid webui private key from {source}: {error}; run `microwave-ctl rotate webui` to replace the pair"
+            "invalid webui private key from {source}: {error}; run `microwave-ctl rotate-credentials webui` to replace the pair"
         )
     };
     parse_private_key_pem(&candidate).map_err(|error| invalid(&source, &error))?;
@@ -726,7 +726,7 @@ mod webui_tests {
             .to_string();
 
         assert!(error.contains("webui"), "{error}");
-        assert!(error.contains("rotate webui"), "{error}");
+        assert!(error.contains("rotate-credentials webui"), "{error}");
     }
 
     #[tokio::test]
@@ -742,7 +742,7 @@ mod webui_tests {
             .to_string();
 
         assert!(error.contains("webui"), "{error}");
-        assert!(error.contains("rotate webui"), "{error}");
+        assert!(error.contains("rotate-credentials webui"), "{error}");
         assert!(stored(&store, WEBUI_PRIVATE_KEY_NAME).is_none());
     }
 
@@ -855,6 +855,6 @@ mod webui_tests {
             .to_string();
 
         assert!(error.contains("webui"), "{error}");
-        assert!(error.contains("rotate webui"), "{error}");
+        assert!(error.contains("rotate-credentials webui"), "{error}");
     }
 }

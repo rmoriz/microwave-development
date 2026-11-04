@@ -81,7 +81,7 @@ The data directory contains:
 | `pivotal.pem` | Superuser private key, created on first start, mode `0600`. |
 | `pivotal.password` | Generated superuser password, created on first start, mode `0600`. |
 | `objectstore.secret` | Local `/bookshelf` HMAC secret, created on first start, mode `0600`. |
-| `webui_priv.pem` / `webui_pub.pem` | Optional legacy web-UI keypair migrated by `import-knife-backup --secrets-dir`; `0600` / `0644`. |
+| `webui_priv.pem` / `webui_pub.pem` | Web-UI keypair, created on first start when `auth.webui_key = true`, or imported from a migrated file at first enable; `0600` / `0644`. The metadata database is the source of truth; these are convenience copies rewritten on every start. |
 | `private-chef-secrets.json` | Optional migrated upstream secret document, mode `0600`. |
 | `ssl/cert.pem`, `ssl/key.pem`, `ca/**` | Optional migrated TLS/CA material; keys are `0600`, certificates `0644`, copied to configured TLS paths or this data directory. |
 
@@ -214,6 +214,66 @@ verifies them against the actor's keys.
 | `auth.password_reset_token_in_response`<br/>`MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE` | Default `false`. Development-only: return the `/id/password-reset` URL in the HTTP response. Leave disabled in production; it allows account takeover. This still applies when mail is enabled. |
 | `auth.password_reset_ttl_seconds`<br/>`MW_AUTH__PASSWORD_RESET_TTL_SECONDS` | Default `3600`. Password-reset token lifetime in seconds. Must be greater than zero and at most `604800` (seven days). The reset email derives its expiry text from this value. |
 | `stats.username`<br/>`stats.password`<br/>`MW_STATS__USERNAME`<br/>`MW_STATS__PASSWORD` | Unset by default. Optional Basic auth for `/_stats`; when set, `/_status` remains public. Set both. |
+| `auth.webui_key`<br/>`MW_AUTH__WEBUI_KEY` | Default `false`. When `true`, `X-Ops-Request-Source: web` impersonation trusts a dedicated WebUI keypair instead of the superuser key. The pair is stored in the metadata database and materialized as `webui_priv.pem` / `webui_pub.pem`. |
+| `auth.webui_key_path`<br/>`MW_AUTH__WEBUI_KEY_PATH` | Unset by default: `<paths.data_dir>/webui_priv.pem`. Absolute path for the materialized private key; the public key is written next to it as `webui_pub.pem`. Requires `auth.webui_key = true`. |
+
+#### Web UI key
+
+`auth.webui_key` gives a WebUI its own keypair instead of the superuser key. It
+affects only requests that carry `X-Ops-Request-Source: web`: with the switch
+on, those requests are verified against the WebUI public key, and `pivotal.pem`
+no longer impersonates through that header. Every other request path is
+unchanged. Default `false` keeps today's behavior.
+
+Enable it, restart the server, then hand the private key to the console:
+
+1. Set `[auth] webui_key = true`, optionally set `webui_key_path`, run
+   `check-config`, and restart the server.
+2. On first start the key comes from the first available source: the stored
+   `secret:webui:private_key`, else the file at the configured path (default
+   `<data_dir>/webui_priv.pem`), else a newly generated RSA-2048 pair. A
+   migrated `webui_priv.pem` is therefore adopted without changing the
+   console's credentials.
+3. Export the private key with
+   `microwave-ctl --config /etc/microwave/microwave.toml show-secret webui private_key`,
+   or copy the materialized file.
+4. Point cinc-console at that key and remove `pivotal.pem` from its
+   configuration.
+
+The metadata store is the source of truth. The materialized files are
+rewritten from it on every start, so deleting or editing them does not change
+what the server trusts; `show-secret` and the next start read the store. The
+private key never appears in logs, `_status`, metrics, `microwave-server
+config` output, error messages, or any CLI output other than `show-secret`.
+
+The flag is authoritative. If it is enabled but startup cannot load a usable
+key, the server exits with an actionable error. If a running process has no
+public key loaded, web impersonation fails with `401` instead of silently
+falling back to the superuser key. Turning the switch off restores
+superuser-key impersonation; a console still configured with the WebUI key
+then fails until it is given `pivotal.pem` again.
+
+Rotate with:
+
+```sh
+microwave-ctl --config /etc/microwave/microwave.toml rotate-credentials webui
+```
+
+Rotation changes only the store. Restart the server and update every console
+with the new private key; the old key stops working at the next start.
+`rotate-all-credentials` and `show-service-credentials` deliberately skip
+`webui`: bulk rotation is not a coordinated console update, and the bulk
+credential listing stays free of the private key. Use `rotate-credentials
+webui` and `show-secret webui private_key` instead.
+
+`remove-secret webui private_key` alone is not a reset: the next start
+re-imports the materialized file. For a clean slate either run
+`rotate-credentials webui`, or remove the secret and delete the materialized
+file before restarting.
+
+The key can impersonate any existing user it names, so protect it like
+`pivotal.pem`: mode `0600`, out of shell history and logs, and inside every
+backup.
 
 #### Organization policy
 
@@ -1250,6 +1310,11 @@ secrets are always inside the database dump and are restored with it. That
 includes the object-store secret copied into `kvpair`; file-level
 `--include-private-keys` does not control database secrets.
 
+`--include-private-keys` includes the `webui_{priv,pub}.pem` convenience copies
+only while they sit at the default `data_dir` paths. A custom
+`auth.webui_key_path` is outside the fixed manifest; it is rematerialized from
+the database dump on the next start.
+
 It also does not include:
 
 - S3/Garage objects when an external object store is configured;
@@ -1279,6 +1344,12 @@ entries only for these data-directory files when present:
   `private-chef-secrets.json`, `private_chef_secrets.json`;
 - `webui_priv.pem`, `webui_pub.pem`, `oc_id_priv.pem`, `oc_id_pub.pem`,
   `ocid_priv.pem`, `ocid_pub.pem`, `oc-id.pem`, `oc_id.pem`.
+
+The `webui_{priv,pub}.pem` entries exist only at the default `data_dir` paths.
+With a custom `auth.webui_key_path` the pair is outside this fixed manifest; it
+is not archived, and the next start rematerializes it from the database dump.
+Restoring a backup therefore keeps the key even when the file was never in the
+archive.
 
 It also includes the configured `server.tls.cert_path` and
 `server.tls.key_path`; those paths may be outside the data directory. There is
@@ -1547,6 +1618,11 @@ on-disk material under `secrets/`. It reads only an explicit manifest:
 - configured `server.tls.cert_path` and `server.tls.key_path` (the certificate
   path may contain the full chain)
 
+`webui_{priv,pub}.pem` are read only at the default `data_dir` paths. A custom
+`auth.webui_key_path` is outside the fixed manifest and is not exported; with
+`--include-secrets` the stored pair is in the snapshot anyway and the next
+start rematerializes the file from it.
+
 No glob is used, symlinked data-dir candidates abort the export, explicitly
 configured TLS paths may be managed symlinks and are read through, and no file
 is read unless the flag is set. The CLI prints only `Private keys:
@@ -1793,8 +1869,11 @@ Secret files are staged before any target is replaced and rolled back as a set
 on an ordinary commit error. A process crash during commit can still leave a
 partial set; keep an operator backup and re-run with `--force` after recovery.
 `webui_priv.pem`/`webui_pub.pem` and `private-chef-secrets.json` are preserved
-for external tooling; Microwave does not consume the web-UI keypair or merge
-the private-chef secret document at runtime.
+for external tooling. The importer does not merge the private-chef secret
+document at runtime. The web-UI keypair stays a file so an upgraded console
+keeps working: with `auth.webui_key = true` the server consumes it on the next
+start and imports it into the metadata store (the materialized file then
+becomes a convenience copy). With the switch off it is never trusted.
 
 **Client/user private keys remain client-owned.** Chef Infra Server stores
 only public keys for clients and users, so no migration tool can recover their
