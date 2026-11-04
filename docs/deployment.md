@@ -81,7 +81,7 @@ The data directory contains:
 | `pivotal.pem` | Superuser private key, created on first start, mode `0600`. |
 | `pivotal.password` | Generated superuser password, created on first start, mode `0600`. |
 | `objectstore.secret` | Local `/bookshelf` HMAC secret, created on first start, mode `0600`. |
-| `webui_priv.pem` / `webui_pub.pem` | Web-UI keypair, created on first start when `auth.webui_key = true`, or imported from a migrated file at first enable; `0600` / `0644`. The metadata database is the source of truth; these are convenience copies rewritten on every start. |
+| `webui_priv.pem` / `webui_pub.pem` | Web-UI keypair, created on first start when `auth.webui_key = true`, or imported on any start while the store has no secret and a file exists at the configured path (default `<data_dir>`); `0600` / `0644`. The metadata database is the source of truth; these are convenience copies rewritten on every start. |
 | `private-chef-secrets.json` | Optional migrated upstream secret document, mode `0600`. |
 | `ssl/cert.pem`, `ssl/key.pem`, `ca/**` | Optional migrated TLS/CA material; keys are `0600`, certificates `0644`, copied to configured TLS paths or this data directory. |
 
@@ -219,21 +219,25 @@ verifies them against the actor's keys.
 
 #### Web UI key
 
-`auth.webui_key` gives a WebUI its own keypair instead of the superuser key. It
-affects only requests that carry `X-Ops-Request-Source: web`: with the switch
-on, those requests are verified against the WebUI public key, and `pivotal.pem`
-no longer impersonates through that header. Every other request path is
-unchanged. Default `false` keeps today's behavior.
+`auth.webui_key` gives a WebUI its own keypair. The WebUI key alone does not
+authenticate: it is consulted only for requests that also carry
+`X-Ops-Request-Source: web`, and only after the named actor's own keys failed
+to verify. With the switch on, such a request is then verified against the
+WebUI public key and impersonates the named user. The superuser key stops
+impersonating *other* users through that header, but a `pivotal.pem` request
+naming `pivotal` still authenticates as the superuser itself because the
+actor-key check wins first. Every other request path is unchanged. Default
+`false` keeps today's behavior.
 
 Enable it, restart the server, then hand the private key to the console:
 
 1. Set `[auth] webui_key = true`, optionally set `webui_key_path`, run
    `check-config`, and restart the server.
-2. On first start the key comes from the first available source: the stored
+2. On startup the key comes from the first available source: the stored
    `secret:webui:private_key`, else the file at the configured path (default
    `<data_dir>/webui_priv.pem`), else a newly generated RSA-2048 pair. A
-   migrated `webui_priv.pem` is therefore adopted without changing the
-   console's credentials.
+   migrated `webui_priv.pem` at the default path is therefore adopted without
+   changing the console's credentials.
 3. Export the private key with
    `microwave-ctl --config /etc/microwave/microwave.toml show-secret webui private_key`,
    or copy the materialized file.
@@ -273,7 +277,7 @@ file before restarting.
 
 The key can impersonate any existing user it names, so protect it like
 `pivotal.pem`: mode `0600`, out of shell history and logs, and inside every
-backup.
+full backup (snapshots need `--include-secrets`).
 
 #### Organization policy
 
@@ -1871,9 +1875,12 @@ partial set; keep an operator backup and re-run with `--force` after recovery.
 `webui_priv.pem`/`webui_pub.pem` and `private-chef-secrets.json` are preserved
 for external tooling. The importer does not merge the private-chef secret
 document at runtime. The web-UI keypair stays a file so an upgraded console
-keeps working: with `auth.webui_key = true` the server consumes it on the next
-start and imports it into the metadata store (the materialized file then
-becomes a convenience copy). With the switch off it is never trusted.
+keeps working: with `auth.webui_key = true` the server consumes the file at the
+configured path (default `<data_dir>/webui_priv.pem`) on the next start and
+imports it into the metadata store (the materialized file then becomes a
+convenience copy). The importer only writes the default `data_dir` path, so a
+custom `auth.webui_key_path` must be populated manually; otherwise the server
+generates a fresh pair. With the switch off the file is never trusted.
 
 **Client/user private keys remain client-owned.** Chef Infra Server stores
 only public keys for clients and users, so no migration tool can recover their
