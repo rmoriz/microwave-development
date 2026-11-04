@@ -67,6 +67,11 @@ services:
       MW_SERVER_URL: http://microwave:8000
       MW_ORG: ${MW_ORG:-e2e}
       MW_ORG_FULL_NAME: ${MW_ORG_FULL_NAME:-Microwave E2E}
+      # Demo console login the seed recreates on every run. Fixtures, not
+      # production credentials.
+      MW_CONSOLE_USER: ${MW_CONSOLE_USER:-e2e-console}
+      MW_CONSOLE_PASSWORD: ${MW_CONSOLE_PASSWORD:-e2e-console-password}
+      MW_CONSOLE_EMAIL: ${MW_CONSOLE_EMAIL:-e2e-console@example.com}
       ROLE_NAME: ${ROLE_NAME:-e2e_role}
       # Supermarket cookbook names and versions. Both are the newest releases
       # of their cookbook: nginx 12.3.4 is resource-only (the e2e_nginx wrapper

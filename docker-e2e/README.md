@@ -17,6 +17,8 @@ node actually needs:
    `docker exec`.
 4. **workstation** — Cinc Workstation and OpenCode, for driving the stack by
    hand. Not published; reach it with `docker compose exec` or `./shell`.
+5. **cinc-console** — the official web UI, logged in with the seeded demo user.
+   Published on `127.0.0.1:18081` only.
 
 Nothing runs on the host except `docker compose`.
 
@@ -165,6 +167,32 @@ fixtures, not production credentials, and the MCP write tools (`delete_node`,
 use a different token, change it in `docker-compose.yml` (or the environment)
 and in `microwave/microwave.toml` under `[mcp.organizations.e2e]`.
 
+## Console
+
+`cinc-console` is the official Cinc Console web UI at
+<http://127.0.0.1:18081>. The seed creates the demo login `e2e-console` with
+the password `e2e-console-password`; both are fixtures, not production
+credentials.
+
+The root URL answers `307` to `/login` while no session exists. After logging
+in, the organization pages live under `/orgs/<org>`, for example `/orgs/e2e`
+or `/orgs/e2e/nodes`. They are **not** under `/organizations/<org>`; that is
+the API prefix the console builds internally from `CINC_SERVER_URL`.
+
+The console signs its impersonation with the WebUI keypair (the private half
+mounted read-only from the `console-key` volume at
+`/key/webui_priv.pem`), not with `pivotal.pem`. It never mounts the server's
+data volume.
+
+The service runs as uid 1000 on a read-only root filesystem with all
+capabilities dropped, and publishes only on `127.0.0.1`. Its health endpoint
+is `http://127.0.0.1:18081/api/healthz`.
+
+Overrides: `MW_CONSOLE_PORT` moves the host port; `MW_CONSOLE_USER`,
+`MW_CONSOLE_PASSWORD`, and `MW_CONSOLE_EMAIL` change the seeded login;
+`MW_CONSOLE_SESSION_SECRET` changes the session signing secret (keep the fixed
+default so a restart keeps sessions); `CINC_CONSOLE_IMAGE` changes the image.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -172,6 +200,13 @@ and in `microwave/microwave.toml` under `[mcp.organizations.e2e]`.
 | `MW_E2E_PORT` | `18080` | Host port for the microwave API |
 | `MW_MCP_TOKEN` | `e2e-mcp-token` | Bearer token for the MCP endpoint |
 | `MW_WORKSTATION_IMAGE` | `microwave-workstation:e2e` | Workstation image tag |
+| `MW_CONSOLE_PORT` | `18081` | Loopback host port for the console |
+| `MW_CONSOLE_USER` | `e2e-console` | Demo console user created by the seed |
+| `MW_CONSOLE_PASSWORD` | `e2e-console-password` | Password for the demo console user |
+| `MW_CONSOLE_EMAIL` | `e2e-console@example.com` | Email for the demo console user |
+| `MW_CONSOLE_SESSION_SECRET` | `e2e-console-session-secret-32-chars-min` | Console session signing secret |
+| `CINC_CONSOLE_IMAGE` | `ghcr.io/cinc-project/cinc-console:0.9.0` | Console image |
+| `ALPINE_IMAGE` | `alpine:3.22` | Base image for the key handoff service |
 | `MW_ORG` | `e2e` | Organization name |
 | `ROLE_NAME` | `e2e_role` | Role created by the seed |
 | `NGINX_COOKBOOK` / `NGINX_VERSION` | `nginx` / `12.3.4` | Supermarket cookbook |
@@ -237,6 +272,12 @@ and in `microwave/microwave.toml` under `[mcp.organizations.e2e]`.
   the Compose network carry that `Host` header. `data_collector.store = "local"`
   keeps run reports so the MCP run tools return data. See "Workstation" for the
   client side.
+- **Console key rotation.** `rotate-credentials webui` changes the stored
+  keypair, and a server restart materializes the new key. The console then
+  keeps the old copy in the `console-key` volume until `docker compose up`
+  re-runs that service, and it reads the key only at boot, so restart
+  `cinc-console` afterwards. Existing console sessions keep working, but every
+  server call fails with `401` while the console holds the old key.
 - **Repeated runs.** A validator may create clients but not update them.
   `chef-client` turns the resulting `409 Client already exists` into a `PUT`,
   which the validator is not allowed to do, so a node whose previous converge
