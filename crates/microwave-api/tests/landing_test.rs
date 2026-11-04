@@ -267,7 +267,7 @@ async fn a_partial_signature_is_not_a_browser() {
         HeaderValue::from_static("pivotal"),
     );
     let response = app.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_ne!(
         response.headers()[header::CONTENT_TYPE],
         "text/html; charset=utf-8"

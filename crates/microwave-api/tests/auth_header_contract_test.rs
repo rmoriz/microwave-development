@@ -42,9 +42,10 @@ async fn status(request: Request<Body>) -> StatusCode {
 }
 
 /// A missing or empty signing header never reaches verification; upstream
-/// reports every `no_authn` case as unauthenticated, not as malformed.
+/// rejects the request shape as malformed before it looks at the signature, so
+/// the answer is `400` and not `401`.
 #[tokio::test]
-async fn missing_or_empty_required_headers_are_unauthenticated() {
+async fn missing_or_empty_required_headers_are_bad_requests() {
     for header in ["x-ops-sign", "x-ops-timestamp", "x-ops-content-hash"] {
         for empty in [false, true] {
             let mut request = signed_at("2026-10-24T12:00:00Z");
@@ -55,7 +56,7 @@ async fn missing_or_empty_required_headers_are_unauthenticated() {
             }
             assert_eq!(
                 status(request).await,
-                StatusCode::UNAUTHORIZED,
+                StatusCode::BAD_REQUEST,
                 "header {header}, empty={empty}"
             );
         }

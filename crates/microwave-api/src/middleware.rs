@@ -1178,8 +1178,10 @@ fn authentication_failure(user_id: &str) -> ApiError {
     ))
 }
 
-/// A missing or empty signing header means the request is unauthenticated; it
-/// never reaches signature verification.
+/// A missing or empty required signing header is a malformed request, not a
+/// failed verification: upstream rejects the shape with `400` before the
+/// signature is ever looked at. A missing signature line stays `401`, because
+/// it takes the place of the signed value itself.
 fn required_header(headers: &HeaderMap, name: &str) -> Result<String, ApiError> {
     headers
         .get(name)
@@ -1187,7 +1189,7 @@ fn required_header(headers: &HeaderMap, name: &str) -> Result<String, ApiError> 
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
-        .ok_or_else(ApiError::unauthorized)
+        .ok_or_else(|| ApiError::bad_request("Failed to authenticate"))
 }
 
 fn authorization_lines(headers: &HeaderMap) -> Result<Vec<&str>, ApiError> {

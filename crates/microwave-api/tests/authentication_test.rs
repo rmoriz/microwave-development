@@ -232,8 +232,8 @@ async fn malformed_credential_bodies_are_rejected_before_authentication() {
         );
     }
 
-    // A well-formed body reaches authentication. Missing required signing
-    // headers are unauthenticated.
+    // A well-formed body reaches authentication. A missing required signing
+    // header is a malformed request.
     let response = app
         .oneshot(
             Request::post("/authenticate_user")
@@ -245,7 +245,7 @@ async fn malformed_credential_bodies_are_rejected_before_authentication() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

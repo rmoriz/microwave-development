@@ -79,7 +79,7 @@ committing Rust. The homepage has no linter beyond `astro check`.
   tool, duration, result count, outcome, and the target on writes.
 - A request with no `X-Chef-Version`, no `X-Cinc-Version` and no `X-Ops-*`
   header (a partial signature counts too) gets the static landing page instead
-  of the JSON `401`, but only on a path `location /` owns. The nginx-owned
+  of the JSON `400`, but only on a path `location /` owns. The nginx-owned
   paths (`/version`, `/_status`, `/_stats`, `/server_api_version`, `/id*`,
   `/bookshelf/*`, `…/validate`, `…/required_recipe`, `…/data-collector`, `…/mcp`,
   compliance) keep their own answer. The hardening headers

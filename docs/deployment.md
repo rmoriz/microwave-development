@@ -461,7 +461,7 @@ Operational notes:
 
 A browser that opens the server address sends no client-version header and no
 `X-Ops-*` header. A request like that on a path `location /` owns receives the
-embedded landing page instead of the JSON `401`: a static, script-free HTML
+embedded landing page instead of the JSON `400`: a static, script-free HTML
 page that links the project website, the documentation and the repository, and
 points to `/version` and `/_status` for machine-readable checks. Paths that
 upstream answers from their own nginx `location` — `/version`, `/_status`,
