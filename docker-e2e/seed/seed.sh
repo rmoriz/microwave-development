@@ -110,10 +110,10 @@ ssl_verify_mode :verify_none
 EOF
 
 # ---- 3. Console demo user --------------------------------------------------
-# knife's "only admin" guard ignores `pivotal`, so the console user is always
-# the sole *counted* admin on this fixture stack and `-R` alone would refuse
-# the delete. Take the user out of the group first, then delete with `-R` so
-# the org membership goes too. Absence on the first run is not an error.
+# Recreate on every run so the documented password stays true. The delete
+# disassociates org membership by default; -R additionally bypasses knife's
+# "only admin" guard should the explicit group removal have failed. Absence
+# on the first run is not an error.
 remove_console_user() {
     knife group remove user "$1" admins --config "$SHARED/knife.rb" >/dev/null 2>&1 || true
     knife user delete "$1" --remove-from-admin-groups -y \
@@ -121,22 +121,35 @@ remove_console_user() {
 }
 
 # A previous run may have used another name. Remove it so an override replaces
-# the account instead of leaving a second admin with the default password.
-if [ -f "$SHARED/seed-summary.txt" ]; then
+# the account instead of leaving a second admin with the default password. The
+# summary fallback covers a stack seeded before the state file existed.
+prev_console_user=""
+if [ -s "$SHARED/console-user" ]; then
+    prev_console_user="$(head -1 "$SHARED/console-user")"
+elif [ -f "$SHARED/seed-summary.txt" ]; then
     prev_console_user="$(sed -n 's/^console_user: //p' "$SHARED/seed-summary.txt" | tail -1)"
-    if [ -n "$prev_console_user" ] && [ "$prev_console_user" != "$CONSOLE_USER" ]; then
-        log "removing previous console user $prev_console_user"
-        remove_console_user "$prev_console_user"
-    fi
+fi
+if [ -n "$prev_console_user" ] && [ "$prev_console_user" != "$CONSOLE_USER" ]; then
+    log "removing previous console user $prev_console_user"
+    remove_console_user "$prev_console_user"
+    # `user list` distinguishes a surviving user from a transient `show` error:
+    # an assignment failure aborts under `set -e`, absence is explicit below.
+    remaining_users="$(knife user list --config "$SHARED/knife-server.rb" -F json)"
+    case "$remaining_users" in
+    *\"$prev_console_user\"*)
+        log "error: previous console user $prev_console_user still exists"
+        exit 1
+        ;;
+    esac
 fi
 
-# Recreate on every run so the documented password stays true.
 log "resetting console user $CONSOLE_USER"
 remove_console_user "$CONSOLE_USER"
 knife user create "$CONSOLE_USER" \
     --email "$CONSOLE_EMAIL" \
     --password "$CONSOLE_PASSWORD" \
     --config "$SHARED/knife-server.rb"
+printf '%s\n' "$CONSOLE_USER" >"$SHARED/console-user"
 knife org user add "$ORG" "$CONSOLE_USER" --config "$SHARED/knife.rb"
 knife group add user "$CONSOLE_USER" admins --config "$SHARED/knife.rb"
 

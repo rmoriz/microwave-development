@@ -291,9 +291,9 @@ local use. Keep one fixed value if sessions should survive a restart.
   only at boot, so restart `cinc-console` afterwards. Existing console sessions
   keep working, but every server call fails with `401` while the console holds
   the old key. A broken or unreadable key does not show in `/api/healthz`
-  (still `200`); logins fail with `500` until it is fixed. A **full**
-  `docker compose up -d` also works, but it re-runs the
-  seed, writes a new `run-id`, and makes every node re-register and
+  (still `200`); logins fail with `500`; restore the file and restart
+  `cinc-console`. A **full** `docker compose up -d` also works, but it re-runs
+  the seed, writes a new `run-id`, and makes every node re-register and
   re-converge, so it is the heavier option, not the default recovery.
 - **Repeated runs.** A validator may create clients but not update them.
   `chef-client` turns the resulting `409 Client already exists` into a `PUT`,
