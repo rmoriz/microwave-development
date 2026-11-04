@@ -41,6 +41,8 @@ class WorkflowTest(unittest.TestCase):
     def test_trigger_is_tag_only(self):
         self.assertNotIn("workflow_dispatch", self.workflow["on"])
         self.assertEqual(self.workflow["on"]["push"]["tags"], ["v*"])
+        self.assertEqual(self.workflow["concurrency"]["group"], "release")
+        self.assertFalse(self.workflow["concurrency"]["cancel-in-progress"])
 
     def test_meta_job_resolves_the_tag(self):
         meta = self.workflow["jobs"]["meta"]
@@ -59,8 +61,32 @@ class WorkflowTest(unittest.TestCase):
         self.assertLess(names.index("Smoke-test the image"), names.index("Log in to GHCR"))
         self.assertLess(names.index("Log in to GHCR"), names.index("Push the architecture image"))
 
-    def test_publish_waits_for_the_manifest(self):
-        self.assertEqual(set(self.workflow["jobs"]["publish"]["needs"]), {"build", "manifest"})
+    def test_build_uses_the_matrix_arch_and_smoke_tests_every_binary(self):
+        build = yaml.safe_dump(self.workflow["jobs"]["build"])
+        self.assertIn("${VERSION}-${ARCH}", build)
+        smoke = self.workflow["jobs"]["build"]["steps"][
+            [step.get("name", "") for step in self.workflow["jobs"]["build"]["steps"]].index(
+                "Smoke-test the image"
+            )
+        ]
+        run = smoke["run"]
+        for binary in ("microwave-server", "microwave-ctl", "microwave-migrate"):
+            self.assertIn(f"{binary} --version", run)
+        self.assertIn("{{.Architecture}}", run)
+
+    def test_manifest_uses_the_tag_script(self):
+        manifest = yaml.safe_dump(self.workflow["jobs"]["manifest"])
+        self.assertIn("scripts/release-image-manifest-tags.sh", manifest)
+        self.assertIn("git tag --list", manifest)
+
+    def test_publish_waits_for_metadata_and_manifest(self):
+        self.assertEqual(
+            set(self.workflow["jobs"]["publish"]["needs"]),
+            {"meta", "build", "manifest"},
+        )
+        publish = yaml.safe_dump(self.workflow["jobs"]["publish"])
+        self.assertIn("--prerelease", publish)
+        self.assertIn("STABLE", publish)
 
 
 if __name__ == "__main__":

@@ -49,18 +49,20 @@ package installs on Debian 12+ and Ubuntu 24.04+. For Ubuntu 22.04, build in a
 
 ### Release builds
 
-`.github/workflows/release.yml` runs on `v*` tag pushes and on manual
-`workflow_dispatch`. A tag push builds release binaries for linux/amd64 and
-linux/arm64 and attaches them, with checksums, to that GitHub Release, next to
-the tarballs. A tag push also builds `microwave-server_<version>_<arch>.deb`
-and its `microwave-server_<version>_<arch>.deb.sha256` for `amd64` and `arm64`
-and attaches both, unless the version cannot be derived. A
-`workflow_dispatch` on a tag packages; on a branch it produces only the
-tarballs — no package. A `v*` tag whose remainder is not a Debian version (for
-example the moving `v-current` snapshot tag) is packaged as
-`<workspace version>+snapshot.<UTC date>.g<short sha>`, so snapshots stay
-installable. Only a tag that is a Debian version sets the package version
-directly, and the run warns when it differs from `[workspace.package]`.
+`.github/workflows/release.yml` runs on `vX.Y.Z` and `vX.Y.Z-<pre>`
+tag pushes only; there is no manual dispatch and no moving tag. A valid tag
+builds release binaries for linux/amd64 and linux/arm64 and attaches them,
+with checksums, to that GitHub Release, next to the tarballs. The same legs
+push the matching architecture images to `ghcr.io/rmoriz/microwave-server`
+and merge them into one manifest.
+
+A tag also builds `microwave-server_<version>_<arch>.deb` and its
+`microwave-server_<version>_<arch>.deb.sha256` for `amd64` and `arm64` and
+attaches both. Only a tag that is a Debian version sets the package version
+directly, and the run warns when it differs from `[workspace.package]`. A
+non-semver tag fails in the `meta` job before anything is built, so the
+snapshot fallback in the build job is unreachable while the trigger stays
+semver-only.
 
 ## Install
 

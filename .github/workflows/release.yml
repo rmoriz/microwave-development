@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -169,7 +169,15 @@ jobs:
             -t "$IMAGE" \
             -f Dockerfile "$RUNNER_TEMP/image-context"
       - name: Smoke-test the image
-        run: docker run --rm "$IMAGE" microwave-server --version
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          docker run --rm "$IMAGE" microwave-server --version
+          docker run --rm "$IMAGE" microwave-ctl --version
+          docker run --rm "$IMAGE" microwave-migrate --version
+          test "$(docker image inspect --format '{{.Architecture}}' "$IMAGE")" = "$ARCH"
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -187,6 +195,12 @@ jobs:
       contents: read
       packages: write
     steps:
+      # Tags are needed to keep `latest` and `X.Y` from moving backwards when
+      # an older tag is re-run.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       - uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -202,16 +216,24 @@ jobs:
           STABLE: ${{ needs.meta.outputs.stable }}
         run: |
           set -euo pipefail
+          stable_tags="$(git tag --list 'v[0-9]*' | grep -Ev -- '-' | sort -Vr)"
+          highest_stable="$(printf '%s\n' "$stable_tags" | head -n1 || true)"
+          highest_same_minor="$(printf '%s\n' "$stable_tags" | grep -E "^v${MAJOR_MINOR}\." | head -n1 || true)"
+          mapfile -t manifest_tags < <(
+            scripts/release-image-manifest-tags.sh \
+              "$GITHUB_REF_NAME" "$MAJOR_MINOR" "$STABLE" \
+              "$highest_stable" "$highest_same_minor"
+          )
           base="ghcr.io/${GITHUB_REPOSITORY_OWNER}/microwave-server"
-          tags=(-t "${base}:${VERSION}")
-          if [ "${STABLE}" = "1" ]; then
-            tags+=(-t "${base}:${MAJOR_MINOR}" -t "${base}:latest")
-          fi
-          docker buildx imagetools create "${tags[@]}" \
+          args=()
+          for tag in "${manifest_tags[@]}"; do
+            args+=(-t "${base}:${tag}")
+          done
+          docker buildx imagetools create "${args[@]}" \
             "${base}:${VERSION}-amd64" "${base}:${VERSION}-arm64"
 
   publish:
-    needs: [build, manifest]
+    needs: [meta, build, manifest]
     runs-on: ubuntu-24.04
     steps:
       # `gh` resolves the repository from the checkout, not from GITHUB_REPOSITORY.
@@ -224,11 +246,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          STABLE: ${{ needs.meta.outputs.stable }}
         run: |
           set -euo pipefail
+          args=(--title "$GITHUB_REF_NAME" --generate-notes)
+          if [ "$STABLE" != "1" ]; then
+            args+=(--prerelease)
+          fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+            if [ "$STABLE" != "1" ]; then
+              gh release edit "$GITHUB_REF_NAME" --prerelease
+            else
+              gh release edit "$GITHUB_REF_NAME" --prerelease=false
+            fi
           else
-            gh release create "$GITHUB_REF_NAME" dist/* \
-              --title "$GITHUB_REF_NAME" --generate-notes
+            gh release create "$GITHUB_REF_NAME" dist/* "${args[@]}"
           fi
