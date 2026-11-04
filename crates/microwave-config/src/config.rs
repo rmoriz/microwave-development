@@ -158,6 +158,26 @@ impl Config {
                 value: self.auth.password_reset_ttl_seconds.to_string(),
             });
         }
+        self.validate_webui_key()?;
+        Ok(())
+    }
+
+    fn validate_webui_key(&self) -> Result<(), ConfigError> {
+        let Some(path) = &self.auth.webui_key_path else {
+            return Ok(());
+        };
+        if !path.is_absolute() {
+            return Err(ConfigError::InvalidValue {
+                key: "auth.webui_key_path".into(),
+                value: path.display().to_string(),
+            });
+        }
+        if !self.auth.webui_key {
+            return Err(ConfigError::InvalidValue {
+                key: "auth.webui_key".into(),
+                value: "auth.webui_key_path requires auth.webui_key = true".into(),
+            });
+        }
         Ok(())
     }
 
@@ -206,7 +226,8 @@ impl Config {
     /// - `MW_OBJECT_STORE__SECRET` (local bookshelf token secret)
     /// - `MW_AUTH__SKEW_SECONDS`, `MW_AUTH__SUPERUSER_NAME`,
     ///   `MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE`,
-    ///   `MW_AUTH__PASSWORD_RESET_TTL_SECONDS`
+    ///   `MW_AUTH__PASSWORD_RESET_TTL_SECONDS`, `MW_AUTH__WEBUI_KEY`,
+    ///   `MW_AUTH__WEBUI_KEY_PATH`
     /// - `MW_MAIL__ENABLED`, `MW_MAIL__HOST`, `MW_MAIL__PORT`,
     ///   `MW_MAIL__SECURITY`, `MW_MAIL__USERNAME`, `MW_MAIL__PASSWORD`,
     ///   `MW_MAIL__AUTH`, `MW_MAIL__FROM`, `MW_MAIL__REPLY_TO`,
@@ -371,6 +392,13 @@ impl Config {
             self.auth.password_reset_ttl_seconds =
                 parse_value("MW_AUTH__PASSWORD_RESET_TTL_SECONDS", value)?;
         }
+        if let Ok(value) = std::env::var("MW_AUTH__WEBUI_KEY") {
+            self.auth.webui_key = parse_bool("MW_AUTH__WEBUI_KEY", &value)?;
+        }
+        if let Ok(value) = std::env::var("MW_AUTH__WEBUI_KEY_PATH") {
+            self.auth.webui_key_path = non_empty(value).map(PathBuf::from);
+        }
+        self.validate_webui_key()?;
         if let Ok(value) = std::env::var("MW_MAIL__ENABLED") {
             self.mail.enabled = parse_bool("MW_MAIL__ENABLED", &value)?;
         }
@@ -946,6 +974,13 @@ pub struct AuthConfig {
     /// How long a password-reset token stays valid, in seconds. Must be
     /// greater than zero and at most [`Self::MAX_PASSWORD_RESET_TTL_SECONDS`].
     pub password_reset_ttl_seconds: u64,
+    /// Generate and trust a dedicated WebUI keypair for
+    /// `X-Ops-Request-Source: web` impersonation. Default `false`: web
+    /// impersonation trusts the superuser key.
+    pub webui_key: bool,
+    /// Optional absolute path for the materialized private key. Defaults to
+    /// `<paths.data_dir>/webui_priv.pem`. Requires `webui_key = true`.
+    pub webui_key_path: Option<PathBuf>,
 }
 
 impl AuthConfig {
@@ -960,6 +995,8 @@ impl Default for AuthConfig {
             superuser_name: "pivotal".into(),
             password_reset_token_in_response: false,
             password_reset_ttl_seconds: 3600,
+            webui_key: false,
+            webui_key_path: None,
         }
     }
 }

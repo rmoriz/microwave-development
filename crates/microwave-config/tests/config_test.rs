@@ -1561,3 +1561,84 @@ fn otel_settings_can_be_overridden_from_env() {
     std::env::remove_var("MW_OTEL__HEADERS");
     std::env::remove_var("MW_OTEL__INTERVAL_SECONDS");
 }
+
+#[test]
+fn webui_key_is_disabled_by_default() {
+    let c = Config::default();
+    assert!(!c.auth.webui_key);
+    assert!(c.auth.webui_key_path.is_none());
+}
+
+#[test]
+fn parses_an_enabled_webui_key_and_absolute_path() {
+    let c = Config::from_toml_str(
+        r#"
+        [auth]
+        webui_key = true
+        webui_key_path = "/etc/microwave/webui_priv.pem"
+    "#,
+    )
+    .unwrap();
+    assert!(c.auth.webui_key);
+    assert_eq!(
+        c.auth.webui_key_path.as_deref(),
+        Some(std::path::Path::new("/etc/microwave/webui_priv.pem"))
+    );
+}
+
+#[test]
+fn rejects_a_relative_webui_key_path() {
+    let error = Config::from_toml_str(
+        r#"
+        [auth]
+        webui_key = true
+        webui_key_path = "webui_priv.pem"
+    "#,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("auth.webui_key_path"), "{error}");
+}
+
+#[test]
+fn rejects_a_webui_key_path_without_enabling_the_key() {
+    let error = Config::from_toml_str(
+        r#"
+        [auth]
+        webui_key_path = "/etc/microwave/webui_priv.pem"
+    "#,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("auth.webui_key"), "{error}");
+}
+
+#[test]
+fn env_overrides_webui_key_settings() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("MW_AUTH__WEBUI_KEY", "true");
+    std::env::set_var("MW_AUTH__WEBUI_KEY_PATH", "/tmp/webui_priv.pem");
+
+    let mut c = Config::default();
+    c.apply_env().unwrap();
+
+    std::env::remove_var("MW_AUTH__WEBUI_KEY");
+    std::env::remove_var("MW_AUTH__WEBUI_KEY_PATH");
+
+    assert!(c.auth.webui_key);
+    assert_eq!(
+        c.auth.webui_key_path.as_deref(),
+        Some(std::path::Path::new("/tmp/webui_priv.pem"))
+    );
+}
+
+#[test]
+fn env_rejects_a_path_without_enabling_the_key() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("MW_AUTH__WEBUI_KEY_PATH", "/tmp/webui_priv.pem");
+
+    let mut c = Config::default();
+    let error = c.apply_env().unwrap_err();
+
+    std::env::remove_var("MW_AUTH__WEBUI_KEY_PATH");
+
+    assert!(error.to_string().contains("auth.webui_key"), "{error}");
+}
