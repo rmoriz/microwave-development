@@ -15,5 +15,5 @@ pub use keygen::{KeyPair, KeygenCache, KeygenStatus};
 pub use password::{hash_password, needs_upgrade, verify_password, PasswordHash};
 pub use signature::{
     decode_signature, generate_rsa_keypair, parse_private_key_pem, parse_public_key_pem,
-    public_key_fingerprint, sign_request, verify_request, AuthHeaders,
+    public_key_fingerprint, public_key_pem_from_private, sign_request, verify_request, AuthHeaders,
 };
