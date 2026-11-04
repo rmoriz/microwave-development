@@ -1,5 +1,8 @@
 use crate::{context::Context, CtlError};
-use microwave_store::StoreError;
+use microwave_crypto::public_key_pem_from_private;
+use microwave_store::{
+    StoreError, WEBUI_PRIVATE_KEY_NAME, WEBUI_PUBLIC_KEY_NAME, WEBUI_SECRET_GROUP,
+};
 
 /// Credentials that can be managed through the CLI. The names mirror the
 /// upstream `chef-server-ctl` groups plus the `object_store` group introduced
@@ -49,12 +52,50 @@ pub(crate) const KNOWN_CREDENTIALS: &[(&str, &[&str])] = &[
     ("mcp", &[]),
 ];
 
+/// Credentials accepted by the generic secret commands but excluded from
+/// `show-service-credentials` and `rotate-all`.
+pub(crate) const EXTRA_CREDENTIALS: &[(&str, &[&str])] = &[(
+    WEBUI_SECRET_GROUP,
+    &[WEBUI_PRIVATE_KEY_NAME, WEBUI_PUBLIC_KEY_NAME],
+)];
+
 /// Store a secret. The value is never echoed back to the terminal.
 pub fn set_secret(context: &Context, group: &str, name: &str, value: &str) -> Result<(), CtlError> {
     validate_credential(group, name)?;
+    if group == WEBUI_SECRET_GROUP {
+        return set_webui_secret(context, name, value);
+    }
     let store = context.open_metadata_store()?;
     store.run(store.store().set_secret(group, name, value))?;
     println!("Secret {group}.{name} updated.");
+    Ok(())
+}
+
+/// Store the WebUI private key and derive the public half from it.
+fn set_webui_secret(context: &Context, name: &str, value: &str) -> Result<(), CtlError> {
+    if name == WEBUI_PUBLIC_KEY_NAME {
+        return Err(CtlError::message(
+            "webui.public_key is derived from webui.private_key; set webui.private_key instead",
+        ));
+    }
+    let public_pem = public_key_pem_from_private(value).map_err(|error| {
+        CtlError::message(format!(
+            "webui.private_key is not a valid PEM private key: {error}"
+        ))
+    })?;
+    let store = context.open_metadata_store()?;
+    store.run(
+        store
+            .store()
+            .set_secret(WEBUI_SECRET_GROUP, WEBUI_PRIVATE_KEY_NAME, value),
+    )?;
+    store.run(
+        store
+            .store()
+            .set_secret(WEBUI_SECRET_GROUP, WEBUI_PUBLIC_KEY_NAME, &public_pem),
+    )?;
+    println!("Secret {WEBUI_SECRET_GROUP}.{WEBUI_PRIVATE_KEY_NAME} updated.");
+    println!("Secret {WEBUI_SECRET_GROUP}.{WEBUI_PUBLIC_KEY_NAME} updated.");
     Ok(())
 }
 
@@ -107,10 +148,12 @@ pub fn maintenance(context: &Context, action: crate::MaintenanceAction) -> Resul
 fn validate_credential(group: &str, name: &str) -> Result<(), CtlError> {
     let Some((_, names)) = KNOWN_CREDENTIALS
         .iter()
+        .chain(EXTRA_CREDENTIALS.iter())
         .find(|(known_group, _)| *known_group == group)
     else {
         let groups = KNOWN_CREDENTIALS
             .iter()
+            .chain(EXTRA_CREDENTIALS.iter())
             .map(|(group, _)| *group)
             .collect::<Vec<_>>()
             .join(", ");
@@ -165,6 +208,74 @@ mod tests {
         assert!(validate_credential("mcp", "Acme").is_err());
         assert!(validate_credential("mcp", "").is_err());
         assert!(validate_credential("mcp", "with/slash").is_err());
+    }
+
+    #[test]
+    fn webui_is_extra_and_not_in_the_bulk_credential_list() {
+        assert!(super::KNOWN_CREDENTIALS
+            .iter()
+            .all(|(group, _)| *group != microwave_store::WEBUI_SECRET_GROUP));
+        assert!(super::EXTRA_CREDENTIALS
+            .iter()
+            .any(|(group, _)| *group == microwave_store::WEBUI_SECRET_GROUP));
+    }
+
+    #[test]
+    fn setting_the_webui_private_key_derives_and_stores_the_public_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = context_with_store(dir.path());
+        let (private_pem, _) = microwave_crypto::generate_rsa_keypair().unwrap();
+
+        set_secret(&context, "webui", "private_key", &private_pem).unwrap();
+
+        let store = context.open_metadata_store().unwrap();
+        let stored_private = store
+            .run(store.store().get_secret("webui", "private_key"))
+            .unwrap()
+            .unwrap();
+        let stored_public = store
+            .run(store.store().get_secret("webui", "public_key"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored_private, private_pem);
+        assert_eq!(
+            stored_public,
+            microwave_crypto::public_key_pem_from_private(&private_pem).unwrap()
+        );
+        show_secret(&context, "webui", "private_key").unwrap();
+    }
+
+    #[test]
+    fn setting_the_webui_public_key_directly_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = context_with_store(dir.path());
+
+        let error = set_secret(&context, "webui", "public_key", "anything").unwrap_err();
+
+        assert!(error.to_string().contains("derived"), "{error}");
+        let store = context.open_metadata_store().unwrap();
+        assert!(store
+            .run(store.store().get_secret("webui", "public_key"))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn a_malformed_webui_private_key_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = context_with_store(dir.path());
+
+        assert!(set_secret(&context, "webui", "private_key", "not a key").is_err());
+
+        let store = context.open_metadata_store().unwrap();
+        assert!(store
+            .run(store.store().get_secret("webui", "private_key"))
+            .unwrap()
+            .is_none());
+        assert!(store
+            .run(store.store().get_secret("webui", "public_key"))
+            .unwrap()
+            .is_none());
     }
 
     /// `otel headers` stores the newline-separated header lines that

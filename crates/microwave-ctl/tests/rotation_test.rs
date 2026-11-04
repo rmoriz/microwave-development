@@ -41,6 +41,7 @@ fn ctl_command(kind: &str, service: Option<&str>) -> CtlCommand {
         },
         "rotate-all-credentials" => CtlCommand::RotateAllCredentials,
         "rotate-shared-secrets" => CtlCommand::RotateSharedSecrets,
+        "show-service-credentials" => CtlCommand::ShowServiceCredentials,
         other => panic!("unknown test command {other}"),
     }
 }
@@ -334,4 +335,87 @@ fn push_jobs_rotation_generates_a_matching_rsa_keypair() {
     assert!(!text.contains("BEGIN PUBLIC KEY"));
     assert!(!text.contains("pushy_priv_key"));
     assert!(!text.contains("pushy_pub_key"));
+}
+
+#[test]
+fn rotate_webui_rotates_both_halves_and_prints_names() {
+    let installation = Installation::new();
+    installation.seed(&[
+        ("webui", "private_key", "old-private"),
+        ("webui", "public_key", "old-public"),
+    ]);
+
+    let output = run_ctl(&installation.config, "rotate-credentials", Some("webui"));
+    assert_success(&output);
+    let text = stdout(&output);
+
+    let private_pem = installation.secret("webui", "private_key").unwrap();
+    let public_pem = installation.secret("webui", "public_key").unwrap();
+    let _public_key = parse_public_key_pem(&public_pem).expect("parse public key");
+    let request = CanonicalRequest {
+        method: "GET",
+        path: "/organizations/acme/nodes",
+        body: b"",
+        user_id: "webui",
+        timestamp: "2026-10-25T12:00:00Z",
+        api_version: Some("1"),
+        version: SignVersion::V1_3,
+    };
+    let headers = sign_request(&private_pem, &request).expect("sign with private key");
+    verify_request(&public_pem, &headers, &request).expect("verify with public key");
+
+    assert!(text.contains("Rotated webui.private_key"), "{text}");
+    assert!(text.contains("Rotated webui.public_key"), "{text}");
+    assert!(
+        !text.contains(&private_pem),
+        "stdout leaked the private key"
+    );
+    assert!(
+        !text.contains("BEGIN PRIVATE KEY"),
+        "stdout leaked PEM material"
+    );
+    assert!(text.contains("WARNING"), "{text}");
+}
+
+#[test]
+fn rotate_all_credentials_leaves_webui_alone() {
+    let installation = Installation::new();
+    installation.seed(&[
+        ("webui", "private_key", "keep-private"),
+        ("webui", "public_key", "keep-public"),
+    ]);
+
+    let output = run_ctl(&installation.config, "rotate-all-credentials", None);
+    assert_success(&output);
+
+    assert_eq!(
+        installation.secret("webui", "private_key").as_deref(),
+        Some("keep-private")
+    );
+    assert_eq!(
+        installation.secret("webui", "public_key").as_deref(),
+        Some("keep-public")
+    );
+}
+
+#[test]
+fn show_service_credentials_does_not_print_webui() {
+    let installation = Installation::new();
+    installation.seed(&[
+        ("object_store", "secret", "visible-object-store"),
+        ("webui", "private_key", "hidden-webui-private"),
+        ("webui", "public_key", "hidden-webui-public"),
+    ]);
+
+    let output = run_ctl(&installation.config, "show-service-credentials", None);
+    assert_success(&output);
+    let text = stdout(&output);
+
+    assert!(text.contains("visible-object-store"), "{text}");
+    assert!(
+        !text.contains("hidden-webui-private"),
+        "stdout leaked the webui key"
+    );
+    assert!(!text.contains("hidden-webui-public"), "{text}");
+    assert!(!text.contains("webui:"), "{text}");
 }
