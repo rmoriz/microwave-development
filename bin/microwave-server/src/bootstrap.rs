@@ -145,6 +145,18 @@ pub async fn ensure_webui_key(
     config: &Config,
     store: &dyn MetadataStore,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    ensure_webui_key_with(config, store).await
+}
+
+/// The secret-store seam of [`ensure_webui_key`].
+///
+/// Kept generic over the narrow trait so tests can inject a store whose
+/// `get_secret` lies once, deterministically exercising the losing-replica
+/// branch below.
+async fn ensure_webui_key_with<S: microwave_store::SecretsRepository + ?Sized>(
+    config: &Config,
+    store: &S,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     if !config.auth.webui_key {
         return Ok(None);
     }
@@ -534,13 +546,16 @@ mod superuser_tests {
 #[cfg(test)]
 mod webui_tests {
     use super::*;
+    use async_trait::async_trait;
     use microwave_crypto::{
         generate_rsa_keypair, public_key_fingerprint, public_key_pem_from_private,
     };
     use microwave_store::{
-        SqliteStore, WEBUI_PRIVATE_KEY_NAME, WEBUI_PUBLIC_KEY_NAME, WEBUI_SECRET_GROUP,
+        SecretsRepository, SqliteStore, StoreError, WEBUI_PRIVATE_KEY_NAME, WEBUI_PUBLIC_KEY_NAME,
+        WEBUI_SECRET_GROUP,
     };
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
     fn webui_config(data_dir: &Path) -> Config {
@@ -556,6 +571,41 @@ mod webui_tests {
 
     fn stored(store: &SqliteStore, name: &str) -> Option<String> {
         store.get_secret(WEBUI_SECRET_GROUP, name).unwrap()
+    }
+
+    /// A store whose first `get_secret` reports absence even though the key is
+    /// already stored, standing in for a replica that read before the winner
+    /// committed.
+    struct LosingReplica<'a> {
+        inner: &'a SqliteStore,
+        forced_absent_once: AtomicBool,
+    }
+
+    #[async_trait]
+    impl SecretsRepository for LosingReplica<'_> {
+        async fn get_secret(&self, group: &str, name: &str) -> Result<Option<String>, StoreError> {
+            if !self.forced_absent_once.swap(true, Ordering::SeqCst) {
+                return Ok(None);
+            }
+            self.inner.get_secret(group, name)
+        }
+
+        async fn set_secret(&self, group: &str, name: &str, value: &str) -> Result<(), StoreError> {
+            self.inner.set_secret(group, name, value)
+        }
+
+        async fn set_secret_if_absent(
+            &self,
+            group: &str,
+            name: &str,
+            value: &str,
+        ) -> Result<String, StoreError> {
+            self.inner.set_secret_if_absent(group, name, value)
+        }
+
+        async fn remove_secret(&self, group: &str, name: &str) -> Result<(), StoreError> {
+            self.inner.remove_secret(group, name)
+        }
     }
 
     #[tokio::test]
@@ -739,5 +789,75 @@ mod webui_tests {
             private_pem
         );
         assert_eq!(public_key_pem_from_private(&private_pem).unwrap(), left);
+    }
+
+    #[tokio::test]
+    async fn a_losing_race_uses_the_retained_key_not_its_own_candidate() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = webui_config(data_dir.path());
+        // The winner's key is already stored, but the racing replica reads an
+        // absent secret and would otherwise import the stale file below.
+        let (stored_private, _) = generate_rsa_keypair().unwrap();
+        store
+            .set_secret(WEBUI_SECRET_GROUP, WEBUI_PRIVATE_KEY_NAME, &stored_private)
+            .unwrap();
+        let (candidate_private, candidate_public) = generate_rsa_keypair().unwrap();
+        std::fs::write(data_dir.path().join("webui_priv.pem"), &candidate_private).unwrap();
+        let racing = LosingReplica {
+            inner: &store,
+            forced_absent_once: AtomicBool::new(false),
+        };
+
+        let public_pem = ensure_webui_key_with(&config, &racing)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_ne!(candidate_public, public_pem, "must not use its candidate");
+        assert_eq!(
+            public_key_fingerprint(&public_pem).unwrap(),
+            public_key_fingerprint(&public_key_pem_from_private(&stored_private).unwrap()).unwrap(),
+            "the public key must be derived from the retained private key"
+        );
+        assert_eq!(
+            stored(&store, WEBUI_PRIVATE_KEY_NAME).as_deref(),
+            Some(stored_private.as_str())
+        );
+        assert_eq!(
+            stored(&store, WEBUI_PUBLIC_KEY_NAME).as_deref(),
+            Some(public_pem.as_str())
+        );
+        assert_eq!(
+            std::fs::read_to_string(data_dir.path().join("webui_priv.pem")).unwrap(),
+            stored_private,
+            "the divergent file must be overwritten with the retained key"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_losing_race_validates_the_retained_key() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = webui_config(data_dir.path());
+        store
+            .set_secret(WEBUI_SECRET_GROUP, WEBUI_PRIVATE_KEY_NAME, "not a key")
+            .unwrap();
+        // A valid candidate would pass the first validation; the invalid stored
+        // key must still produce the actionable message.
+        let (candidate_private, _) = generate_rsa_keypair().unwrap();
+        std::fs::write(data_dir.path().join("webui_priv.pem"), &candidate_private).unwrap();
+        let racing = LosingReplica {
+            inner: &store,
+            forced_absent_once: AtomicBool::new(false),
+        };
+
+        let error = ensure_webui_key_with(&config, &racing)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("webui"), "{error}");
+        assert!(error.contains("rotate webui"), "{error}");
     }
 }

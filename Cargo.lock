@@ -1927,6 +1927,7 @@ name = "microwave-server"
 version = "0.2.0"
 dependencies = [
  "assert_cmd",
+ "async-trait",
  "axum",
  "axum-server",
  "base64 0.23.1",
