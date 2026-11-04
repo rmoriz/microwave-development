@@ -18,7 +18,7 @@ genau dieses Muster abbildet. Damit entfallen Cookbook-Abhängigkeiten wie
 
 - Eigene Site-Cookbook `e2e_timer` deklariert
   `chef_client_systemd_timer` in ihrem Default-Rezept.
-- `interval "10min"`, `splay "1min"`, `delay_after_boot "5min"`,
+- `interval "10min"`, `splay "1min"`, `delay_after_boot "10min"`,
   `chef_binary_path "/opt/cinc/bin/cinc-client"`,
   `config_directory "/etc/cinc"`.
 - `daemon_options` reichen `--json-attributes /etc/cinc/node.json`,
@@ -45,9 +45,9 @@ statt des Cookbooks. Der Timer ruft `cinc-client` direkt; die Registrierung
 passiert weiterhin einmalig über den Boot-Converge beziehungsweise bei neuer
 Seed-Generation über den Path-Trigger.
 
-`delay_after_boot "5min"` verschiebt den ersten Lauf, damit er nicht in den
+`delay_after_boot "10min"` verschiebt den ersten Lauf, damit er nicht in den
 noch laufenden initialen Converge fällt. Die Ressource setzt den Timer auf
-`OnBootSec=5min` + `OnUnitActiveSec=10min` + `RandomizedDelaySec=1min`.
+`OnBootSec=10min` + `OnUnitActiveSec=10min` + `RandomizedDelaySec=1min`.
 
 ## Änderungen
 
@@ -76,4 +76,4 @@ noch laufenden initialen Converge fällt. Die Ressource setzt den Timer auf
 - Ob `daemon_options` vor oder nach `-c` im generierten `ExecStart` stehen
   (die Ressource hängt `-c` hinten an; beides muss von Cinc akzeptiert werden).
 - Ob der erste Tick nach 5 Minuten in der Praxis kollisionsfrei ist oder
-  `delay_after_boot` auf 10 Minuten gehört.
+  `delay_after_boot` reicht.
