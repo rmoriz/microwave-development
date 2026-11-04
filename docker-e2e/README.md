@@ -74,12 +74,15 @@ docker compose down -v
 5. writes a `Berksfile` pinning the two Supermarket cookbooks and runs
    `berks vendor`;
 6. uploads every resolved cookbook with `knife cookbook upload --all`, and
-   uploads the local `e2e_nginx` and `e2e_postgresql` wrapper cookbooks;
-7. writes `role.rb` and runs `knife role from file`:
+   uploads the local `e2e_nginx`, `e2e_postgresql`, `e2e_timer`, and
+   `e2e_marker` wrapper cookbooks;
+7. writes `role.rb` and runs `knife role from file`; besides nginx and
+   PostgreSQL, the role installs the periodic `chef-client.timer` and the
+   `/etc/e2e-marker` file used to verify timer runs:
 
    ```ruby
    name "e2e_role"
-   run_list "recipe[e2e_nginx]", "recipe[e2e_postgresql]"
+   run_list "recipe[e2e_nginx]", "recipe[e2e_postgresql]", "recipe[e2e_timer]", "recipe[e2e_marker]"
    ```
 
 8. writes `/shared/client.rb` (`chef_server_url`, validator key) and
