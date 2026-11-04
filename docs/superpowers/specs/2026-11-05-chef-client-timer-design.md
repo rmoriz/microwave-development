@@ -8,12 +8,19 @@ gemacht werden (Rolle, Umgebung, Node-Attribute), ohne manuellen Eingriff
 ankommen. Der Timer ergänzt den bestehenden Boot-Converge und den
 Path-Trigger; er ersetzt keinen davon.
 
+Das Cookbook `chef-client` ist deprecated. Genutzt wird die in Cinc 19
+eingebaute Ressource `chef_client_systemd_timer` (in
+`chef-19.4.46/lib/chef/resource/chef_client_systemd_timer.rb` vorhanden), die
+genau dieses Muster abbildet. Damit entfallen Cookbook-Abhängigkeiten wie
+`cron` und `logrotate`.
+
 ## Goals
 
-- `chef-client::systemd_service` aus dem Cookbook `chef-client` 12.3.4 wird
-  Teil der Node-Rolle.
-- `node['chef_client']['systemd']['timer'] = true`, `interval = 600`,
-  `splay = 60`, `bin = /opt/cinc/bin/cinc-client`, `conf_dir = /etc/cinc`.
+- Eigene Site-Cookbook `e2e_timer` deklariert
+  `chef_client_systemd_timer` in ihrem Default-Rezept.
+- `interval "10min"`, `splay "1min"`, `delay_after_boot "5min"`,
+  `chef_binary_path "/opt/cinc/bin/cinc-client"`,
+  `config_directory "/etc/cinc"`.
 - `daemon_options` reichen `--json-attributes /etc/cinc/node.json`,
   `--log-level info`, `--no-color` an jeden Lauf weiter.
 - Der Timer startet erst, wenn der initiale Converge vorbei ist.
@@ -21,7 +28,7 @@ Path-Trigger; er ersetzt keinen davon.
 ## Non-Goals
 
 - Kein Ersatz des Boot-Converges oder des `run-id`-Path-Triggers.
-- Kein konfigurierbares Intervall über eine Host-Variable; 600 s ist fest.
+- Kein konfigurierbares Intervall über eine Host-Variable; 10 Minuten sind fest.
 - Keine Änderung an `auth`, Console oder MCP.
 
 ## Anti-Goals
@@ -33,27 +40,24 @@ Path-Trigger; er ersetzt keinen davon.
 
 ## Approach
 
-Gewählt: **A mit Splay**, wie besprochen. Der Timer ruft `cinc-client` direkt;
-die Registrierung passiert weiterhin einmalig über den Boot-Converge
-beziehungsweise bei neuer Seed-Generation über den Path-Trigger.
+Gewählt: **A mit Splay**, wie besprochen, aber mit der eingebauten Ressource
+statt des Cookbooks. Der Timer ruft `cinc-client` direkt; die Registrierung
+passiert weiterhin einmalig über den Boot-Converge beziehungsweise bei neuer
+Seed-Generation über den Path-Trigger.
 
-Der erste Tick wird per Drop-in von `OnBootSec=1min` auf `5min` verschoben.
-Das Cookbook erzeugt die Timer-Unit mit `OnBootSec=1min`; der erste
-Client-Lauf würde sonst in den noch laufenden initialen Converge fallen.
+`delay_after_boot "5min"` verschiebt den ersten Lauf, damit er nicht in den
+noch laufenden initialen Converge fällt. Die Ressource setzt den Timer auf
+`OnBootSec=5min` + `OnUnitActiveSec=10min` + `RandomizedDelaySec=1min`.
 
 ## Änderungen
 
-1. `docker-e2e/seed/seed.sh`: `chef-client` 12.3.4 in die Berksfile
-   aufnehmen; `chef-client::systemd_service` hinter die beiden Wrapper in den
-   `run_list` von `role.rb`; die Attribute aus Goals in `role.rb` setzen.
-2. `docker-e2e/client/Dockerfile`: Drop-in
-   `/etc/systemd/system/chef-client.timer.d/boot.conf` mit
-   `[Timer]` / `OnBootSec=5min` installieren.
+1. Neues Site-Cookbook `docker-e2e/seed/site-cookbooks/e2e_timer` mit
+   `metadata.rb` und `recipes/default.rb` (die Ressource aus Approach).
+2. `docker-e2e/seed/seed.sh`: `recipe[e2e_timer]` hinter die beiden Wrapper in
+   den `run_list` von `role.rb`. Der bestehende Upload-Loop lädt das neue
+   Cookbook mit.
 3. `docker-e2e/README.md`: Timer, Intervall, Splay und der Hinweis, dass
    Änderungen aus Console/MCP damit innerhalb von zehn Minuten ankommen.
-
-Die Berksfile-Auflösung zieht `cron` und `logrotate` als Cookbook-Abhängigkeiten
-mit; beide werden wie die anderen vendored Cookbooks hochgeladen.
 
 ## Verifikation
 
@@ -63,14 +67,13 @@ mit; beide werden wie die anderen vendored Cookbooks hochgeladen.
   kein Ressourcenkonflikt.
 - Eine Änderung über MCP (z. B. Node-Attribut) erscheint nach spätestens einem
   Intervall im nächsten Lauf.
-- Ein absichtlich fehlschlagender Lauf (ungültiger Run-List-Eintrag) blockiert
-  den Timer nicht; der nächste Tick läuft wieder.
+- Ein absichtlich fehlschlagender Lauf blockiert den Timer nicht; der nächste
+  Tick läuft wieder.
 - `docker compose config --quiet` und ein vollständiger Seed-Lauf bleiben grün.
 
 ## Offen für den Builder
 
-- Genaue `daemon_options`-Reihenfolge und ob `--no-color` zusätzlich zur
-  Journal-Ausgabe nötig ist.
-- Ob der Drop-in-Pfad im Image vor dem ersten Start korrekt greift oder ein
-  `systemctl daemon-reload` nötig ist (das Cookbook lädt nach dem Schreiben der
-  Unit ohnehin neu).
+- Ob `daemon_options` vor oder nach `-c` im generierten `ExecStart` stehen
+  (die Ressource hängt `-c` hinten an; beides muss von Cinc akzeptiert werden).
+- Ob der erste Tick nach 5 Minuten in der Praxis kollisionsfrei ist oder
+  `delay_after_boot` auf 10 Minuten gehört.
