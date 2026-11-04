@@ -25,7 +25,8 @@ RestartSec=5s
 TimeoutStopSec=30s
 
 # Creates /var/lib/microwave (0700) and /etc/microwave. The binary only writes
-# below the data directory.
+# below the data directory; a custom auth.webui_key_path outside it needs a
+# writable parent and its own ReadWritePaths= drop-in.
 StateDirectory=microwave
 StateDirectoryMode=0700
 ConfigurationDirectory=microwave

@@ -30,10 +30,12 @@ RestartSec=5s
 TimeoutStopSec=30s
 
 # systemd creates and owns these. Leave them to systemd; drop-ins should not
-# repoint them. The binary itself only writes below the data directory. systemd
-# would create the log file root-owned when it opens the append target, so the
-# package pre-creates it 0600 microwave:microwave (postinst) and keeps that
-# stable; rotation runs as root either way.
+# repoint them. The binary itself only writes below the data directory, except
+# a custom auth.webui_key_path, which needs a writable parent and a
+# ReadWritePaths= drop-in. systemd would create the log file root-owned when it
+# opens the append target, so the package pre-creates it 0600
+# microwave:microwave (postinst) and keeps that stable; rotation runs as root
+# either way.
 StateDirectory=microwave
 StateDirectoryMode=0700
 LogsDirectory=microwave

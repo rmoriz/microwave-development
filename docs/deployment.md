@@ -85,8 +85,10 @@ The data directory contains:
 | `private-chef-secrets.json` | Optional migrated upstream secret document, mode `0600`. |
 | `ssl/cert.pem`, `ssl/key.pem`, `ca/**` | Optional migrated TLS/CA material; keys are `0600`, certificates `0644`, copied to configured TLS paths or this data directory. |
 
-Nothing outside the data directory is written at runtime. The process does not
-need root, a home directory, or a local search service, Java, or Erlang stack.
+Nothing outside the data directory is written at runtime, except a custom
+`auth.webui_key_path` (which needs the writability and `ReadWritePaths=` notes
+above). The process does not need root, a home directory, or a local search
+service, Java, or Erlang stack.
 
 ## 2. Configuration
 
@@ -215,7 +217,7 @@ verifies them against the actor's keys.
 | `auth.password_reset_ttl_seconds`<br/>`MW_AUTH__PASSWORD_RESET_TTL_SECONDS` | Default `3600`. Password-reset token lifetime in seconds. Must be greater than zero and at most `604800` (seven days). The reset email derives its expiry text from this value. |
 | `stats.username`<br/>`stats.password`<br/>`MW_STATS__USERNAME`<br/>`MW_STATS__PASSWORD` | Unset by default. Optional Basic auth for `/_stats`; when set, `/_status` remains public. Set both. |
 | `auth.webui_key`<br/>`MW_AUTH__WEBUI_KEY` | Default `false`. When `true`, `X-Ops-Request-Source: web` impersonation trusts a dedicated WebUI keypair instead of the superuser key. The pair is stored in the metadata database and materialized as `webui_priv.pem` / `webui_pub.pem`. |
-| `auth.webui_key_path`<br/>`MW_AUTH__WEBUI_KEY_PATH` | Unset by default: `<paths.data_dir>/webui_priv.pem`. Absolute path for the materialized private key; the public key is written next to it as `webui_pub.pem`. Requires `auth.webui_key = true`. |
+| `auth.webui_key_path`<br/>`MW_AUTH__WEBUI_KEY_PATH` | Unset by default: `<paths.data_dir>/webui_priv.pem`. Absolute path for the materialized private key; the public key is written next to it as `webui_pub.pem`. Requires `auth.webui_key = true`. The parent directory must already exist and be writable by the service account; directories created for the pair are `0700`, but pre-existing ones are not tightened, and a path outside `paths.data_dir` also needs a `ReadWritePaths=` drop-in (or `chown microwave` for `/etc/microwave`). A data-directory subdirectory such as `/var/lib/microwave/webui/webui_priv.pem` avoids both. |
 
 #### Web UI key
 
@@ -229,18 +231,27 @@ naming `pivotal` still authenticates as the superuser itself because the
 actor-key check wins first. Every other request path is unchanged. Default
 `false` keeps today's behavior.
 
-Enable it, restart the server, then hand the private key to the console:
+Enable it on every replica together (a staggered rollout produces random `401`s
+on the replicas that have not been restarted), then hand the private key to the
+console:
 
 1. Set `[auth] webui_key = true`, optionally set `webui_key_path`, run
-   `check-config`, and restart the server.
+   `check-config`, and restart the server. A custom `webui_key_path` must point
+   at an existing, service-writable directory; outside the data directory that
+   means a `ReadWritePaths=` drop-in. `check-config` preflights the path (parent
+   exists, writable, basename), but it cannot validate a stored key; that
+   happens on every `serve` start, so `microwave-server serve --check` is the
+   full startup validation and also materializes the files.
 2. On startup the key comes from the first available source: the stored
    `secret:webui:private_key`, else the file at the configured path (default
    `<data_dir>/webui_priv.pem`), else a newly generated RSA-2048 pair. A
    migrated `webui_priv.pem` at the default path is therefore adopted without
    changing the console's credentials.
 3. Export the private key with
-   `microwave-ctl --config /etc/microwave/microwave.toml show-secret webui private_key`,
-   or copy the materialized file.
+   `microwave-ctl --config /etc/microwave/microwave.toml show-secret webui private_key`.
+   Prefer this over copying the materialized file: the file is a convenience
+   copy, and right after a rotation it still holds the old key until the next
+   restart.
 4. Point cinc-console at that key and remove `pivotal.pem` from its
    configuration.
 
@@ -263,8 +274,11 @@ Rotate with:
 microwave-ctl --config /etc/microwave/microwave.toml rotate-credentials webui
 ```
 
-Rotation changes only the store. Restart the server and update every console
-with the new private key; the old key stops working at the next start.
+Rotate while all replicas are stopped: a replica that read the old private key
+overwrites the new public half until its next restart. Rotation changes only
+the store. Restart the server and update every console with the new private
+key (`show-secret webui private_key`, not the stale materialized file); the old
+key stops working at the next start.
 `rotate-all-credentials` and `show-service-credentials` deliberately skip
 `webui`: bulk rotation is not a coordinated console update, and the bulk
 credential listing stays free of the private key. Use `rotate-credentials
@@ -277,7 +291,9 @@ file before restarting.
 
 The key can impersonate any existing user it names, so protect it like
 `pivotal.pem`: mode `0600`, out of shell history and logs, and inside every
-full backup (snapshots need `--include-secrets`).
+full backup (snapshots need `--include-secrets`). The name `webui` is used as
+the request's key name, so a user-owned key literally named `webui` cannot be
+renamed while impersonating.
 
 #### Organization policy
 
@@ -956,7 +972,8 @@ The unit:
 - creates `/var/lib/microwave` via `StateDirectory` and `/etc/microwave` via
   `ConfigurationDirectory`;
 - writes only to the data directory (`ProtectSystem=strict` +
-  `ReadWritePaths=/var/lib/microwave`);
+  `ReadWritePaths=/var/lib/microwave`), unless a custom `auth.webui_key_path`
+  gets its own `ReadWritePaths=` drop-in and a writable parent directory;
 - restarts on failure, not on clean exit;
 - has no reload signal — restart the unit to apply configuration changes.
 
