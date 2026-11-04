@@ -81,7 +81,7 @@ The data directory contains:
 | `pivotal.pem` | Superuser private key, created on first start, mode `0600`. |
 | `pivotal.password` | Generated superuser password, created on first start, mode `0600`. |
 | `objectstore.secret` | Local `/bookshelf` HMAC secret, created on first start, mode `0600`. |
-| `webui_priv.pem` / `webui_pub.pem` | Web-UI keypair, created on first start when `auth.webui_key = true`, or imported on any start while the store has no secret and a file exists at the configured path (default `<data_dir>`); `0600` / `0644`. The metadata database is the source of truth; these are convenience copies rewritten on every start. |
+| `webui_priv.pem` / `webui_pub.pem` | Web-UI keypair, created on first start when `auth.webui_key = true`, or, while the switch is on, imported on any start where the store has no secret and a file exists at the configured path (default `<data_dir>`); `0600` / `0644`. The metadata database is the source of truth; these are convenience copies rewritten on every start. |
 | `private-chef-secrets.json` | Optional migrated upstream secret document, mode `0600`. |
 | `ssl/cert.pem`, `ssl/key.pem`, `ca/**` | Optional migrated TLS/CA material; keys are `0600`, certificates `0644`, copied to configured TLS paths or this data directory. |
 
