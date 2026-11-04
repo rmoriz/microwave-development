@@ -853,6 +853,25 @@ Image properties:
   `microwave-server serve --config /etc/microwave/microwave.toml` still works
   as a `command:`/`docker run` override.
 
+Released images are published for `linux/amd64` and `linux/arm64`:
+
+```sh
+docker pull ghcr.io/rmoriz/microwave-server:0.3.0
+docker run -d --name microwave \
+  -p 8000:8000 \
+  -v microwave-data:/var/lib/microwave \
+  -v "$PWD/packaging/microwave.toml.example:/etc/microwave/microwave.toml:ro" \
+  ghcr.io/rmoriz/microwave-server:0.3.0
+```
+
+Stable releases also move the matching `X.Y` tag and `latest`; a pre-release
+keeps only its exact version. The package must be set to public once in the
+repository's package settings before anonymous pulls work. Its OCI source
+label points back to the repository.
+
+A local build still compiles the workspace inside Docker and is the
+alternative when you work from a checkout:
+
 ```sh
 docker build -t microwave-server:local .
 docker run -d --name microwave \
