@@ -139,8 +139,6 @@ fn create_private_dirs(path: &Path) -> Result<(), std::io::Error> {
 /// generated. Returns the public PEM when `auth.webui_key` is enabled.
 ///
 /// Only the public fingerprint is logged, never key material.
-// Wired into `main.rs` by the follow-up middleware task; tests exercise it today.
-#[allow(dead_code)]
 pub async fn ensure_webui_key(
     config: &Config,
     store: &dyn MetadataStore,
@@ -217,7 +215,6 @@ async fn ensure_webui_key_with<S: microwave_store::SecretsRepository + ?Sized>(
     Ok(Some(public_pem))
 }
 
-#[allow(dead_code)]
 fn webui_private_key_path(config: &Config) -> std::path::PathBuf {
     config
         .auth

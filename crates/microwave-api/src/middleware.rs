@@ -1032,17 +1032,37 @@ async fn authenticate_signed(
         }
     }
 
-    // Web requests may be signed with the webui key while naming the user to
-    // impersonate. In this harness the webui key is the superuser key.
+    // Web requests may be signed with the dedicated WebUI key while naming the
+    // user to impersonate. When `auth.webui_key` is enabled only that key is
+    // accepted; otherwise the platform superuser key keeps working.
     if authenticated.is_none()
         && headers
             .get("x-ops-request-source")
             .and_then(|value| value.to_str().ok())
             == Some("web")
     {
-        authenticated =
-            impersonated_principal(&state, org.as_ref(), &user_id, &auth_headers, &canonical)
-                .await?;
+        if state.config.auth.webui_key {
+            let Some(webui_key) = state.webui_key.as_deref() else {
+                tracing::error!(
+                    "auth.webui_key is enabled but no WebUI public key is loaded; refusing web impersonation"
+                );
+                return Err(authentication_failure(&user_id));
+            };
+            authenticated = impersonated_principal_with_key(
+                &state,
+                org.as_ref(),
+                &user_id,
+                &auth_headers,
+                &canonical,
+                webui_key,
+                "webui",
+            )
+            .await?;
+        } else {
+            authenticated =
+                impersonated_principal(&state, org.as_ref(), &user_id, &auth_headers, &canonical)
+                    .await?;
+        }
     }
 
     let (principal, key_name) = authenticated.ok_or_else(|| authentication_failure(&user_id))?;
@@ -1125,20 +1145,41 @@ async fn impersonated_principal(
         .find_actor_keys(&superuser.id, ActorType::User)
         .await
         .map_err(ApiError::from)?;
-    let mut verified_with = None;
     for key in keys {
         if key.expired {
             continue;
         }
-        if microwave_crypto::verify_request(&key.public_key, auth_headers, canonical).is_ok() {
-            verified_with = Some(key.key_name);
-            break;
+        let impersonated = impersonated_principal_with_key(
+            state,
+            org,
+            user_id,
+            auth_headers,
+            canonical,
+            &key.public_key,
+            &key.key_name,
+        )
+        .await?;
+        if impersonated.is_some() {
+            return Ok(impersonated);
         }
     }
-    let Some(key_name) = verified_with else {
-        return Ok(None);
-    };
+    Ok(None)
+}
 
+/// Verify `verification_key` and, on success, build the impersonated principal
+/// for `user_id`, reporting `key_name` as the authenticating key.
+async fn impersonated_principal_with_key(
+    state: &crate::AppState,
+    org: Option<&microwave_store::Org>,
+    user_id: &str,
+    auth_headers: &microwave_crypto::AuthHeaders,
+    canonical: &microwave_crypto::CanonicalRequest<'_>,
+    verification_key: &str,
+    key_name: &str,
+) -> Result<Option<(microwave_store::Principal, String)>, ApiError> {
+    if microwave_crypto::verify_request(verification_key, auth_headers, canonical).is_err() {
+        return Ok(None);
+    }
     let Some(user) = state
         .store
         .find_user(user_id)
@@ -1154,7 +1195,7 @@ async fn impersonated_principal(
         actor_type: ActorType::User,
         org_id: org.map(|org| org.id.clone()),
     };
-    Ok(Some((principal, key_name)))
+    Ok(Some((principal, key_name.to_string())))
 }
 
 fn parse_api_version(headers: &HeaderMap) -> Result<u8, String> {

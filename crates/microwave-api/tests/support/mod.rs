@@ -6,10 +6,10 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use microwave_api::{router, AppState};
 use microwave_config::Config;
-use microwave_crypto::{sign_request, CanonicalRequest, SignVersion};
+use microwave_crypto::{generate_rsa_keypair, sign_request, CanonicalRequest, SignVersion};
 use microwave_objectstore::{LocalObjectStore, ObjectStore};
 use microwave_store::{ActorType, Org, SqliteStore, User};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
 
 pub const PRIVATE_KEY: &str = include_str!("../../../microwave-crypto/tests/fixtures/test_key.pem");
@@ -75,6 +75,27 @@ fn build_state(mut config: Config, keygen_enabled: bool) -> AppState {
 
 pub fn app(state: AppState) -> axum::Router {
     router(state)
+}
+
+static WEBUI_KEYPAIR: OnceLock<(String, String)> = OnceLock::new();
+
+/// A keypair distinct from the shared test key, generated once per test binary.
+pub fn webui_keypair() -> &'static (String, String) {
+    WEBUI_KEYPAIR.get_or_init(|| generate_rsa_keypair().unwrap())
+}
+
+/// State with `auth.webui_key = true` and the matching public key loaded.
+pub fn state_with_webui_key() -> AppState {
+    let mut config = Config::default();
+    config.auth.webui_key = true;
+    state_with_config(config).with_webui_key(webui_keypair().1.clone())
+}
+
+/// State with `auth.webui_key = true` but no loaded public key.
+pub fn state_with_webui_key_missing() -> AppState {
+    let mut config = Config::default();
+    config.auth.webui_key = true;
+    state_with_config(config)
 }
 
 /// Add a user with the shared test key and a default profile derived from the

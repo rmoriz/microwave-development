@@ -47,6 +47,8 @@ pub struct AppState {
     pub(crate) depsolver: Arc<tokio::sync::Semaphore>,
     /// Outbound mail surface for notifications and password resets.
     pub mailer: Arc<dyn microwave_mail::Mailer>,
+    /// Public PEM of the dedicated WebUI key when `auth.webui_key` is enabled.
+    pub webui_key: Option<String>,
 }
 
 impl AppState {
@@ -105,6 +107,7 @@ impl AppState {
             compliance_client,
             depsolver,
             mailer,
+            webui_key: None,
         })
     }
 
@@ -164,6 +167,12 @@ impl AppState {
     #[doc(hidden)]
     pub fn with_mailer(mut self, mailer: Arc<dyn microwave_mail::Mailer>) -> Self {
         self.mailer = mailer;
+        self
+    }
+
+    /// Load the dedicated WebUI public key used for web impersonation.
+    pub fn with_webui_key(mut self, public_key_pem: String) -> Self {
+        self.webui_key = Some(public_key_pem);
         self
     }
 

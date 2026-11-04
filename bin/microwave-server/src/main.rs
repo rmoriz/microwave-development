@@ -144,6 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 };
             bootstrap::ensure_superuser(store.as_ref(), &config).await?;
+            let webui_key = bootstrap::ensure_webui_key(&config, store.as_ref()).await?;
             // Configuration and environment win over the stored header
             // secret; loading it here fails startup when the stored value is
             // malformed instead of failing the first export.
@@ -227,6 +228,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     return Err(error.into());
                 }
+            };
+            let state = match webui_key {
+                Some(public_key_pem) => state.with_webui_key(public_key_pem),
+                None => state,
             };
             tracing::info!(%bind, %local_addr, scheme, "microwave-server listening");
             let gauge_refresh = otel

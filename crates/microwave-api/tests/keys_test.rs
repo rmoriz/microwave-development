@@ -2,6 +2,8 @@ mod support;
 
 use axum::http::StatusCode;
 use axum::Router;
+use microwave_api::AppState;
+use microwave_crypto::hash_password;
 use microwave_crypto::SignVersion;
 use serde_json::Value;
 use tower::ServiceExt;
@@ -469,6 +471,125 @@ async fn webui_can_impersonate_an_org_member() {
     );
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+async fn app_with_bob(state: AppState) -> Router {
+    let app = support::app(state.clone());
+    let org = support::add_org(&state, "acme").await;
+    let bob = state
+        .sqlite()
+        .create_user("bob", "bob@example.com", "bcrypt", "h", "s", false)
+        .unwrap();
+    support::associate(&state, &org, &bob);
+    app
+}
+
+#[tokio::test]
+async fn webui_key_impersonates_an_org_member_when_enabled() {
+    let app = app_with_bob(support::state_with_webui_key()).await;
+
+    let mut request = support::signed_request_with_key(
+        "GET",
+        "/organizations/acme/users/bob",
+        b"",
+        SignVersion::V1_3,
+        "bob",
+        &support::webui_keypair().0,
+    );
+    request
+        .headers_mut()
+        .insert("x-ops-request-source", "web".parse().unwrap());
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn superuser_key_cannot_impersonate_when_webui_key_is_enabled() {
+    let app = app_with_bob(support::state_with_webui_key()).await;
+
+    let mut request = support::signed_request(
+        "GET",
+        "/organizations/acme/users/bob",
+        b"",
+        SignVersion::V1_3,
+        "bob",
+    );
+    request
+        .headers_mut()
+        .insert("x-ops-request-source", "web".parse().unwrap());
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn webui_key_without_the_web_header_is_rejected() {
+    let app = app_with_bob(support::state_with_webui_key()).await;
+
+    let request = support::signed_request_with_key(
+        "GET",
+        "/organizations/acme/users/bob",
+        b"",
+        SignVersion::V1_3,
+        "bob",
+        &support::webui_keypair().0,
+    );
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn enabled_webui_key_without_a_loaded_key_fails_closed() {
+    let app = app_with_bob(support::state_with_webui_key_missing()).await;
+
+    let mut request = support::signed_request(
+        "GET",
+        "/organizations/acme/users/bob",
+        b"",
+        SignVersion::V1_3,
+        "bob",
+    );
+    request
+        .headers_mut()
+        .insert("x-ops-request-source", "web".parse().unwrap());
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn webui_key_can_authenticate_a_user_login() {
+    let state = support::state_with_webui_key();
+    let hash = hash_password("foobar").unwrap();
+    state
+        .sqlite()
+        .create_user(
+            "alice",
+            "alice@example.com",
+            &hash.hash_type,
+            &hash.hash,
+            &hash.salt,
+            false,
+        )
+        .unwrap();
+    let app = support::app(state);
+
+    let mut request = support::signed_request_with_key(
+        "POST",
+        "/authenticate_user",
+        br#"{"username":"alice","password":"foobar"}"#,
+        SignVersion::V1_3,
+        "pivotal",
+        &support::webui_keypair().0,
+    );
+    request
+        .headers_mut()
+        .insert("x-ops-request-source", "web".parse().unwrap());
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]
