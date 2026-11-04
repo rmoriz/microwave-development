@@ -2,7 +2,7 @@
 #
 # Multi-stage image for Microwave Server.
 #
-# Builds the three deployable binaries from the Cargo workspace:
+# The three deployable binaries:
 #   * microwave-server    — the HTTP daemon
 #   * microwave-ctl       — the operational CLI
 #   * microwave-migrate   — snapshot export/import
@@ -10,9 +10,17 @@
 # chef-server-ctl is not built separately; the runtime stage symlinks it to
 # microwave-ctl.
 #
-# Build:
+# Targets:
+#   * local   (default) builds the workspace with Cargo.
+#   * release copies prebuilt binaries from the build context.
+#
+# Build locally:
 #   docker build -t microwave-server:local .
 #   docker build --build-arg RUST_VERSION=1.94 -t microwave-server:1.94 .
+#
+# Build the release target from a context with the three binaries and
+# packaging/microwave.toml.example:
+#   docker build --target release -t microwave-server:release .
 #
 # The runtime image runs as an unprivileged user and keeps all mutable state
 # under /var/lib/microwave. The configuration is read from
@@ -51,10 +59,18 @@ FROM debian:trixie-slim AS runtime
 
 ARG UID=10001
 ARG GID=10001
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG CREATED=1970-01-01T00:00:00Z
+ARG SOURCE=""
 
 LABEL org.opencontainers.image.title="microwave-server" \
       org.opencontainers.image.description="Rust Chef Infra Server API-compatible server" \
-      org.opencontainers.image.licenses="AGPL-3.0-only"
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.source="${SOURCE}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.created="${CREATED}"
 
 # ca-certificates: OpenSearch/S3 over TLS.
 # curl: container healthcheck.
@@ -70,16 +86,13 @@ RUN groupadd --system --gid "${GID}" microwave \
     && install -d -m 0750 -o microwave -g microwave /var/lib/microwave \
     && install -d -m 0755 -o root -g root /etc/microwave
 
-COPY --from=builder /out/microwave-server /usr/local/bin/microwave-server
-COPY --from=builder /out/microwave-ctl /usr/local/bin/microwave-ctl
-# Same executable as microwave-ctl; the symlink keeps the alias for runbooks
-# without shipping the CLI twice.
-RUN ln -s microwave-ctl /usr/local/bin/chef-server-ctl
-COPY --from=builder /out/microwave-migrate /usr/local/bin/microwave-migrate
-
 # Baked-in example configuration. Mount a real file over this path in
 # production; it is intentionally free of secrets.
 COPY --chown=root:microwave --chmod=0640 packaging/microwave.toml.example /etc/microwave/microwave.toml
+
+# Same executable as microwave-ctl; the symlink keeps the alias for runbooks
+# without shipping the CLI twice. Both targets provide microwave-ctl.
+RUN ln -s microwave-ctl /usr/local/bin/chef-server-ctl
 
 ENV MW_CONFIG=/etc/microwave/microwave.toml \
     RUST_LOG=info
@@ -117,3 +130,17 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 # `microwave-server serve --config /etc/microwave/microwave.toml` still works
 # and can be used as a `command:`/`docker run` override.
 CMD ["microwave-ctl", "service", "start", "--foreground", "--config", "/etc/microwave/microwave.toml"]
+
+# Release target: the context supplies the three binaries already built for
+# the target architecture. Nothing is compiled here.
+FROM runtime AS release
+COPY --chmod=0755 microwave-server /usr/local/bin/microwave-server
+COPY --chmod=0755 microwave-ctl /usr/local/bin/microwave-ctl
+COPY --chmod=0755 microwave-migrate /usr/local/bin/microwave-migrate
+
+# Local target: keeps the source build and stays the default stage so a plain
+# `docker build .` behaves as before.
+FROM runtime AS local
+COPY --from=builder /out/microwave-server /usr/local/bin/microwave-server
+COPY --from=builder /out/microwave-ctl /usr/local/bin/microwave-ctl
+COPY --from=builder /out/microwave-migrate /usr/local/bin/microwave-migrate
