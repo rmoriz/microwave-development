@@ -140,6 +140,18 @@ pub fn check_config(context: &Context) -> Result<(), CtlError> {
         ));
     }
 
+    if config.auth.webui_key {
+        match config.auth.webui_key_path.as_deref() {
+            Some(path) => match validate_webui_key_path(path) {
+                Ok(()) => checks.push(format!("auth.webui_key_path {}", path.display())),
+                Err(reason) => {
+                    problems.push(format!("auth.webui_key_path {}: {reason}", path.display()));
+                }
+            },
+            None => checks.push("auth.webui_key_path default".to_string()),
+        }
+    }
+
     match config.keygen.validate() {
         Ok(()) => checks.push(format!(
             "keygen size {} workers {} warm_up {}",
@@ -432,6 +444,93 @@ fn redacted_url(url: &Url) -> String {
     }
 }
 
+/// Validate a custom WebUI key path the way startup materialization needs it:
+/// the basename must be usable, the path must not already be a directory, and
+/// the nearest existing ancestor directory must accept a write from the
+/// service account (startup creates missing directories itself). A
+/// `ProtectSystem=strict` unit makes an outside-data-dir path read-only unless
+/// the operator adds a drop-in. The write probe runs as the invoking user,
+/// which under `ExecStartPre` is the service account.
+fn validate_webui_key_path(path: &Path) -> Result<(), String> {
+    if path.is_dir() {
+        return Err(
+            "is an existing directory; name the key file instead, such as webui_priv.pem"
+                .to_string(),
+        );
+    }
+    let name = path
+        .file_name()
+        .ok_or_else(|| "must be a file path, not a directory".to_string())?;
+    if name == "webui_pub.pem" {
+        return Err(
+            "the basename is overwritten by the derived public key; use webui_priv.pem or another name"
+                .to_string(),
+        );
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| "must be an absolute path".to_string())?;
+    // Startup creates missing directories, so only the nearest existing
+    // ancestor has to exist and be writable.
+    let mut probe_dir = parent;
+    loop {
+        match std::fs::metadata(probe_dir) {
+            Ok(metadata) if metadata.is_dir() => break,
+            Ok(_) => return Err(format!("{} is not a directory", probe_dir.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                probe_dir = probe_dir
+                    .parent()
+                    .filter(|ancestor| !ancestor.as_os_str().is_empty())
+                    .ok_or_else(|| {
+                        format!(
+                            "cannot find an existing ancestor directory of {}",
+                            parent.display()
+                        )
+                    })?;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect parent directory {}: {error}",
+                    probe_dir.display()
+                ))
+            }
+        }
+    }
+    // `create_new` keeps an existing file intact, so neither a stale probe nor a
+    // configured key that happens to use the probe name is truncated. Each
+    // collision moves on to the next candidate name.
+    let mut failure = None;
+    for attempt in 0..16u32 {
+        let probe = probe_dir.join(format!(".webui-key-probe-{}-{attempt}", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+        {
+            Ok(file) => {
+                drop(file);
+                let _ = std::fs::remove_file(&probe);
+                return Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => failure = Some(error),
+        }
+        break;
+    }
+    match failure {
+        Some(error) => Err(format!(
+            "directory {} is not writable by the service account ({error}); a path outside \
+             paths.data_dir also needs a `ReadWritePaths=` systemd drop-in",
+            probe_dir.display()
+        )),
+        None => Err(format!(
+            "could not find a free probe file name in {}",
+            probe_dir.display()
+        )),
+    }
+}
+
 fn validate_required_recipe_path(path: &Path) -> Result<(), String> {
     let metadata =
         std::fs::symlink_metadata(path).map_err(|error| format!("cannot read file: {error}"))?;
@@ -559,6 +658,65 @@ mod tests {
         let error = check_config(&context_with_bind("no-such-host.invalid")).unwrap_err();
         assert!(
             error.to_string().contains("server.bind"),
+            "unexpected error: {error}"
+        );
+    }
+
+    fn context_with_webui_key_path(path: PathBuf) -> Context {
+        let mut context = context_with_pool_size(10);
+        context.config.auth.webui_key = true;
+        context.config.auth.webui_key_path = Some(path);
+        context
+    }
+
+    #[test]
+    fn check_config_accepts_a_writable_webui_key_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = context_with_webui_key_path(dir.path().join("webui_priv.pem"));
+        assert!(check_config(&context).is_ok());
+    }
+
+    #[test]
+    fn check_config_accepts_a_missing_webui_key_parent_that_startup_creates() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = context_with_webui_key_path(dir.path().join("nested/keys/webui_priv.pem"));
+        assert!(check_config(&context).is_ok());
+    }
+
+    #[test]
+    fn check_config_rejects_a_webui_key_path_that_is_an_existing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = dir.path().join("keys");
+        std::fs::create_dir(&keys).unwrap();
+        let error = check_config(&context_with_webui_key_path(keys)).unwrap_err();
+        assert!(
+            error.to_string().contains("existing directory"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn check_config_rejects_a_webui_key_path_whose_parent_is_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-a-dir");
+        std::fs::write(&file, b"x").unwrap();
+        let error =
+            check_config(&context_with_webui_key_path(file.join("webui_priv.pem"))).unwrap_err();
+        assert!(
+            error.to_string().contains("not a directory"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn check_config_rejects_webui_pub_pem_as_the_private_key_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = check_config(&context_with_webui_key_path(
+            dir.path().join("webui_pub.pem"),
+        ))
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("public key"),
             "unexpected error: {error}"
         );
     }

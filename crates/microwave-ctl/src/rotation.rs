@@ -6,10 +6,11 @@
 
 use crate::{
     context::{Context, StoreHandle},
-    secrets::KNOWN_CREDENTIALS,
+    secrets::{set_webui_pair, EXTRA_CREDENTIALS, KNOWN_CREDENTIALS},
     CtlError,
 };
 use microwave_crypto::generate_rsa_keypair;
+use microwave_store::{WEBUI_PRIVATE_KEY_NAME, WEBUI_PUBLIC_KEY_NAME, WEBUI_SECRET_GROUP};
 use uuid::Uuid;
 
 /// Private half of the `push-jobs-server` keypair.
@@ -25,7 +26,14 @@ pub fn rotate_credentials(context: &Context, service: &str) -> Result<(), CtlErr
     // rewrite credentials.
     let names = group_credentials(service)?;
     let store = context.open_metadata_store()?;
-    rotate_group(&store, service, names)
+    rotate_group(&store, service, names)?;
+    if service == WEBUI_SECRET_GROUP {
+        println!(
+            "WARNING: the WebUI keypair has changed. Restart the server and update every WebUI\n\
+             (for example cinc-console) with the new private key before the old one stops working."
+        );
+    }
+    Ok(())
 }
 
 /// Rotate every known service credential.
@@ -67,10 +75,12 @@ pub fn rotate_shared_secrets(context: &Context) -> Result<(), CtlError> {
 
 /// Rotate the credentials in one group.
 ///
-/// The `push-jobs-server` pile is special: the private and public key are a
-/// pair, so rotating either name regenerates and stores both at once.
+/// Keypairs are special: rotating either half regenerates and stores both at
+/// once. The `webui` pair goes through [`set_webui_pair`], which restores the
+/// old private half if the public write fails.
 fn rotate_group(store: &StoreHandle, group: &str, names: &[&str]) -> Result<(), CtlError> {
     let mut rotated_pushy_pair = false;
+    let mut rotated_webui_pair = false;
 
     for &name in names {
         if group == "push-jobs-server" && (name == PUSHY_PRIVATE_KEY || name == PUSHY_PUBLIC_KEY) {
@@ -85,6 +95,25 @@ fn rotate_group(store: &StoreHandle, group: &str, names: &[&str]) -> Result<(), 
             continue;
         }
 
+        if group == WEBUI_SECRET_GROUP
+            && (name == WEBUI_PRIVATE_KEY_NAME || name == WEBUI_PUBLIC_KEY_NAME)
+        {
+            if !rotated_webui_pair {
+                let (private_pem, public_pem) = generate_rsa_keypair()?;
+                store
+                    .run(set_webui_pair(store.store(), &private_pem, &public_pem))
+                    .map_err(|error| {
+                        CtlError::message(format!(
+                            "failed to rotate {group}.{WEBUI_PRIVATE_KEY_NAME}: {error}"
+                        ))
+                    })?;
+                println!("Rotated {group}.{WEBUI_PRIVATE_KEY_NAME}");
+                println!("Rotated {group}.{WEBUI_PUBLIC_KEY_NAME}");
+                rotated_webui_pair = true;
+            }
+            continue;
+        }
+
         store_rotated_secret(store, group, name, &generated_value(group, name))?;
     }
 
@@ -95,11 +124,13 @@ fn rotate_group(store: &StoreHandle, group: &str, names: &[&str]) -> Result<(), 
 fn group_credentials(group: &str) -> Result<&'static [&'static str], CtlError> {
     KNOWN_CREDENTIALS
         .iter()
+        .chain(EXTRA_CREDENTIALS.iter())
         .find(|(known_group, _)| *known_group == group)
         .map(|(_, names)| *names)
         .ok_or_else(|| {
             let groups = KNOWN_CREDENTIALS
                 .iter()
+                .chain(EXTRA_CREDENTIALS.iter())
                 .map(|(known_group, _)| *known_group)
                 .collect::<Vec<_>>()
                 .join(", ");

@@ -160,6 +160,14 @@ pub fn parse_private_key_pem(pem: &str) -> Result<RsaPrivateKey, CryptoError> {
     Ok(key)
 }
 
+/// Derive the SPKI public PEM that matches a PKCS#1 or PKCS#8 private PEM.
+pub fn public_key_pem_from_private(private_pem: &str) -> Result<String, CryptoError> {
+    parse_private_key_pem(private_pem)?
+        .to_public_key()
+        .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+        .map_err(|error| CryptoError::InvalidKey(error.to_string()))
+}
+
 fn raw_sign(private_key: &RsaPrivateKey, message: &[u8]) -> Result<Vec<u8>, CryptoError> {
     if private_key.n().bits() < 2048 {
         return Err(CryptoError::InvalidKey(
@@ -219,4 +227,33 @@ fn left_pad(bytes: Vec<u8>, size: usize) -> Result<Vec<u8>, CryptoError> {
     let mut padded = vec![0u8; size];
     padded[size - bytes.len()..].copy_from_slice(&bytes);
     Ok(padded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derives_a_public_pem_from_a_private_pem() {
+        let (private_pem, public_pem) = generate_rsa_keypair().unwrap();
+        let derived = public_key_pem_from_private(&private_pem).unwrap();
+
+        assert!(derived.contains("BEGIN PUBLIC KEY"));
+        assert_eq!(
+            public_key_fingerprint(&derived).unwrap(),
+            public_key_fingerprint(&public_pem).unwrap()
+        );
+    }
+
+    #[test]
+    fn derives_a_public_pem_from_a_pkcs1_private_pem() {
+        use rsa::pkcs1::EncodeRsaPrivateKey;
+
+        let private =
+            parse_private_key_pem(include_str!("../tests/fixtures/test_key.pem")).unwrap();
+        let pkcs1 = private.to_pkcs1_pem(rsa::pkcs8::LineEnding::LF).unwrap();
+
+        let derived = public_key_pem_from_private(&pkcs1).unwrap();
+        assert!(derived.contains("BEGIN PUBLIC KEY"));
+    }
 }

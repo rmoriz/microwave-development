@@ -17,6 +17,8 @@ node actually needs:
    `docker exec`.
 4. **workstation** — Cinc Workstation and OpenCode, for driving the stack by
    hand. Not published; reach it with `docker compose exec` or `./shell`.
+5. **cinc-console** — the official web UI, logged in with the seeded demo user.
+   Published on `127.0.0.1:18081` only.
 
 Nothing runs on the host except `docker compose`.
 
@@ -64,21 +66,23 @@ docker compose down -v
 2. creates the organization with `knife org create e2e` — or reuses it if it
    already exists — and keeps the generated `e2e-validator` key on the shared
    volume;
-3. deletes the `node-debian`, `node-ubuntu`, `node-fedora`, and `node-amazon`
+3. removes and recreates the demo console user, adds it to the organization and
+   `admins`;
+4. deletes the `node-debian`, `node-ubuntu`, `node-fedora`, and `node-amazon`
    node and client objects with the `pivotal` superuser key so repeated runs
    can register again, and writes a new `run-id` generation marker;
-4. writes a `Berksfile` pinning the two Supermarket cookbooks and runs
+5. writes a `Berksfile` pinning the two Supermarket cookbooks and runs
    `berks vendor`;
-5. uploads every resolved cookbook with `knife cookbook upload --all`, and
+6. uploads every resolved cookbook with `knife cookbook upload --all`, and
    uploads the local `e2e_nginx` and `e2e_postgresql` wrapper cookbooks;
-6. writes `role.rb` and runs `knife role from file`:
+7. writes `role.rb` and runs `knife role from file`:
 
    ```ruby
    name "e2e_role"
    run_list "recipe[e2e_nginx]", "recipe[e2e_postgresql]"
    ```
 
-7. writes `/shared/client.rb` (`chef_server_url`, validator key) and
+8. writes `/shared/client.rb` (`chef_server_url`, validator key) and
    `/shared/node.json` (`"run_list": ["role[e2e_role]"]`).
 
 Each node runs `cinc-e2e-converge.service` on boot. The script behind it copies
@@ -165,6 +169,42 @@ fixtures, not production credentials, and the MCP write tools (`delete_node`,
 use a different token, change it in `docker-compose.yml` (or the environment)
 and in `microwave/microwave.toml` under `[mcp.organizations.e2e]`.
 
+## Console
+
+`cinc-console` is the official Cinc Console web UI at
+<http://127.0.0.1:18081>. The URLs below use that default; if you set
+`MW_CONSOLE_PORT`, substitute the new port. The seed creates the demo login
+`e2e-console` by default, with the password `e2e-console-password`; both are
+fixtures, not production credentials.
+
+The root URL answers `307` to `/login` while no session exists. After logging
+in, the organization pages live under `/orgs/<org>`, for example `/orgs/e2e`
+or `/orgs/e2e/nodes`. They are **not** under `/organizations/<org>`; that is
+the API prefix the console builds internally from `CINC_SERVER_URL`.
+
+The console signs its impersonation with the WebUI keypair (the private half
+mounted read-only from the `console-key` volume at
+`/key/webui_priv.pem`), not with `pivotal.pem`. It never mounts the server's
+data volume.
+
+The service runs as uid 1000 on a read-only root filesystem with all
+capabilities dropped, and publishes only on `127.0.0.1`. Its health endpoint
+is `http://127.0.0.1:<MW_CONSOLE_PORT>/api/healthz`. Like the other e2e
+services it has no `restart:` policy, so a crash stays down;
+`docker compose up -d cinc-console` brings it back.
+
+Overrides: `MW_CONSOLE_PORT` moves the host port; `MW_CONSOLE_USER`,
+`MW_CONSOLE_PASSWORD`, and `MW_CONSOLE_EMAIL` change the seeded login, but only
+on the next seed run (`docker compose up -d seed`, or a full `up`); changing
+them on a running stack alone changes nothing. The email is derived from the
+user unless `MW_CONSOLE_EMAIL` is set. A seed run also writes a new `run-id`,
+so the nodes re-register and re-converge.
+`MW_CONSOLE_SESSION_SECRET` changes the session signing secret; the console
+rejects anything shorter than 32 characters. The shipped default is a fixture,
+just like the login; override it with at least 32 characters for anything but
+local use. Keep one fixed value if sessions should survive a restart.
+`CINC_CONSOLE_IMAGE` changes the image.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -172,6 +212,13 @@ and in `microwave/microwave.toml` under `[mcp.organizations.e2e]`.
 | `MW_E2E_PORT` | `18080` | Host port for the microwave API |
 | `MW_MCP_TOKEN` | `e2e-mcp-token` | Bearer token for the MCP endpoint |
 | `MW_WORKSTATION_IMAGE` | `microwave-workstation:e2e` | Workstation image tag |
+| `MW_CONSOLE_PORT` | `18081` | Loopback host port for the console |
+| `MW_CONSOLE_USER` | `e2e-console` | Demo console user created by the seed |
+| `MW_CONSOLE_PASSWORD` | `e2e-console-password` | Password for the demo console user |
+| `MW_CONSOLE_EMAIL` | `<MW_CONSOLE_USER>@example.com` | Email for the demo console user |
+| `MW_CONSOLE_SESSION_SECRET` | `e2e-console-session-secret-32-chars-min` | Console session signing secret |
+| `CINC_CONSOLE_IMAGE` | `ghcr.io/cinc-project/cinc-console:0.9.0` | Console image |
+| `ALPINE_IMAGE` | `alpine:3.22` | Base image for the key handoff service |
 | `MW_ORG` | `e2e` | Organization name |
 | `ROLE_NAME` | `e2e_role` | Role created by the seed |
 | `NGINX_COOKBOOK` / `NGINX_VERSION` | `nginx` / `12.3.4` | Supermarket cookbook |
@@ -237,6 +284,17 @@ and in `microwave/microwave.toml` under `[mcp.organizations.e2e]`.
   the Compose network carry that `Host` header. `data_collector.store = "local"`
   keeps run reports so the MCP run tools return data. See "Workstation" for the
   client side.
+- **Console key rotation.** `rotate-credentials webui` changes the stored
+  keypair, and a server restart materializes the new key. The console then
+  keeps the old copy in the `console-key` volume until
+  `docker compose up -d console-key` re-runs that service, and it reads the key
+  only at boot, so restart `cinc-console` afterwards. Existing console sessions
+  keep working, but every server call fails with `401` while the console holds
+  the old key. A broken or unreadable key does not show in `/api/healthz`
+  (still `200`); logins fail with `500`; restore the file and restart
+  `cinc-console`. A **full** `docker compose up -d` also works, but it re-runs
+  the seed, writes a new `run-id`, and makes every node re-register and
+  re-converge, so it is the heavier option, not the default recovery.
 - **Repeated runs.** A validator may create clients but not update them.
   `chef-client` turns the resulting `409 Client already exists` into a `PUT`,
   which the validator is not allowed to do, so a node whose previous converge

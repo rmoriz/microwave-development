@@ -24,6 +24,12 @@ pub const BOOKSHELF_SECRET_ACCESS_KEY: &str = "secret_access_key";
 pub const OTEL_SECRET_GROUP: &str = "otel";
 /// Name used for the OTLP header secret.
 pub const OTEL_SECRET_NAME: &str = "headers";
+/// Group used for the optional dedicated WebUI keypair.
+pub const WEBUI_SECRET_GROUP: &str = "webui";
+/// Private half of the optional dedicated WebUI keypair.
+pub const WEBUI_PRIVATE_KEY_NAME: &str = "private_key";
+/// Public half of the optional dedicated WebUI keypair.
+pub const WEBUI_PUBLIC_KEY_NAME: &str = "public_key";
 
 /// Return the raw `kvpair` key for a secret.
 pub fn secret_kv_key(group: &str, name: &str) -> String {
