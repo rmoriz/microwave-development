@@ -247,9 +247,9 @@ fn read_error(path: &Path, error: &dyn std::fmt::Display) -> String {
 /// systemd remediation.
 fn write_error(path: &Path, error: &dyn std::fmt::Display) -> String {
     format!(
-        "cannot write webui key file {}: {error}; its parent directory must be writable by the \
-         service account and a path outside paths.data_dir needs a systemd `ReadWritePaths=` \
-         drop-in (or use a writable subdirectory)",
+        "cannot write webui key file {}: {error}; the nearest existing directory must be \
+         writable by the service account and a path outside paths.data_dir needs a systemd \
+         `ReadWritePaths=` drop-in (or use a writable subdirectory)",
         path.display()
     )
 }

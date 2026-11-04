@@ -497,29 +497,35 @@ fn validate_webui_key_path(path: &Path) -> Result<(), String> {
             }
         }
     }
-    let probe = probe_dir.join(format!(".webui-key-probe-{}", std::process::id()));
-    let open_probe = || {
-        std::fs::OpenOptions::new()
+    // `create_new` keeps an existing file intact, so neither a stale probe nor a
+    // configured key that happens to use the probe name is truncated. Each
+    // collision moves on to the next candidate name.
+    let mut failure = None;
+    for attempt in 0..16u32 {
+        let probe = probe_dir.join(format!(".webui-key-probe-{}-{attempt}", std::process::id()));
+        match std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .open(&probe)
-    };
-    let mut probe_result = open_probe();
-    // A stale probe file left by another user is still removable when the
-    // directory itself is writable.
-    if probe_result.is_err() && probe.exists() && std::fs::remove_file(&probe).is_ok() {
-        probe_result = open_probe();
-    }
-    match probe_result {
-        Ok(file) => {
-            drop(file);
-            let _ = std::fs::remove_file(&probe);
-            Ok(())
+        {
+            Ok(file) => {
+                drop(file);
+                let _ = std::fs::remove_file(&probe);
+                return Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => failure = Some(error),
         }
-        Err(error) => Err(format!(
+        break;
+    }
+    match failure {
+        Some(error) => Err(format!(
             "directory {} is not writable by the service account ({error}); a path outside \
              paths.data_dir also needs a `ReadWritePaths=` systemd drop-in",
+            probe_dir.display()
+        )),
+        None => Err(format!(
+            "could not find a free probe file name in {}",
             probe_dir.display()
         )),
     }
