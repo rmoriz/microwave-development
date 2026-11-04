@@ -7,6 +7,8 @@
 #   microwave    - microwave-server built from the repository root Dockerfile
 #   seed         - knife + Berkshelf: downloads nginx/postgresql from Supermarket,
 #                  uploads them, creates the role, writes client config
+#   console-key  - copies the WebUI private key out of the data volume for the
+#                  console user
 #   node-debian  - Debian node running Cinc Client against the role
 #   node-ubuntu  - Ubuntu node running Cinc Client against the role
 #   node-fedora  - Fedora node running Cinc Client against the role
@@ -86,6 +88,24 @@ services:
       - microwave-data:/mw-data:ro
       # Pass the validator key and client config to the test nodes.
       - chef-shared:/shared
+
+  # Copies the materialized WebUI key out of the data volume for the console
+  # user (uid 1000). The console cannot read the 0600 root-owned original.
+  console-key:
+    image: ${ALPINE_IMAGE:-alpine:3.22}
+    depends_on:
+      microwave:
+        condition: service_healthy
+    volumes:
+      - microwave-data:/mw-data:ro
+      - console-key:/key
+    command:
+      [
+        "sh",
+        "-c",
+        "set -e; test -s /mw-data/webui_priv.pem; cp /mw-data/webui_priv.pem /key/webui_priv.pem; chown 1000:1000 /key/webui_priv.pem; chmod 0400 /key/webui_priv.pem",
+      ]
+    restart: "no"
 
   workstation:
     build:
@@ -225,6 +245,7 @@ services:
 
 volumes:
   microwave-data:
+  console-key:
   chef-shared:
   workstation-opencode:
   workstation-opencode-config:

@@ -35,3 +35,8 @@ writes = true
 [data_collector]
 # Keep run reports so the MCP run tools have data to return.
 store = "local"
+
+[auth]
+# The console signs web impersonation with its own keypair instead of
+# pivotal.pem. Created on first start in the data directory.
+webui_key = true
