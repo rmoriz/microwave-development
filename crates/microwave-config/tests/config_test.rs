@@ -1612,6 +1612,34 @@ fn rejects_a_webui_key_path_without_enabling_the_key() {
 }
 
 #[test]
+fn rejects_a_webui_key_path_with_no_file_name() {
+    let error = Config::from_toml_str(
+        r#"
+        [auth]
+        webui_key = true
+        webui_key_path = "/"
+    "#,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("auth.webui_key_path"), "{error}");
+    assert!(error.to_string().contains("no file name"), "{error}");
+}
+
+#[test]
+fn rejects_webui_pub_pem_as_the_private_key_path() {
+    let error = Config::from_toml_str(
+        r#"
+        [auth]
+        webui_key = true
+        webui_key_path = "/etc/microwave/webui_pub.pem"
+    "#,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("auth.webui_key_path"), "{error}");
+    assert!(error.to_string().contains("public key"), "{error}");
+}
+
+#[test]
 fn env_overrides_webui_key_settings() {
     let _guard = ENV_LOCK.lock().unwrap();
     std::env::set_var("MW_AUTH__WEBUI_KEY", "true");

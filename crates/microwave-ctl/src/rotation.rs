@@ -100,7 +100,13 @@ fn rotate_group(store: &StoreHandle, group: &str, names: &[&str]) -> Result<(), 
         {
             if !rotated_webui_pair {
                 let (private_pem, public_pem) = generate_rsa_keypair()?;
-                store.run(set_webui_pair(store.store(), &private_pem, &public_pem))?;
+                store
+                    .run(set_webui_pair(store.store(), &private_pem, &public_pem))
+                    .map_err(|error| {
+                        CtlError::message(format!(
+                            "failed to rotate {group}.{WEBUI_PRIVATE_KEY_NAME}: {error}"
+                        ))
+                    })?;
                 println!("Rotated {group}.{WEBUI_PRIVATE_KEY_NAME}");
                 println!("Rotated {group}.{WEBUI_PUBLIC_KEY_NAME}");
                 rotated_webui_pair = true;

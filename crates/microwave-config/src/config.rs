@@ -172,6 +172,24 @@ impl Config {
                 value: path.display().to_string(),
             });
         }
+        let Some(name) = path.file_name() else {
+            return Err(ConfigError::InvalidValue {
+                key: "auth.webui_key_path".into(),
+                value: format!(
+                    "{} has no file name; use a file path, not a directory",
+                    path.display()
+                ),
+            });
+        };
+        if name == "webui_pub.pem" {
+            return Err(ConfigError::InvalidValue {
+                key: "auth.webui_key_path".into(),
+                value: format!(
+                    "{} is overwritten by the derived public key; use webui_priv.pem or another name",
+                    path.display()
+                ),
+            });
+        }
         if !self.auth.webui_key {
             return Err(ConfigError::InvalidValue {
                 key: "auth.webui_key".into(),

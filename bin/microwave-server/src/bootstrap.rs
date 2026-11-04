@@ -112,6 +112,14 @@ fn write_materialized_file(path: &Path, contents: &str, mode: u32) -> Result<(),
     file.write_all(contents.as_bytes())?;
     file.sync_all()?;
     drop(file);
+    // The creation-time mode above is masked by the process umask, and the
+    // shipped units set `UMask=0077`. Set the exact mode before publishing the
+    // file so the documented `0644` public key does not silently become `0600`.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(mode))?;
+    }
     std::fs::rename(&temp, path)?;
     Ok(())
 }
@@ -166,7 +174,8 @@ async fn ensure_webui_key_with<S: microwave_store::SecretsRepository + ?Sized>(
     {
         Some(stored) => (stored, "secret:webui:private_key".to_string()),
         None if private_path.is_file() => (
-            std::fs::read_to_string(&private_path)?,
+            std::fs::read_to_string(&private_path)
+                .map_err(|error| read_error(&private_path, &error))?,
             private_path.display().to_string(),
         ),
         None => (generate_rsa_keypair()?.0, "generated".to_string()),
@@ -196,12 +205,11 @@ async fn ensure_webui_key_with<S: microwave_store::SecretsRepository + ?Sized>(
 
     let unchanged =
         std::fs::read_to_string(&private_path).is_ok_and(|existing| existing == retained);
-    write_materialized_file(&private_path, &retained, 0o600)?;
-    write_materialized_file(
-        &private_path.with_file_name("webui_pub.pem"),
-        &public_pem,
-        0o644,
-    )?;
+    write_materialized_file(&private_path, &retained, 0o600)
+        .map_err(|error| write_error(&private_path, &error))?;
+    let public_path = private_path.with_file_name("webui_pub.pem");
+    write_materialized_file(&public_path, &public_pem, 0o644)
+        .map_err(|error| write_error(&public_path, &error))?;
     if !unchanged {
         tracing::info!(
             path = %private_path.display(),
@@ -221,6 +229,29 @@ fn webui_private_key_path(config: &Config) -> std::path::PathBuf {
         .webui_key_path
         .clone()
         .unwrap_or_else(|| Path::new(&config.paths.data_dir).join("webui_priv.pem"))
+}
+
+/// Context for a failed import read. The import file is opt-in, so the error
+/// must name the file and both ways out instead of only the OS error.
+fn read_error(path: &Path, error: &dyn std::fmt::Display) -> String {
+    format!(
+        "cannot read webui private key from {}: {error}; the file must be readable by the \
+         service account, or run `microwave-ctl rotate-credentials webui` to replace the pair",
+        path.display()
+    )
+}
+
+/// Context for a failed materialization write. The target directory is a
+/// deployment concern more often than the key itself, so name it and the
+/// systemd remediation.
+fn write_error(path: &Path, error: &dyn std::fmt::Display) -> String {
+    format!(
+        "cannot write webui key file {}: {error}; its parent directory must exist and be \
+         writable by the service account, and a path outside paths.data_dir needs a systemd \
+         `ReadWritePaths=` drop-in (or use a writable subdirectory), or run \
+         `microwave-ctl rotate-credentials webui` to replace the pair",
+        path.display()
+    )
 }
 
 /// Load the local object-store HMAC secret, creating it on first start.
@@ -709,6 +740,66 @@ mod webui_tests {
         assert_eq!(mode(custom_path.parent().unwrap()), 0o700);
         assert_eq!(mode(&custom_path), 0o600);
         assert_eq!(mode(&custom_path.with_file_name("webui_pub.pem")), 0o644);
+    }
+
+    /// The umask is process-global, so this test changes it for the duration of
+    /// one call and restores it. A umask of `0o077` is what the shipped units
+    /// set; the explicit `chmod` before the rename must still yield `0644`.
+    #[tokio::test]
+    async fn materialized_modes_are_exact_under_a_0077_umask() {
+        let previous = unsafe { libc::umask(0o077) };
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = webui_config(data_dir.path());
+
+        let result = ensure_webui_key(&config, &store).await;
+        unsafe { libc::umask(previous) };
+        result.unwrap().unwrap();
+
+        assert_eq!(mode(&data_dir.path().join("webui_priv.pem")), 0o600);
+        assert_eq!(mode(&data_dir.path().join("webui_pub.pem")), 0o644);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_import_file_names_the_path_and_the_fix() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = webui_config(data_dir.path());
+        let path = data_dir.path().join("webui_priv.pem");
+        // Non-UTF8 bytes fail the read regardless of whether the test runs as
+        // root.
+        std::fs::write(&path, [0xff, 0xfe]).unwrap();
+
+        let error = ensure_webui_key(&config, &store)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(error.contains("service account"), "{error}");
+        assert!(error.contains("rotate-credentials webui"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_write_failure_names_the_path_and_the_fix() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mut config = webui_config(data_dir.path());
+        // The parent of the target does not exist and sits below a regular
+        // file, so `create_dir_all` fails.
+        let blocker = data_dir.path().join("blocked");
+        std::fs::write(&blocker, "not a directory").unwrap();
+        let path = blocker.join("webui_priv.pem");
+        config.auth.webui_key_path = Some(path.clone());
+
+        let error = ensure_webui_key(&config, &store)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(error.contains("writable by the service account"), "{error}");
+        assert!(error.contains("ReadWritePaths"), "{error}");
     }
 
     #[tokio::test]
