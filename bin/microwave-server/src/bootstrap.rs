@@ -1,9 +1,12 @@
 use microwave_config::Config;
-use microwave_crypto::{generate_rsa_keypair, hash_password};
+use microwave_crypto::{
+    generate_rsa_keypair, hash_password, parse_private_key_pem, public_key_fingerprint,
+    public_key_pem_from_private,
+};
 use microwave_store::{
     ActorType, MetadataStore, StoreError, BOOKSHELF_ACCESS_KEY_ID, BOOKSHELF_SECRET_ACCESS_KEY,
     BOOKSHELF_SECRET_GROUP, OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME, OTEL_SECRET_GROUP,
-    OTEL_SECRET_NAME,
+    OTEL_SECRET_NAME, WEBUI_PRIVATE_KEY_NAME, WEBUI_PUBLIC_KEY_NAME, WEBUI_SECRET_GROUP,
 };
 use std::path::Path;
 use uuid::Uuid;
@@ -79,13 +82,136 @@ pub async fn ensure_superuser(
 }
 
 fn write_private_file(path: &Path, contents: &str) -> Result<(), std::io::Error> {
-    std::fs::write(path, contents)?;
+    write_materialized_file(path, contents, 0o600)
+}
+
+fn write_materialized_file(path: &Path, contents: &str, mode: u32) -> Result<(), std::io::Error> {
+    // A bare file name has an empty parent, which `DirBuilder` cannot create.
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    create_private_dirs(parent)?;
+    let name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
+    })?;
+    let temp = parent.join(format!(
+        ".{}.tmp-{}",
+        name.to_string_lossy(),
+        Uuid::new_v4().simple()
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(mode);
     }
+    let mut file = options.open(&temp)?;
+    use std::io::Write;
+    file.write_all(contents.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&temp, path)?;
     Ok(())
+}
+
+fn create_private_dirs(path: &Path) -> Result<(), std::io::Error> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(path)
+    }
+}
+
+/// Ensure a dedicated WebUI keypair exists and is materialized.
+///
+/// The metadata store is the source of truth: a stored key wins over the
+/// import file, and a divergent materialized file is overwritten. Without a
+/// stored key the configured import path is used, or a fresh pair is
+/// generated. Returns the public PEM when `auth.webui_key` is enabled.
+///
+/// Only the public fingerprint is logged, never key material.
+// Wired into `main.rs` by the follow-up middleware task; tests exercise it today.
+#[allow(dead_code)]
+pub async fn ensure_webui_key(
+    config: &Config,
+    store: &dyn MetadataStore,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    if !config.auth.webui_key {
+        return Ok(None);
+    }
+    let private_path = webui_private_key_path(config);
+
+    let (candidate, source) = match store
+        .get_secret(WEBUI_SECRET_GROUP, WEBUI_PRIVATE_KEY_NAME)
+        .await?
+    {
+        Some(stored) => (stored, "secret:webui:private_key".to_string()),
+        None if private_path.is_file() => (
+            std::fs::read_to_string(&private_path)?,
+            private_path.display().to_string(),
+        ),
+        None => (generate_rsa_keypair()?.0, "generated".to_string()),
+    };
+    let invalid = |source: &str, error: &dyn std::fmt::Display| {
+        format!(
+            "invalid webui private key from {source}: {error}; run `microwave-ctl rotate webui` to replace the pair"
+        )
+    };
+    parse_private_key_pem(&candidate).map_err(|error| invalid(&source, &error))?;
+
+    let retained = store
+        .set_secret_if_absent(WEBUI_SECRET_GROUP, WEBUI_PRIVATE_KEY_NAME, &candidate)
+        .await?;
+    if retained != candidate {
+        // Another replica won the race. Validate the stored key so an invalid
+        // value still produces the actionable message instead of a raw crypto
+        // error on the next line.
+        parse_private_key_pem(&retained)
+            .map_err(|error| invalid("secret:webui:private_key", &error))?;
+    }
+
+    let public_pem = public_key_pem_from_private(&retained)?;
+    store
+        .set_secret(WEBUI_SECRET_GROUP, WEBUI_PUBLIC_KEY_NAME, &public_pem)
+        .await?;
+
+    let unchanged =
+        std::fs::read_to_string(&private_path).is_ok_and(|existing| existing == retained);
+    write_materialized_file(&private_path, &retained, 0o600)?;
+    write_materialized_file(
+        &private_path.with_file_name("webui_pub.pem"),
+        &public_pem,
+        0o644,
+    )?;
+    if !unchanged {
+        tracing::info!(
+            path = %private_path.display(),
+            "materialized the webui private key from the metadata store"
+        );
+    }
+    tracing::info!(
+        fingerprint = %public_key_fingerprint(&public_pem)?,
+        "webui keypair is enabled"
+    );
+    Ok(Some(public_pem))
+}
+
+#[allow(dead_code)]
+fn webui_private_key_path(config: &Config) -> std::path::PathBuf {
+    config
+        .auth
+        .webui_key_path
+        .clone()
+        .unwrap_or_else(|| Path::new(&config.paths.data_dir).join("webui_priv.pem"))
 }
 
 /// Load the local object-store HMAC secret, creating it on first start.
@@ -402,5 +528,216 @@ mod superuser_tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("configured superuser"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod webui_tests {
+    use super::*;
+    use microwave_crypto::{
+        generate_rsa_keypair, public_key_fingerprint, public_key_pem_from_private,
+    };
+    use microwave_store::{
+        SqliteStore, WEBUI_PRIVATE_KEY_NAME, WEBUI_PUBLIC_KEY_NAME, WEBUI_SECRET_GROUP,
+    };
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Arc;
+
+    fn webui_config(data_dir: &Path) -> Config {
+        let mut config = Config::default();
+        config.paths.data_dir = data_dir.to_string_lossy().into_owned();
+        config.auth.webui_key = true;
+        config
+    }
+
+    fn mode(path: &Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    fn stored(store: &SqliteStore, name: &str) -> Option<String> {
+        store.get_secret(WEBUI_SECRET_GROUP, name).unwrap()
+    }
+
+    #[tokio::test]
+    async fn generates_and_materializes_on_first_start() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = webui_config(data_dir.path());
+
+        let public_pem = ensure_webui_key(&config, &store).await.unwrap().unwrap();
+
+        let private_pem = stored(&store, WEBUI_PRIVATE_KEY_NAME).unwrap();
+        assert_eq!(
+            stored(&store, WEBUI_PUBLIC_KEY_NAME).as_deref(),
+            Some(public_pem.as_str())
+        );
+        assert_eq!(
+            public_key_pem_from_private(&private_pem).unwrap(),
+            public_pem
+        );
+        let private_path = data_dir.path().join("webui_priv.pem");
+        let public_path = data_dir.path().join("webui_pub.pem");
+        assert_eq!(std::fs::read_to_string(&private_path).unwrap(), private_pem);
+        assert_eq!(std::fs::read_to_string(&public_path).unwrap(), public_pem);
+        assert_eq!(mode(&private_path), 0o600);
+        assert_eq!(mode(&public_path), 0o644);
+    }
+
+    #[tokio::test]
+    async fn reuses_the_stored_key_and_overwrites_a_divergent_file() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = webui_config(data_dir.path());
+
+        let first = ensure_webui_key(&config, &store).await.unwrap().unwrap();
+        std::fs::write(data_dir.path().join("webui_priv.pem"), "not a key").unwrap();
+
+        let second = ensure_webui_key(&config, &store).await.unwrap().unwrap();
+
+        assert_eq!(first, second);
+        let private_pem = stored(&store, WEBUI_PRIVATE_KEY_NAME).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(data_dir.path().join("webui_priv.pem")).unwrap(),
+            private_pem
+        );
+    }
+
+    #[tokio::test]
+    async fn imports_an_existing_webui_priv_pem() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = webui_config(data_dir.path());
+        let (private_pem, _) = generate_rsa_keypair().unwrap();
+        std::fs::write(data_dir.path().join("webui_priv.pem"), &private_pem).unwrap();
+
+        let public_pem = ensure_webui_key(&config, &store).await.unwrap().unwrap();
+
+        assert_eq!(
+            stored(&store, WEBUI_PRIVATE_KEY_NAME).as_deref(),
+            Some(private_pem.as_str())
+        );
+        assert_eq!(
+            public_key_fingerprint(&public_pem).unwrap(),
+            public_key_fingerprint(&public_key_pem_from_private(&private_pem).unwrap()).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_custom_path_is_the_only_import_source() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let custom_dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mut config = webui_config(data_dir.path());
+        let custom_path = custom_dir.path().join("webui_priv.pem");
+        config.auth.webui_key_path = Some(custom_path.clone());
+
+        let (data_dir_key, _) = generate_rsa_keypair().unwrap();
+        let (custom_key, _) = generate_rsa_keypair().unwrap();
+        std::fs::write(data_dir.path().join("webui_priv.pem"), &data_dir_key).unwrap();
+        std::fs::write(&custom_path, &custom_key).unwrap();
+
+        ensure_webui_key(&config, &store).await.unwrap().unwrap();
+
+        assert_eq!(
+            stored(&store, WEBUI_PRIVATE_KEY_NAME).as_deref(),
+            Some(custom_key.as_str())
+        );
+        assert_eq!(std::fs::read_to_string(&custom_path).unwrap(), custom_key);
+        assert_eq!(
+            std::fs::read_to_string(data_dir.path().join("webui_priv.pem")).unwrap(),
+            data_dir_key
+        );
+    }
+
+    #[tokio::test]
+    async fn creates_missing_parent_directories_with_0700() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mut config = webui_config(data_dir.path());
+        let custom_path = data_dir.path().join("nested/keys/webui_priv.pem");
+        config.auth.webui_key_path = Some(custom_path.clone());
+
+        ensure_webui_key(&config, &store).await.unwrap().unwrap();
+
+        assert_eq!(mode(custom_path.parent().unwrap()), 0o700);
+        assert_eq!(mode(&custom_path), 0o600);
+        assert_eq!(mode(&custom_path.with_file_name("webui_pub.pem")), 0o644);
+    }
+
+    #[tokio::test]
+    async fn an_invalid_stored_key_fails_with_an_actionable_error() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = webui_config(data_dir.path());
+        store
+            .set_secret(WEBUI_SECRET_GROUP, WEBUI_PRIVATE_KEY_NAME, "not a key")
+            .unwrap();
+
+        let error = ensure_webui_key(&config, &store)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("webui"), "{error}");
+        assert!(error.contains("rotate webui"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn an_invalid_import_file_fails_with_an_actionable_error() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = webui_config(data_dir.path());
+        std::fs::write(data_dir.path().join("webui_priv.pem"), "not a key").unwrap();
+
+        let error = ensure_webui_key(&config, &store)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("webui"), "{error}");
+        assert!(error.contains("rotate webui"), "{error}");
+        assert!(stored(&store, WEBUI_PRIVATE_KEY_NAME).is_none());
+    }
+
+    #[tokio::test]
+    async fn disabled_touches_nothing() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mut config = webui_config(data_dir.path());
+        config.auth.webui_key = false;
+        let existing = data_dir.path().join("webui_priv.pem");
+        std::fs::write(&existing, "pre-existing key material").unwrap();
+
+        assert!(ensure_webui_key(&config, &store).await.unwrap().is_none());
+
+        assert!(stored(&store, WEBUI_PRIVATE_KEY_NAME).is_none());
+        assert!(stored(&store, WEBUI_PUBLIC_KEY_NAME).is_none());
+        assert_eq!(
+            std::fs::read_to_string(&existing).unwrap(),
+            "pre-existing key material"
+        );
+        assert!(!data_dir.path().join("webui_pub.pem").exists());
+    }
+
+    #[tokio::test]
+    async fn concurrent_bootstraps_converge_on_one_key() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let config = webui_config(data_dir.path());
+
+        let (left, right) = tokio::join!(
+            ensure_webui_key(&config, store.as_ref()),
+            ensure_webui_key(&config, store.as_ref())
+        );
+        let left = left.unwrap().unwrap();
+        let right = right.unwrap().unwrap();
+
+        assert_eq!(left, right);
+        let private_pem = stored(&store, WEBUI_PRIVATE_KEY_NAME).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(data_dir.path().join("webui_priv.pem")).unwrap(),
+            private_pem
+        );
+        assert_eq!(public_key_pem_from_private(&private_pem).unwrap(), left);
     }
 }

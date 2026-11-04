@@ -49,6 +49,7 @@ pub use sandboxes::SandboxCheck;
 pub use secrets::{
     secret_kv_key, BOOKSHELF_ACCESS_KEY_ID, BOOKSHELF_SECRET_ACCESS_KEY, BOOKSHELF_SECRET_GROUP,
     OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME, OTEL_SECRET_GROUP, OTEL_SECRET_NAME,
+    WEBUI_PRIVATE_KEY_NAME, WEBUI_PUBLIC_KEY_NAME, WEBUI_SECRET_GROUP,
 };
 pub use sqlite::{SqliteStore, StoreError};
 pub use timing::{DbSystem, StoreTimer};
