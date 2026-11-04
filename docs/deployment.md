@@ -217,7 +217,7 @@ verifies them against the actor's keys.
 | `auth.password_reset_ttl_seconds`<br/>`MW_AUTH__PASSWORD_RESET_TTL_SECONDS` | Default `3600`. Password-reset token lifetime in seconds. Must be greater than zero and at most `604800` (seven days). The reset email derives its expiry text from this value. |
 | `stats.username`<br/>`stats.password`<br/>`MW_STATS__USERNAME`<br/>`MW_STATS__PASSWORD` | Unset by default. Optional Basic auth for `/_stats`; when set, `/_status` remains public. Set both. |
 | `auth.webui_key`<br/>`MW_AUTH__WEBUI_KEY` | Default `false`. When `true`, `X-Ops-Request-Source: web` impersonation trusts a dedicated WebUI keypair instead of the superuser key. The pair is stored in the metadata database and materialized as `webui_priv.pem` / `webui_pub.pem`. |
-| `auth.webui_key_path`<br/>`MW_AUTH__WEBUI_KEY_PATH` | Unset by default: `<paths.data_dir>/webui_priv.pem`. Absolute path for the materialized private key; the public key is written next to it as `webui_pub.pem`. Requires `auth.webui_key = true`. The parent directory must already exist and be writable by the service account; directories created for the pair are `0700`, but pre-existing ones are not tightened, and a path outside `paths.data_dir` also needs a `ReadWritePaths=` drop-in (or `chown microwave` for `/etc/microwave`). A data-directory subdirectory such as `/var/lib/microwave/webui/webui_priv.pem` avoids both. |
+| `auth.webui_key_path`<br/>`MW_AUTH__WEBUI_KEY_PATH` | Unset by default: `<paths.data_dir>/webui_priv.pem`. Absolute file path for the materialized private key; the public key is written next to it as `webui_pub.pem`. Requires `auth.webui_key = true`. Missing parent directories are created `0700`; pre-existing ones are not tightened, and the nearest existing directory must be writable by the service account. A path outside `paths.data_dir` also needs a `ReadWritePaths=` drop-in (and, for `/etc/microwave`, `chown microwave`). A data-directory subdirectory such as `/var/lib/microwave/webui/webui_priv.pem` avoids both. Paths ending in `/` or naming an existing directory are rejected. |
 
 #### Web UI key
 
@@ -237,11 +237,12 @@ console:
 
 1. Set `[auth] webui_key = true`, optionally set `webui_key_path`, run
    `check-config`, and restart the server. A custom `webui_key_path` must point
-   at an existing, service-writable directory; outside the data directory that
-   means a `ReadWritePaths=` drop-in. `check-config` preflights the path (parent
-   exists, writable, basename), but it cannot validate a stored key; that
-   happens on every `serve` start, so `microwave-server serve --check` is the
-   full startup validation and also materializes the files.
+   at a file in a directory the service account can write (missing directories
+   are created); outside the data directory that means a `ReadWritePaths=`
+   drop-in. `check-config` preflights the path (basename, writability), but it
+   cannot validate a stored key; that happens on every `serve` start, so
+   `microwave-server serve --check` is the fuller validation and also
+   materializes the files.
 2. On startup the key comes from the first available source: the stored
    `secret:webui:private_key`, else the file at the configured path (default
    `<data_dir>/webui_priv.pem`), else a newly generated RSA-2048 pair. A

@@ -1626,6 +1626,20 @@ fn rejects_a_webui_key_path_with_no_file_name() {
 }
 
 #[test]
+fn rejects_a_webui_key_path_ending_in_a_separator() {
+    let error = Config::from_toml_str(
+        r#"
+        [auth]
+        webui_key = true
+        webui_key_path = "/var/lib/microwave/webui/"
+    "#,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("auth.webui_key_path"), "{error}");
+    assert!(error.to_string().contains("separator"), "{error}");
+}
+
+#[test]
 fn rejects_webui_pub_pem_as_the_private_key_path() {
     let error = Config::from_toml_str(
         r#"

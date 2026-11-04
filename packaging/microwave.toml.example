@@ -146,10 +146,11 @@ superuser_name = "pivotal"
 # as webui_priv.pem / webui_pub.pem; hand the private key to the console.
 # webui_key = false
 # Absolute path for the materialized private key (default
-# <paths.data_dir>/webui_priv.pem). The parent directory must already exist and
-# be writable by the service account; a path outside the data directory also
-# needs a systemd `ReadWritePaths=` drop-in, so a data-directory subdirectory is
-# simpler. The public key is written next to it. Requires webui_key = true.
+# <paths.data_dir>/webui_priv.pem). Missing parent directories are created 0700;
+# the nearest existing one must be writable by the service account. A path
+# outside the data directory also needs a systemd `ReadWritePaths=` drop-in, so a
+# data-directory subdirectory is simpler. The public key is written next to it.
+# Requires webui_key = true.
 # webui_key_path = "/var/lib/microwave/webui_priv.pem"
 
 # Outbound SMTP for password-reset mail. Disabled by default; all other keys in

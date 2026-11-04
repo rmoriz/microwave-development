@@ -181,6 +181,15 @@ impl Config {
                 ),
             });
         };
+        if path.as_os_str().to_string_lossy().ends_with('/') {
+            return Err(ConfigError::InvalidValue {
+                key: "auth.webui_key_path".into(),
+                value: format!(
+                    "{} ends with a separator; name the key file instead",
+                    path.display()
+                ),
+            });
+        }
         if name == "webui_pub.pem" {
             return Err(ConfigError::InvalidValue {
                 key: "auth.webui_key_path".into(),

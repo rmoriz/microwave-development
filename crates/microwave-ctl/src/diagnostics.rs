@@ -445,12 +445,19 @@ fn redacted_url(url: &Url) -> String {
 }
 
 /// Validate a custom WebUI key path the way startup materialization needs it:
-/// the basename must be usable and the parent must already exist and accept a
-/// write from the service account. A `ProtectSystem=strict` unit makes an
-/// outside-data-dir path read-only unless the operator adds a drop-in. The
-/// write probe runs as the invoking user, which under `ExecStartPre` is the
-/// service account.
+/// the basename must be usable, the path must not already be a directory, and
+/// the nearest existing ancestor directory must accept a write from the
+/// service account (startup creates missing directories itself). A
+/// `ProtectSystem=strict` unit makes an outside-data-dir path read-only unless
+/// the operator adds a drop-in. The write probe runs as the invoking user,
+/// which under `ExecStartPre` is the service account.
 fn validate_webui_key_path(path: &Path) -> Result<(), String> {
+    if path.is_dir() {
+        return Err(
+            "is an existing directory; name the key file instead, such as webui_priv.pem"
+                .to_string(),
+        );
+    }
     let name = path
         .file_name()
         .ok_or_else(|| "must be a file path, not a directory".to_string())?;
@@ -464,25 +471,46 @@ fn validate_webui_key_path(path: &Path) -> Result<(), String> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .ok_or_else(|| "must be an absolute path".to_string())?;
-    let metadata = std::fs::metadata(parent).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            format!(
-                "parent directory {} does not exist; create it and make it writable by the service account",
-                parent.display()
-            )
-        } else {
-            format!("cannot inspect parent directory {}: {error}", parent.display())
+    // Startup creates missing directories, so only the nearest existing
+    // ancestor has to exist and be writable.
+    let mut probe_dir = parent;
+    loop {
+        match std::fs::metadata(probe_dir) {
+            Ok(metadata) if metadata.is_dir() => break,
+            Ok(_) => return Err(format!("{} is not a directory", probe_dir.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                probe_dir = probe_dir
+                    .parent()
+                    .filter(|ancestor| !ancestor.as_os_str().is_empty())
+                    .ok_or_else(|| {
+                        format!(
+                            "cannot find an existing ancestor directory of {}",
+                            parent.display()
+                        )
+                    })?;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect parent directory {}: {error}",
+                    probe_dir.display()
+                ))
+            }
         }
-    })?;
-    if !metadata.is_dir() {
-        return Err(format!("parent {} is not a directory", parent.display()));
     }
-    let probe = parent.join(format!(".webui-key-probe-{}", std::process::id()));
-    let probe_result = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&probe);
+    let probe = probe_dir.join(format!(".webui-key-probe-{}", std::process::id()));
+    let open_probe = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&probe)
+    };
+    let mut probe_result = open_probe();
+    // A stale probe file left by another user is still removable when the
+    // directory itself is writable.
+    if probe_result.is_err() && probe.exists() && std::fs::remove_file(&probe).is_ok() {
+        probe_result = open_probe();
+    }
     match probe_result {
         Ok(file) => {
             drop(file);
@@ -490,9 +518,9 @@ fn validate_webui_key_path(path: &Path) -> Result<(), String> {
             Ok(())
         }
         Err(error) => Err(format!(
-            "parent directory {} is not writable by the service account ({error}); a path outside \
+            "directory {} is not writable by the service account ({error}); a path outside \
              paths.data_dir also needs a `ReadWritePaths=` systemd drop-in",
-            parent.display()
+            probe_dir.display()
         )),
     }
 }
@@ -643,24 +671,31 @@ mod tests {
     }
 
     #[test]
-    fn check_config_rejects_a_missing_webui_key_parent() {
-        let error = check_config(&context_with_webui_key_path(
-            "/nonexistent/keys/webui_priv.pem".into(),
-        ))
-        .unwrap_err();
+    fn check_config_accepts_a_missing_webui_key_parent_that_startup_creates() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = context_with_webui_key_path(dir.path().join("nested/keys/webui_priv.pem"));
+        assert!(check_config(&context).is_ok());
+    }
+
+    #[test]
+    fn check_config_rejects_a_webui_key_path_that_is_an_existing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = dir.path().join("keys");
+        std::fs::create_dir(&keys).unwrap();
+        let error = check_config(&context_with_webui_key_path(keys)).unwrap_err();
         assert!(
-            error.to_string().contains("does not exist"),
-            "unexpected error: {error}"
-        );
-        assert!(
-            error.to_string().contains("service account"),
+            error.to_string().contains("existing directory"),
             "unexpected error: {error}"
         );
     }
 
     #[test]
-    fn check_config_rejects_a_webui_key_path_ending_in_a_directory() {
-        let error = check_config(&context_with_webui_key_path("/".into())).unwrap_err();
+    fn check_config_rejects_a_webui_key_path_whose_parent_is_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-a-dir");
+        std::fs::write(&file, b"x").unwrap();
+        let error =
+            check_config(&context_with_webui_key_path(file.join("webui_priv.pem"))).unwrap_err();
         assert!(
             error.to_string().contains("not a directory"),
             "unexpected error: {error}"
