@@ -28,3 +28,6 @@ uuid.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true

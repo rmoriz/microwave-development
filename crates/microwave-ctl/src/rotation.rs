@@ -6,7 +6,7 @@
 
 use crate::{
     context::{Context, StoreHandle},
-    secrets::{EXTRA_CREDENTIALS, KNOWN_CREDENTIALS},
+    secrets::{set_webui_pair, EXTRA_CREDENTIALS, KNOWN_CREDENTIALS},
     CtlError,
 };
 use microwave_crypto::generate_rsa_keypair;
@@ -75,8 +75,9 @@ pub fn rotate_shared_secrets(context: &Context) -> Result<(), CtlError> {
 
 /// Rotate the credentials in one group.
 ///
-/// The `push-jobs-server` pile is special: the private and public key are a
-/// pair, so rotating either name regenerates and stores both at once.
+/// Keypairs are special: rotating either half regenerates and stores both at
+/// once. The `webui` pair goes through [`set_webui_pair`], which restores the
+/// old private half if the public write fails.
 fn rotate_group(store: &StoreHandle, group: &str, names: &[&str]) -> Result<(), CtlError> {
     let mut rotated_pushy_pair = false;
     let mut rotated_webui_pair = false;
@@ -99,8 +100,9 @@ fn rotate_group(store: &StoreHandle, group: &str, names: &[&str]) -> Result<(), 
         {
             if !rotated_webui_pair {
                 let (private_pem, public_pem) = generate_rsa_keypair()?;
-                store_rotated_secret(store, group, WEBUI_PRIVATE_KEY_NAME, &private_pem)?;
-                store_rotated_secret(store, group, WEBUI_PUBLIC_KEY_NAME, &public_pem)?;
+                store.run(set_webui_pair(store.store(), &private_pem, &public_pem))?;
+                println!("Rotated {group}.{WEBUI_PRIVATE_KEY_NAME}");
+                println!("Rotated {group}.{WEBUI_PUBLIC_KEY_NAME}");
                 rotated_webui_pair = true;
             }
             continue;

@@ -1713,6 +1713,7 @@ dependencies = [
 name = "microwave-ctl"
 version = "0.2.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "clap",
  "flate2",

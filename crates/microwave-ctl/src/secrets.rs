@@ -1,7 +1,8 @@
 use crate::{context::Context, CtlError};
 use microwave_crypto::public_key_pem_from_private;
 use microwave_store::{
-    StoreError, WEBUI_PRIVATE_KEY_NAME, WEBUI_PUBLIC_KEY_NAME, WEBUI_SECRET_GROUP,
+    SecretsRepository, StoreError, WEBUI_PRIVATE_KEY_NAME, WEBUI_PUBLIC_KEY_NAME,
+    WEBUI_SECRET_GROUP,
 };
 
 /// Credentials that can be managed through the CLI. The names mirror the
@@ -84,18 +85,60 @@ fn set_webui_secret(context: &Context, name: &str, value: &str) -> Result<(), Ct
         ))
     })?;
     let store = context.open_metadata_store()?;
-    store.run(
-        store
-            .store()
-            .set_secret(WEBUI_SECRET_GROUP, WEBUI_PRIVATE_KEY_NAME, value),
-    )?;
-    store.run(
-        store
-            .store()
-            .set_secret(WEBUI_SECRET_GROUP, WEBUI_PUBLIC_KEY_NAME, &public_pem),
-    )?;
+    store.run(set_webui_pair(store.store(), value, &public_pem))?;
     println!("Secret {WEBUI_SECRET_GROUP}.{WEBUI_PRIVATE_KEY_NAME} updated.");
     println!("Secret {WEBUI_SECRET_GROUP}.{WEBUI_PUBLIC_KEY_NAME} updated.");
+    Ok(())
+}
+
+/// Write both halves of the WebUI keypair, keeping the store consistent on a
+/// best-effort basis.
+///
+/// The secret repository has no multi-write transaction. If the public write
+/// fails, the previous private value is restored (or removed when there was
+/// none) and the original error is returned. When the restore itself fails, the
+/// returned error names both failures.
+///
+/// This is best effort within one command only. A hard failure is reconciled on
+/// the next server start: bootstrap retains the stored private key and derives
+/// the public half from it again.
+pub(crate) async fn set_webui_pair(
+    store: &(impl SecretsRepository + ?Sized),
+    private_pem: &str,
+    public_pem: &str,
+) -> Result<(), StoreError> {
+    let previous = store
+        .get_secret(WEBUI_SECRET_GROUP, WEBUI_PRIVATE_KEY_NAME)
+        .await?;
+    store
+        .set_secret(WEBUI_SECRET_GROUP, WEBUI_PRIVATE_KEY_NAME, private_pem)
+        .await?;
+    if let Err(error) = store
+        .set_secret(WEBUI_SECRET_GROUP, WEBUI_PUBLIC_KEY_NAME, public_pem)
+        .await
+    {
+        let restored = match previous.as_deref() {
+            Some(previous) => {
+                store
+                    .set_secret(WEBUI_SECRET_GROUP, WEBUI_PRIVATE_KEY_NAME, previous)
+                    .await
+            }
+            None => {
+                store
+                    .remove_secret(WEBUI_SECRET_GROUP, WEBUI_PRIVATE_KEY_NAME)
+                    .await
+            }
+        };
+        if let Err(restore_error) = restored {
+            return Err(StoreError::Invalid(format!(
+                "failed to write {WEBUI_SECRET_GROUP}.{WEBUI_PUBLIC_KEY_NAME} ({error}) and \
+                 failed to restore {WEBUI_SECRET_GROUP}.{WEBUI_PRIVATE_KEY_NAME} \
+                 ({restore_error}); the stored pair is inconsistent until the next server start \
+                 reconciles it"
+            )));
+        }
+        return Err(error);
+    }
     Ok(())
 }
 
@@ -184,9 +227,88 @@ fn validate_credential(group: &str, name: &str) -> Result<(), CtlError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{set_secret, show_secret, validate_credential};
+    use super::{set_secret, set_webui_pair, show_secret, validate_credential};
     use crate::context::Context;
+    use microwave_store::{SecretsRepository, SqliteStore, StoreError};
     use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Delegates to a real store but fails the second `set_secret` call, which
+    /// is the public half of a WebUI pair write.
+    struct FailSecondWrite<'a> {
+        inner: &'a SqliteStore,
+        writes: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl SecretsRepository for FailSecondWrite<'_> {
+        async fn get_secret(&self, group: &str, name: &str) -> Result<Option<String>, StoreError> {
+            SecretsRepository::get_secret(self.inner, group, name).await
+        }
+
+        async fn set_secret(&self, group: &str, name: &str, value: &str) -> Result<(), StoreError> {
+            if self.writes.fetch_add(1, Ordering::SeqCst) == 1 {
+                return Err(StoreError::Invalid(
+                    "injected public-key write failure".into(),
+                ));
+            }
+            SecretsRepository::set_secret(self.inner, group, name, value).await
+        }
+
+        async fn set_secret_if_absent(
+            &self,
+            group: &str,
+            name: &str,
+            value: &str,
+        ) -> Result<String, StoreError> {
+            SecretsRepository::set_secret_if_absent(self.inner, group, name, value).await
+        }
+
+        async fn remove_secret(&self, group: &str, name: &str) -> Result<(), StoreError> {
+            SecretsRepository::remove_secret(self.inner, group, name).await
+        }
+    }
+
+    fn fail_second_write(store: &SqliteStore) -> FailSecondWrite<'_> {
+        FailSecondWrite {
+            inner: store,
+            writes: AtomicUsize::new(0),
+        }
+    }
+
+    /// Fails the public write and the private restore that follows it.
+    struct FailPublicAndRestore<'a> {
+        inner: &'a SqliteStore,
+        writes: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl SecretsRepository for FailPublicAndRestore<'_> {
+        async fn get_secret(&self, group: &str, name: &str) -> Result<Option<String>, StoreError> {
+            SecretsRepository::get_secret(self.inner, group, name).await
+        }
+
+        async fn set_secret(&self, group: &str, name: &str, value: &str) -> Result<(), StoreError> {
+            match self.writes.fetch_add(1, Ordering::SeqCst) {
+                1 => Err(StoreError::Invalid("injected public failure".into())),
+                2 => Err(StoreError::Invalid("injected restore failure".into())),
+                _ => SecretsRepository::set_secret(self.inner, group, name, value).await,
+            }
+        }
+
+        async fn set_secret_if_absent(
+            &self,
+            group: &str,
+            name: &str,
+            value: &str,
+        ) -> Result<String, StoreError> {
+            SecretsRepository::set_secret_if_absent(self.inner, group, name, value).await
+        }
+
+        async fn remove_secret(&self, group: &str, name: &str) -> Result<(), StoreError> {
+            SecretsRepository::remove_secret(self.inner, group, name).await
+        }
+    }
 
     fn context_with_store(dir: &Path) -> Context {
         let config_path = dir.join("microwave.toml");
@@ -276,6 +398,80 @@ mod tests {
             .run(store.store().get_secret("webui", "public_key"))
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_failed_public_write_restores_the_previous_pair() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .set_secret("webui", "private_key", "old-private")
+            .unwrap();
+        store
+            .set_secret("webui", "public_key", "old-public")
+            .unwrap();
+        let failing = fail_second_write(&store);
+
+        let error = set_webui_pair(&failing, "new-private", "new-public")
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("injected"), "{error}");
+        assert_eq!(
+            store.get_secret("webui", "private_key").unwrap().as_deref(),
+            Some("old-private")
+        );
+        assert_eq!(
+            store.get_secret("webui", "public_key").unwrap().as_deref(),
+            Some("old-public")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_public_write_removes_a_fresh_private_half() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let failing = fail_second_write(&store);
+
+        let error = set_webui_pair(&failing, "new-private", "new-public")
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("injected"), "{error}");
+        assert!(store.get_secret("webui", "private_key").unwrap().is_none());
+        assert!(store.get_secret("webui", "public_key").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_failed_restore_names_both_failures() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .set_secret("webui", "private_key", "old-private")
+            .unwrap();
+        store
+            .set_secret("webui", "public_key", "old-public")
+            .unwrap();
+        let failing = FailPublicAndRestore {
+            inner: &store,
+            writes: AtomicUsize::new(0),
+        };
+
+        let error = set_webui_pair(&failing, "new-private", "new-public")
+            .await
+            .unwrap_err();
+        let text = error.to_string();
+
+        assert!(text.contains("injected public failure"), "{text}");
+        assert!(text.contains("injected restore failure"), "{text}");
+        assert!(text.contains("inconsistent"), "{text}");
+        // The failed restore leaves the new private half behind; startup
+        // re-derives the public half from it.
+        assert_eq!(
+            store.get_secret("webui", "private_key").unwrap().as_deref(),
+            Some("new-private")
+        );
+        assert_eq!(
+            store.get_secret("webui", "public_key").unwrap().as_deref(),
+            Some("old-public")
+        );
     }
 
     /// `otel headers` stores the newline-separated header lines that
