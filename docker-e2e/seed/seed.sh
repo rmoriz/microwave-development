@@ -3,11 +3,12 @@
 # Seed microwave-server for the docker-e2e stack:
 #   1. wait for the server and its bootstrap superuser key
 #   2. create the organization (which also creates <org>-validator)
-#   3. reset the node/client fixtures so a repeated run can bootstrap again
-#   4. resolve nginx + postgres from Supermarket with Berkshelf
-#   5. upload the cookbooks with knife
-#   6. create a role whose run_list points at both cookbooks
-#   7. write the Cinc Client config and node run_list for the test nodes
+#   3. create the demo console user and add it to admins
+#   4. reset the node/client fixtures so a repeated run can bootstrap again
+#   5. resolve nginx + postgres from Supermarket with Berkshelf
+#   6. upload the cookbooks with knife
+#   7. create a role whose run_list points at both cookbooks
+#   8. write the Cinc Client config and node run_list for the test nodes
 #
 set -euo pipefail
 
@@ -24,6 +25,11 @@ POSTGRES_RECIPE="${POSTGRES_RECIPE:-e2e_postgresql}"
 # Client names the node containers register with. Included so the seed can
 # remove leftovers from a previous, partially failed run.
 NODE_NAMES="${NODE_NAMES:-node-debian node-ubuntu node-fedora node-amazon}"
+
+# Demo console login. Fixture credentials, not production.
+CONSOLE_USER="${MW_CONSOLE_USER:-e2e-console}"
+CONSOLE_PASSWORD="${MW_CONSOLE_PASSWORD:-e2e-console-password}"
+CONSOLE_EMAIL="${MW_CONSOLE_EMAIL:-e2e-console@example.com}"
 
 SHARED=/shared
 DATA=/mw-data
@@ -103,7 +109,22 @@ chef_server_url "$SERVER/organizations/$ORG"
 ssl_verify_mode :verify_none
 EOF
 
-# ---- 3. Reset node fixtures ------------------------------------------------
+# ---- 3. Console demo user --------------------------------------------------
+# Recreate on every run so the documented password stays true. Absence on the
+# first run is not an error.
+log "resetting console user $CONSOLE_USER"
+# knife refuses to delete an org's only admin while it sits in the admins group,
+# so take the user out of the group first. Absence on the first run is fine.
+knife group remove user "$CONSOLE_USER" admins --config "$SHARED/knife.rb" >/dev/null 2>&1 || true
+knife user delete "$CONSOLE_USER" -y --config "$SHARED/knife-server.rb" >/dev/null 2>&1 || true
+knife user create "$CONSOLE_USER" \
+    --email "$CONSOLE_EMAIL" \
+    --password "$CONSOLE_PASSWORD" \
+    --config "$SHARED/knife-server.rb"
+knife org user add "$ORG" "$CONSOLE_USER" --config "$SHARED/knife.rb"
+knife group add user "$CONSOLE_USER" admins --config "$SHARED/knife.rb"
+
+# ---- 4. Reset node fixtures ------------------------------------------------
 # A validator may create clients but not update existing ones. chef-client
 # turns the resulting 409 into a PUT, which the validator is not authorized
 # for. Delete the test node and client leftovers with the superuser key so a
@@ -113,7 +134,7 @@ for node in $NODE_NAMES; do
     knife client delete "$node" --yes --config "$SHARED/knife.rb" >/dev/null 2>&1 || true
 done
 
-# ---- 4. Resolve cookbooks from Supermarket ---------------------------------
+# ---- 5. Resolve cookbooks from Supermarket ---------------------------------
 cat >"$SHARED/Berksfile" <<EOF
 source "https://supermarket.chef.io"
 
@@ -126,7 +147,7 @@ cd "$SHARED"
 rm -rf "$COOKBOOKS"
 berks vendor "$COOKBOOKS"
 
-# ---- 5. Upload cookbooks ---------------------------------------------------
+# ---- 6. Upload cookbooks ---------------------------------------------------
 log "uploading cookbooks"
 knife cookbook upload --all \
     --cookbook-path "$COOKBOOKS" \
@@ -142,7 +163,7 @@ for wrapper in e2e_nginx e2e_postgresql; do
         --config "$SHARED/knife.rb"
 done
 
-# ---- 6. Role ---------------------------------------------------------------
+# ---- 7. Role ---------------------------------------------------------------
 cat >"$SHARED/role.rb" <<EOF
 name "$ROLE_NAME"
 description "nginx + PostgreSQL 18 from Chef Supermarket"
@@ -154,7 +175,7 @@ EOF
 log "creating role $ROLE_NAME"
 knife role from file "$SHARED/role.rb" --config "$SHARED/knife.rb"
 
-# ---- 7. Client config and node run_list ------------------------------------
+# ---- 8. Client config and node run_list ------------------------------------
 cat >"$SHARED/client.rb" <<EOF
 chef_server_url "$SERVER/organizations/$ORG"
 validation_client_name "$ORG-validator"
@@ -178,6 +199,8 @@ EOF
 cat >"$SHARED/seed-summary.txt" <<EOF
 server: $SERVER
 organization: $ORG
+console_user: $CONSOLE_USER
+console_password: $CONSOLE_PASSWORD
 validator: $ORG-validator
 role: $ROLE_NAME
 run_list: recipe[$NGINX_RECIPE], recipe[$POSTGRES_RECIPE]
