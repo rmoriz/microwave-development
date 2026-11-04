@@ -171,11 +171,17 @@ and in `microwave/microwave.toml` under `[mcp.organizations.e2e]`.
 
 ## Console
 
-`cinc-console` is the official Cinc Console web UI at
-<http://127.0.0.1:18081>. The URLs below use that default; if you set
-`MW_CONSOLE_PORT`, substitute the new port. The seed creates the demo login
-`e2e-console` by default, with the password `e2e-console-password`; both are
-fixtures, not production credentials.
+`cinc-console` is the official [Cinc Console](https://github.com/cinc-project/cinc-console)
+web UI at <http://127.0.0.1:18081>. The browser logs in here, and the console
+then acts on the server as that user while the server enforces the user's
+ACLs. This fixture runs it without TLS against the seeded demo login; see
+[Connecting cinc-console](../docs/deployment.md#connecting-cinc-console) for
+the production shape (reverse proxy, secret files, cookie and CA settings).
+
+The URLs below use the `18081` default; if you set `MW_CONSOLE_PORT`,
+substitute the new port. The seed creates the demo login `e2e-console` by
+default, with the password `e2e-console-password`; both are fixtures, not
+production credentials.
 
 The root URL answers `307` to `/login` while no session exists. After logging
 in, the organization pages live under `/orgs/<org>`, for example `/orgs/e2e`

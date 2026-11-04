@@ -253,8 +253,8 @@ console:
    Prefer this over copying the materialized file: the file is a convenience
    copy, and right after a rotation it still holds the old key until the next
    restart.
-4. Point cinc-console at that key and remove `pivotal.pem` from its
-   configuration.
+4. Connect cinc-console to the server and remove `pivotal.pem` from its
+   configuration; see [Connecting cinc-console](#connecting-cinc-console).
 
 The metadata store is the source of truth. The materialized files are
 rewritten from it on every start, so deleting or editing them does not change
@@ -295,6 +295,90 @@ The key can impersonate any existing user it names, so protect it like
 full backup (snapshots need `--include-secrets`). The name `webui` is used as
 the request's key name, so a user-owned key literally named `webui` cannot be
 renamed while impersonating.
+
+#### Connecting cinc-console
+
+[cinc-console](https://github.com/cinc-project/cinc-console) is the official
+browser UI for a Cinc/Chef Infra Server: nodes, roles, environments, data bags,
+members and groups, gated by the server's own ACLs. It is a separate Next.js
+container. The browser logs in to the console; the console keeps the WebUI
+private key server-side and signs every subsequent request with it while
+carrying the logged-in user's identity and `X-Ops-Request-Source: web`. The
+server applies that user's permissions, so the console never makes its own
+authorization decisions. Sessions are encrypted cookies and hold only the
+username, so the console is stateless and can run behind a load balancer.
+
+One login call is special: `POST /authenticate_user` needs an actor that may
+globally create, so `CINC_AUTH_ACTOR` names one (the console still signs with
+the WebUI key, not the actor's own key). On microwave use `pivotal`, which
+always exists and always has a key.
+
+Minimal Compose service; mount both secrets as files and keep the console off
+the public interface unless a reverse proxy terminates TLS in front of it:
+
+```yaml
+services:
+  cinc-console:
+    image: ghcr.io/cinc-project/cinc-console:0.9.0
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /app/.next/cache:size=128m,mode=1777
+    environment:
+      CINC_SERVER_URL: https://chef.example.com
+      CINC_WEBUI_KEY_FILE: /run/secrets/webui_priv.pem
+      SESSION_SECRET_FILE: /run/secrets/session_secret
+      SESSION_COOKIE_SECURE: "true"
+      CINC_AUTH_ACTOR: pivotal
+      NODE_ENV: production
+    volumes:
+      - ./secrets/webui_priv.pem:/run/secrets/webui_priv.pem:ro
+      - ./secrets/session_secret:/run/secrets/session_secret:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+```
+
+Steps:
+
+1. Create a normal user with a password and add it to the organization; that
+   user logs in to the console. Users without a key cannot be used directly as
+   the login actor, hence the `pivotal` actor above.
+2. Export the private key rather than copying the materialized file (the file
+   is stale after a rotation), and generate a session secret of at least 32
+   characters. Both files must be readable by uid/gid 1000:
+
+   ```sh
+   install -d -m 0700 secrets
+   microwave-ctl --config /etc/microwave/microwave.toml \
+     show-secret webui private_key > secrets/webui_priv.pem
+   openssl rand -base64 32 > secrets/session_secret
+   chown 1000:1000 secrets/webui_priv.pem secrets/session_secret
+   chmod 0600 secrets/webui_priv.pem secrets/session_secret
+   ```
+
+3. Set `CINC_SERVER_URL` to the server root only. The console covers every
+   organization and builds `/organizations/<org>/…` itself; a URL with an
+   organization path makes every call 404.
+4. Match TLS reality: keep `SESSION_COOKIE_SECURE=true` behind HTTPS and set
+   it to `false` only for a deliberate plain-HTTP setup. For a self-signed
+   server certificate, give the console `CINC_CA_CERT_FILE` (or
+   `CINC_SSL_NO_VERIFY=true` in development). `SESSION_TTL_SECONDS` defaults to
+   `28800`.
+5. Rotate as described above: stop the console, rotate the key, restart the
+   server, re-export the file, then start the console. A console holding the
+   old key answers logins with `500` and server calls with `401`. Health
+   endpoints stay green throughout because they do not touch the server.
+
+The console presents the session cookie as `HttpOnly` and `SameSite=Lax`; the
+`Secure` flag follows `SESSION_COOKIE_SECURE`. Every request it signs is the
+logged-in user's, so a `403` in the UI is the server's decision, not a console
+bug. Editing cookbook or policy content and uploading cookbooks remain out of
+scope; clients can be created and deleted but not edited.
 
 #### Organization policy
 
