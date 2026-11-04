@@ -29,7 +29,7 @@ NODE_NAMES="${NODE_NAMES:-node-debian node-ubuntu node-fedora node-amazon}"
 # Demo console login. Fixture credentials, not production.
 CONSOLE_USER="${MW_CONSOLE_USER:-e2e-console}"
 CONSOLE_PASSWORD="${MW_CONSOLE_PASSWORD:-e2e-console-password}"
-CONSOLE_EMAIL="${MW_CONSOLE_EMAIL:-e2e-console@example.com}"
+CONSOLE_EMAIL="${MW_CONSOLE_EMAIL:-${CONSOLE_USER}@example.com}"
 
 SHARED=/shared
 DATA=/mw-data
@@ -110,13 +110,29 @@ ssl_verify_mode :verify_none
 EOF
 
 # ---- 3. Console demo user --------------------------------------------------
-# Recreate on every run so the documented password stays true. Absence on the
-# first run is not an error.
+# knife's "only admin" guard ignores `pivotal`, so the console user is always
+# the sole *counted* admin on this fixture stack and `-R` alone would refuse
+# the delete. Take the user out of the group first, then delete with `-R` so
+# the org membership goes too. Absence on the first run is not an error.
+remove_console_user() {
+    knife group remove user "$1" admins --config "$SHARED/knife.rb" >/dev/null 2>&1 || true
+    knife user delete "$1" --remove-from-admin-groups -y \
+        --config "$SHARED/knife-server.rb" >/dev/null 2>&1 || true
+}
+
+# A previous run may have used another name. Remove it so an override replaces
+# the account instead of leaving a second admin with the default password.
+if [ -f "$SHARED/seed-summary.txt" ]; then
+    prev_console_user="$(sed -n 's/^console_user: //p' "$SHARED/seed-summary.txt" | tail -1)"
+    if [ -n "$prev_console_user" ] && [ "$prev_console_user" != "$CONSOLE_USER" ]; then
+        log "removing previous console user $prev_console_user"
+        remove_console_user "$prev_console_user"
+    fi
+fi
+
+# Recreate on every run so the documented password stays true.
 log "resetting console user $CONSOLE_USER"
-# knife refuses to delete an org's only admin while it sits in the admins group,
-# so take the user out of the group first. Absence on the first run is fine.
-knife group remove user "$CONSOLE_USER" admins --config "$SHARED/knife.rb" >/dev/null 2>&1 || true
-knife user delete "$CONSOLE_USER" -y --config "$SHARED/knife-server.rb" >/dev/null 2>&1 || true
+remove_console_user "$CONSOLE_USER"
 knife user create "$CONSOLE_USER" \
     --email "$CONSOLE_EMAIL" \
     --password "$CONSOLE_PASSWORD" \
