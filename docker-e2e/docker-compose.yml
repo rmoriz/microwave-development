@@ -9,7 +9,8 @@
 #                  uploads them, creates the role, writes client config
 #   console-key  - copies the WebUI private key out of the data volume for the
 #                  console user
-#   cinc-console - browser UI for the stack, key read-only from console-key
+#   cinc-console - browser UI for the stack, logged in with the seeded demo
+#                  user
 #   node-debian  - Debian node running Cinc Client against the role
 #   node-ubuntu  - Ubuntu node running Cinc Client against the role
 #   node-fedora  - Fedora node running Cinc Client against the role

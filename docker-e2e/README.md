@@ -170,9 +170,10 @@ and in `microwave/microwave.toml` under `[mcp.organizations.e2e]`.
 ## Console
 
 `cinc-console` is the official Cinc Console web UI at
-<http://127.0.0.1:18081>. The seed creates the demo login `e2e-console` with
-the password `e2e-console-password`; both are fixtures, not production
-credentials.
+<http://127.0.0.1:18081>. The URLs below use that default; if you set
+`MW_CONSOLE_PORT`, substitute the new port. The seed creates the demo login
+`e2e-console` with the password `e2e-console-password`; both are fixtures, not
+production credentials.
 
 The root URL answers `307` to `/login` while no session exists. After logging
 in, the organization pages live under `/orgs/<org>`, for example `/orgs/e2e`
@@ -186,12 +187,17 @@ data volume.
 
 The service runs as uid 1000 on a read-only root filesystem with all
 capabilities dropped, and publishes only on `127.0.0.1`. Its health endpoint
-is `http://127.0.0.1:18081/api/healthz`.
+is `http://127.0.0.1:<MW_CONSOLE_PORT>/api/healthz`.
 
 Overrides: `MW_CONSOLE_PORT` moves the host port; `MW_CONSOLE_USER`,
-`MW_CONSOLE_PASSWORD`, and `MW_CONSOLE_EMAIL` change the seeded login;
-`MW_CONSOLE_SESSION_SECRET` changes the session signing secret (keep the fixed
-default so a restart keeps sessions); `CINC_CONSOLE_IMAGE` changes the image.
+`MW_CONSOLE_PASSWORD`, and `MW_CONSOLE_EMAIL` change the seeded login, but only
+on the next seed run (`docker compose up -d seed`, or a full `up`); changing
+them on a running stack alone changes nothing.
+`MW_CONSOLE_SESSION_SECRET` changes the session signing secret; the console
+rejects anything shorter than 32 characters. The shipped default is a fixture,
+just like the login; override it with at least 32 characters for anything but
+local use. Keep one fixed value if sessions should survive a restart.
+`CINC_CONSOLE_IMAGE` changes the image.
 
 ## Configuration
 
@@ -274,10 +280,13 @@ default so a restart keeps sessions); `CINC_CONSOLE_IMAGE` changes the image.
   client side.
 - **Console key rotation.** `rotate-credentials webui` changes the stored
   keypair, and a server restart materializes the new key. The console then
-  keeps the old copy in the `console-key` volume until `docker compose up`
-  re-runs that service, and it reads the key only at boot, so restart
-  `cinc-console` afterwards. Existing console sessions keep working, but every
-  server call fails with `401` while the console holds the old key.
+  keeps the old copy in the `console-key` volume until
+  `docker compose up -d console-key` re-runs that service, and it reads the key
+  only at boot, so restart `cinc-console` afterwards. Existing console sessions
+  keep working, but every server call fails with `401` while the console holds
+  the old key. A **full** `docker compose up -d` also works, but it re-runs the
+  seed, writes a new `run-id`, and makes every node re-register and
+  re-converge, so it is the heavier option, not the default recovery.
 - **Repeated runs.** A validator may create clients but not update them.
   `chef-client` turns the resulting `409 Client already exists` into a `PUT`,
   which the validator is not allowed to do, so a node whose previous converge
