@@ -196,6 +196,8 @@ counters and are queried with `rate()`.
 | `microwave.store.operation.duration` | histogram (s) | `db.system`, `db.operation`, `outcome` | `microwave_store_operation_duration_seconds` | `outcome` is `ok`, `error` or `cancelled` (guard dropped before finishing) |
 | `microwave.search.request.duration` | histogram (s) | `backend`, `outcome` | `microwave_search_request_duration_seconds` | — |
 | `microwave.object_store.request.duration` | histogram (s) | `backend`, `operation`, `outcome` | `microwave_object_store_request_duration_seconds` | — |
+| `microwave.limits.requests` | counter | `scope`, `outcome`, `microwave.organization` | `microwave_server_limits_total` | `microwave_server_limits_total` (`scope`, `org`, `outcome`) |
+| `microwave.limits.in_flight` | observable gauge | `scope` | `microwave_server_limits_in_flight` | `microwave_server_limits_in_flight` |
 
 `http.route` is a route template, never a path with IDs, so the label set stays
 bounded. `http.response.status_code` is the exact code, so `401`, `403`, `404`
@@ -269,10 +271,12 @@ attribute, so a dashboard that reads both should not mix them up.
 
 ## Cardinality
 
-`route × method × status × org` is the series set of the request histogram.
-Method and status are bounded by the protocol, the route is a template, and the
-organization count is bounded by the deployment. Object names, node names,
-client names and cookbook names are never labels for that reason.
+`route × method × status × org` is the series set of the request histogram and
+`scope × outcome × org` the one of the limit counter; `scope` and `outcome` are
+fixed enumerations and the in-flight gauge has no `org`. Method and status are
+bounded by the protocol, the route is a template, and the organization count is
+bounded by the deployment. Object names, node names, client names and cookbook
+names are never labels for that reason.
 
 Both sinks enforce a hard per-instrument limit: `2,000` series for every
 instrument, `10,000` for `http.server.request.duration`, which multiplies route

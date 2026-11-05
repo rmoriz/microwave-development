@@ -37,13 +37,18 @@ async fn handle(
     };
     // Org and principal stay bounded even on the MCP surface; the still
     // running `rmcp` service keeps both permits for the whole call.
-    let (_org_permit, _principal_permit) =
-        match crate::limits::layer::check_org_principal(&state, Some(&ctx.org), &ctx.principal)
-            .await
-        {
-            Ok(permits) => permits,
-            Err(response) => return response,
-        };
+    let log = crate::limits::layer::RejectionLog::of(&request);
+    let (_org_permit, _principal_permit) = match crate::limits::layer::check_org_principal(
+        &state,
+        &log,
+        Some(&ctx.org),
+        &ctx.principal,
+    )
+    .await
+    {
+        Ok(permits) => permits,
+        Err(response) => return response,
+    };
     let config = server_config(&state);
     let service: StreamableHttpService<McpServer, LocalSessionManager> = StreamableHttpService::new(
         move || Ok(McpServer::new(ctx.clone())),

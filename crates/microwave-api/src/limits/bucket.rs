@@ -50,17 +50,25 @@ impl Bucket {
 }
 
 struct Entry {
-    bucket: Mutex<Bucket>,
-    in_flight: Arc<Semaphore>,
+    state: Mutex<EntryState>,
     busy: AtomicUsize,
     last_seen: Mutex<Instant>,
+}
+
+struct EntryState {
+    bucket: Bucket,
+    in_flight: Arc<Semaphore>,
+    capacity: usize,
 }
 
 impl Entry {
     fn new(burst: f64, in_flight: usize, now: Instant) -> Self {
         Self {
-            bucket: Mutex::new(Bucket::full(burst, now)),
-            in_flight: Arc::new(Semaphore::new(in_flight.min(Semaphore::MAX_PERMITS))),
+            state: Mutex::new(EntryState {
+                bucket: Bucket::full(burst, now),
+                in_flight: Arc::new(Semaphore::new(in_flight.min(Semaphore::MAX_PERMITS))),
+                capacity: in_flight,
+            }),
             busy: AtomicUsize::new(0),
             last_seen: Mutex::new(now),
         }
@@ -72,6 +80,31 @@ impl Entry {
 
     fn last_seen(&self) -> Instant {
         *lock(&self.last_seen)
+    }
+
+    /// Apply a quota that changed after the entry was created.
+    ///
+    /// The bookshelf gate passes no override name when the org row is missing,
+    /// so the same key can be acquired with the default and later with the
+    /// configured quota. A rebuilt semaphore starts empty; permits still held
+    /// on the old one keep counting there until they drop.
+    fn retune(&self, burst: f64, in_flight: usize) {
+        let mut state = lock(&self.state);
+        if state.bucket.burst != burst {
+            // A raised burst also hands out the extra tokens, so a new
+            // override takes effect on the next request instead of after the
+            // old bucket has refilled.
+            state.bucket.tokens = if burst > state.bucket.burst {
+                (state.bucket.tokens + (burst - state.bucket.burst)).min(burst)
+            } else {
+                state.bucket.tokens.min(burst)
+            };
+            state.bucket.burst = burst;
+        }
+        if state.capacity != in_flight {
+            state.capacity = in_flight;
+            state.in_flight = Arc::new(Semaphore::new(in_flight.min(Semaphore::MAX_PERMITS)));
+        }
     }
 }
 
@@ -87,7 +120,11 @@ impl Slot {
 
     /// Semaphore the caller waits on for an in-flight slot.
     pub fn in_flight(&self) -> Arc<Semaphore> {
-        self.0.in_flight.clone()
+        lock(&self.0.state).in_flight.clone()
+    }
+
+    fn take(&self, rate_per_second: f64, now: Instant) -> Result<(), BucketRejection> {
+        lock(&self.0.state).bucket.try_take(rate_per_second, now)
     }
 }
 
@@ -127,12 +164,13 @@ impl<K: Hash + Eq + Clone> ShardedMap<K> {
     }
 
     fn with_shards(max_entries: usize, shards: usize) -> Self {
+        let shards = shards.max(1);
         Self {
             shards: (0..shards)
                 .map(|_| Mutex::new(HashMap::new()))
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
-            shard_capacity: max_entries.div_ceil(SHARDS).max(1),
+            shard_capacity: max_entries.div_ceil(shards).max(1),
         }
     }
 
@@ -156,6 +194,7 @@ impl<K: Hash + Eq + Clone> ShardedMap<K> {
             .or_insert_with(|| Arc::new(Entry::new(spec.burst, in_flight, now)))
             .clone();
         *lock(&entry.last_seen) = now;
+        entry.retune(spec.burst, in_flight);
 
         if shard.len() > self.shard_capacity {
             self.evict(&mut shard, &key);
@@ -165,8 +204,8 @@ impl<K: Hash + Eq + Clone> ShardedMap<K> {
         let in_flight = slot.in_flight();
         drop(shard);
 
-        let taken = lock(&slot.0.bucket).try_take(spec.rate_per_second, now);
-        taken.map(|()| (slot, in_flight))
+        slot.take(spec.rate_per_second, now)
+            .map(|()| (slot, in_flight))
     }
 
     /// Drop roughly the oldest tenth of a shard, but only idle entries and
@@ -263,7 +302,7 @@ mod tests {
 
     #[test]
     fn eviction_removes_the_oldest_idle_entry_and_keeps_a_busy_one() {
-        let map = ShardedMap::<u32>::with_shards(16, 1);
+        let map = ShardedMap::<u32>::with_shards(1, 1);
         let spec = spec(100.0, 100.0);
         let now = Instant::now();
 
@@ -289,6 +328,29 @@ mod tests {
 
         assert_eq!(map.len(), 3);
         assert!(map.len() > 1);
+    }
+
+    #[test]
+    fn a_changed_burst_applies_to_a_live_entry() {
+        let map = ShardedMap::<u32>::new(100);
+        let now = Instant::now();
+        let _first = map.acquire(1, spec(10.0, 1.0), 1, now).unwrap().0;
+        assert!(map.acquire(1, spec(10.0, 1.0), 1, now).is_err());
+
+        // A wider burst takes effect on the entry that already exists.
+        assert!(map.acquire(1, spec(10.0, 5.0), 1, now).is_ok());
+    }
+
+    #[test]
+    fn a_changed_in_flight_cap_rebuilds_the_semaphore() {
+        let map = ShardedMap::<u32>::with_shards(16, 1);
+        let now = Instant::now();
+        let (slot, semaphore) = map.acquire(1, spec(10.0, 10.0), 1, now).unwrap();
+        assert_eq!(semaphore.available_permits(), 1);
+        drop(slot);
+
+        let (_, semaphore) = map.acquire(1, spec(10.0, 10.0), 3, now).unwrap();
+        assert_eq!(semaphore.available_permits(), 3);
     }
 
     #[test]

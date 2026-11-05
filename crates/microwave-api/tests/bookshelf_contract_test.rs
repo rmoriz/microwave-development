@@ -322,3 +322,12 @@ async fn bodies_over_the_configured_limit_are_rejected_before_the_handler() {
     let response = send(&app, "PUT", &object_path(&checksum, "PUT"), &contents).await;
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
+
+#[tokio::test]
+async fn an_unsupported_method_stays_a_405() {
+    let app = support::app(support::state_with_pivotal());
+    let checksum = md5_hex(b"no method");
+    let response = send(&app, "POST", &object_path(&checksum, "PUT"), b"").await;
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert!(response.headers().contains_key(header::ALLOW));
+}

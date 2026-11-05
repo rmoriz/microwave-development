@@ -39,12 +39,29 @@ superuser_name = "load-superuser"
 max_concurrent = 4
 
 [limits]
-# Above the default 32 so the reference concurrency reaches the database
-# instead of the admission cap; over-limit requests still answer 503.
+# The gates stay on, but every bucket is far wider than the production default
+# so the run measures the database instead of the limiter. The global cap is
+# the one bound left in place: it keeps 5000 actors from opening 5000
+# concurrent database requests. The driver runs in one container, so every
+# request shares one source bucket.
 queue_timeout_ms = 1500
 
 [limits.global]
 in_flight = 64
+
+[limits.source]
+rate_per_second = 20000
+burst = 50000
+
+[limits.org]
+rate_per_second = 5000
+burst = 20000
+in_flight = 256
+
+[limits.principal]
+rate_per_second = 100
+burst = 200
+in_flight = 8
 
 [data_collector]
 store = "local"

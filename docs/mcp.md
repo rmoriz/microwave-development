@@ -206,6 +206,13 @@ behaviour.
 | `mcp.max_result_bytes`<br/>`MW_MCP__MAX_RESULT_BYTES` | Default `1048576` (1 MiB). Clamped to 1 KiB-16 MiB. A larger serialized result is an error, never truncated. |
 | `mcp.max_upload_bytes`<br/>`MW_MCP__MAX_UPLOAD_BYTES` | Default `10485760` (10 MiB). Clamped to 1 byte-250 MiB. Caps decoded cookbook upload bytes; see [Cookbook upload](#cookbook-upload). |
 
+These are result bounds. Request pressure is bounded separately: after a token
+authenticates, a call consumes the same organization and principal buckets as a
+signed request, and a rejection answers `503` with `Retry-After`. A bad token
+consumes nothing. See
+[How request limits isolate organizations](deployment.md#how-request-limits-isolate-organizations)
+for the knobs.
+
 #### Host and origin checks
 
 Both lists are comma-separated and drive the checks described in

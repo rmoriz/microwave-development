@@ -305,7 +305,8 @@ enabled = false
 # path = "/etc/microwave/required_recipe.rb"
 
 # In-memory request limits, per process. Off disables every gate. Replicas
-# share no counter; size per instance. See docs/deployment.md, "Request limits".
+# share no counter; size per instance. See docs/deployment.md, "How request
+# limits isolate organizations".
 # Violations answer 503 with Retry-After so Cinc retries them.
 # [limits]
 # enabled = true

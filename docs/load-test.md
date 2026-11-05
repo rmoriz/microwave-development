@@ -269,17 +269,23 @@ value.
 
 ## Limit 503s
 
-The stack raises `limits.global.in_flight` to 64, above the server default of
-32, so the reference concurrency reaches the database instead of the admission
-cap. A request above that bound answers `503 Server is overloaded. Retry
-later.` and is retried like a solver `503`. The report keeps the two apart: a
-limit rejection increments the `limits 503s` column of its endpoint, never the
-`solver 503s` column.
+The gates stay enabled, but the stack raises every bucket far above the
+production default so the run measures the database, not the limiter: one
+source bucket (`rate_per_second = 20000`), one org (`5000/s`, `in_flight =
+256`) and only the global admission cap at 64 remain in place. That cap keeps
+5,000 actors from opening 5,000 concurrent database requests.
 
-A non-zero `limits 503s` column means the admission cap bound the run, not the
-database. Raise `MW_LIMITS_GLOBAL_IN_FLIGHT` in the same step and compare only
-against runs with the same value. A rejected request that exhausts the retry
-budget stops its node like any other final failure.
+A request above a bound answers `503 Server is overloaded. Retry later.` and is
+retried like a solver `503`. The report keeps the two apart: a limit rejection
+increments the `limits 503s` column of its endpoint, never the `solver 503s`
+column.
+
+A non-zero `limits 503s` column means a limit bound the run, not the database.
+Check which knob fits — `MW_LIMITS_GLOBAL_IN_FLIGHT` for the admission cap, the
+`MW_LIMITS_SOURCE_*` and `MW_LIMITS_ORG_*` values otherwise — raise it in the
+same step and compare only against runs with the same value. A rejected
+request that exhausts the retry budget stops its node like any other final
+failure.
 
 ## Where the evidence is
 

@@ -1082,11 +1082,6 @@ async fn authenticate_signed(
             )));
         }
     }
-    let (_org_permit, _principal_permit) =
-        match crate::limits::layer::check_org_principal(&state, org.as_ref(), &principal).await {
-            Ok(permits) => permits,
-            Err(response) => return Ok(response),
-        };
     let mut action_meta = if state.actions.is_enabled()
         && crate::actions::is_candidate(parts.method.as_str(), &path)
     {
@@ -1109,6 +1104,14 @@ async fn authenticate_signed(
         }
     }
     let mut request = axum::extract::Request::from_parts(parts, axum::body::Body::from(body_bytes));
+    let log = crate::limits::layer::RejectionLog::of(&request);
+    let (_org_permit, _principal_permit) =
+        match crate::limits::layer::check_org_principal(&state, &log, org.as_ref(), &principal)
+            .await
+        {
+            Ok(permits) => permits,
+            Err(response) => return Ok(response),
+        };
     request
         .extensions_mut()
         .insert(crate::state::ApiVersion(api_version));
@@ -1254,7 +1257,7 @@ fn authorization_lines(headers: &HeaderMap) -> Result<Vec<&str>, ApiError> {
 
 /// Liveness and metrics endpoints remain available while the API is drained
 /// for maintenance, and so does the version manifest nginx answers itself.
-pub(crate) fn is_maintenance_exempt(path: &str) -> bool {
+fn is_maintenance_exempt(path: &str) -> bool {
     path == "/_status" || path == "/_stats" || path == "/version"
 }
 

@@ -1355,14 +1355,14 @@ impl LimitsConfig {
             ));
         }
         self.source
-            .validate("limits.source")
-            .map_err(|field| (format!("limits.source.{field}"), String::new()))?;
+            .validate()
+            .map_err(|(field, value)| (format!("limits.source.{field}"), value))?;
         self.org
-            .validate("limits.org")
-            .map_err(|field| (format!("limits.org.{field}"), String::new()))?;
+            .validate()
+            .map_err(|(field, value)| (format!("limits.org.{field}"), value))?;
         self.principal
-            .validate("limits.principal")
-            .map_err(|field| (format!("limits.principal.{field}"), String::new()))?;
+            .validate()
+            .map_err(|(field, value)| (format!("limits.principal.{field}"), value))?;
         for (name, over) in &self.organizations {
             if !valid_org_name(name) {
                 return Err((format!("limits.organizations.{name}"), name.clone()));
@@ -1420,12 +1420,12 @@ pub struct LimitsRateConfig {
 }
 
 impl LimitsRateConfig {
-    fn validate(&self, _scope: &str) -> Result<(), String> {
+    fn validate(&self) -> Result<(), (&'static str, String)> {
         if self.rate_per_second == 0 {
-            return Err("rate_per_second".into());
+            return Err(("rate_per_second", self.rate_per_second.to_string()));
         }
         if self.burst == 0 {
-            return Err("burst".into());
+            return Err(("burst", self.burst.to_string()));
         }
         Ok(())
     }
@@ -1449,15 +1449,15 @@ pub struct LimitsOrgConfig {
 }
 
 impl LimitsOrgConfig {
-    fn validate(&self, _scope: &str) -> Result<(), String> {
+    fn validate(&self) -> Result<(), (&'static str, String)> {
         if self.rate_per_second == 0 {
-            return Err("rate_per_second".into());
+            return Err(("rate_per_second", self.rate_per_second.to_string()));
         }
         if self.burst == 0 {
-            return Err("burst".into());
+            return Err(("burst", self.burst.to_string()));
         }
         if self.in_flight == 0 {
-            return Err("in_flight".into());
+            return Err(("in_flight", self.in_flight.to_string()));
         }
         Ok(())
     }
@@ -1482,15 +1482,15 @@ pub struct LimitsPrincipalConfig {
 }
 
 impl LimitsPrincipalConfig {
-    fn validate(&self, _scope: &str) -> Result<(), String> {
+    fn validate(&self) -> Result<(), (&'static str, String)> {
         if self.rate_per_second == 0 {
-            return Err("rate_per_second".into());
+            return Err(("rate_per_second", self.rate_per_second.to_string()));
         }
         if self.burst == 0 {
-            return Err("burst".into());
+            return Err(("burst", self.burst.to_string()));
         }
         if self.in_flight == 0 {
-            return Err("in_flight".into());
+            return Err(("in_flight", self.in_flight.to_string()));
         }
         Ok(())
     }

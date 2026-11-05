@@ -13,7 +13,7 @@ pub(crate) enum IpKey {
 
 impl From<IpAddr> for IpKey {
     fn from(address: IpAddr) -> Self {
-        match address {
+        match address.to_canonical() {
             IpAddr::V4(address) => Self::V4(u32::from(address)),
             IpAddr::V6(address) => Self::V6((u128::from(address) >> 64) as u64),
         }
@@ -49,7 +49,7 @@ pub(crate) fn client_ip(request: &Request, trusted: &[String]) -> Option<IpAddr>
     }
     let forwarded = request.headers().get("x-forwarded-for")?.to_str().ok()?;
     for entry in forwarded.rsplit(',').map(str::trim) {
-        let Ok(address) = entry.parse::<IpAddr>() else {
+        let Some(address) = hop_address(entry) else {
             return Some(peer.ip());
         };
         if !peer_is_trusted(SocketAddr::new(address, 0), trusted) {
@@ -57,6 +57,14 @@ pub(crate) fn client_ip(request: &Request, trusted: &[String]) -> Option<IpAddr>
         }
     }
     Some(peer.ip())
+}
+
+/// One `X-Forwarded-For` entry, with or without a port.
+fn hop_address(entry: &str) -> Option<IpAddr> {
+    if let Ok(address) = entry.parse::<IpAddr>() {
+        return Some(address);
+    }
+    entry.parse::<SocketAddr>().ok().map(|entry| entry.ip())
 }
 
 #[cfg(test)]
@@ -117,11 +125,28 @@ mod tests {
     }
 
     #[test]
+    fn a_forwarded_entry_may_carry_a_port() {
+        let peer: IpAddr = "127.0.0.1".parse().unwrap();
+        let trusted = vec!["127.0.0.1".to_string()];
+        assert_eq!(
+            client(peer, Some("1.2.3.4:443, 127.0.0.1:80"), &trusted),
+            Some("1.2.3.4".parse().unwrap())
+        );
+    }
+
+    #[test]
     fn ipv6_keys_on_the_64_bit_prefix() {
         let a: IpAddr = "2001:db8:1:2::1".parse().unwrap();
         let b: IpAddr = "2001:db8:1:2::ffff".parse().unwrap();
         let c: IpAddr = "2001:db8:1:3::1".parse().unwrap();
         assert_eq!(IpKey::from(a), IpKey::from(b));
         assert_ne!(IpKey::from(a), IpKey::from(c));
+    }
+
+    #[test]
+    fn an_ipv4_mapped_address_shares_the_ipv4_bucket() {
+        let mapped: IpAddr = "::ffff:198.51.100.7".parse().unwrap();
+        let plain: IpAddr = "198.51.100.7".parse().unwrap();
+        assert_eq!(IpKey::from(mapped), IpKey::from(plain));
     }
 }

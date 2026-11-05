@@ -440,6 +440,28 @@ required once it is on. See [Mail (SMTP)](#mail-smtp).
 | `mail.hello_name`<br/>`MW_MAIL__HELLO_NAME` | Unset by default. EHLO/HELO name. When unset the mail library's default is used. |
 | `mail.tls_ca_path`<br/>`MW_MAIL__TLS_CA_PATH` | Unset by default. Extra PEM CA certificate used to verify a relay with a private CA; system roots remain trusted. Read when the mailer is built at startup, so an unreadable or unparseable file fails startup. |
 
+#### Request limits
+
+Process-local admission, source, org, and principal buckets. Enabled by
+default; `limits.enabled = false` turns every gate into a no-op at runtime. See
+[How request limits isolate organizations](#how-request-limits-isolate-organizations).
+
+| Setting | Details |
+|---|---|
+| `limits.enabled`<br/>`MW_LIMITS__ENABLED` | Default `true`. Master switch for every gate. |
+| `limits.queue_timeout_ms`<br/>`MW_LIMITS__QUEUE_TIMEOUT_MS` | Default `1500`. Longest wait for a free in-flight slot before `503`; `0` fails immediately. |
+| `limits.max_entries`<br/>`MW_LIMITS__MAX_ENTRIES` | Default `10000`. Upper bound per bucket map, divided across 16 shards. At least `100`. Busy entries are never evicted, so a map can briefly exceed the bound. |
+| `limits.global.in_flight`<br/>`MW_LIMITS__GLOBAL__IN_FLIGHT` | Default `32`. Concurrent requests admitted per process. Keep it below the DB pool and worker capacity. |
+| `limits.source.rate_per_second`<br/>`MW_LIMITS__SOURCE__RATE_PER_SECOND` | Default `500`. Requests per second per client address before authentication. |
+| `limits.source.burst`<br/>`MW_LIMITS__SOURCE__BURST` | Default `1000`. Short burst per client address. |
+| `limits.org.rate_per_second`<br/>`MW_LIMITS__ORG__RATE_PER_SECOND` | Default `200`. Sustained requests per second for one organization across all its principals. |
+| `limits.org.burst`<br/>`MW_LIMITS__ORG__BURST` | Default `400`. Burst for one organization. |
+| `limits.org.in_flight`<br/>`MW_LIMITS__ORG__IN_FLIGHT` | Default `16`. Concurrent requests per organization. |
+| `limits.principal.rate_per_second`<br/>`MW_LIMITS__PRINCIPAL__RATE_PER_SECOND` | Default `20`. Sustained requests per second for one principal, deliberately below the org rate. |
+| `limits.principal.burst`<br/>`MW_LIMITS__PRINCIPAL__BURST` | Default `40`. Burst for one principal. |
+| `limits.principal.in_flight`<br/>`MW_LIMITS__PRINCIPAL__IN_FLIGHT` | Default `4`. Concurrent requests per principal. |
+| `limits.organizations.<name>` | Unset by default. Per-organization override of `rate_per_second`, `burst`, and `in_flight`; only set keys win. The name follows the organization naming rules. |
+
 #### Key cache, Data Collector and integrations
 
 Background services and the optional Automate integrations. Forwarding,
@@ -740,7 +762,7 @@ link and is unsafe for production.
 Email-change verification and organization invitation mail are not implemented
 in this slice.
 
-### Request limits
+### How request limits isolate organizations
 
 The server keeps every limit in process memory. They exist so one noisy client
 cannot starve its own organization, another organization, or the process
@@ -771,24 +793,10 @@ The source bucket reads `X-Forwarded-For` only when the immediate peer is
 listed in `server.trusted_proxies`; it walks the header from the right and uses
 the rightmost address that is not itself trusted, so a client-supplied prefix
 cannot bypass it. IPv6 clients are bucketed by their `/64`, so rotating through
-a subnet does not multiply a client's quota.
+a subnet does not multiply a client's quota. The full key list is in the
+[configuration index](#request-limits).
 
-| Setting | Details |
-|---|---|
-| `limits.enabled`<br/>`MW_LIMITS__ENABLED` | Default `true`. `false` turns every gate into a no-op without a restart-only workaround. |
-| `limits.queue_timeout_ms`<br/>`MW_LIMITS__QUEUE_TIMEOUT_MS` | Default `1500`. Longest wait for a free in-flight slot before `503`. `0` fails immediately. |
-| `limits.max_entries`<br/>`MW_LIMITS__MAX_ENTRIES` | Default `10000`. Upper bound per bucket map, divided across 16 shards. Must be at least `100`. Busy entries are never evicted, so a map can briefly exceed the bound. |
-| `limits.global.in_flight`<br/>`MW_LIMITS__GLOBAL__IN_FLIGHT` | Default `32`. Concurrent requests admitted per process. Keep it below the DB pool and worker capacity. |
-| `limits.source.rate_per_second`<br/>`MW_LIMITS__SOURCE__RATE_PER_SECOND` | Default `500`. Requests per second per client address before authentication. |
-| `limits.source.burst`<br/>`MW_LIMITS__SOURCE__BURST` | Default `1000`. Short burst allowed per client address. |
-| `limits.org.rate_per_second`<br/>`MW_LIMITS__ORG__RATE_PER_SECOND` | Default `200`. Sustained requests per second for one organization across all its principals. |
-| `limits.org.burst`<br/>`MW_LIMITS__ORG__BURST` | Default `400`. Burst for one organization. |
-| `limits.org.in_flight`<br/>`MW_LIMITS__ORG__IN_FLIGHT` | Default `16`. Concurrent requests per organization. |
-| `limits.principal.rate_per_second`<br/>`MW_LIMITS__PRINCIPAL__RATE_PER_SECOND` | Default `20`. Sustained requests per second for one principal, deliberately below the org rate. |
-| `limits.principal.burst`<br/>`MW_LIMITS__PRINCIPAL__BURST` | Default `40`. Burst for one principal. |
-| `limits.principal.in_flight`<br/>`MW_LIMITS__PRINCIPAL__IN_FLIGHT` | Default `4`. Concurrent requests per principal. |
-
-`limits.organizations.<name>` overrides the org socket for one organization,
+`limits.organizations.<name>` overrides the org quota for one organization,
 matched on the organization name. Only set keys win; unset keys keep the
 default. Bookkeeping stays on the internal org ID, so overrides and plain
 requests share one bucket for that organization.
@@ -818,7 +826,7 @@ rate_per_second = 50
 in_flight = 8
 ```
 
-`check-config` rejects zero rates, burst, or in-flight values, an
+`check-config` rejects zero values for rates, burst, and in-flight, a
 `max_entries` below `100`, and invalid organization names.
 
 The decisions are counted on `/_stats` and over OTLP as
@@ -2325,7 +2333,7 @@ Metric export to an OpenTelemetry collector, and the `otel` object of
 | Endpoint | Auth | Purpose |
 |---|---|---|
 | `GET /_status` | none | `{"status":"pong","upstreams":{"chef_sql":"pong","chef_index":"pong","bookshelf":"pong"},"upstream_details":{...},"keygen":{"status":"ok","cached":3,"capacity":3,"workers":1,"worker_healthy":true,"worker_failures":0,"warm_up_failures":0,"generated_on_demand":0},"indexing":{"mode":"embedded"}}`. |
-| `GET /_stats` | none | Request counters, authentication failures, uptime, maintenance state, node count, and the `otel` object: `enabled`, the endpoint without credentials (`null` while disabled), and `last_export_error`. JSON by default, Prometheus text with `Accept: text/plain` or `?format=prometheus`. |
+| `GET /_stats` | none | Request counters, authentication failures, uptime, maintenance state, node count, the `limits` object (`in_flight` per scope and request-limit totals), and the `otel` object: `enabled`, the endpoint without credentials (`null` while disabled), and `last_export_error`. JSON by default, Prometheus text with `Accept: text/plain` or `?format=prometheus`. |
 | `GET /server_api_version` | none | `min_api_version` / `max_api_version` (`0`/`2`). |
 | `GET /license` | `signed` | Node license counters: configured limit, current node count, `limit_exceeded`, and the upgrade URL. Telemetry is disabled by default. |
 | `POST /organizations/:org/data-collector` | `signed` or `x-data-collector-token` | Present when `data_collector.root_url` is configured or `data_collector.store` is `local`/`both`. When `store` is `forward`/`both` and `root_url` is configured, forwards the JSON body and preserves the collector's status and body. `local` returns `200 {}` without forwarding while still storing `run_converge` reports; `both` also stores them. Timeouts map to `504`, other upstream failures to `502`; a disabled endpoint returns `404`. |
@@ -2465,8 +2473,9 @@ manual check (the container healthcheck uses `MW_HEALTHCHECK_INSECURE` for the
 same purpose).
 
 `/_stats` exposes process-local counters for requests, response classes,
-authentication failures, and uptime, plus the maintenance flag and node count.
-It does not require authentication and remains reachable during maintenance:
+authentication failures, and uptime, plus the maintenance flag, node count,
+the request-limit totals and in-flight gauges. It does not require
+authentication and remains reachable during maintenance:
 
 ```sh
 curl -fsS http://127.0.0.1:8000/_stats

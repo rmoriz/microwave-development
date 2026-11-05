@@ -70,12 +70,12 @@ Org-Quote ausschöpfen, aber nicht die Quote anderer Orgs.
 
 Von außen nach innen:
 
-1. **Globale Aufnahme** (`limits::global_gate`, eigener Layer außen):
+1. **Globale Aufnahme** (`limits::admission`, eigener Layer außen):
    exempt-Pfade durchreichen, sonst ein globales Semaphore-Permit mit
    `queue_timeout_ms` erwerben. Timeout → `503` + `Retry-After`. Der Body ist
    zu diesem Zeitpunkt noch ungelesen.
-2. **Quell-Bucket** (`limits::source`): Token Bucket pro Quell-IP, bevor Auth
-   DB-Lookups macht.
+2. **Quell-Bucket** (im selben Layer, direkt nach dem globalen Permit): Token
+   Bucket pro Quell-IP, bevor Auth DB-Lookups macht.
 3. **Authentifizierung** wie heute.
 4. **Org- und Principal-Bucket:** nach `AuthContext`, orgweit über `org.id`,
    principalweit über `(org.id, principal.actor_id)`. Pfade ohne Org
@@ -163,10 +163,9 @@ Warten), `max_entries` mindestens 100.
 
 ### Metriken
 
-`/_stats` und OTLP bekommen Zähler und ein Gauge:
+`/_stats` und OTLP bekommen einen Zähler und ein Gauge:
 
-- `limits_allowed_total{scope}`
-- `limits_rejected_total{scope,org}`
+- `limits_total{scope,org,outcome}` mit `outcome` = `allowed`/`rejected`
 - `limits_in_flight{scope}` als Gauge
 
 Scopes: `global`, `source`, `org`, `principal`. `org` ist bei globalen und

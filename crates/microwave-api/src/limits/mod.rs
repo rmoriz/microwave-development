@@ -7,7 +7,7 @@ pub mod bucket;
 pub mod layer;
 pub mod source;
 
-pub use layer::{admission, overloaded, AdmissionApplied};
+pub use layer::{admission, AdmissionApplied};
 
 use crate::Metrics;
 use bucket::{BucketRejection, RateSpec, ShardedMap, Slot};
@@ -120,10 +120,6 @@ impl Limiter {
 
     pub fn enabled(&self) -> bool {
         self.enabled
-    }
-
-    pub fn has_org_overrides(&self) -> bool {
-        !self.organizations.is_empty()
     }
 
     /// Take one global in-flight slot, waiting up to the queue timeout.

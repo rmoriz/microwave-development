@@ -1700,6 +1700,15 @@ fn limits_defaults_and_validation() {
     assert!(Config::from_toml_str("[limits.source]\nburst = 0\n").is_err());
     assert!(Config::from_toml_str("[limits.organizations.Bad_Org]\nburst = 5\n").is_err());
 
+    let mut broken = Config::default();
+    broken.limits.org.burst = 0;
+    let error = broken.validate().expect_err("zero burst");
+    assert!(matches!(
+        error,
+        microwave_config::ConfigError::InvalidValue { ref key, ref value }
+            if key == "limits.org.burst" && value == "0"
+    ));
+
     let parsed = Config::from_toml_str(
         "[limits]\nenabled = false\n[limits.organizations.acme]\nrate_per_second = 5\nin_flight = 2\n",
     )

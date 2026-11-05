@@ -2240,3 +2240,19 @@ async fn a_bad_bearer_token_consumes_no_org_token() {
         StatusCode::OK
     );
 }
+
+#[tokio::test]
+async fn disabled_limits_pass_through_mcp() {
+    let mut config = mcp_config(&[("acme", "a")]);
+    config.limits.enabled = false;
+    config.limits.org.burst = 1;
+    config.limits.queue_timeout_ms = 0;
+    let (_state, _org, app) = fixture(config).await;
+
+    for _ in 0..3 {
+        assert_eq!(
+            mcp(&app, "acme", "a", initialize()).await.status(),
+            StatusCode::OK
+        );
+    }
+}

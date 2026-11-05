@@ -222,6 +222,27 @@ url = "sqlite://$database"
 [license]
 node_license = 25
 upgrade_url = "https://www.chef.io/pricing"
+
+# Pedant fires thousands of requests from a single principal without retrying a
+# `503`, so the gates stay enabled but the buckets are far wider than the
+# production defaults.
+[limits]
+queue_timeout_ms = 5000
+
+[limits.global]
+in_flight = 128
+
+[limits.source]
+rate_per_second = 5000
+burst = 10000
+
+[limits.org]
+rate_per_second = 5000
+burst = 10000
+
+[limits.principal]
+rate_per_second = 5000
+burst = 10000
 EOF
 
   # The vendored compliance_proxy spec starts its own HTTPS stub on this port

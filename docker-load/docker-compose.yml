@@ -111,6 +111,13 @@ services:
       MW_DEPSOLVER__MAX_CONCURRENT: ${MW_DEPSOLVER__MAX_CONCURRENT:-4}
       # Overrides limits.global.in_flight; limit rejections are counted apart.
       MW_LIMITS__GLOBAL__IN_FLIGHT: ${MW_LIMITS_GLOBAL_IN_FLIGHT:-64}
+      # Every request comes from the load container, so one source bucket.
+      MW_LIMITS__SOURCE__RATE_PER_SECOND: ${MW_LIMITS_SOURCE_RATE_PER_SECOND:-20000}
+      MW_LIMITS__SOURCE__BURST: ${MW_LIMITS_SOURCE_BURST:-50000}
+      # One org carries the whole run.
+      MW_LIMITS__ORG__RATE_PER_SECOND: ${MW_LIMITS_ORG_RATE_PER_SECOND:-5000}
+      MW_LIMITS__ORG__BURST: ${MW_LIMITS_ORG_BURST:-20000}
+      MW_LIMITS__ORG__IN_FLIGHT: ${MW_LIMITS_ORG_IN_FLIGHT:-256}
       # Must match [stats] in the mounted configuration.
       MW_STATS__USERNAME: load
       MW_STATS__PASSWORD: load-stats
