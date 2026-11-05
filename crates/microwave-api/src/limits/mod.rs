@@ -4,12 +4,16 @@
 //! instance enforces its own admission, org and principal quotas.
 
 pub mod bucket;
+pub mod layer;
 pub mod source;
+
+pub use layer::{admission, overloaded, AdmissionApplied};
 
 use crate::Metrics;
 use bucket::{BucketRejection, RateSpec, ShardedMap, Slot};
 use microwave_config::LimitsConfig;
 use microwave_store::{Org, Principal};
+use source::IpKey;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -48,8 +52,16 @@ pub struct Rejection {
 pub struct LimitPermit {
     _permit: Option<OwnedSemaphorePermit>,
     _slot: Option<Slot>,
-    _metrics: Option<Arc<Metrics>>,
+    metrics: Option<Arc<Metrics>>,
     scope: Scope,
+}
+
+impl Drop for LimitPermit {
+    fn drop(&mut self) {
+        if let Some(metrics) = &self.metrics {
+            metrics.adjust_limits_in_flight(self.scope.as_str(), -1);
+        }
+    }
 }
 
 impl LimitPermit {
@@ -57,7 +69,7 @@ impl LimitPermit {
         Self {
             _permit: None,
             _slot: None,
-            _metrics: None,
+            metrics: None,
             scope: Scope::Global,
         }
     }
@@ -77,7 +89,7 @@ pub struct Limiter {
     queue_timeout: Duration,
     metrics: Arc<Metrics>,
     global: Arc<Semaphore>,
-    source: ShardedMap<IpAddr>,
+    source: ShardedMap<IpKey>,
     org: ShardedMap<String>,
     principal: ShardedMap<(String, String)>,
     org_defaults: microwave_config::LimitsOrgConfig,
@@ -139,13 +151,13 @@ impl Limiter {
 
     /// Take one token for a source address. The source bucket has no separate
     /// in-flight cap, so its semaphore is effectively unlimited.
-    pub async fn source(&self, key: IpAddr) -> Result<LimitPermit, Rejection> {
+    pub async fn source(&self, address: IpAddr) -> Result<LimitPermit, Rejection> {
         if !self.enabled {
             return Ok(LimitPermit::empty());
         }
         let slot = self
             .take(self.source.acquire(
-                key,
+                IpKey::from(address),
                 self.source_rate,
                 Semaphore::MAX_PERMITS,
                 std::time::Instant::now(),
@@ -275,10 +287,11 @@ impl Limiter {
     }
 
     fn held(&self, slot: Option<Slot>, scope: Scope, permit: OwnedSemaphorePermit) -> LimitPermit {
+        self.metrics.adjust_limits_in_flight(scope.as_str(), 1);
         LimitPermit {
             _permit: Some(permit),
             _slot: slot,
-            _metrics: Some(self.metrics.clone()),
+            metrics: Some(self.metrics.clone()),
             scope,
         }
     }

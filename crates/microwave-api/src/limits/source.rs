@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::middleware::proxy_matches;
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::Request;

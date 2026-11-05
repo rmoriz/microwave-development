@@ -142,6 +142,7 @@ pub fn router(state: AppState) -> Router {
     }
 
     let request_state = state.clone();
+    let limits_state = state.clone();
     let inner = inner
         .fallback(not_found)
         .layer(axum::middleware::from_fn_with_state(
@@ -183,6 +184,10 @@ pub fn router(state: AppState) -> Router {
         // Compression sits inside the request context so the access log also
         // covers the encoding work, but both wrap `/version` and the fallback.
         .layer(axum::middleware::from_fn(middleware::compress_response))
+        .layer(axum::middleware::from_fn_with_state(
+            limits_state,
+            limits::admission,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             request_state,
             middleware::observe_request,

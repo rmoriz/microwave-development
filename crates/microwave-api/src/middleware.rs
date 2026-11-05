@@ -1249,7 +1249,7 @@ fn authorization_lines(headers: &HeaderMap) -> Result<Vec<&str>, ApiError> {
 
 /// Liveness and metrics endpoints remain available while the API is drained
 /// for maintenance, and so does the version manifest nginx answers itself.
-fn is_maintenance_exempt(path: &str) -> bool {
+pub(crate) fn is_maintenance_exempt(path: &str) -> bool {
     path == "/_status" || path == "/_stats" || path == "/version"
 }
 
@@ -1426,7 +1426,7 @@ fn client_version(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// The landing page's static surface, answered by a dedicated nginx `location`.
-fn is_static_asset_path(path: &str) -> bool {
+pub(crate) fn is_static_asset_path(path: &str) -> bool {
     path == "/index.html"
         || path == "/favicon.svg"
         || path == "/css"
@@ -1475,7 +1475,7 @@ fn has_api_headers(headers: &HeaderMap) -> bool {
 }
 
 /// No client marker and no signature header, on a path `location /` owns.
-fn serves_landing_page(path: &str, headers: &HeaderMap) -> bool {
+pub(crate) fn serves_landing_page(path: &str, headers: &HeaderMap) -> bool {
     client_version(headers).is_none() && !has_api_headers(headers) && !is_nginx_only_path(path)
 }
 

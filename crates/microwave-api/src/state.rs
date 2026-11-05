@@ -45,6 +45,8 @@ pub struct AppState {
     /// Bounds concurrent dependency solver runs. Acquired without waiting so
     /// excess requests fail fast with 503.
     pub(crate) depsolver: Arc<tokio::sync::Semaphore>,
+    /// Process-local request limits.
+    pub limits: Arc<crate::limits::Limiter>,
     /// Outbound mail surface for notifications and password resets.
     pub mailer: Arc<dyn microwave_mail::Mailer>,
     /// Public PEM of the dedicated WebUI key when `auth.webui_key` is enabled.
@@ -81,6 +83,7 @@ impl AppState {
         let actions =
             crate::actions::ActionDispatcher::new(&config, http_client.clone(), store.clone());
         let depsolver = build_depsolver_semaphore(&config);
+        let limits = Arc::new(crate::limits::Limiter::new(&config.limits, metrics.clone()));
         if config.mail.is_enabled() {
             if let Some(url) = config.server.public_url.as_deref() {
                 if url.trim().starts_with("http://") {
@@ -106,6 +109,7 @@ impl AppState {
             http_client,
             compliance_client,
             depsolver,
+            limits,
             mailer,
             webui_key: None,
         })
