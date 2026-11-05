@@ -240,7 +240,7 @@ local use. Keep one fixed value if sessions should survive a restart.
 | `MW_CONSOLE_PASSWORD` | `e2e-console-password` | Password for the demo console user |
 | `MW_CONSOLE_EMAIL` | `<MW_CONSOLE_USER>@example.com` | Email for the demo console user |
 | `MW_CONSOLE_SESSION_SECRET` | `e2e-console-session-secret-32-chars-min` | Console session signing secret |
-| `CINC_CONSOLE_IMAGE` | `ghcr.io/cinc-project/cinc-console:0.9.0` | Console image |
+| `CINC_CONSOLE_IMAGE` | `ghcr.io/cinc-project/cinc-console:latest` | Console image |
 | `ALPINE_IMAGE` | `alpine:3.22` | Base image for the key handoff service |
 | `MW_ORG` | `e2e` | Organization name |
 | `ROLE_NAME` | `e2e_role` | Role created by the seed |
