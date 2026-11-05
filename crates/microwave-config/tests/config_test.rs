@@ -1684,3 +1684,40 @@ fn env_rejects_a_path_without_enabling_the_key() {
 
     assert!(error.to_string().contains("auth.webui_key"), "{error}");
 }
+
+#[test]
+fn limits_defaults_and_validation() {
+    let c = Config::default();
+    assert!(c.limits.enabled);
+    assert_eq!(c.limits.queue_timeout_ms, 1_500);
+    assert_eq!(c.limits.max_entries, 10_000);
+    assert_eq!(c.limits.global.in_flight, 32);
+    assert_eq!(c.limits.org.in_flight, 16);
+    assert_eq!(c.limits.principal.in_flight, 4);
+
+    assert!(Config::from_toml_str("[limits]\nmax_entries = 99\n").is_err());
+    assert!(Config::from_toml_str("[limits.global]\nin_flight = 0\n").is_err());
+    assert!(Config::from_toml_str("[limits.source]\nburst = 0\n").is_err());
+    assert!(Config::from_toml_str("[limits.organizations.Bad_Org]\nburst = 5\n").is_err());
+
+    let parsed = Config::from_toml_str(
+        "[limits]\nenabled = false\n[limits.organizations.acme]\nrate_per_second = 5\nin_flight = 2\n",
+    )
+    .unwrap();
+    assert!(!parsed.limits.enabled);
+    assert_eq!(parsed.limits.organizations["acme"].rate_per_second, Some(5));
+    assert_eq!(parsed.limits.organizations["acme"].in_flight, Some(2));
+}
+
+#[test]
+fn limits_env_overrides() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("MW_LIMITS__GLOBAL__IN_FLIGHT", "7");
+    std::env::set_var("MW_LIMITS__ORG__RATE_PER_SECOND", "11");
+    let mut config = Config::default();
+    config.apply_env().unwrap();
+    std::env::remove_var("MW_LIMITS__GLOBAL__IN_FLIGHT");
+    std::env::remove_var("MW_LIMITS__ORG__RATE_PER_SECOND");
+    assert_eq!(config.limits.global.in_flight, 7);
+    assert_eq!(config.limits.org.rate_per_second, 11);
+}

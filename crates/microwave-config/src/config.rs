@@ -16,6 +16,7 @@ pub struct Config {
     pub mail: MailConfig,
     pub keygen: KeygenConfig,
     pub depsolver: DepsolverConfig,
+    pub limits: LimitsConfig,
     pub license: LicenseConfig,
     pub stats: StatsConfig,
     pub otel: OtelConfig,
@@ -159,6 +160,9 @@ impl Config {
             });
         }
         self.validate_webui_key()?;
+        self.limits
+            .validate()
+            .map_err(|(key, value)| ConfigError::InvalidValue { key, value })?;
         Ok(())
     }
 
@@ -261,6 +265,12 @@ impl Config {
     ///   `MW_MAIL__TIMEOUT_MS`, `MW_MAIL__HELLO_NAME`, `MW_MAIL__TLS_CA_PATH`
     /// - `MW_KEYGEN__SIZE`, `MW_KEYGEN__WORKERS`, `MW_KEYGEN__WARM_UP`
     /// - `MW_DEPSOLVER__TIMEOUT_MS`, `MW_DEPSOLVER__MAX_CONCURRENT`
+    /// - `MW_LIMITS__ENABLED`, `MW_LIMITS__QUEUE_TIMEOUT_MS`,
+    ///   `MW_LIMITS__MAX_ENTRIES`, `MW_LIMITS__GLOBAL__IN_FLIGHT`,
+    ///   `MW_LIMITS__SOURCE__RATE_PER_SECOND`, `MW_LIMITS__SOURCE__BURST`,
+    ///   `MW_LIMITS__ORG__RATE_PER_SECOND`, `MW_LIMITS__ORG__BURST`,
+    ///   `MW_LIMITS__ORG__IN_FLIGHT`, `MW_LIMITS__PRINCIPAL__RATE_PER_SECOND`,
+    ///   `MW_LIMITS__PRINCIPAL__BURST`, `MW_LIMITS__PRINCIPAL__IN_FLIGHT`
     /// - `MW_LICENSE__NODE_LICENSE`, `MW_LICENSE__UPGRADE_URL`
     /// - `MW_STATS__USERNAME`, `MW_STATS__PASSWORD`
     /// - `MW_OTEL__ENABLED`, `MW_OTEL__ENDPOINT`, `MW_OTEL__PROTOCOL`,
@@ -497,6 +507,46 @@ impl Config {
         }
         if let Ok(value) = std::env::var("MW_DEPSOLVER__MAX_CONCURRENT") {
             self.depsolver.max_concurrent = parse_value("MW_DEPSOLVER__MAX_CONCURRENT", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_LIMITS__ENABLED") {
+            self.limits.enabled = parse_bool("MW_LIMITS__ENABLED", &value)?;
+        }
+        if let Ok(value) = std::env::var("MW_LIMITS__QUEUE_TIMEOUT_MS") {
+            self.limits.queue_timeout_ms = parse_value("MW_LIMITS__QUEUE_TIMEOUT_MS", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_LIMITS__MAX_ENTRIES") {
+            self.limits.max_entries = parse_value("MW_LIMITS__MAX_ENTRIES", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_LIMITS__GLOBAL__IN_FLIGHT") {
+            self.limits.global.in_flight = parse_value("MW_LIMITS__GLOBAL__IN_FLIGHT", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_LIMITS__SOURCE__RATE_PER_SECOND") {
+            self.limits.source.rate_per_second =
+                parse_value("MW_LIMITS__SOURCE__RATE_PER_SECOND", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_LIMITS__SOURCE__BURST") {
+            self.limits.source.burst = parse_value("MW_LIMITS__SOURCE__BURST", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_LIMITS__ORG__RATE_PER_SECOND") {
+            self.limits.org.rate_per_second =
+                parse_value("MW_LIMITS__ORG__RATE_PER_SECOND", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_LIMITS__ORG__BURST") {
+            self.limits.org.burst = parse_value("MW_LIMITS__ORG__BURST", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_LIMITS__ORG__IN_FLIGHT") {
+            self.limits.org.in_flight = parse_value("MW_LIMITS__ORG__IN_FLIGHT", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_LIMITS__PRINCIPAL__RATE_PER_SECOND") {
+            self.limits.principal.rate_per_second =
+                parse_value("MW_LIMITS__PRINCIPAL__RATE_PER_SECOND", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_LIMITS__PRINCIPAL__BURST") {
+            self.limits.principal.burst = parse_value("MW_LIMITS__PRINCIPAL__BURST", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_LIMITS__PRINCIPAL__IN_FLIGHT") {
+            self.limits.principal.in_flight =
+                parse_value("MW_LIMITS__PRINCIPAL__IN_FLIGHT", value)?;
         }
         if let Ok(value) = std::env::var("MW_LICENSE__NODE_LICENSE") {
             self.license.node_license = parse_value("MW_LICENSE__NODE_LICENSE", value)?;
@@ -1273,6 +1323,195 @@ impl Default for DepsolverConfig {
             max_concurrent: 4,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct LimitsConfig {
+    /// Master switch. When false every gate is a no-op.
+    pub enabled: bool,
+    /// Longest wait for an in-flight slot before answering 503.
+    pub queue_timeout_ms: u64,
+    /// Upper bound for each in-memory bucket map, divided across shards.
+    pub max_entries: usize,
+    pub global: LimitsGlobalConfig,
+    pub source: LimitsRateConfig,
+    pub org: LimitsOrgConfig,
+    pub principal: LimitsPrincipalConfig,
+    /// Per-organization overrides, keyed by organization name.
+    pub organizations: std::collections::BTreeMap<String, LimitsOrgOverride>,
+}
+
+impl LimitsConfig {
+    /// Reject zero rates and bounds that would make the limiter unusable.
+    pub fn validate(&self) -> Result<(), (String, String)> {
+        if self.max_entries < 100 {
+            return Err(("limits.max_entries".into(), self.max_entries.to_string()));
+        }
+        if self.global.in_flight == 0 {
+            return Err((
+                "limits.global.in_flight".into(),
+                self.global.in_flight.to_string(),
+            ));
+        }
+        self.source
+            .validate("limits.source")
+            .map_err(|field| (format!("limits.source.{field}"), String::new()))?;
+        self.org
+            .validate("limits.org")
+            .map_err(|field| (format!("limits.org.{field}"), String::new()))?;
+        self.principal
+            .validate("limits.principal")
+            .map_err(|field| (format!("limits.principal.{field}"), String::new()))?;
+        for (name, over) in &self.organizations {
+            if !valid_org_name(name) {
+                return Err((format!("limits.organizations.{name}"), name.clone()));
+            }
+            if over.rate_per_second == Some(0) {
+                return Err((
+                    format!("limits.organizations.{name}.rate_per_second"),
+                    "0".into(),
+                ));
+            }
+            if over.burst == Some(0) {
+                return Err((format!("limits.organizations.{name}.burst"), "0".into()));
+            }
+            if over.in_flight == Some(0) {
+                return Err((format!("limits.organizations.{name}.in_flight"), "0".into()));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            queue_timeout_ms: 1_500,
+            max_entries: 10_000,
+            global: LimitsGlobalConfig::default(),
+            source: LimitsRateConfig::default(),
+            org: LimitsOrgConfig::default(),
+            principal: LimitsPrincipalConfig::default(),
+            organizations: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct LimitsGlobalConfig {
+    /// Concurrent requests admitted per process.
+    pub in_flight: usize,
+}
+
+impl Default for LimitsGlobalConfig {
+    fn default() -> Self {
+        Self { in_flight: 32 }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct LimitsRateConfig {
+    pub rate_per_second: u32,
+    pub burst: u32,
+}
+
+impl LimitsRateConfig {
+    fn validate(&self, _scope: &str) -> Result<(), String> {
+        if self.rate_per_second == 0 {
+            return Err("rate_per_second".into());
+        }
+        if self.burst == 0 {
+            return Err("burst".into());
+        }
+        Ok(())
+    }
+}
+
+impl Default for LimitsRateConfig {
+    fn default() -> Self {
+        Self {
+            rate_per_second: 500,
+            burst: 1_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct LimitsOrgConfig {
+    pub rate_per_second: u32,
+    pub burst: u32,
+    pub in_flight: usize,
+}
+
+impl LimitsOrgConfig {
+    fn validate(&self, _scope: &str) -> Result<(), String> {
+        if self.rate_per_second == 0 {
+            return Err("rate_per_second".into());
+        }
+        if self.burst == 0 {
+            return Err("burst".into());
+        }
+        if self.in_flight == 0 {
+            return Err("in_flight".into());
+        }
+        Ok(())
+    }
+}
+
+impl Default for LimitsOrgConfig {
+    fn default() -> Self {
+        Self {
+            rate_per_second: 200,
+            burst: 400,
+            in_flight: 16,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct LimitsPrincipalConfig {
+    pub rate_per_second: u32,
+    pub burst: u32,
+    pub in_flight: usize,
+}
+
+impl LimitsPrincipalConfig {
+    fn validate(&self, _scope: &str) -> Result<(), String> {
+        if self.rate_per_second == 0 {
+            return Err("rate_per_second".into());
+        }
+        if self.burst == 0 {
+            return Err("burst".into());
+        }
+        if self.in_flight == 0 {
+            return Err("in_flight".into());
+        }
+        Ok(())
+    }
+}
+
+impl Default for LimitsPrincipalConfig {
+    fn default() -> Self {
+        Self {
+            rate_per_second: 20,
+            burst: 40,
+            in_flight: 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct LimitsOrgOverride {
+    pub rate_per_second: Option<u32>,
+    pub burst: Option<u32>,
+    pub in_flight: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
