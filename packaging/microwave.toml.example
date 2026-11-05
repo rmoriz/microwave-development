@@ -304,6 +304,33 @@ insecure_skip_tls_verify = false
 enabled = false
 # path = "/etc/microwave/required_recipe.rb"
 
+# In-memory request limits, per process. Off disables every gate. Replicas
+# share no counter; size per instance. See docs/deployment.md, "Request limits".
+# Violations answer 503 with Retry-After so Cinc retries them.
+# [limits]
+# enabled = true
+# Longest wait for an in-flight slot before 503; 0 fails immediately.
+# queue_timeout_ms = 1500
+# Upper bound per bucket map, at least 100.
+# max_entries = 10000
+# [limits.global]
+# in_flight = 32
+# [limits.source]
+# rate_per_second = 500
+# burst = 1000
+# [limits.org]
+# rate_per_second = 200
+# burst = 400
+# in_flight = 16
+# [limits.principal]
+# rate_per_second = 20
+# burst = 40
+# in_flight = 4
+# Per-org overrides match the organization name; unset keys keep the default.
+# [limits.organizations.acme]
+# rate_per_second = 50
+# in_flight = 8
+
 [telemetry]
 # Reserved for compatibility. Microwave never phones home: telemetry is
 # disabled by default and no outbound sender is implemented.

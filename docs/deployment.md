@@ -740,6 +740,98 @@ link and is unsafe for production.
 Email-change verification and organization invitation mail are not implemented
 in this slice.
 
+### Request limits
+
+The server keeps every limit in process memory. They exist so one noisy client
+cannot starve its own organization, another organization, or the process
+itself. There are three layers, applied in this order:
+
+1. A global in-flight cap admits at most `limits.global.in_flight` requests at
+   once, below the database pool and worker capacity.
+2. A pre-authentication token bucket per source address stops unauthenticated
+   floods before they reach signature checking.
+3. After authentication, every request takes an org-wide and a stricter
+   per-principal slot. Both buckets meter request rate and in-flight requests.
+
+Bookshelf uploads and downloads have no signing identity, so they are charged
+to the organization named in the path before the body is buffered. MCP
+requests are charged after bearer authentication, with the same org and
+principal limits as the signed API.
+
+A rate or in-flight violation answers `503` with `Retry-After` in whole
+seconds. Cinc retries `503` but not `429`, which is why `503` is used here. The
+body is `{"error":["Server is overloaded. Retry later."]}`.
+
+Health, monitoring, version, license, and the static landing page stay
+reachable when every slot is taken: `/_status`, `/_stats`, `/version`,
+`/server_api_version`, `/license`, the static assets, and `/` when it serves
+the landing page.
+
+The source bucket reads `X-Forwarded-For` only when the immediate peer is
+listed in `server.trusted_proxies`; it walks the header from the right and uses
+the rightmost address that is not itself trusted, so a client-supplied prefix
+cannot bypass it. IPv6 clients are bucketed by their `/64`, so rotating through
+a subnet does not multiply a client's quota.
+
+| Setting | Details |
+|---|---|
+| `limits.enabled`<br/>`MW_LIMITS__ENABLED` | Default `true`. `false` turns every gate into a no-op without a restart-only workaround. |
+| `limits.queue_timeout_ms`<br/>`MW_LIMITS__QUEUE_TIMEOUT_MS` | Default `1500`. Longest wait for a free in-flight slot before `503`. `0` fails immediately. |
+| `limits.max_entries`<br/>`MW_LIMITS__MAX_ENTRIES` | Default `10000`. Upper bound per bucket map, divided across 16 shards. Must be at least `100`. Busy entries are never evicted, so a map can briefly exceed the bound. |
+| `limits.global.in_flight`<br/>`MW_LIMITS__GLOBAL__IN_FLIGHT` | Default `32`. Concurrent requests admitted per process. Keep it below the DB pool and worker capacity. |
+| `limits.source.rate_per_second`<br/>`MW_LIMITS__SOURCE__RATE_PER_SECOND` | Default `500`. Requests per second per client address before authentication. |
+| `limits.source.burst`<br/>`MW_LIMITS__SOURCE__BURST` | Default `1000`. Short burst allowed per client address. |
+| `limits.org.rate_per_second`<br/>`MW_LIMITS__ORG__RATE_PER_SECOND` | Default `200`. Sustained requests per second for one organization across all its principals. |
+| `limits.org.burst`<br/>`MW_LIMITS__ORG__BURST` | Default `400`. Burst for one organization. |
+| `limits.org.in_flight`<br/>`MW_LIMITS__ORG__IN_FLIGHT` | Default `16`. Concurrent requests per organization. |
+| `limits.principal.rate_per_second`<br/>`MW_LIMITS__PRINCIPAL__RATE_PER_SECOND` | Default `20`. Sustained requests per second for one principal, deliberately below the org rate. |
+| `limits.principal.burst`<br/>`MW_LIMITS__PRINCIPAL__BURST` | Default `40`. Burst for one principal. |
+| `limits.principal.in_flight`<br/>`MW_LIMITS__PRINCIPAL__IN_FLIGHT` | Default `4`. Concurrent requests per principal. |
+
+`limits.organizations.<name>` overrides the org socket for one organization,
+matched on the organization name. Only set keys win; unset keys keep the
+default. Bookkeeping stays on the internal org ID, so overrides and plain
+requests share one bucket for that organization.
+
+```toml
+[limits]
+enabled = true
+queue_timeout_ms = 1500
+max_entries = 10000
+
+[limits.global]
+in_flight = 32
+
+[limits.org]
+rate_per_second = 200
+burst = 400
+in_flight = 16
+
+[limits.principal]
+rate_per_second = 20
+burst = 40
+in_flight = 4
+
+# A background indexing org with its own, higher share.
+[limits.organizations.batch-indexer]
+rate_per_second = 50
+in_flight = 8
+```
+
+`check-config` rejects zero rates, burst, or in-flight values, an
+`max_entries` below `100`, and invalid organization names.
+
+The decisions are counted on `/_stats` and over OTLP as
+`microwave_server_limits_total{scope,org,outcome}` and
+`microwave_server_limits_in_flight{scope}`; see
+[Health, status, and logs](#12-health-status-and-logs). Scopes are `global`,
+`source`, `org`, and `principal`.
+
+**Limits apply per process and replica.** Replicas share no counter and no
+bucket, so a fleet of three admits up to three times the configured rate.
+Size the values for one instance, or rely on the upstream load balancer for a
+fleet-wide bound.
+
 ### MCP endpoint (experimental)
 
 The optional MCP endpoint exposes 11 read tools and 8 write tools per
