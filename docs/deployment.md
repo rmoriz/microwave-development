@@ -794,7 +794,9 @@ listed in `server.trusted_proxies`; it walks the header from the right and uses
 the rightmost address that is not itself trusted, so a client-supplied prefix
 cannot bypass it. IPv6 clients are bucketed by their `/64`, so rotating through
 a subnet does not multiply a client's quota. The full key list is in the
-[configuration index](#request-limits).
+[configuration index](#request-limits), and
+[Request limits](request-limits.md) explains the counting, the defaults, and
+the tuning.
 
 `limits.organizations.<name>` overrides the org quota for one organization,
 matched on the organization name. Only set keys win; unset keys keep the

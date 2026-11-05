@@ -2343,3 +2343,98 @@ area = "deployment"
 status = "verified"
 surfaces = [ { path = "docs/opentelemetry.md", needle = "set-secret otel headers" } ]
 verify = { kind = "grep", path = "crates/microwave-ctl/src/secrets.rs", pattern = "\"otel\", &\\[\"headers\"\\]" }
+
+[[claim]]
+id = "limits-guide-published"
+summary = "The request-limits guide is part of the published docs site."
+area = "docs"
+status = "verified"
+surfaces = [
+  { path = "docs/request-limits.md", needle = "Request limits" },
+  { path = "docs/index.md", needle = "request-limits.md" },
+  { path = "website/docs/sidebars.ts", needle = "request-limits" },
+]
+verify = { kind = "grep", path = "website/docs/docusaurus.config.ts", pattern = "request-limits.md" }
+
+[[claim]]
+id = "limits-guide-defaults"
+summary = "The guide's default table matches the shipped configuration defaults."
+area = "docs"
+status = "verified"
+surfaces = [
+  { path = "docs/request-limits.md", needle = "| `limits.global.in_flight` | `32` |" },
+  { path = "docs/request-limits.md", needle = "| `limits.org.rate_per_second` | `200` |" },
+]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "in_flight: 32" }
+
+[[claim]]
+id = "limits-guide-per-process"
+summary = "The limiter is process-local and replicas share no counter."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/request-limits.md", needle = "There is no shared counter" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/limits/mod.rs", pattern = "deliberately process-local" }
+
+[[claim]]
+id = "limits-guide-503-retry-after"
+summary = "A limit violation answers 503 with a Retry-After header."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/request-limits.md", needle = "answers `503` with `Retry-After`" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/limits/layer.rs", pattern = "RETRY_AFTER" }
+
+[[claim]]
+id = "limits-guide-retry-after-refill"
+summary = "Retry-After is derived from the refill rate and is at least one second."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/request-limits.md", needle = "`ceil((1 - tokens) / rate_per_second)`" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/limits/bucket.rs", pattern = "\\(1.0 - self.tokens\\) / rate_per_second" }
+
+[[claim]]
+id = "limits-guide-exemptions"
+summary = "Health, stats, version, license, landing page, and static assets are exempt from the gates."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/request-limits.md", needle = "`/_status`, `/_stats`, `/version`, `/server_api_version`, `/license`" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/limits/layer.rs", pattern = "\"/_status\" \\| \"/_stats\" \\| \"/version\"" }
+
+[[claim]]
+id = "limits-guide-ipv6-prefix"
+summary = "IPv6 clients are bucketed by their /64 and IPv4-mapped addresses fold into IPv4."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/request-limits.md", needle = "bucketed by their `/64`" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/limits/source.rs", pattern = ">> 64" }
+
+[[claim]]
+id = "limits-guide-forwarded-for"
+summary = "A trusted peer is resolved from the rightmost untrusted X-Forwarded-For entry."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/request-limits.md", needle = "read from the right" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/limits/source.rs", pattern = "forwarded.rsplit" }
+
+[[claim]]
+id = "limits-guide-max-entries-floor"
+summary = "check-config rejects a max_entries below 100."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/request-limits.md", needle = "`check-config` rejects anything below `100`" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "self.max_entries < 100" }
+
+[[claim]]
+id = "limits-guide-bookshelf-before-body"
+summary = "Bookshelf is charged to the path organization before the body extractor runs."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/request-limits.md", needle = "before the body is buffered" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/limits/layer.rs", pattern = "bookshelf_org_gate" }
+
+[[claim]]
+id = "limits-guide-mcp-after-auth"
+summary = "MCP calls are charged after bearer authentication."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/request-limits.md", needle = "after authentication" } ]
+verify = { kind = "grep", path = "crates/microwave-api/src/mcp/mod.rs", pattern = "check_org_principal" }

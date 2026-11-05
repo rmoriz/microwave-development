@@ -20,6 +20,10 @@ Progress.
 - **[Point MCP clients at it](./mcp.md)** — the per-organization MCP endpoint
   over the Streamable HTTP transport. MCP is `experimental`: off by default, and
   writes are on by default but switched off with `writes = false`.
+- **[Bound request pressure](./request-limits.md)** — the process-local
+  admission, source, organization, and principal limits: what they protect,
+  their defaults, how tokens and in-flight slots are counted, and how to tune
+  them.
 - **[Monitor it with OpenTelemetry](./opentelemetry.md)** — opt-in OTLP/HTTP
   metric export, off by default: the collector setup, the exact series with
   their types and attributes, whole-server and per-org queries, and the
