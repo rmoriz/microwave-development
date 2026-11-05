@@ -1082,6 +1082,11 @@ async fn authenticate_signed(
             )));
         }
     }
+    let (_org_permit, _principal_permit) =
+        match crate::limits::layer::check_org_principal(&state, org.as_ref(), &principal).await {
+            Ok(permits) => permits,
+            Err(response) => return Ok(response),
+        };
     let mut action_meta = if state.actions.is_enabled()
         && crate::actions::is_candidate(parts.method.as_str(), &path)
     {

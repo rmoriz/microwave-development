@@ -1,7 +1,7 @@
 //! Admission middleware: global concurrency and per-source rate.
 
 use super::source::client_ip;
-use super::{Rejection, Scope};
+use super::{LimitPermit, Rejection, Scope};
 use crate::middleware::{is_static_asset_path, serves_landing_page};
 use crate::{AppState, Metrics};
 use axum::extract::{Request, State};
@@ -61,6 +61,55 @@ fn log_rejection(request: &Request, rejection: Rejection) {
         retry_after = rejection.retry_after,
         "request rejected by limit"
     );
+}
+
+fn log_org_rejection(org: &str, principal: &str, rejection: Rejection) {
+    tracing::warn!(
+        scope = rejection.scope.as_str(),
+        org,
+        principal,
+        retry_after = rejection.retry_after,
+        "request rejected by limit"
+    );
+}
+
+/// Org and principal limits, applied after authentication. Both permits live
+/// until the request is done.
+#[allow(clippy::result_large_err)]
+pub async fn check_org_principal(
+    state: &AppState,
+    org: Option<&microwave_store::Org>,
+    principal: &microwave_store::Principal,
+) -> Result<(LimitPermit, LimitPermit), Response> {
+    let Some(org) = org else {
+        return Ok((LimitPermit::empty(), LimitPermit::empty()));
+    };
+    let org_permit = match state.limits.org(org).await {
+        Ok(permit) => {
+            state
+                .metrics
+                .record_limit(Scope::Org.as_str(), &org.name, "allowed");
+            permit
+        }
+        Err(rejection) => {
+            log_org_rejection(&org.name, &principal.name, rejection);
+            return Err(rejected(rejection, &state.metrics, &org.name));
+        }
+    };
+    let principal_permit = match state.limits.principal(org, principal).await {
+        Ok(permit) => {
+            state
+                .metrics
+                .record_limit(Scope::Principal.as_str(), &org.name, "allowed");
+            permit
+        }
+        Err(rejection) => {
+            drop(org_permit);
+            log_org_rejection(&org.name, &principal.name, rejection);
+            return Err(rejected(rejection, &state.metrics, &org.name));
+        }
+    };
+    Ok((org_permit, principal_permit))
 }
 
 /// Global admission and the pre-auth source bucket.
