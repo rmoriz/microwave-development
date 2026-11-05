@@ -10,6 +10,9 @@ or MCP, or to reproduce a provisioning bug. It is a test fixture, not a
 production deployment: every login below is a fixed fixture, and the node
 containers run privileged.
 
+The server image is pulled from `ghcr.io/rmoriz/microwave-server` by default. A
+source build overlay is near the end.
+
 ## Prerequisites
 
 - Docker Engine with Compose v2.
@@ -41,9 +44,9 @@ docker compose logs -f seed
 docker compose logs -f node-debian node-ubuntu node-fedora node-amazon
 ```
 
-The API answers on `http://127.0.0.1:18080`; the console on
-`http://127.0.0.1:18081`. The first converge takes a few minutes because it
-installs nginx and PostgreSQL.
+The API answers on port `18080` on all interfaces, `http://127.0.0.1:18080` from
+the host; the console only on `http://127.0.0.1:18081`. The first converge takes
+a few minutes because it installs nginx and PostgreSQL.
 
 ## Containers and ports
 

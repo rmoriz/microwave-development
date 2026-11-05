@@ -80,6 +80,12 @@ class DocsPageTest(unittest.TestCase):
         self.assertIsNotNone(match, variable)
         return match.group(1)
 
+    def row(self, marker):
+        for line in self.page.splitlines():
+            if line.startswith("|") and marker in line:
+                return line
+        self.fail(f"no table row for {marker}")
+
     def test_page_names_every_service_and_no_other(self):
         compose = yaml.safe_load(self.compose_text)
         for service in compose["services"]:
@@ -106,10 +112,24 @@ class DocsPageTest(unittest.TestCase):
         )
 
     def test_page_logins_come_from_the_compose_defaults(self):
-        for variable in ("MW_CONSOLE_USER", "MW_CONSOLE_PASSWORD", "MW_MCP_TOKEN"):
-            self.assertIn(self.compose_default(variable), self.page)
+        console = self.row("Console at")
+        self.assertIn(self.compose_default("MW_CONSOLE_USER"), console)
+        self.assertIn(self.compose_default("MW_CONSOLE_PASSWORD"), console)
+        mcp = self.row("MCP endpoint")
+        self.assertIn(self.compose_default("MW_MCP_TOKEN"), mcp)
         self.assertIn("pivotal", self.page)
         self.assertIn("/var/lib/microwave/pivotal.password", self.page)
+
+    def test_page_org_comes_from_the_compose_default(self):
+        org = self.compose_default("MW_ORG")
+        self.assertIn(f"organizations/{org}/mcp", self.page)
+
+    def test_page_allowed_hosts_match_the_server_config(self):
+        server = (ROOT / "docker-e2e" / "microwave" / "microwave.toml").read_text()
+        match = re.search(r"allowed_hosts = \[(.*?)\]", server)
+        self.assertIsNotNone(match)
+        for host in re.findall(r'"([^"]+)"', match.group(1)):
+            self.assertIn(host, self.page)
 
     def test_page_paths(self):
         self.assertIn(
