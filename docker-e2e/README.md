@@ -3,9 +3,10 @@
 A self-contained Compose stack that exercises the parts of a Chef Server a
 node actually needs:
 
-1. **microwave** — `microwave-server` built from the repository root
-   `Dockerfile`, with SQLite, embedded search, and the local `/bookshelf`
-   store.
+1. **microwave** — `microwave-server`, pulled from
+   `ghcr.io/rmoriz/microwave-server:latest` by default, with SQLite, embedded
+   search, and the local `/bookshelf` store. The source-build overlay builds it
+   from the repository root `Dockerfile` instead.
 2. **seed** — knife + Berkshelf in a container. It creates the organization,
    downloads the newest `nginx` and `postgresql` cookbooks from Chef Supermarket,
    uploads them plus the local wrapper cookbooks to microwave-server, and creates
@@ -26,11 +27,23 @@ Nothing runs on the host except `docker compose`.
 
 ```sh
 cd docker-e2e
-docker compose up -d --build
+docker compose up -d
 ```
 
-The workstation image is built locally, so a first start or a change to
-`workstation/**` needs `--build`.
+This pulls the moving `latest` image. Pin a version for a reproducible run:
+
+```sh
+MW_IMAGE=ghcr.io/rmoriz/microwave-server:0.3.1 docker compose up -d
+```
+
+To build the server from this checkout instead:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
+The seed, node and workstation images are always local, so a first start or a
+change under `seed/**`, `client/**` or `workstation/**` needs `--build`.
 
 Follow the seed and the node output:
 
@@ -218,6 +231,7 @@ local use. Keep one fixed value if sessions should survive a restart.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `MW_IMAGE` | `ghcr.io/rmoriz/microwave-server:latest` (build default: `microwave-server:e2e`) | Server image; pin a version or digest here |
 | `MW_E2E_PORT` | `18080` | Host port for the microwave API |
 | `MW_MCP_TOKEN` | `e2e-mcp-token` | Bearer token for the MCP endpoint |
 | `MW_WORKSTATION_IMAGE` | `microwave-workstation:e2e` | Workstation image tag |
@@ -243,6 +257,10 @@ local use. Keep one fixed value if sessions should survive a restart.
 
 ## Notes and trade-offs
 
+- **Pulled server, or a source build.** `latest` moves with every stable
+  release, so pin `MW_IMAGE` when a run has to stay comparable. Use the
+  `docker-compose.build.yml` overlay for server changes; it tags the result
+  locally and leaves the pulled `latest` untouched.
 - **Listener address.** `microwave/microwave.toml` binds to
   `microwave:8000`, not `0.0.0.0:8000`. microwave-server builds the
   presigned `/bookshelf` upload and download URLs from `server.bind`, so
