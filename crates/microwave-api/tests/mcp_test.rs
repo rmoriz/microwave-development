@@ -2205,3 +2205,38 @@ async fn a_failing_mcp_tool_records_an_error_outcome() {
         .iter()
         .any(|entry| entry.tool == "get_node" && entry.outcome == "error"));
 }
+
+#[tokio::test]
+async fn the_org_bucket_limits_mcp_requests_after_bearer_auth() {
+    let mut config = mcp_config(&[("acme", "a")]);
+    config.limits.org.burst = 1;
+    config.limits.org.rate_per_second = 1;
+    config.limits.queue_timeout_ms = 0;
+    let (_state, _org, app) = fixture(config).await;
+
+    assert_eq!(
+        mcp(&app, "acme", "a", initialize()).await.status(),
+        StatusCode::OK
+    );
+    let rejected = mcp(&app, "acme", "a", initialize()).await;
+    assert_eq!(rejected.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(rejected.headers()["retry-after"], "1");
+}
+
+#[tokio::test]
+async fn a_bad_bearer_token_consumes_no_org_token() {
+    let mut config = mcp_config(&[("acme", "a")]);
+    config.limits.org.burst = 1;
+    config.limits.org.rate_per_second = 1;
+    config.limits.queue_timeout_ms = 0;
+    let (_state, _org, app) = fixture(config).await;
+
+    assert_eq!(
+        mcp(&app, "acme", "wrong", initialize()).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        mcp(&app, "acme", "a", initialize()).await.status(),
+        StatusCode::OK
+    );
+}
