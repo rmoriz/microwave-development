@@ -1,11 +1,11 @@
 # Docker e2e stack
 
-`docker-e2e/` is a Compose stack that runs a Chef Server-shaped test end to end:
+`docker-e2e/` is a Compose stack that runs a Microwave Server test end to end:
 a Microwave server, a seeded organization with cookbooks and a role, four Linux
 nodes that converge with Cinc Client, a web console, and a workstation with
 knife and OpenCode. Everything runs in containers; the host only needs Docker.
 
-Use it to watch a real `chef-client` run against the server, to try the console
+Use it to watch a real `cinc-client` run against the server, to try the console
 or MCP, or to reproduce a provisioning bug. It is a test fixture, not a
 production deployment: every login below is a fixed fixture, and the node
 containers run privileged.

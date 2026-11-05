@@ -1,6 +1,6 @@
 # docker-e2e — Microwave Server provisioning test
 
-A self-contained Compose stack that exercises the parts of a Chef Server a
+A self-contained Compose stack that exercises the parts of Microwave Server a
 node actually needs:
 
 1. **microwave** — `microwave-server`, pulled from
@@ -324,7 +324,7 @@ local use. Keep one fixed value if sessions should survive a restart.
   the seed, writes a new `run-id`, and makes every node re-register and
   re-converge, so it is the heavier option, not the default recovery.
 - **Repeated runs.** A validator may create clients but not update them.
-  `chef-client` turns the resulting `409 Client already exists` into a `PUT`,
+  `cinc-client` turns the resulting `409 Client already exists` into a `PUT`,
   which the validator is not allowed to do, so a node whose previous converge
   failed cannot simply register again. The seed deletes the node and client
   objects with the superuser key and publishes a new `run-id`; a node whose
