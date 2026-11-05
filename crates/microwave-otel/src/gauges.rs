@@ -80,6 +80,10 @@ pub(crate) const INSTRUMENTS: &[InstrumentSpec] = &[
         otlp: "microwave.keygen.worker_healthy",
         prom: "microwave_server_keygen_worker_healthy",
     },
+    InstrumentSpec {
+        otlp: "microwave.limits.in_flight",
+        prom: "microwave_server_limits_in_flight",
+    },
 ];
 
 const STATE: &str = "state";
@@ -87,6 +91,7 @@ const DEPENDENCY: &str = "dependency";
 const CLASS: &str = "class";
 const SERVICE_VERSION: &str = "service.version";
 const INDEXING_MODE: &str = "indexing.mode";
+const SCOPE: &str = "scope";
 
 /// The catalogue row for an instrument name.
 fn spec(otlp: &'static str) -> &'static InstrumentSpec {
@@ -244,4 +249,15 @@ pub(crate) fn register(meter: &Meter, metrics: &Arc<Metrics>, indexing_mode: &'s
             })
             .build();
     }
+
+    let limits = metrics.clone();
+    meter
+        .u64_observable_gauge(spec("microwave.limits.in_flight").otlp)
+        .with_description("Requests holding a limit slot")
+        .with_callback(move |observer: &dyn AsyncInstrument<u64>| {
+            for (scope, value) in limits.limits_in_flight() {
+                observer.observe(value, &[KeyValue::new(SCOPE, scope)]);
+            }
+        })
+        .build();
 }

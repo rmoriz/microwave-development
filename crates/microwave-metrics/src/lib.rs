@@ -18,7 +18,7 @@ pub use histogram::{
 };
 pub use recorder::Recorder;
 pub use registry::{
-    ConvergeSeries, DependencyState, HttpSeries, KeygenGauges, McpSeries, Metrics, MetricsSnapshot,
-    ObjectStoreSeries, PoolGauges, SearchSeries, StoreSeries,
+    ConvergeSeries, DependencyState, HttpSeries, KeygenGauges, LimitSeries, McpSeries, Metrics,
+    MetricsSnapshot, ObjectStoreSeries, PoolGauges, SearchSeries, StoreSeries,
 };
 pub use route::{metrics_route, organization_label};

@@ -42,6 +42,10 @@ pub(crate) const INSTRUMENTS: &[InstrumentSpec] = &[
         otlp: "microwave.object_store.request.duration",
         prom: "microwave_server_object_store_request_duration_seconds",
     },
+    InstrumentSpec {
+        otlp: "microwave.limits.requests",
+        prom: "microwave_server_limits_total",
+    },
 ];
 
 /// The catalogue row for an instrument name.
@@ -65,6 +69,7 @@ const OPERATION: &str = "operation";
 const OUTCOME: &str = "outcome";
 const TOOL: &str = "tool";
 const STATUS: &str = "status";
+const SCOPE: &str = "scope";
 
 /// The recorder attached to [`microwave_metrics::Metrics`].
 pub(crate) struct OtelRecorder {
@@ -76,6 +81,7 @@ pub(crate) struct OtelRecorder {
     store: Histogram<f64>,
     search: Histogram<f64>,
     object_store: Histogram<f64>,
+    limits: Counter<u64>,
 }
 
 impl OtelRecorder {
@@ -119,6 +125,10 @@ impl OtelRecorder {
                 .with_unit("s")
                 .with_description("Object store request duration")
                 .with_boundaries(latency_boundaries())
+                .build(),
+            limits: meter
+                .u64_counter(spec("microwave.limits.requests").otlp)
+                .with_description("Request limit decisions")
                 .build(),
         }
     }
@@ -196,6 +206,17 @@ impl Recorder for OtelRecorder {
             ],
         );
     }
+
+    fn limit(&self, scope: &str, org: &str, outcome: &str) {
+        self.limits.add(
+            1,
+            &[
+                KeyValue::new(SCOPE, scope.to_string()),
+                KeyValue::new(ORGANIZATION, org.to_string()),
+                KeyValue::new(OUTCOME, outcome.to_string()),
+            ],
+        );
+    }
 }
 
 #[cfg(test)]
@@ -227,6 +248,42 @@ mod tests {
                 _ => Vec::new(),
             })
             .collect()
+    }
+
+    /// Pull the attributes of one exported counter's data points.
+    fn counter_attributes(exporter: &InMemoryMetricExporter, name: &str) -> Vec<KeyValue> {
+        exporter
+            .get_finished_metrics()
+            .unwrap()
+            .iter()
+            .flat_map(|resource| resource.scope_metrics())
+            .flat_map(|scope| scope.metrics())
+            .filter(|metric| metric.name() == name)
+            .flat_map(|metric| match metric.data() {
+                AggregatedMetrics::U64(MetricData::Sum(sum)) => sum
+                    .data_points()
+                    .flat_map(|point| point.attributes().cloned())
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
+    /// The first exported value of one gauge.
+    fn gauge_value(exporter: &InMemoryMetricExporter, name: &str) -> Option<u64> {
+        exporter
+            .get_finished_metrics()
+            .unwrap()
+            .iter()
+            .flat_map(|resource| resource.scope_metrics())
+            .flat_map(|scope| scope.metrics())
+            .find(|metric| metric.name() == name)
+            .and_then(|metric| match metric.data() {
+                AggregatedMetrics::U64(MetricData::Gauge(gauge)) => {
+                    gauge.data_points().next().map(|point| point.value())
+                }
+                _ => None,
+            })
     }
 
     /// The number of exported data points of one histogram.
@@ -307,6 +364,12 @@ mod tests {
             "microwave_server_mcp_tool_calls_total"
         )));
         assert!(super::CATALOGUE
+            .contains(&("microwave.limits.requests", "microwave_server_limits_total")));
+        assert!(super::CATALOGUE.contains(&(
+            "microwave.limits.in_flight",
+            "microwave_server_limits_in_flight"
+        )));
+        assert!(super::CATALOGUE
             .iter()
             .all(|(otlp, prom)| otlp.contains('.') && prom.starts_with("microwave_server_")));
         let mut prom: Vec<&str> = super::CATALOGUE.iter().map(|(_, prom)| *prom).collect();
@@ -344,6 +407,29 @@ mod tests {
             bounds(&exporter, "http.server.request.duration"),
             LATENCY_BUCKETS_SECONDS
         );
+    }
+
+    #[tokio::test]
+    async fn records_limits_decisions() {
+        let metrics = Arc::new(Metrics::new());
+        let exporter = InMemoryMetricExporter::default();
+        let guard = testing::init_with_exporter(metrics.clone(), exporter.clone()).unwrap();
+        metrics.record_limit("org", "acme", "rejected");
+        guard.force_flush().await.unwrap();
+
+        let attributes: std::collections::HashMap<String, String> =
+            counter_attributes(&exporter, "microwave.limits.requests")
+                .into_iter()
+                .map(|kv| (kv.key.to_string(), kv.value.to_string()))
+                .collect();
+        assert!(
+            !attributes.is_empty(),
+            "{:?}",
+            exported_names(&exporter).await
+        );
+        assert_eq!(attributes["scope"], "org");
+        assert_eq!(attributes["microwave.organization"], "acme");
+        assert_eq!(attributes["outcome"], "rejected");
     }
 
     #[tokio::test]
@@ -410,6 +496,7 @@ mod tests {
             name: "sqlite",
             up: true,
         }]);
+        metrics.adjust_limits_in_flight("org", 3);
         guard.force_flush().await.unwrap();
 
         let names = exported_names(&exporter).await;
@@ -420,9 +507,14 @@ mod tests {
             "microwave.server.build.info",
             "microwave.keygen.cached",
             "microwave.server.dependencies",
+            "microwave.limits.in_flight",
         ] {
             assert!(names.iter().any(|found| found == name), "{name}");
         }
+        assert_eq!(
+            gauge_value(&exporter, "microwave.limits.in_flight"),
+            Some(3)
+        );
     }
 
     struct FailingExporter;

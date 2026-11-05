@@ -132,6 +132,11 @@ pub const CATALOGUE: &[(&str, &str)] = &[
         "microwave.object_store.request.duration",
         "microwave_server_object_store_request_duration_seconds",
     ),
+    ("microwave.limits.requests", "microwave_server_limits_total"),
+    (
+        "microwave.limits.in_flight",
+        "microwave_server_limits_in_flight",
+    ),
 ];
 
 /// One catalogue row as the recorder and gauge modules register it.

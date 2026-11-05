@@ -11,6 +11,7 @@ use crate::histogram::{
 };
 use crate::Recorder;
 use http::StatusCode;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -170,6 +171,15 @@ counter_series! {
     } collapsed: org with OVERFLOW_LABEL
 }
 
+counter_series! {
+    /// One request-limit decision series.
+    LimitSeries {
+        scope: String,
+        org: String,
+        outcome: String,
+    } collapsed: scope with OVERFLOW_LABEL
+}
+
 /// Keygen cache gauges, mirroring `microwave_crypto::KeygenStatus`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeygenGauges {
@@ -229,6 +239,8 @@ pub struct Metrics {
     http: Histograms<HttpSeries>,
     mcp: Histograms<McpSeries>,
     converge: Counters<ConvergeSeries>,
+    limits: Counters<LimitSeries>,
+    limits_in_flight: Mutex<BTreeMap<&'static str, u64>>,
     store: Histograms<StoreSeries>,
     search: Histograms<SearchSeries>,
     object_store: Histograms<ObjectStoreSeries>,
@@ -301,6 +313,8 @@ impl Metrics {
             http: Histograms::new(REQUEST_SERIES_LIMIT),
             mcp: Histograms::new(DEFAULT_SERIES_LIMIT),
             converge: Counters::new(DEFAULT_SERIES_LIMIT),
+            limits: Counters::new(DEFAULT_SERIES_LIMIT),
+            limits_in_flight: Mutex::new(BTreeMap::new()),
             store: Histograms::new(DEFAULT_SERIES_LIMIT),
             search: Histograms::new(DEFAULT_SERIES_LIMIT),
             object_store: Histograms::new(DEFAULT_SERIES_LIMIT),
@@ -395,6 +409,48 @@ impl Metrics {
         if let Some(recorder) = self.recorder.get() {
             recorder.converge(org, status);
         }
+    }
+
+    /// Count one request-limit decision.
+    pub fn record_limit(&self, scope: &str, org: &str, outcome: &str) {
+        self.limits.increment(LimitSeries {
+            scope: scope.to_string(),
+            org: org.to_string(),
+            outcome: outcome.to_string(),
+            count: 0,
+        });
+        if let Some(recorder) = self.recorder.get() {
+            recorder.limit(scope, org, outcome);
+        }
+    }
+
+    /// Move one in-flight gauge. The value never drops below zero, even if a
+    /// permit is released twice.
+    pub fn adjust_limits_in_flight(&self, scope: &'static str, delta: i64) {
+        let mut in_flight = lock(&self.limits_in_flight);
+        let value = in_flight.entry(scope).or_insert(0);
+        *value = value.saturating_add_signed(delta);
+    }
+
+    /// Every scope that currently has, or recently had, a held permit.
+    pub fn limits_in_flight(&self) -> Vec<(&'static str, u64)> {
+        lock(&self.limits_in_flight)
+            .iter()
+            .map(|(scope, value)| (*scope, *value))
+            .collect()
+    }
+
+    pub fn limit_series(&self) -> Vec<LimitSeries> {
+        let mut series: Vec<_> = self
+            .limits
+            .snapshot()
+            .into_iter()
+            .map(|(key, count)| LimitSeries { count, ..key })
+            .collect();
+        series.sort_unstable_by(|a, b| {
+            (&a.scope, &a.org, &a.outcome).cmp(&(&b.scope, &b.org, &b.outcome))
+        });
+        series
     }
 
     /// Record a finished metadata-store operation.
@@ -634,6 +690,7 @@ mod tests {
         fn store_operation(&self, _d: &str, _op: &str, _oc: &str, _du: Duration) {}
         fn search_request(&self, _b: &str, _oc: &str, _d: Duration) {}
         fn object_store_request(&self, _b: &str, _op: &str, _oc: &str, _d: Duration) {}
+        fn limit(&self, _s: &str, _o: &str, _oc: &str) {}
     }
 
     #[test]
@@ -655,12 +712,39 @@ mod tests {
         metrics.record_store_operation("sqlite", "find_node", "ok", Duration::from_millis(1));
         metrics.record_search_request("embedded", "ok", Duration::from_millis(1));
         metrics.record_object_store_request("local", "get", "error", Duration::from_millis(1));
+        metrics.record_limit("org", "acme", "rejected");
         assert_eq!(metrics.http_series()[0].count, 1);
         assert_eq!(metrics.mcp_series()[0].tool, "list_nodes");
         assert_eq!(metrics.converge_series()[0].status, "success");
         assert_eq!(metrics.store_series()[0].operation, "find_node");
         assert_eq!(metrics.search_series()[0].backend, "embedded");
         assert_eq!(metrics.object_store_series()[0].outcome, "error");
+        assert_eq!(metrics.limit_series()[0].outcome, "rejected");
+    }
+
+    #[test]
+    fn limits_series_carry_scope_org_and_outcome() {
+        let metrics = Metrics::new();
+        metrics.record_limit("org", "acme", "rejected");
+        metrics.record_limit("global", "", "allowed");
+        let series = metrics.limit_series();
+        assert_eq!(series.len(), 2);
+        assert_eq!(series[0].scope, "global");
+        assert_eq!(series[0].outcome, "allowed");
+        assert_eq!(series[1].scope, "org");
+        assert_eq!(series[1].org, "acme");
+        assert_eq!(series[1].outcome, "rejected");
+        assert_eq!(series[1].count, 1);
+    }
+
+    #[test]
+    fn limits_in_flight_saturates_at_zero() {
+        let metrics = Metrics::new();
+        metrics.adjust_limits_in_flight("org", 2);
+        metrics.adjust_limits_in_flight("org", -1);
+        assert_eq!(metrics.limits_in_flight(), vec![("org", 1)]);
+        metrics.adjust_limits_in_flight("org", -5);
+        assert_eq!(metrics.limits_in_flight(), vec![("org", 0)]);
     }
 
     #[test]

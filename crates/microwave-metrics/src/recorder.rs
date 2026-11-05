@@ -20,4 +20,5 @@ pub trait Recorder: Send + Sync {
         outcome: &str,
         duration: Duration,
     );
+    fn limit(&self, scope: &str, org: &str, outcome: &str);
 }

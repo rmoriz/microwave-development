@@ -385,6 +385,7 @@ async fn stats(
              # TYPE microwave_server_nodes gauge\n",
         );
         body.push_str(&format!("microwave_server_nodes {node_count}\n"));
+        push_limit_metrics(&mut body, &state.metrics);
         push_http_histograms(&mut body, state.metrics.http_series());
         push_build_info(&mut body, state.search.name());
         push_dependency_gauges(&mut body, &state.metrics.dependencies());
@@ -464,6 +465,33 @@ fn collapse_http_series(series: Vec<HttpSeries>) -> Vec<(String, HttpSeries)> {
 }
 
 const REQUEST_DURATION: &str = "microwave_server_request_duration_seconds";
+
+/// Append the request-limit counters and in-flight gauge.
+fn push_limit_metrics(body: &mut String, metrics: &Metrics) {
+    body.push_str(
+        "# HELP microwave_server_limits_total Request limit decisions.\n\
+         # TYPE microwave_server_limits_total counter\n",
+    );
+    for entry in metrics.limit_series() {
+        body.push_str(&format!(
+            "microwave_server_limits_total{{scope=\"{}\",org=\"{}\",outcome=\"{}\"}} {}\n",
+            escape_label(&entry.scope),
+            escape_label(&entry.org),
+            escape_label(&entry.outcome),
+            entry.count
+        ));
+    }
+    body.push_str(
+        "# HELP microwave_server_limits_in_flight Requests holding a limit slot.\n\
+         # TYPE microwave_server_limits_in_flight gauge\n",
+    );
+    for (scope, value) in metrics.limits_in_flight() {
+        body.push_str(&format!(
+            "microwave_server_limits_in_flight{{scope=\"{}\"}} {value}\n",
+            escape_label(scope)
+        ));
+    }
+}
 
 /// Append the request duration histogram, one `_bucket`/`_sum`/`_count` group
 /// per label set, with `le` last and `+Inf` before `_sum`.
@@ -673,6 +701,23 @@ fn stats_json(
     pool: Option<PoolStats>,
     keygen: &KeygenStatus,
 ) -> Value {
+    let limits_in_flight: Map<String, Value> = metrics
+        .limits_in_flight()
+        .into_iter()
+        .map(|(scope, value)| (scope.to_string(), json!(value)))
+        .collect();
+    let limit_totals: Vec<Value> = metrics
+        .limit_series()
+        .into_iter()
+        .map(|entry| {
+            json!({
+                "scope": entry.scope,
+                "org": entry.org,
+                "outcome": entry.outcome,
+                "count": entry.count,
+            })
+        })
+        .collect();
     let mut body = json!({
         "uptime_seconds": snapshot.uptime_seconds,
         "requests": {
@@ -696,6 +741,10 @@ fn stats_json(
             "last_export_error": metrics.export_error(),
         },
         "keygen": keygen_json(keygen),
+        "limits": {
+            "in_flight": limits_in_flight,
+            "totals": limit_totals,
+        },
         "upstreams": upstreams_json(&metrics.dependencies()),
     });
     if let Some(db_pool) = pool_gauges_json(pool) {
@@ -907,6 +956,35 @@ mod tests {
             r#"{"idle":1,"in_use":2,"max":3}"#
         );
         assert!(pool_gauges_json(None).is_none());
+    }
+
+    #[test]
+    fn limit_metrics_render_totals_and_in_flight() {
+        let metrics = Metrics::new();
+        metrics.record_limit("org", "acme", "rejected");
+        metrics.adjust_limits_in_flight("org", 1);
+
+        let mut body = String::new();
+        push_limit_metrics(&mut body, &metrics);
+        assert!(body.contains(
+            "microwave_server_limits_total{scope=\"org\",org=\"acme\",outcome=\"rejected\"} 1\n"
+        ));
+        assert!(body.contains("microwave_server_limits_in_flight{scope=\"org\"} 1\n"));
+    }
+
+    #[test]
+    fn limit_metrics_appear_in_stats_json() {
+        let metrics = Metrics::new();
+        let otel = OtelConfig::default();
+        metrics.record_limit("org", "acme", "rejected");
+        metrics.adjust_limits_in_flight("org", 2);
+
+        let value = stats_json(&metrics, &otel, &snapshot(), false, 0, None, &keygen());
+        assert_eq!(value["limits"]["in_flight"]["org"], 2);
+        assert_eq!(value["limits"]["totals"][0]["scope"], "org");
+        assert_eq!(value["limits"]["totals"][0]["org"], "acme");
+        assert_eq!(value["limits"]["totals"][0]["outcome"], "rejected");
+        assert_eq!(value["limits"]["totals"][0]["count"], 1);
     }
 
     #[test]
