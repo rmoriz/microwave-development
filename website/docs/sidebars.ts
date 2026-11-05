@@ -15,6 +15,7 @@ const sidebars: SidebarsConfig = {
         {type: 'doc', id: 'debian-package', label: 'Debian packages'},
         {type: 'doc', id: 'http-parity', label: 'HTTP API parity'},
         {type: 'doc', id: 'load-test', label: 'Load test'},
+        {type: 'doc', id: 'docker-e2e', label: 'Docker e2e stack'},
       ],
     },
     {

@@ -62,5 +62,39 @@ class ComposeTest(unittest.TestCase):
         self.assertIn("build", config["services"]["workstation"])
 
 
+class DocsPageTest(unittest.TestCase):
+    def setUp(self):
+        self.page = (ROOT / "docs" / "docker-e2e.md").read_text()
+
+    def test_page_names_every_service_and_no_other(self):
+        compose = yaml.safe_load(
+            (ROOT / "docker-e2e" / "docker-compose.yml").read_text()
+        )
+        for service in compose["services"]:
+            self.assertIn(f"microwave-e2e-{service}-1", self.page)
+        names = set(re.findall(r"microwave-e2e-([a-z-]+)-1", self.page))
+        self.assertEqual(names, set(compose["services"]))
+
+    def test_page_quick_start_and_ports(self):
+        self.assertIn(
+            "git clone https://github.com/rmoriz/microwave-development.git",
+            self.page,
+        )
+        self.assertIn("cd docker-e2e", self.page)
+        self.assertIn("docker compose up -d", self.page)
+        self.assertIn("18080", self.page)
+        self.assertIn("127.0.0.1:18081", self.page)
+
+    def test_page_logins_and_build_path(self):
+        self.assertIn("e2e-console", self.page)
+        self.assertIn("e2e-console-password", self.page)
+        self.assertIn("/var/lib/microwave/pivotal.password", self.page)
+        self.assertIn(
+            "docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build",
+            self.page,
+        )
+        self.assertIn("docker compose down -v", self.page)
+
+
 if __name__ == "__main__":
     unittest.main()
