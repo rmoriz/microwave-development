@@ -2,9 +2,10 @@
 
 use super::source::client_ip;
 use super::{LimitPermit, Rejection, Scope};
+use crate::bookshelf::{authorized, TokenQuery};
 use crate::middleware::{is_static_asset_path, serves_landing_page};
 use crate::{AppState, Metrics};
-use axum::extract::{Request, State};
+use axum::extract::{Query, Request, State};
 use axum::http::{header::RETRY_AFTER, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -110,6 +111,78 @@ pub async fn check_org_principal(
         }
     };
     Ok((org_permit, principal_permit))
+}
+
+/// `/bookshelf/organizations/:org/checksums/:checksum` parts.
+fn bookshelf_target(path: &str) -> Option<(&str, &str)> {
+    let mut parts = path.trim_matches('/').split('/');
+    if parts.next() != Some("bookshelf") || parts.next() != Some("organizations") {
+        return None;
+    }
+    let organization = parts.next().filter(|part| !part.is_empty())?;
+    if parts.next() != Some("checksums") {
+        return None;
+    }
+    let checksum = parts.next().filter(|part| !part.is_empty())?;
+    Some((organization, checksum))
+}
+
+/// Count bookshelf uploads and downloads against the org quota.
+///
+/// Bookshelf authenticates with a query token rather than a signature, so this
+/// gate sits in front of the body extractor: a rejected upload never buffers
+/// its body. Downloads count as well because the org share is about transfer
+/// pressure, not only storage writes.
+pub async fn bookshelf_org_gate(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !state.limits.enabled() {
+        return next.run(request).await;
+    }
+    let method = if request.method() == axum::http::Method::HEAD {
+        "GET".to_string()
+    } else {
+        request.method().as_str().to_string()
+    };
+    let Some((organization, checksum)) = bookshelf_target(request.uri().path()) else {
+        return next.run(request).await;
+    };
+    let query = match Query::<TokenQuery>::try_from_uri(request.uri()) {
+        Ok(Query(query)) => query,
+        Err(response) => return response.into_response(),
+    };
+    if let Err(error) = authorized(&state, &method, organization, checksum, &query) {
+        return error.into_response();
+    }
+
+    let name = if state.limits.has_org_overrides() {
+        state
+            .store
+            .find_org_by_id(organization)
+            .await
+            .ok()
+            .flatten()
+            .map(|org| org.name)
+    } else {
+        None
+    };
+    let permit = match state.limits.org_by_key(organization, name.as_deref()).await {
+        Ok(permit) => {
+            state
+                .metrics
+                .record_limit(Scope::Org.as_str(), organization, "allowed");
+            permit
+        }
+        Err(rejection) => {
+            log_org_rejection(organization, "", rejection);
+            return rejected(rejection, &state.metrics, organization);
+        }
+    };
+    let response = next.run(request).await;
+    drop(permit);
+    response
 }
 
 /// Global admission and the pre-auth source bucket.

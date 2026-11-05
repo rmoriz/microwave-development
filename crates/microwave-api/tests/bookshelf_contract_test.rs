@@ -314,8 +314,8 @@ fn upload_limit_matches_upstream_250_mib() {
 #[tokio::test]
 async fn bodies_over_the_configured_limit_are_rejected_before_the_handler() {
     // Exercise the same layer with a small cap so the test stays cheap.
-    let app =
-        microwave_api::bookshelf::routes_with_limit(1024).with_state(support::state_with_pivotal());
+    let state = support::state_with_pivotal();
+    let app = microwave_api::bookshelf::routes_with_limit(1024, state.clone()).with_state(state);
     let contents = vec![b'x'; 2048];
     let checksum = md5_hex(&contents);
 

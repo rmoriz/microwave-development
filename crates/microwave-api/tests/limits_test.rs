@@ -292,3 +292,81 @@ async fn validate_consumes_an_org_token() {
         StatusCode::SERVICE_UNAVAILABLE
     );
 }
+
+const BOOKSHELF_ORG: &str = "bookshelf-limits";
+const BOOKSHELF_SECRET: &str = "test-secret";
+
+fn bookshelf_path(checksum: &str, method: &str) -> String {
+    let expires_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 900;
+    let token = microwave_objectstore::bookshelf_token(
+        BOOKSHELF_SECRET,
+        method,
+        BOOKSHELF_ORG,
+        checksum,
+        expires_at,
+    );
+    format!(
+        "/bookshelf/organizations/{BOOKSHELF_ORG}/checksums/{checksum}?token={token}&exp={expires_at}"
+    )
+}
+
+async fn bookshelf_send(
+    app: &Router,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .body(Body::from(body.to_vec()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_busy_org_bucket_rejects_a_bookshelf_upload() {
+    let mut config = config();
+    config.limits.org.in_flight = 1;
+    config.limits.queue_timeout_ms = 0;
+    let state = support::state_with_config(config);
+    let app = support::app(state.clone());
+    let contents = b"cookbook file";
+    let checksum = microwave_objectstore::md5_hex(contents);
+    let path = bookshelf_path(&checksum, "PUT");
+
+    let held = state.limits.org_by_key(BOOKSHELF_ORG, None).await.unwrap();
+    let rejected = bookshelf_send(&app, "PUT", &path, contents).await;
+    assert_eq!(rejected.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(rejected.headers()["retry-after"], "1");
+
+    drop(held);
+    assert_eq!(
+        bookshelf_send(&app, "PUT", &path, contents).await.status(),
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn a_busy_org_bucket_rejects_a_bookshelf_download() {
+    let mut config = config();
+    config.limits.org.in_flight = 1;
+    config.limits.queue_timeout_ms = 0;
+    let state = support::state_with_config(config);
+    let app = support::app(state.clone());
+    let path = bookshelf_path(&microwave_objectstore::md5_hex(b"missing"), "GET");
+
+    let _held = state.limits.org_by_key(BOOKSHELF_ORG, None).await.unwrap();
+    assert_eq!(
+        bookshelf_send(&app, "GET", &path, b"").await.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+}

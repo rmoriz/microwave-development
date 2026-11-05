@@ -530,9 +530,9 @@ Expected: FAIL.
 
 - [ ] **Step 3: Gate implementieren und einhängen**
 
-`bookshelf_org_gate` extrahiert Org-ID und Checksum aus den Pfadsegmenten, liest `Query<TokenQuery>`, ruft `bookshelf::authorized` und gibt bei Fehler die unveränderte Antwort zurück. Nur wenn `state.limits.has_org_overrides()` gilt, wird `find_org_by_id` für den Override-Namen aufgerufen. Dann `org_by_key` und Permit über `next.run` halten.
+`bookshelf_org_gate` extrahiert Org-ID und Checksum aus den Pfadsegmenten, liest `Query<TokenQuery>`, ruft `bookshelf::authorized` und gibt bei Fehler die unveränderte Antwort zurück. HEAD prüft wie der Handler mit `GET`. Nur wenn `state.limits.has_org_overrides()` gilt, wird `find_org_by_id` für den Override-Namen aufgerufen. Dann `org_by_key` und Permit über `next.run` halten.
 
-In `routes_with_limit` `.route_layer(axum::middleware::from_fn(bookshelf_org_gate))` ergänzen; das Gate liegt damit vor dem `Bytes`-Extraktor und vor `DefaultBodyLimit`.
+`routes_with_limit` nimmt zusätzlich den `AppState`; in `routes_with_limit` `.route_layer(axum::middleware::from_fn_with_state(state, bookshelf_org_gate))` ergänzen; das Gate liegt damit vor dem `Bytes`-Extraktor und vor `DefaultBodyLimit`. Der Contract-Test reicht den State an `routes_with_limit` und behält `with_state` für den Rest.
 
 - [ ] **Step 4: Tests laufen lassen**
 

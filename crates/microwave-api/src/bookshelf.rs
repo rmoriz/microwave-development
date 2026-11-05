@@ -29,7 +29,7 @@ pub const MAX_UPLOAD_BYTES: usize = 250 * 1024 * 1024;
 pub const CACHE_CONTROL_MAX_AGE: u64 = DEFAULT_PRESIGN_EXPIRY_SECONDS;
 
 #[derive(Debug, Deserialize)]
-struct TokenQuery {
+pub(crate) struct TokenQuery {
     token: Option<String>,
     exp: Option<u64>,
 }
@@ -38,7 +38,7 @@ struct TokenQuery {
 ///
 /// A missing or temporally invalid `exp` is a `403`; a well-formed token with a
 /// bad signature remains a `401`, matching the historical behavior.
-fn authorized(
+pub(crate) fn authorized(
     state: &AppState,
     method: &str,
     organization: &str,
@@ -77,21 +77,25 @@ fn authorized(
     }
 }
 
-pub fn routes() -> Router<AppState> {
-    routes_with_limit(MAX_UPLOAD_BYTES)
+pub fn routes(state: AppState) -> Router<AppState> {
+    routes_with_limit(MAX_UPLOAD_BYTES, state)
 }
 
 /// Build the bookshelf routes with an explicit upload cap.
 ///
 /// Exposed so tests can exercise the body-limit behavior without sending a
 /// quarter-gigabyte request.
-pub fn routes_with_limit(limit: usize) -> Router<AppState> {
+pub fn routes_with_limit(limit: usize, state: AppState) -> Router<AppState> {
     Router::new()
         .route(
             "/bookshelf/organizations/{organization}/checksums/{checksum}",
             get(download).put(upload).head(head).delete(delete_object),
         )
         .layer(axum::extract::DefaultBodyLimit::max(limit))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state,
+            crate::limits::layer::bookshelf_org_gate,
+        ))
 }
 
 async fn download(

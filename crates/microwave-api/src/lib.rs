@@ -118,7 +118,7 @@ pub fn router(state: AppState) -> Router {
         .merge(roles::routes())
         .merge(data_bags::routes())
         .merge(search::routes())
-        .merge(bookshelf::routes())
+        .merge(bookshelf::routes(state.clone()))
         .merge(sandboxes::routes())
         .merge(cookbooks::routes())
         .merge(cookbook_artifacts::routes())
