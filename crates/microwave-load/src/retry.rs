@@ -23,6 +23,9 @@ const BASE_DELAY: Duration = Duration::from_millis(200);
 /// Body the server writes when the dependency solver is saturated.
 const SOLVER_OVERLOADED: &[u8] = b"Dependency solver overloaded";
 
+/// Body the server writes when a request limit rejects the request.
+const LIMIT_OVERLOADED: &[u8] = b"Server is overloaded";
+
 /// How many retries one request needed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RetryCount(pub u32);
@@ -38,6 +41,16 @@ impl std::fmt::Display for RetryCount {
 pub struct SolverOverloaded(pub u32);
 
 impl std::fmt::Display for SolverOverloaded {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// How many `503` responses came from a request limit rather than the solver.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LimitOverloaded(pub u32);
+
+impl std::fmt::Display for LimitOverloaded {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(formatter)
     }
@@ -79,38 +92,47 @@ pub fn is_solver_overload(body: &[u8]) -> bool {
         .any(|window| window == SOLVER_OVERLOADED)
 }
 
+/// Whether a `503` body names a request limit.
+pub fn is_limit_overload(body: &[u8]) -> bool {
+    body.windows(LIMIT_OVERLOADED.len())
+        .any(|window| window == LIMIT_OVERLOADED)
+}
+
 /// Run `attempt` until it yields a final status, retrying the policy statuses
 /// and transport errors.
 ///
 /// Returns the last attempt together with the number of retries and solver
 /// overloads seen. A transport error that survives the whole budget is
-/// returned as an error that carries both counters.
+/// returned as an error that carries every counter.
 pub async fn execute<F, Fut>(
     mut attempt: F,
-) -> Result<(Attempt, RetryCount, SolverOverloaded), LoadError>
+) -> Result<(Attempt, RetryCount, SolverOverloaded, LimitOverloaded), LoadError>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<Attempt, LoadError>>,
 {
     let mut retries = RetryCount::default();
     let mut solver = SolverOverloaded::default();
+    let mut limit = LimitOverloaded::default();
 
     for index in 0..=MAX_RETRIES {
         let last = index == MAX_RETRIES;
         match attempt().await {
             Ok(result) => {
-                if result.status == StatusCode::SERVICE_UNAVAILABLE
-                    && is_solver_overload(&result.body)
-                {
-                    solver.0 += 1;
+                if result.status == StatusCode::SERVICE_UNAVAILABLE {
+                    if is_solver_overload(&result.body) {
+                        solver.0 += 1;
+                    } else if is_limit_overload(&result.body) {
+                        limit.0 += 1;
+                    }
                 }
                 if last || !should_retry(result.status) {
-                    return Ok((result, retries, solver));
+                    return Ok((result, retries, solver, limit));
                 }
             }
             Err(error) => {
                 if last {
-                    return Err(error.counted(retries, solver));
+                    return Err(error.counted(retries, solver, limit));
                 }
             }
         }
@@ -159,5 +181,42 @@ mod tests {
             b"{\"error\":\"Dependency solver overloaded\"}"
         ));
         assert!(!is_solver_overload(b"busy"));
+    }
+
+    #[test]
+    fn limit_overload_needs_the_marker_in_the_body() {
+        assert!(is_limit_overload(
+            b"{\"error\":[\"Server is overloaded. Retry later.\"]}"
+        ));
+        assert!(!is_limit_overload(b"busy"));
+        assert!(!is_limit_overload(b"Dependency solver overloaded"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_limit_503_counts_as_limit_not_solver() {
+        let calls = std::sync::atomic::AtomicU32::new(0);
+        let (attempt, retries, solver, limit) = execute(|| {
+            let call = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async move {
+                if call == 0 {
+                    Ok(Attempt {
+                        status: StatusCode::SERVICE_UNAVAILABLE,
+                        body: LIMIT_OVERLOADED.to_vec(),
+                    })
+                } else {
+                    Ok(Attempt {
+                        status: StatusCode::OK,
+                        body: Vec::new(),
+                    })
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(attempt.status, StatusCode::OK);
+        assert_eq!(retries.0, 1);
+        assert_eq!(solver.0, 0);
+        assert_eq!(limit.0, 1);
     }
 }

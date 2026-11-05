@@ -194,7 +194,7 @@ JSON siblings for that; the Markdown is for reading.
 Change one variable per pair and keep `--concurrency`, `--ramp` and the fixture
 identical. A second variable in the same step makes the difference
 unattributable. Compare the same endpoint's p50, p95 and p99, the failure
-counts and the `solver 503s` column, not a single aggregate.
+counts, the `solver 503s` and `limits 503s` columns, not a single aggregate.
 
 Do not compare across `--shared-key` modes. Signing costs the same either way:
 the driver parses the PEM and signs every request in both modes, and a signature
@@ -266,6 +266,20 @@ that node at the solve and lands it in the failures. To reduce the noise, edit
 `docker-load/microwave/microwave.toml` or set `MW_DEPSOLVER__MAX_CONCURRENT`
 (the knob above) in the same step, and compare only against runs with the same
 value.
+
+## Limit 503s
+
+The stack raises `limits.global.in_flight` to 64, above the server default of
+32, so the reference concurrency reaches the database instead of the admission
+cap. A request above that bound answers `503 Server is overloaded. Retry
+later.` and is retried like a solver `503`. The report keeps the two apart: a
+limit rejection increments the `limits 503s` column of its endpoint, never the
+`solver 503s` column.
+
+A non-zero `limits 503s` column means the admission cap bound the run, not the
+database. Raise `MW_LIMITS_GLOBAL_IN_FLIGHT` in the same step and compare only
+against runs with the same value. A rejected request that exhausts the retry
+budget stops its node like any other final failure.
 
 ## Where the evidence is
 

@@ -213,6 +213,7 @@ impl Converge<'_> {
                     status: Some(outcome.status.as_u16()),
                     retries: outcome.retries.0,
                     solver_503: outcome.solver_overloaded.0,
+                    limit_503: outcome.limit_overloaded.0,
                     latency,
                 });
                 if outcome.status.is_success() {
@@ -222,19 +223,21 @@ impl Converge<'_> {
                 }
             }
             Err(error) => {
-                let (retries, solver_503) = match &error {
+                let (retries, solver_503, limit_503) = match &error {
                     crate::LoadError::Transport {
                         retries,
                         solver_503,
+                        limit_503,
                         ..
-                    } => (retries.0, solver_503.0),
-                    _ => (0, 0),
+                    } => (retries.0, solver_503.0, limit_503.0),
+                    _ => (0, 0, 0),
                 };
                 self.samples.push(Sample {
                     endpoint,
                     status: None,
                     retries,
                     solver_503,
+                    limit_503,
                     latency,
                 });
                 Err(format!("{endpoint}: {error}"))
@@ -255,6 +258,7 @@ impl Converge<'_> {
                 status: None,
                 retries: 0,
                 solver_503: 0,
+                limit_503: 0,
                 latency: std::time::Duration::ZERO,
             }),
         }

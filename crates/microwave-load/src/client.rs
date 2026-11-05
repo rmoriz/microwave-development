@@ -6,7 +6,7 @@
 //! unsigned because it carries its own token and its query string is not part
 //! of the canonical path.
 
-use crate::retry::{self, RetryCount, SolverOverloaded};
+use crate::retry::{self, LimitOverloaded, RetryCount, SolverOverloaded};
 use crate::LoadError;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -41,6 +41,7 @@ pub struct Outcome {
     pub body: Vec<u8>,
     pub retries: RetryCount,
     pub solver_overloaded: SolverOverloaded,
+    pub limit_overloaded: LimitOverloaded,
 }
 
 /// Build the one HTTP client of a whole run, with an idle pool that holds every
@@ -103,7 +104,7 @@ impl NodeClient {
                 "relative path '{path}' does not start with '/'"
             )));
         }
-        let (attempt, retries, solver_overloaded) =
+        let (attempt, retries, solver_overloaded, limit_overloaded) =
             retry::execute(|| async { self.attempt(method.clone(), path, body.as_deref()).await })
                 .await?;
         Ok(Outcome {
@@ -111,6 +112,7 @@ impl NodeClient {
             body: attempt.body,
             retries,
             solver_overloaded,
+            limit_overloaded,
         })
     }
 

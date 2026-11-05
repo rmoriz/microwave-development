@@ -26,6 +26,7 @@ pub struct EndpointResult {
     pub statuses: BTreeMap<String, u64>,
     pub retries: u64,
     pub solver_503: u64,
+    pub limit_503: u64,
     pub p50_us: u32,
     pub p95_us: u32,
     pub p99_us: u32,
@@ -44,6 +45,7 @@ impl EndpointResult {
                 .collect(),
             retries: summary.retries,
             solver_503: summary.solver_503,
+            limit_503: summary.limit_503,
             p50_us: summary.p50,
             p95_us: summary.p95,
             p99_us: summary.p99,
@@ -244,9 +246,9 @@ fn render(report: &Report) -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "| Endpoint | n | statuses | p50 µs | p95 µs | p99 µs | max µs | retries | solver 503s |"
+        "| Endpoint | n | statuses | p50 µs | p95 µs | p99 µs | max µs | retries | solver 503s | limits 503s |"
     );
-    let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|");
+    let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|---|");
     for endpoint in &results.endpoints {
         let statuses: Vec<String> = endpoint
             .statuses
@@ -255,7 +257,7 @@ fn render(report: &Report) -> String {
             .collect();
         let _ = writeln!(
             out,
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             endpoint.endpoint,
             endpoint.count,
             statuses.join(", "),
@@ -264,7 +266,8 @@ fn render(report: &Report) -> String {
             endpoint.p99_us,
             endpoint.max_us,
             endpoint.retries,
-            endpoint.solver_503
+            endpoint.solver_503,
+            endpoint.limit_503
         );
     }
     let _ = writeln!(out);
@@ -415,6 +418,7 @@ mod tests {
                 statuses: BTreeMap::from([(200, 2), (0, 1)]),
                 retries: 2,
                 solver_503: 1,
+                limit_503: 4,
                 p50: 1_000,
                 p95: 2_000,
                 p99: 3_000,
@@ -473,6 +477,7 @@ mod tests {
         assert!(markdown.contains("1 nodes did not complete"));
         assert!(markdown.contains("GET nodes/:node: transport"));
         assert!(markdown.contains("canary-0: ok"));
+        assert!(markdown.contains("limits 503s"), "{markdown}");
     }
 
     #[test]
@@ -483,6 +488,7 @@ mod tests {
         assert_eq!(report.fingerprint, fingerprint());
         assert_eq!(report.results.failed, 1);
         assert_eq!(report.results.endpoints[0].statuses["200"], 2);
+        assert_eq!(report.results.endpoints[0].limit_503, 4);
         assert_eq!(report.results.pool_samples.len(), 1);
         assert_eq!(report.config["concurrency"], 5_000);
     }

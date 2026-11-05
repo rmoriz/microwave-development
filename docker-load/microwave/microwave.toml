@@ -38,6 +38,14 @@ superuser_name = "load-superuser"
 # The reference concurrency: excess solves answer 503 and are retried.
 max_concurrent = 4
 
+[limits]
+# Above the default 32 so the reference concurrency reaches the database
+# instead of the admission cap; over-limit requests still answer 503.
+queue_timeout_ms = 1500
+
+[limits.global]
+in_flight = 64
+
 [data_collector]
 store = "local"
 

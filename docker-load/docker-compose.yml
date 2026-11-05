@@ -109,6 +109,8 @@ services:
       MW_DATABASE__POOL_SIZE: ${MW_POOL_SIZE:-10}
       # Overrides depsolver.max_concurrent in the mounted configuration.
       MW_DEPSOLVER__MAX_CONCURRENT: ${MW_DEPSOLVER__MAX_CONCURRENT:-4}
+      # Overrides limits.global.in_flight; limit rejections are counted apart.
+      MW_LIMITS__GLOBAL__IN_FLIGHT: ${MW_LIMITS_GLOBAL_IN_FLIGHT:-64}
       # Must match [stats] in the mounted configuration.
       MW_STATS__USERNAME: load
       MW_STATS__PASSWORD: load-stats

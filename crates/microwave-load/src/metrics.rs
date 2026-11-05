@@ -28,6 +28,7 @@ pub struct Sample {
     pub status: Option<u16>,
     pub retries: u32,
     pub solver_503: u32,
+    pub limit_503: u32,
     pub latency: Duration,
 }
 
@@ -59,6 +60,7 @@ pub struct Endpoint {
     pub statuses: BTreeMap<u16, u64>,
     pub retries: u64,
     pub solver_503: u64,
+    pub limit_503: u64,
     pub latencies_us: Vec<u32>,
 }
 
@@ -70,6 +72,7 @@ impl Endpoint {
         *self.statuses.entry(class).or_default() += 1;
         self.retries += u64::from(sample.retries);
         self.solver_503 += u64::from(sample.solver_503);
+        self.limit_503 += u64::from(sample.limit_503);
         let micros = u32::try_from(sample.latency.as_micros()).unwrap_or(u32::MAX);
         self.latencies_us.push(micros);
     }
@@ -83,6 +86,7 @@ impl Endpoint {
             statuses: self.statuses.clone(),
             retries: self.retries,
             solver_503: self.solver_503,
+            limit_503: self.limit_503,
             p50: percentile(&sorted, 50),
             p95: percentile(&sorted, 95),
             p99: percentile(&sorted, 99),
@@ -98,6 +102,7 @@ pub struct Summary {
     pub statuses: BTreeMap<u16, u64>,
     pub retries: u64,
     pub solver_503: u64,
+    pub limit_503: u64,
     pub p50: u32,
     pub p95: u32,
     pub p99: u32,
@@ -268,12 +273,13 @@ mod tests {
     use axum::Router;
     use std::sync::atomic::AtomicUsize;
 
-    fn sample(status: Option<u16>, retries: u32, solver: u32, micros: u64) -> Sample {
+    fn sample(status: Option<u16>, retries: u32, solver: u32, limit: u32, micros: u64) -> Sample {
         Sample {
             endpoint: "GET nodes/:node",
             status,
             retries,
             solver_503: solver,
+            limit_503: limit,
             latency: Duration::from_micros(micros),
         }
     }
@@ -289,7 +295,7 @@ mod tests {
 
         let mut endpoint = Endpoint::default();
         for micros in [5, 1, 3, 2, 4] {
-            endpoint.record(&sample(Some(200), 0, 0, micros));
+            endpoint.record(&sample(Some(200), 0, 0, 0, micros));
         }
         let summary = endpoint.summary();
         assert_eq!(
@@ -304,7 +310,7 @@ mod tests {
     fn a_status_less_request_is_counted_as_class_zero() {
         let mut metrics = Metrics::new(false);
         metrics.record(NodeRun::failed(
-            vec![sample(None, 5, 1, 1_000)],
+            vec![sample(None, 5, 1, 2, 1_000)],
             "GET nodes/:node: transport".into(),
         ));
 
@@ -312,6 +318,7 @@ mod tests {
         assert_eq!(endpoint.statuses.get(&0), Some(&1));
         assert_eq!(endpoint.retries, 5);
         assert_eq!(endpoint.solver_503, 1);
+        assert_eq!(endpoint.limit_503, 2);
         assert_eq!(metrics.failed, 1);
         assert_eq!(metrics.completed, 0);
     }
@@ -342,13 +349,14 @@ mod tests {
     fn a_solver_503_is_counted_without_failing_the_node() {
         let mut metrics = Metrics::new(true);
         metrics.record(NodeRun {
-            samples: vec![sample(Some(200), 2, 2, 500)],
+            samples: vec![sample(Some(200), 2, 2, 1, 500)],
             completed: true,
             failure: None,
         });
 
         let endpoint = &metrics.endpoints["GET nodes/:node"];
         assert_eq!(endpoint.solver_503, 2);
+        assert_eq!(endpoint.limit_503, 1);
         assert_eq!(endpoint.statuses.get(&200), Some(&1));
         assert_eq!(metrics.failed, 0);
         assert_eq!(metrics.completed, 1);

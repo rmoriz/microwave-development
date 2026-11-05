@@ -22,7 +22,7 @@ pub use fingerprint::Fingerprint;
 pub use fixture::{BookBlob, Fixture, KeyEntry, KeyKind, Sizes, ORG_ID, ORG_NAME, SUPERUSER};
 pub use keys::ActorKey;
 pub use metrics::Metrics;
-pub use retry::{RetryCount, SolverOverloaded};
+pub use retry::{LimitOverloaded, RetryCount, SolverOverloaded};
 pub use sequence::converge;
 
 use clap::Parser;
@@ -74,10 +74,13 @@ pub enum LoadError {
     /// Fingerprint or report failure.
     #[error("{0}")]
     Diagnostic(String),
-    #[error("transport after {retries} retries ({solver_503} solver 503s): {source}")]
+    #[error(
+        "transport after {retries} retries ({solver_503} solver 503s, {limit_503} limit 503s): {source}"
+    )]
     Transport {
         retries: RetryCount,
         solver_503: SolverOverloaded,
+        limit_503: LimitOverloaded,
         #[source]
         source: reqwest::Error,
     },
@@ -106,16 +109,24 @@ impl LoadError {
         Self::Transport {
             retries: RetryCount::default(),
             solver_503: SolverOverloaded::default(),
+            limit_503: LimitOverloaded::default(),
             source,
         }
     }
 
-    /// Carry the retry and solver counters into an exhausted transport error.
-    pub(crate) fn counted(self, retries: RetryCount, solver_503: SolverOverloaded) -> Self {
+    /// Carry the retry, solver and limit counters into an exhausted
+    /// transport error.
+    pub(crate) fn counted(
+        self,
+        retries: RetryCount,
+        solver_503: SolverOverloaded,
+        limit_503: LimitOverloaded,
+    ) -> Self {
         match self {
             Self::Transport { source, .. } => Self::Transport {
                 retries,
                 solver_503,
+                limit_503,
                 source,
             },
             other => other,
@@ -382,7 +393,7 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
     }
     for (endpoint, summary) in metrics.summaries() {
         println!(
-            "{endpoint}: n={} status={:?} p50={}us p95={}us p99={}us max={}us retries={} solver_503={}",
+            "{endpoint}: n={} status={:?} p50={}us p95={}us p99={}us max={}us retries={} solver_503={} limit_503={}",
             summary.count,
             summary.statuses,
             summary.p50,
@@ -390,7 +401,8 @@ fn run_load(args: RunArgs) -> Result<(), LoadError> {
             summary.p99,
             summary.max,
             summary.retries,
-            summary.solver_503
+            summary.solver_503,
+            summary.limit_503
         );
     }
     println!("pool samples: {}", metrics.pool_samples.len());
