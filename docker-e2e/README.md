@@ -318,6 +318,15 @@ local use. Keep one fixed value if sessions should survive a restart.
   converge again. A manual `systemctl restart cinc-e2e-converge` on a node
   re-runs the client with the current config (same generation, no
   re-registration).
+- **Periodic converge.** The `e2e_timer` cookbook enables `cinc-client.timer`,
+  which runs `cinc-client.service` every ten minutes with one minute of splay;
+  the first run follows ten minutes after the unit starts. The timer is in
+  addition to the boot converge and the path trigger. Changes to the role, the
+  environment, or node attributes made in cinc-console or over MCP therefore
+  arrive within one interval. A failed run leaves the timer active and the next
+  run starts on schedule. Node-level run lists are an exception: every run
+  passes the seed's `node.json`, whose `run_list` (`role[e2e_role]`) replaces
+  the server-side node run list, so put run-list changes in the role.
 
 ## Inspecting the server
 
