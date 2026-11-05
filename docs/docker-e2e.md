@@ -53,17 +53,17 @@ a few minutes because it installs nginx and PostgreSQL.
 Compose prefixes every container with the project name, so the names below are
 `microwave-e2e-<service>-1`. Only two services publish a port.
 
-| Container | Purpose | Published port |
+| Container | Purpose | Port |
 | --- | --- | --- |
-| `microwave-e2e-microwave-1` | The server: API, `/bookshelf`, MCP | `18080` on all interfaces |
-| `microwave-e2e-seed-1` | Creates the organization, cookbooks, role and demo login, then exits | none |
-| `microwave-e2e-console-key-1` | Copies the WebUI key for the console, then exits | none |
+| `microwave-e2e-microwave-1` | The server: API, `/bookshelf`, MCP | `18080`, all interfaces |
+| `microwave-e2e-seed-1` | Creates the organization, cookbooks, role and demo login, then exits | — |
+| `microwave-e2e-console-key-1` | Copies the WebUI key for the console, then exits | — |
 | `microwave-e2e-cinc-console-1` | Web console | `127.0.0.1:18081` |
-| `microwave-e2e-node-debian-1` | Debian node running Cinc Client against the role | none |
-| `microwave-e2e-node-ubuntu-1` | Ubuntu node running Cinc Client against the role | none |
-| `microwave-e2e-node-fedora-1` | Fedora node running Cinc Client against the role | none |
-| `microwave-e2e-node-amazon-1` | Amazon Linux node running Cinc Client against the role | none |
-| `microwave-e2e-workstation-1` | knife and OpenCode against the stack, for `docker compose exec` | none |
+| `microwave-e2e-node-debian-1` | Debian node running Cinc Client against the role | — |
+| `microwave-e2e-node-ubuntu-1` | Ubuntu node running Cinc Client against the role | — |
+| `microwave-e2e-node-fedora-1` | Fedora node running Cinc Client against the role | — |
+| `microwave-e2e-node-amazon-1` | Amazon Linux node running Cinc Client against the role | — |
+| `microwave-e2e-workstation-1` | knife and OpenCode against the stack, for `docker compose exec` | — |
 
 The API port is reachable from the whole network; the console is loopback only.
 `MW_E2E_PORT` and `MW_CONSOLE_PORT` move both.
