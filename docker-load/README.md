@@ -2,7 +2,7 @@
 
 One Compose stack for the converge load test: PostgreSQL, a seeded fixture, the
 server built from the repository `Dockerfile` and the `microwave-load` driver
-with a real `chef-client` canary, started from a checkout with Docker on a Linux
+with a real `cinc-client`[^cinc] canary, started from a checkout with Docker on a Linux
 host and torn down on every exit. It always uses PostgreSQL, so a run is only
 comparable to another run with the same fingerprint; the report and its
 fingerprint land in `docker-load/out/`.
@@ -11,3 +11,5 @@ fingerprint land in `docker-load/out/`.
 docker-load/run.sh          # reference profile
 docker-load/run.sh smoke    # shrunken fixture, for a first look
 ```
+
+[^cinc]: [Cinc Client](https://cinc.sh/) — the open-source Chef client distribution.

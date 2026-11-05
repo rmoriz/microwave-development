@@ -2,7 +2,7 @@
 
 `docker-load/` is a Compose stack that measures how a Microwave server behaves
 under a converge load: PostgreSQL, a seeded fixture, the server built from the
-repository `Dockerfile`, the `microwave-load` driver and a real `chef-client`
+repository `Dockerfile`, the `microwave-load` driver and a real `cinc-client`[^cinc]
 canary. The stack's mechanics live in
 [`docker-load/README.md`](../docker-load/README.md) and
 [`docker-load/docker-compose.yml`](../docker-load/docker-compose.yml); this
@@ -13,7 +13,7 @@ converges take, and writes a report for a human to read.
 
 ## What it measures, and what it does not
 
-The driver plays `chef-client` over the signed HTTP API: it reads a node and its
+The driver plays `cinc-client` over the signed HTTP API: it reads a node and its
 environment, solves the run list, fetches every file the solution names, saves
 the node and posts the run report, plus a sandbox upload with `--upload`. Each
 request is timed, so the report carries a count, a status distribution, the
@@ -39,7 +39,7 @@ A reading describes:
   backend looks slower here than the stack can tell. The seed writes the blobs
   into `--data-dir` directly, so an S3 object store would need its own upload
   path; only the local store works today.
-- **a driver that imitates `chef-client`**, at a concurrency no real fleet of
+- **a driver that imitates `cinc-client`**, at a concurrency no real fleet of
   clients would produce from one binary. Only the canary runs the real one.
 
 The fixture is fixed so runs stay comparable: 20,000 nodes, 1,000 roles, 600
@@ -83,7 +83,7 @@ away from `/var/lib/microwave`.
 | `MW_SEED_ROLES` | `1000` | Roles the seed creates. |
 | `MW_SEED_VERSIONS` | `600` | Cookbook versions the seed creates. |
 | `MW_SEED_TARGETS` | `5000` | Converge targets, one keypair and node each. |
-| `MW_SEED_CANARY` | `20` | Canary nodes for the real `chef-client`. |
+| `MW_SEED_CANARY` | `20` | Canary nodes for the real `cinc-client`. |
 | `RUST_LOG` | `info` | Server log level. |
 | `RUST_VERSION` | `1` | Rust image tag both images build on. |
 | `CINC_VERSION` | `19` | Cinc Client version installed in the load image. |
@@ -229,14 +229,14 @@ memory allotted to PostgreSQL and never in the same step as the pool size.
 The seed creates canary nodes next to the targets. On `run`, `--canary` creates
 nothing; the seed already wrote the entries, and the flag only caps how many of
 them are converged. After the driver, the load container converges them with the
-real `chef-client`, at most four at a time and with a ten-minute timeout each.
+real `cinc-client`, at most four at a time and with a ten-minute timeout each.
 The report's canary section carries one `canary-<n>: ok|failed` line per node,
 with the stderr tail under a failure. A run without a `chef-client` binary or
 without canary entries says so instead.
 
 A canary failure is reported but never fails the run. That is the point: the
 driver is an imitation, and a green driver run next to a failing real converge
-means the driver drifted from `chef-client`, not that the server is broken.
+means the driver drifted from `cinc-client`, not that the server is broken.
 Treat the canary as a fidelity check on the harness before trusting a
 throughput comparison.
 
@@ -256,7 +256,7 @@ benchmark, and compare it only against another superuser run.
 The stack's configuration sets `depsolver.max_concurrent = 4`, the default
 described in the [deployment guide](deployment.md#search-and-dependency-solver).
 A solve beyond the four permits answers `503 Dependency solver overloaded`. The
-driver retries a `503` with the `chef-client` budget — five retries, exponential
+driver retries a `503` with the `cinc-client` budget — five retries, exponential
 backoff with jitter — so the node usually still completes, with the retry and
 the `solver 503` counted in its endpoint row and slower than a first-try answer.
 
@@ -297,3 +297,5 @@ failure.
 - [`crates/microwave-load/src/fingerprint.rs`](../crates/microwave-load/src/fingerprint.rs)
   and [`crates/microwave-load/src/report.rs`](../crates/microwave-load/src/report.rs)
   — the fingerprint keys and the report layout.
+
+[^cinc]: [Cinc Client](https://cinc.sh/) — the open-source Chef client distribution.

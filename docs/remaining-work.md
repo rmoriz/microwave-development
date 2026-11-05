@@ -124,7 +124,7 @@ Open gaps: 18 (migration: 7, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3)
 
 <a id="gap-knife-e2e"></a>
 
-**gap-knife-e2e** — Only chef-client has an end-to-end converge harness; knife has none.
+**gap-knife-e2e** — Only `cinc-client`[^cinc] has an end-to-end converge harness; knife has none.
 
 - `TODO.md`
 
@@ -141,3 +141,5 @@ Open gaps: 18 (migration: 7, mail: 1, search: 3, ha: 2, auth: 2, tooling: 3)
 - `TODO.md`
 
 <!-- end of generated remaining work -->
+
+[^cinc]: [Cinc Client](https://cinc.sh/) — the open-source Chef client distribution.

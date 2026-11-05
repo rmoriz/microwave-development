@@ -68,6 +68,12 @@ committing Rust. The homepage has no linter beyond `astro check`.
 - Internal URLs go through `withBase()`; `BASE_PATH` and the docs `baseUrl`
   change together. Pages serves the site under `/microwave-development/`.
 
+## Docs writing
+
+- Prefer `cinc-client` over `chef-client` in prose and examples. Keep
+  `chef-client` only where upstream Chef is specifically meant, or where a
+  literal command, path or upstream spec name really is `chef-client`.
+
 ## Rust notes
 
 - `cargo test` needs no external services for the default suites; Postgres

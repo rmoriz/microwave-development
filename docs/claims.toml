@@ -78,7 +78,7 @@ summary = "README: a stock chef-client converges against the server end to end."
 area = "docs"
 status = "verified"
 surfaces = [
-  { path = "README.md", needle = "a stock `chef-client` converges against it end to end" },
+  { path = "README.md", needle = "a stock `cinc-client` converges against it end to end" },
 ]
 verify = { kind = "grep", path = "scripts/run-chef-client-e2e.sh", pattern = "Runs a real chef-client" }
 
@@ -1263,7 +1263,7 @@ verify = { kind = "file", path = "docs/pedant-report.md" }
 
 [[claim]]
 id = "gap-knife-e2e"
-summary = "Only chef-client has an end-to-end converge harness; knife has none."
+summary = "Only `cinc-client`[^cinc] has an end-to-end converge harness; knife has none."
 area = "tooling"
 status = "gap"
 surfaces = [
@@ -1975,7 +1975,7 @@ verify = { kind = "grep", path = "Cargo.lock", pattern = 'name = "base64"' }
 
 [[claim]]
 id = "report-chef-client-e2e"
-summary = "There is a chef-client end-to-end converge harness whose strict run passes."
+summary = "There is a `cinc-client` end-to-end converge harness whose strict run passes."
 area = "tooling"
 status = "verified"
 surfaces = [ { path = "docs/chef-client-e2e-report.md", needle = "MW_E2E_COMPAT=0 MW_E2E_SYNTH_V2=0" } ]
@@ -2098,7 +2098,7 @@ surfaces = [
   { path = "docs/index.md", needle = "./mcp.md" },
   { path = "docs/index.md", needle = "./deployment.md" },
 ]
-verify = { kind = "grep", path = "docs/index.md", pattern = "drop-in replacement for existing `chef-client`" }
+verify = { kind = "grep", path = "docs/index.md", pattern = "drop-in replacement for existing `cinc-client`" }
 
 [[claim]]
 id = "homepage-pages-base-path"

@@ -1,7 +1,7 @@
 # Microwave Server documentation
 
 Microwave Server is a Rust reimplementation of the Chef Infra Server API, built
-as a drop-in replacement for existing `chef-client` fleets and operations
+as a drop-in replacement for existing `cinc-client`[^cinc] fleets and operations
 tooling. This site collects the guides an operator needs; the source for every
 page is a markdown file in the repository, rendered here unchanged.
 
@@ -51,3 +51,5 @@ Progress.
 The code, the issue tracker and these pages live at
 [github.com/rmoriz/microwave-development](https://github.com/rmoriz/microwave-development).
 The marketing page is [Homepage](https://rmoriz.github.io/microwave-development/).
+
+[^cinc]: [Cinc Client](https://cinc.sh/) — the open-source Chef client distribution.

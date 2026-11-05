@@ -1,7 +1,7 @@
 # Request limits
 
 Microwave Server bounds the request pressure one client can put on a running
-process. Without that bound a single misconfigured `chef-client`, a busy
+process. Without that bound a single misconfigured `cinc-client`[^cinc], a busy
 `knife` loop, or a scripting mistake can occupy every database connection and
 every worker, and every other client — inside the same organization or in a
 different one — waits behind it.
@@ -11,7 +11,7 @@ database round trip: a bucket check is a handful of instructions under a shard
 lock, and it runs before any body is read.
 
 The gates are on by default with conservative values. A limit violation
-answers `503` with `Retry-After` in whole seconds; `chef-client` retries `503`
+answers `503` with `Retry-After` in whole seconds; `cinc-client` retries `503`
 on its own, which is why `503` is used instead of `429`.
 
 ## What the limits can do
@@ -103,7 +103,7 @@ value. Because `burst` tokens are available at once, a burst above
 The global cap, every organization and every principal also own a semaphore.
 A caller that finds it empty waits up to `limits.queue_timeout_ms`, then gets
 `503` with `Retry-After: 1`. The wait is what lets a short burst of parallel
-`chef-client` runs drain instead of failing outright. With `0` there is no
+`cinc-client` runs drain instead of failing outright. With `0` there is no
 wait at all.
 
 The source bucket has no separate in-flight cap; the global admission already
@@ -178,7 +178,7 @@ Content-Type: application/json
 {"error":["Server is overloaded. Retry later."]}
 ```
 
-`Retry-After` is always at least `1`. Cinc and `chef-client` retry a `503` with
+`Retry-After` is always at least `1`. Cinc and `cinc-client` retry a `503` with
 backoff; they do not retry `429`.
 
 ### Counters, gauges, and logs
@@ -298,3 +298,5 @@ in_flight = 32
 - [MCP endpoint](mcp.md#limits) — request limits on the MCP surface.
 - [Load test](load-test.md#limit-503s) — the stack's widened buckets and the
   `limits 503s` column.
+
+[^cinc]: [Cinc Client](https://cinc.sh/) — the open-source Chef client distribution.

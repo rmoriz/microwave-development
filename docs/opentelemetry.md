@@ -227,7 +227,7 @@ Aggregate it away for the whole-server view and group by it for the per-org one.
 Requests on a default-org compatibility path (`/nodes`, `/environments`, …)
 carry no organization segment and are reported as `_default`
 ([`crates/microwave-metrics/src/route.rs`](../crates/microwave-metrics/src/route.rs)),
-so a chef-client fleet lands in that bucket.
+so a `cinc-client`[^cinc] fleet lands in that bucket.
 
 Prometheus escapes the dots to underscores, so the label is
 `microwave_organization` there. Whole-server, the p95 per route:
@@ -387,3 +387,5 @@ without dialing, so it passing does not prove reachability.
 **Numbers look doubled.** Two exporters or two collectors in the pipeline
 duplicate every point. Each instance also exports its own `service.instance.id`,
 so check the target list for the same instance scraped twice.
+
+[^cinc]: [Cinc Client](https://cinc.sh/) — the open-source Chef client distribution.

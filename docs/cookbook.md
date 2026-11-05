@@ -46,7 +46,7 @@ Garage is composed only with `object_store_backend = 'garage'`; the default
 `local` store writes the cookbook blobs under the data directory. That local
 Garage endpoint defaults to `https://127.0.0.1:3900`, so set
 `object_store_host` to the name clients reach the node at — or
-`object_store_endpoint` directly — as soon as `chef-client` hosts elsewhere
+`object_store_endpoint` directly — as soon as `cinc-client`[^cinc] hosts elsewhere
 fetch cookbooks: the endpoint lands in the presigned URLs. The listener is
 plain HTTP, so client TLS belongs in a proxy in front of the node.
 
@@ -163,3 +163,5 @@ The [cookbook README](../cookbooks/microwave/README.md) documents every
 resource, its properties, the attributes, the Garage provisioning and what the
 certificates protect. Start there before changing an attribute this page does
 not name.
+
+[^cinc]: [Cinc Client](https://cinc.sh/) — the open-source Chef client distribution.

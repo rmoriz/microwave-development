@@ -630,7 +630,7 @@ Operational notes:
   `TLS is disabled; nothing to reload` and continues, so `systemctl reload` and
   `docker kill --signal=HUP` remain safe when TLS is not enabled. The signal
   still does not re-read the rest of the configuration.
-- The certificate must be valid for the hostname clients use. `chef-client`
+- The certificate must be valid for the hostname clients use. `cinc-client`[^cinc]
   verifies the server URL hostname and the issuing CA; a self-signed
   certificate is suitable only for tests or when the CA is installed on every
   client.
@@ -1145,7 +1145,7 @@ This profile:
   `MW_OBJECT_STORE__ENDPOINT` at `host.docker.internal:3900`.
 
 The endpoint caveat matters: the server uses the same endpoint for its own
-S3 calls *and* for presigned URLs it hands to `chef-client`. The URL must
+S3 calls *and* for presigned URLs it hands to `cinc-client`. The URL must
 resolve from both the server container and the clients. `host.docker.internal`
 works on the Docker host only; for remote nodes use a DNS name behind a
 reverse proxy and set `MW_S3_ENDPOINT` to it.
@@ -1357,7 +1357,7 @@ Garage behind an nginx TLS proxy on port `3900`. That resource is one node with
 `replication_factor = 1`, meant for evaluation and small installations; a real
 cluster stays out of band and is then a plain `s3` endpoint you point the
 server at. The reachability rule is the same and strict: the endpoint is the
-host inside every presigned URL, so it must be the address the `chef-client`
+host inside every presigned URL, so it must be the address the `cinc-client`
 nodes use, and the store certificate SAN has to carry that host. The resource
 provisions the layout, the bucket and one key pair, but it does not copy
 anything: migrating existing `/bookshelf` objects into the bucket is an
@@ -2190,7 +2190,7 @@ snapshot or need to stage the copy yourself:
    `organization-<org_id>/checksum-<md5>`.
 5. **Start the server.**
 6. **Verify** with `microwave-ctl status`, `user-list`, `org-list`,
-   `org-show <org>`, and a `knife` or `chef-client` read against a test org,
+   `org-show <org>`, and a `knife` or `cinc-client` read against a test org,
    then drain clients over gradually.
 
 What the import preserves: users with their password hash format (legacy
@@ -2665,8 +2665,10 @@ requires restoring that backup.
 | `check-config` complains about object store | `s3`/`garage` needs endpoint, bucket, and credentials (config or `bookshelf.*` secrets). |
 | Sandbox completion returns `503` | The object store reports the uploaded checksum as missing. Check `endpoint` reachability from the server and bucket permissions. |
 | Cookbook download URLs point at `0.0.0.0` or an internal name | Local object store uses `server.bind`; switch to S3/Garage or bind a client-reachable address. |
-| `401` from `chef-client` after migration | Client/server clock skew beyond `auth.skew_seconds`, or the client key was not imported. Check `microwave-ctl list-user-keys` / `list-client-keys`. |
+| `401` from `cinc-client` after migration | Client/server clock skew beyond `auth.skew_seconds`, or the client key was not imported. Check `microwave-ctl list-user-keys` / `list-client-keys`. |
 | Search returns no rows after switching backends | Run `microwave-ctl reindex` to backfill the remote cluster; check `search.url`, `search.timeout_ms`, and the cluster health. Add `--purge` only when stale documents for already-deleted objects must be removed. |
 | `maintenance on` still serves requests | Check `microwave-ctl maintenance status` and that all replicas share the same database; `/_status` and `/_stats` are intentionally exempt. |
 | `psql` fails with `failed to run sqlite3` | Install `sqlite3` on the host (present in the container image). |
 | Server takes seconds to stop or `docker stop` waits | Active requests are draining after `SIGTERM`/`SIGINT`. The TLS listener caps the drain at 5 seconds; plain HTTP waits for active requests. Check for a hung handler rather than disabling graceful shutdown. |
+
+[^cinc]: [Cinc Client](https://cinc.sh/) — the open-source Chef client distribution.

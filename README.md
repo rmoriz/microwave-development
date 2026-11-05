@@ -3,7 +3,7 @@
 ![A glittering rainbow microwave under neon light](docs/images/microwave-hero.png)
 
 An independent, open-source Chef Infra Server API implementation in Rust, designed as a drop-in replacement
-for existing `chef-client` fleets and operations tooling: same API, same request signing, same CLI
+for existing `cinc-client`[^cinc] fleets and operations tooling: same API, same request signing, same CLI
 surface.
 
 **Website:** <https://rmoriz.github.io/microwave-development/> · **Documentation:**
@@ -21,8 +21,8 @@ surface.
 ## Why
 
 - **Drop-in** — it implements the Chef Infra Server API, request signing, and authorization that
-  existing `chef-client` runs and operations tooling already speak.
-- **Proven with a real client** — a stock `chef-client` converges against it end to end: the
+  existing `cinc-client` runs and operations tooling already speak.
+- **Proven with a real client** — a stock `cinc-client` converges against it end to end: the
   harness starts a throwaway server, uploads a cookbook, runs the client, and checks the marker
   file the recipe wrote.
 - **Pedant-checked** — the full `scripts/run-pedant.sh strict` set passes; see
@@ -45,15 +45,16 @@ first run writes the superuser credentials to `./data/pivotal.pem`, `./data/pivo
 Docker, systemd, backup and restore, and the external backends are in the
 [deployment guide](https://rmoriz.github.io/microwave-development/docs/deployment/).
 
-To prove that a stock `chef-client` converges against the server end to end, run the harness:
+To prove that a stock `cinc-client` converges against the server end to end, run the harness:
 
 ```sh
 scripts/run-chef-client-e2e.sh
 ```
 
 It needs `curl`, a `chef-client` 18+ binary, and Ruby with `mixlib-authentication`. Point
-`MW_E2E_CHEF_CLIENT` and `MW_E2E_RUBY` at them when they are not on `PATH`; a missing piece exits `2`
-and names itself. The harness builds a throwaway server on a free loopback port with a temporary data
+`MW_E2E_CHEF_CLIENT` and `MW_E2E_RUBY` at them when they are not on `PATH` (Cinc's
+`cinc-client` goes in through `MW_E2E_CHEF_CLIENT`); a missing piece exits `2` and names
+itself. The harness builds a throwaway server on a free loopback port with a temporary data
 directory, so it leaves anything you already run untouched. Success is exit `0` with
 `chef-client e2e: PASS`, the converge recipe's `marker.txt` left in the artifact directory, and the
 saved node the harness verifies. Set `MW_E2E_COMPAT=1` to grant the default environment's read ACE
@@ -179,3 +180,5 @@ tracked or included in clones; inspect them with
 ## License
 
 Microwave Server is licensed under the GNU Affero General Public License, version 3 only (AGPL-3.0-only). See [LICENSE](LICENSE) for the full text. Vendored upstream sources under `chef/` and `chef-server/` keep their original Apache-2.0 licensing.
+
+[^cinc]: [Cinc Client](https://cinc.sh/) — the open-source Chef client distribution.

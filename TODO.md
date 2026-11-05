@@ -192,7 +192,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [x] Implement `POST /organizations/:org/environments/:env/cookbook_versions` handler: <!-- verified: cargo test -p microwave-api --test depsolver_test -->
   - [x] Parse `{"run_list": [...]}` recipes/cookbook constraints. <!-- verified: cargo test -p microwave-api --test depsolver_test -->
   - [x] Combine with `:env` cookbook constraints and solve against all cookbook versions in the org. <!-- verified: cargo test -p microwave-api --test depsolver_test -->
-  - [x] Return solved cookbook version objects with presigned URLs (filtered to minimal metadata fields required by `chef-client`), or `412 Precondition Failed` with exact error JSON on conflict/missing cookbook. <!-- verified: cargo test -p microwave-api --test depsolver_test -->
+  - [x] Return solved cookbook version objects with presigned URLs (filtered to minimal metadata fields required by `cinc-client`[^cinc]), or `412 Precondition Failed` with exact error JSON on conflict/missing cookbook. <!-- verified: cargo test -p microwave-api --test depsolver_test -->
 - [x] Port all `depsolver_tests.erl` unit tests and verify against `oc-chef-pedant/spec/api/depsolver_spec.rb`. <!-- verified: docs/pedant-extended-report.md:169 -->
 
 ---
@@ -364,5 +364,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [x] Run `cargo fmt --check`, clippy, the test suite, claim and render checks, the homepage suite, and pedant in CI (`.github/workflows/`). <!-- verified: .github/workflows/ci.yml, .github/workflows/postgres.yml, .github/workflows/pedant.yml -->
 - [x] Run complete `oc-chef-pedant` suite against Default Embedded mode (SQLite + Tantivy + Local Bookshelf) and achieve 100% pass rate on supported specs. <!-- claim:gap-full-pedant-embedded -->
 - [x] Run complete `oc-chef-pedant` suite against HA mode (PostgreSQL + OpenSearch + Garage/S3) and achieve 100% pass rate. <!-- claim:gap-multi-replica-ha -->
-- [x] Run `chef-client` (`19.4.47`) and `knife` end-to-end integration tests. <!-- claim:gap-knife-e2e -->
+- [x] Run `cinc-client` (`19.4.47`) and `knife` end-to-end integration tests. <!-- claim:gap-knife-e2e -->
 - [x] Run 1,000-node concurrent converge load simulation against Default Embedded mode to verify latency, memory footprint, and zero `SQLITE_BUSY` errors. <!-- claim:gap-load-simulation -->
+
+[^cinc]: [Cinc Client](https://cinc.sh/) — the open-source Chef client distribution.
