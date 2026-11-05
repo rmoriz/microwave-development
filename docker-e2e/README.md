@@ -77,7 +77,7 @@ docker compose down -v
    uploads the local `e2e_nginx`, `e2e_postgresql`, `e2e_timer`, and
    `e2e_marker` wrapper cookbooks;
 7. writes `role.rb` and runs `knife role from file`; besides nginx and
-   PostgreSQL, the role installs the periodic `chef-client.timer` and the
+   PostgreSQL, the role installs the periodic `cinc-client.timer` and the
    `/etc/e2e-marker` file used to verify timer runs:
 
    ```ruby

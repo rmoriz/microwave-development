@@ -42,7 +42,7 @@
 
 **Interfaces:**
 - Consumes: `chef_client_systemd_timer` aus Cinc 19; das gestagte `/etc/cinc/client.rb` und `/etc/cinc/node.json` aus `client/converge.sh`.
-- Produces: Timer-Units `chef-client.timer`/`chef-client.service`, aktiviert beim initialen Converge; Node-Attribut `node['e2e_marker']` schreibt `/etc/e2e-marker`.
+- Produces: Timer-Units `cinc-client.timer`/`cinc-client.service`, aktiviert beim initialen Converge; Node-Attribut `node['e2e_marker']` schreibt `/etc/e2e-marker`.
 
 - [ ] **Step 1: `e2e_timer`-Metadata anlegen**
 
@@ -116,24 +116,24 @@ docker compose wait seed
 - [ ] **Step 8: Units und ersten Tick prüfen**
 
 ```sh
-docker compose exec -T node-debian systemctl cat chef-client.timer
-docker compose exec -T node-debian systemctl is-active chef-client.timer
+docker compose exec -T node-debian systemctl cat cinc-client.timer
+docker compose exec -T node-debian systemctl is-active cinc-client.timer
 ```
 
 Erwartet: `OnBootSec=10min`, `OnUnitActiveSec=10min`,
-`RandomizedDelaySec=1min`, `active`. `systemctl cat chef-client.service`
+`RandomizedDelaySec=1min`, `active`. `systemctl cat cinc-client.service`
 zeigt `ExecStart=/opt/cinc/bin/cinc-client --json-attributes
 /etc/cinc/node.json --log-level info --no-color -c /etc/cinc/client.rb`.
 
 Nach zehn Minuten:
 
 ```sh
-docker compose exec -T node-debian journalctl -u chef-client.service --no-pager | tail -20
+docker compose exec -T node-debian journalctl -u cinc-client.service --no-pager | tail -20
 docker compose exec -T node-debian cat /etc/e2e-marker
 ```
 
 Erwartet: ein zweiter Lauf ohne Paket-/Ressourcenkonflikt; `systemctl
-list-timers chef-client.timer` zeigt den nächsten Lauf.
+list-timers cinc-client.timer` zeigt den nächsten Lauf.
 
 - [ ] **Step 9: Commit**
 
@@ -182,7 +182,7 @@ Erwartet: `before`.
 - [ ] **Step 3: Fehlschlag provozieren**
 
 ```sh
-docker compose exec -T workstation knife node run_list add node-debian 'recipe[does_not_exist]' --config /root/work/.chef/knife.rb
+docker compose exec -T workstation knife role run_list add e2e_role 'recipe[does_not_exist]' --config /root/work/.chef/knife.rb
 ```
 
 - [ ] **Step 4: Fehlschlag und Fortbestand des Timers prüfen**
@@ -190,17 +190,17 @@ docker compose exec -T workstation knife node run_list add node-debian 'recipe[d
 Nach dem nächsten Tick:
 
 ```sh
-docker compose exec -T node-debian journalctl -u chef-client.service --no-pager | tail -20
-docker compose exec -T node-debian systemctl is-active chef-client.timer
+docker compose exec -T node-debian journalctl -u cinc-client.service --no-pager | tail -20
+docker compose exec -T node-debian systemctl is-active cinc-client.timer
 ```
 
-Erwartet: Lauf endet mit Cookbook-Fehler; Timer bleibt `active`; der nächste
+Jeder Lauf setzt die Server-Run-List wegen `--json-attributes` zurück, daher läuft der Fehlschlag über die Rolle. Erwartet: Lauf endet mit Cookbook-Fehler; Timer bleibt `active`; der nächste
 Lauf startet trotzdem.
 
 - [ ] **Step 5: Fehlschlag zurücknehmen**
 
 ```sh
-docker compose exec -T workstation knife node run_list remove node-debian 'recipe[does_not_exist]' --config /root/work/.chef/knife.rb
+docker compose exec -T workstation knife role run_list remove e2e_role 'recipe[does_not_exist]' --config /root/work/.chef/knife.rb
 ```
 
 - [ ] **Step 6: Re-Seed bei aktivem Timer prüfen**
@@ -208,7 +208,7 @@ docker compose exec -T workstation knife node run_list remove node-debian 'recip
 `docker compose up -d` erneut ausführen und `docker compose wait seed`
 abwarten; danach prüfen, dass die Nodes neu registriert sind und der nächste
 Tick wieder erfolgreich läuft (`latest_run`-Status oder Journal). Erwartet:
-kein dauerhaftes 401 durch den gelöschten Client-Key.
+kein 401 im Lauf nach der Re-Registrierung durch den gelöschten Client-Key.
 
 - [ ] **Step 7: Commit, falls Fixes nötig waren**
 
@@ -226,7 +226,7 @@ Nur bei Änderungen; Nachricht `test(e2e): harden the converge timer`.
 
 - [ ] **Step 1: Timer-Abschnitt ergänzen**
 
-Unter „Re-converging“ beschreiben: `chef-client.timer` konvergiert alle zehn
+Unter „Re-converging“ beschreiben: `cinc-client.timer` konvergiert alle zehn
 Minuten mit 1 Minute Splay, erster Lauf zehn Minuten nach dem Boot; der
 initiale Converge und der Path-Trigger bleiben. Änderungen an Rolle,
 Umgebung und Node-Attributen aus Console/MCP kommen damit innerhalb eines
@@ -236,7 +236,7 @@ Intervalls an. Ein fehlgeschlagener Lauf lässt den Timer aktiv.
 
 ```sh
 cd docker-e2e
-grep -n 'chef-client.timer\|zehn Minuten\|innerhalb eines Intervalls' README.md
+grep -n 'cinc-client.timer\|every ten minutes\|within one interval' README.md
 docker compose config --quiet
 ```
 

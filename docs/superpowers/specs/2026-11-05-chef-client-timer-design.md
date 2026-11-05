@@ -61,7 +61,7 @@ noch laufenden initialen Converge fällt. Die Ressource setzt den Timer auf
 
 ## Verifikation
 
-- `systemctl list-timers chef-client.timer` zeigt den nächsten Lauf; der Timer
+- `systemctl list-timers cinc-client.timer` zeigt den nächsten Lauf; der Timer
   ist `active`.
 - Nach dem initialen Converge und dem ersten Tick: zweiter Lauf im Journal,
   kein Ressourcenkonflikt.
