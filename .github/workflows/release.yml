@@ -3,19 +3,48 @@ name: release
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
+  meta:
+    name: release metadata
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      major_minor: ${{ steps.version.outputs.major_minor }}
+      stable: ${{ steps.version.outputs.stable }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve the release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolved="$(scripts/release-image-tags.sh "$GITHUB_REF_NAME")"
+          while IFS='=' read -r key value; do
+            echo "${key}=${value}" >> "$GITHUB_OUTPUT"
+          done <<< "$resolved"
+          version="$(sed -n 's/^version=//p' <<< "$resolved")"
+          workspace_version="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -n1)"
+          if [ -n "$workspace_version" ] && [ "$version" != "$workspace_version" ]; then
+            echo "::warning::tag version $version differs from the workspace version $workspace_version"
+          fi
+
   build:
     name: ${{ matrix.target }}
+    needs: meta
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -23,11 +52,11 @@ jobs:
           - target: linux-amd64
             runner: ubuntu-24.04
             triple: x86_64-unknown-linux-gnu
-            deb_arch: amd64
+            arch: amd64
           - target: linux-arm64
             runner: ubuntu-24.04-arm
             triple: aarch64-unknown-linux-gnu
-            deb_arch: arm64
+            arch: arm64
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -98,21 +127,113 @@ jobs:
         shell: bash
         env:
           DEB_VERSION: ${{ steps.deb.outputs.version }}
-          DEB_ARCH: ${{ matrix.deb_arch }}
+          DEB_ARCH: ${{ matrix.arch }}
           CARGO_TARGET_DIR: target/${{ matrix.triple }}
         run: |
           set -euo pipefail
           scripts/build-deb.sh --skip-build
           sha256sum dist/*.deb > "dist/microwave-server_${DEB_VERSION}_${DEB_ARCH}.deb.sha256"
-      - uses: actions/upload-artifact@v4
+      - name: Upload the archive
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
           retention-days: 7
+      - name: Stage the image context
+        shell: bash
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          context="$RUNNER_TEMP/image-context"
+          rm -rf "$context"
+          mkdir -p "$context/packaging"
+          for binary in microwave-server microwave-ctl microwave-migrate; do
+            install -m 0755 "target/${{ matrix.triple }}/release/$binary" "$context/$binary"
+          done
+          install -m 0644 packaging/microwave.toml.example "$context/packaging/microwave.toml.example"
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER}/microwave-server:${VERSION}-${ARCH}" >> "$GITHUB_ENV"
+      - name: Build the architecture image
+        shell: bash
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker build --target release \
+            --build-arg VERSION="$VERSION" \
+            --build-arg REVISION="$GITHUB_SHA" \
+            --build-arg CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --build-arg SOURCE="https://github.com/${GITHUB_REPOSITORY}" \
+            -t "$IMAGE" \
+            -f Dockerfile "$RUNNER_TEMP/image-context"
+      - name: Smoke-test the image
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          docker run --rm "$IMAGE" microwave-server --version
+          docker run --rm "$IMAGE" microwave-ctl --version
+          docker run --rm "$IMAGE" microwave-migrate --version
+          test "$(docker image inspect --format '{{.Architecture}}' "$IMAGE")" = "$ARCH"
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push the architecture image
+        run: docker push "$IMAGE"
+
+  manifest:
+    name: merge the image manifest
+    needs: [meta, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # Tags are needed to keep `latest` and `X.Y` from moving backwards when
+      # an older tag is re-run.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Merge the manifest
+        shell: bash
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          MAJOR_MINOR: ${{ needs.meta.outputs.major_minor }}
+          STABLE: ${{ needs.meta.outputs.stable }}
+        run: |
+          set -euo pipefail
+          stable_tags="$(git tag --list 'v[0-9]*' | grep -Ev -- '-' | sort -Vr)"
+          highest_stable="$(printf '%s\n' "$stable_tags" | head -n1 || true)"
+          highest_same_minor="$(printf '%s\n' "$stable_tags" | grep -E "^v${MAJOR_MINOR}\." | head -n1 || true)"
+          mapfile -t manifest_tags < <(
+            scripts/release-image-manifest-tags.sh \
+              "$GITHUB_REF_NAME" "$MAJOR_MINOR" "$STABLE" \
+              "$highest_stable" "$highest_same_minor"
+          )
+          base="ghcr.io/${GITHUB_REPOSITORY_OWNER}/microwave-server"
+          args=()
+          for tag in "${manifest_tags[@]}"; do
+            args+=(-t "${base}:${tag}")
+          done
+          docker buildx imagetools create "${args[@]}" \
+            "${base}:${VERSION}-amd64" "${base}:${VERSION}-arm64"
 
   publish:
-    needs: build
+    needs: [meta, build, manifest]
     runs-on: ubuntu-24.04
     steps:
       # `gh` resolves the repository from the checkout, not from GITHUB_REPOSITORY.
@@ -125,11 +246,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          STABLE: ${{ needs.meta.outputs.stable }}
         run: |
           set -euo pipefail
+          args=(--title "$GITHUB_REF_NAME" --generate-notes)
+          if [ "$STABLE" != "1" ]; then
+            args+=(--prerelease)
+          fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+            if [ "$STABLE" != "1" ]; then
+              gh release edit "$GITHUB_REF_NAME" --prerelease
+            else
+              gh release edit "$GITHUB_REF_NAME" --prerelease=false
+            fi
           else
-            gh release create "$GITHUB_REF_NAME" dist/* \
-              --title "$GITHUB_REF_NAME" --generate-notes
+            gh release create "$GITHUB_REF_NAME" dist/* "${args[@]}"
           fi

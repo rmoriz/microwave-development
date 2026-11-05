@@ -133,6 +133,12 @@ committing Rust. The homepage has no linter beyond `astro check`.
   volume or locally built node image survives a suite. The apt cache and the
   captured kitchen logs are the only leftovers, both git-ignored.
 
+## Release notes
+
+- `[workspace.package] version` in `Cargo.toml` and the release tag are
+  identical. Bump the version in the same change that is tagged `vX.Y.Z`;
+  never let the manifest and the tag diverge.
+
 ## Committing
 
 - Work directly on the current branch unless told otherwise.
