@@ -13,6 +13,7 @@ containers run privileged.
 ## Prerequisites
 
 - Docker Engine with Compose v2.
+- `git`, `curl` and `jq` for the checkout and the probes below.
 - A few GB of free disk for the images, the volumes and the cookbook downloads.
 - Network access on the first start: the seed downloads cookbooks from Chef
   Supermarket and the nodes install Cinc Client.
@@ -70,11 +71,26 @@ The API port is reachable from the whole network; the console is loopback only.
 | --- | --- | --- |
 | Console at `http://127.0.0.1:18081` | `e2e-console` | `e2e-console-password` |
 | Server superuser | `pivotal` | `docker compose exec microwave cat /var/lib/microwave/pivotal.password` |
-| MCP endpoint | — | bearer `e2e-mcp-token`, already exported as `$MW_MCP_TOKEN` in `workstation` |
+| MCP endpoint `http://microwave:8000/organizations/e2e/mcp` | — | bearer `e2e-mcp-token`, already exported as `$MW_MCP_TOKEN` in `workstation` |
 
 The nodes need no login: the seed writes a validator key and a client config to
 the shared volume, and each node registers itself. The console user is recreated
 on every seed run, and `MW_CONSOLE_USER` / `MW_CONSOLE_PASSWORD` change it.
+
+MCP is `experimental`. The configuration pins `allowed_hosts` to
+`microwave:8000`, so call the endpoint from `workstation` (or send a matching
+`Host` header) instead of through the published port:
+
+```sh
+docker compose exec workstation bash -c '
+  curl -sS http://microwave:8000/organizations/e2e/mcp \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    -H "Authorization: Bearer $MW_MCP_TOKEN" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"'
+```
+
+The MCP write tools take effect immediately.
 
 ## Getting a shell
 
@@ -114,7 +130,7 @@ MW_IMAGE=ghcr.io/rmoriz/microwave-server:0.3.1 docker compose up -d
 
 To test a change from this checkout, use the build overlay. It compiles the
 repository root `Dockerfile` and tags the result locally, so the pulled `latest`
-image stays untouched:
+image stays untouched as long as `MW_IMAGE` is unset:
 
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
@@ -137,11 +153,12 @@ organization and the seed resets the node fixtures.
 
 - Fixture credentials, fixed ports and a seeded demo organization; change them
   before exposing the stack to anything but localhost.
-- `latest` is moving. Use `MW_IMAGE` for a reproducible run.
+- `latest` is moving. Use `MW_IMAGE` for a reproducible run; the variable name is
+  shared with the root `docker-compose.yml`.
 - The node containers run `systemd` as PID 1 and are `privileged`, with the host
   cgroup mounted read-write.
-- The nodes converge nginx and PostgreSQL only; there is no application data and
-  no PostgreSQL tuning.
+- The nodes converge nginx, PostgreSQL and the timer and marker fixtures; there
+  is no application data and no PostgreSQL tuning.
 
 ## Where the details are
 

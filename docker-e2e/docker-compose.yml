@@ -22,8 +22,8 @@
 #   node-amazon  - Amazon Linux node running Cinc Client against the role
 #   workstation  - knife + OpenCode against the stack, for `docker exec`
 #
-# The workstation, seed and node images are still built locally; only
-# `microwave` has a published image.
+# The workstation, seed and node images are still built locally; only the
+# project's own server image is published.
 #
 # The microwave listener binds to its Compose DNS name instead of 0.0.0.0 so
 # the presigned /bookshelf URLs it hands to knife and the nodes are reachable

@@ -61,39 +61,68 @@ class ComposeTest(unittest.TestCase):
         self.assertEqual(config["name"], "microwave-e2e")
         self.assertIn("build", config["services"]["workstation"])
 
+    def test_overlay_only_changes_the_image_source(self):
+        base = self.base()["services"]
+        overlay = self.overlay()["services"]
+        for config in (base, overlay):
+            config["microwave"].pop("image")
+            config["microwave"].pop("build", None)
+        self.assertEqual(base, overlay)
+
 
 class DocsPageTest(unittest.TestCase):
     def setUp(self):
+        self.compose_text = (ROOT / "docker-e2e" / "docker-compose.yml").read_text()
         self.page = (ROOT / "docs" / "docker-e2e.md").read_text()
 
+    def compose_default(self, variable):
+        match = re.search(r"\$\{" + variable + r":-([^}]+)\}", self.compose_text)
+        self.assertIsNotNone(match, variable)
+        return match.group(1)
+
     def test_page_names_every_service_and_no_other(self):
-        compose = yaml.safe_load(
-            (ROOT / "docker-e2e" / "docker-compose.yml").read_text()
-        )
+        compose = yaml.safe_load(self.compose_text)
         for service in compose["services"]:
             self.assertIn(f"microwave-e2e-{service}-1", self.page)
-        names = set(re.findall(r"microwave-e2e-([a-z-]+)-1", self.page))
+        names = set(re.findall(r"microwave-e2e-([a-z0-9-]+)-1", self.page))
         self.assertEqual(names, set(compose["services"]))
 
-    def test_page_quick_start_and_ports(self):
+    def test_page_quick_start(self):
         self.assertIn(
             "git clone https://github.com/rmoriz/microwave-development.git",
             self.page,
         )
         self.assertIn("cd docker-e2e", self.page)
         self.assertIn("docker compose up -d", self.page)
-        self.assertIn("18080", self.page)
-        self.assertIn("127.0.0.1:18081", self.page)
 
-    def test_page_logins_and_build_path(self):
-        self.assertIn("e2e-console", self.page)
-        self.assertIn("e2e-console-password", self.page)
+    def test_page_ports_come_from_the_compose_defaults(self):
+        api = self.compose_default("MW_E2E_PORT")
+        console = self.compose_default("MW_CONSOLE_PORT")
+        self.assertIn(f":{api}", self.page)
+        self.assertIn(f"127.0.0.1:{console}", self.page)
+        self.assertEqual(
+            set(re.findall(r"(?<![\d.])(\d{5})(?!\d)", self.page)),
+            {api, console},
+        )
+
+    def test_page_logins_come_from_the_compose_defaults(self):
+        for variable in ("MW_CONSOLE_USER", "MW_CONSOLE_PASSWORD", "MW_MCP_TOKEN"):
+            self.assertIn(self.compose_default(variable), self.page)
+        self.assertIn("pivotal", self.page)
         self.assertIn("/var/lib/microwave/pivotal.password", self.page)
+
+    def test_page_paths(self):
         self.assertIn(
             "docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build",
             self.page,
         )
         self.assertIn("docker compose down -v", self.page)
+
+    def test_page_is_wired_into_the_site(self):
+        config = (ROOT / "website" / "docs" / "docusaurus.config.ts").read_text()
+        sidebar = (ROOT / "website" / "docs" / "sidebars.ts").read_text()
+        self.assertIn("'docker-e2e.md'", config)
+        self.assertIn("id: 'docker-e2e'", sidebar)
 
 
 if __name__ == "__main__":

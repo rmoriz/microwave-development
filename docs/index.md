@@ -30,6 +30,9 @@ Progress.
   the authorization model, and the dual-backend suites that pin them down.
 - **[Run the load test](./load-test.md)** — the converge harness, how to read
   its report and fingerprint, and how to compare two runs.
+- **[Try the whole stack with Docker](./docker-e2e.md)** — a Compose stack with
+  a seeded organization, four distro nodes, a console and a workstation, for
+  watching a real converge end to end.
 
 ## How do you know it works?
 

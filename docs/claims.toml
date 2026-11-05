@@ -2142,33 +2142,70 @@ verify = { kind = "grep", path = "docs/load-test.md", pattern = "A canary failur
 
 [[claim]]
 id = "docker-e2e-pull-default"
-summary = "The docker-e2e stack pulls the published server image by default; a version can be pinned with MW_IMAGE."
+summary = "The docker-e2e stack pulls the published server image by default."
 area = "tooling"
 status = "verified"
 surfaces = [
   { path = "docs/docker-e2e.md", needle = "`latest`, which moves with every stable release" },
-  { path = "docs/docker-e2e.md", needle = "MW_IMAGE=ghcr.io/rmoriz/microwave-server:0.3.1" },
 ]
 verify = { kind = "grep", path = "docker-e2e/docker-compose.yml", pattern = "MW_IMAGE:-ghcr\\.io/rmoriz/microwave-server:latest" }
 
 [[claim]]
-id = "docker-e2e-console-loopback-fixture"
-summary = "The docker-e2e console publishes on loopback only and logs in with the fixture user e2e-console."
+id = "docker-e2e-pin-version"
+summary = "A docker-e2e run can be pinned to a version with MW_IMAGE."
+area = "tooling"
+status = "verified"
+surfaces = [
+  { path = "docs/docker-e2e.md", needle = "MW_IMAGE=ghcr.io/rmoriz/microwave-server:0.3.1" },
+]
+verify = { kind = "grep", path = "docker-e2e/README.md", pattern = "MW_IMAGE=ghcr\\.io/rmoriz/microwave-server:0\\.3\\.1" }
+
+[[claim]]
+id = "docker-e2e-console-loopback"
+summary = "The docker-e2e console publishes on loopback only."
 area = "tooling"
 status = "verified"
 surfaces = [
   { path = "docs/docker-e2e.md", needle = "127.0.0.1:18081" },
-  { path = "docs/docker-e2e.md", needle = "e2e-console-password" },
 ]
 verify = { kind = "grep", path = "docker-e2e/docker-compose.yml", pattern = "127\\.0\\.0\\.1:\\$\\{MW_CONSOLE_PORT:-18081\\}" }
 
 [[claim]]
-id = "docker-e2e-source-overlay-teardown"
-summary = "A source build in the docker-e2e stack uses the build overlay, and teardown removes the volumes with down -v."
+id = "docker-e2e-console-fixture-login"
+summary = "The docker-e2e console logs in with the fixture user e2e-console and its fixture password."
+area = "tooling"
+status = "verified"
+surfaces = [
+  { path = "docs/docker-e2e.md", needle = "e2e-console-password" },
+]
+verify = { kind = "grep", path = "docker-e2e/docker-compose.yml", pattern = "MW_CONSOLE_PASSWORD:-e2e-console-password" }
+
+[[claim]]
+id = "docker-e2e-mcp-token"
+summary = "The docker-e2e MCP endpoint uses the fixture bearer token e2e-mcp-token."
+area = "tooling"
+status = "verified"
+surfaces = [
+  { path = "docs/docker-e2e.md", needle = "e2e-mcp-token" },
+]
+verify = { kind = "grep", path = "docker-e2e/docker-compose.yml", pattern = "MW_MCP_TOKEN:-e2e-mcp-token" }
+
+[[claim]]
+id = "docker-e2e-source-overlay"
+summary = "A source build in the docker-e2e stack goes through the build overlay."
 area = "tooling"
 status = "verified"
 surfaces = [
   { path = "docs/docker-e2e.md", needle = "docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build" },
+]
+verify = { kind = "grep", path = "docker-e2e/README.md", pattern = "docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build" }
+
+[[claim]]
+id = "docker-e2e-teardown"
+summary = "Teardown of the docker-e2e stack removes the volumes with down -v."
+area = "tooling"
+status = "verified"
+surfaces = [
   { path = "docs/docker-e2e.md", needle = "docker compose down -v" },
 ]
 verify = { kind = "grep", path = "docker-e2e/README.md", pattern = "docker compose down -v" }

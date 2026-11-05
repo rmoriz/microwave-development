@@ -42,8 +42,8 @@ To build the server from this checkout instead:
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
-The seed, node and workstation images are always local, so a first start or a
-change under `seed/**`, `client/**` or `workstation/**` needs `--build`.
+The seed, node and workstation images are always local, so a change under
+`seed/**`, `client/**` or `workstation/**` needs `--build` to take effect.
 
 Follow the seed and the node output:
 
@@ -231,7 +231,7 @@ local use. Keep one fixed value if sessions should survive a restart.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `MW_IMAGE` | `ghcr.io/rmoriz/microwave-server:latest` (build default: `microwave-server:e2e`) | Server image; pin a version or digest here |
+| `MW_IMAGE` | `ghcr.io/rmoriz/microwave-server:latest` (build default: `microwave-server:e2e`) | Server image; pin a version or digest here. The name is shared with the root compose file |
 | `MW_E2E_PORT` | `18080` | Host port for the microwave API |
 | `MW_MCP_TOKEN` | `e2e-mcp-token` | Bearer token for the MCP endpoint |
 | `MW_WORKSTATION_IMAGE` | `microwave-workstation:e2e` | Workstation image tag |
@@ -258,8 +258,9 @@ local use. Keep one fixed value if sessions should survive a restart.
 ## Notes and trade-offs
 
 - **Pulled server, or a source build.** `latest` moves with every stable
-  release, so pin `MW_IMAGE` when a run has to stay comparable. Use the
-  `docker-compose.build.yml` overlay for server changes; it tags the result
+  release, so pin `MW_IMAGE` when a run has to stay comparable; `docker compose
+  pull microwave` refreshes a stale local tag. Use the `docker-compose.build.yml`
+  overlay for server changes; while `MW_IMAGE` is unset it tags the result
   locally and leaves the pulled `latest` untouched.
 - **Listener address.** `microwave/microwave.toml` binds to
   `microwave:8000`, not `0.0.0.0:8000`. microwave-server builds the
