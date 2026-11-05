@@ -228,7 +228,7 @@ fn trusted_peer_uses_the_rightmost_untrusted_address() {
     let trusted = vec!["127.0.0.1".to_string(), "10.0.0.0/8".to_string()];
     assert_eq!(
         client(peer, Some("1.2.3.4, 10.0.0.5, 127.0.0.1"), &trusted),
-        Some("10.0.0.5".parse().unwrap())
+        Some("1.2.3.4".parse().unwrap())
     );
     assert_eq!(
         client(peer, Some("1.2.3.4, 127.0.0.1"), &trusted),

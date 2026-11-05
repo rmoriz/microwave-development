@@ -229,7 +229,7 @@ fn peer_is_trusted(request: &axum::extract::Request, trusted: &[String]) -> bool
         .any(|entry| proxy_matches(peer, entry))
 }
 
-fn proxy_matches(peer: SocketAddr, entry: &str) -> bool {
+pub(crate) fn proxy_matches(peer: SocketAddr, entry: &str) -> bool {
     if let Ok(address) = entry.parse::<SocketAddr>() {
         return address == peer;
     }

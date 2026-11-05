@@ -4,6 +4,7 @@
 //! instance enforces its own admission, org and principal quotas.
 
 pub mod bucket;
+pub mod source;
 
 use crate::Metrics;
 use bucket::{BucketRejection, RateSpec, ShardedMap, Slot};
