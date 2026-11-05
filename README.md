@@ -109,7 +109,7 @@ hashes, and needs `microwave-ctl password admin` plus `microwave-ctl reindex` af
 
 ## Pedant compatibility
 
-A full `scripts/run-pedant.sh strict` run on 2026-10-30 passes the core set with
+A full `scripts/run-pedant.sh strict` run on 2026-11-05 passes the core set with
 **652 passed / 0 failed / 8 pending of 660**; the 8 pending examples are pedant's own skips.
 Extended suites: **3,284 passed / 0 failed / 7 pending out of 3,291**. All twelve extended tags
 are green.

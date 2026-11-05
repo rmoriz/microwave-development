@@ -1,9 +1,9 @@
 # Extended oc-chef-pedant Compatibility Report
 
-**Date:** 2026-10-30
-**Server under test:** `microwave-server 0.1.0`, binary built from `9966994`
-(`fix(e2e): upload the postgresql wrapper and fix the workstation env`), run on `main` at
-`5c7ffff`; no server source changed between the build and the run
+**Date:** 2026-11-05
+**Server under test:** `microwave-server 0.3.1`, binary built from `9366b3d`
+(`chore(e2e): track the cinc-console latest tag`), run on `main` at `9366b3d`; no server source
+changed between the build and the run
 **Pedant:** vendored `chef-server/oc-chef-pedant` (gemspec version `2.2.0`)
 **Harness:** `scripts/run-pedant.sh` + `scripts/pedant-bootstrap.rb` +
 `scripts/pedant-solr-stub.rb`
@@ -18,8 +18,7 @@ contract suites `environments` and `roles` run 610 examples (587 passed, 23 pend
 examples (78 passed), both with zero failures. Every failure is gone; the pending examples are
 pedant's own skips.
 
-A later full `scripts/run-pedant.sh strict` run on 2026-11-02 (server at `ea8af37` plus the
-per-bag client ACEs) is green across all nineteen tags: **4,639 examples, 0 failures, 38 pending**.
+A full `scripts/run-pedant.sh strict` run on 2026-11-05 (server at `9366b3d`) is green across all nineteen tags: **4,639 examples, 0 failures, 38 pending**.
 Data bag and node writes became ordinary ACL checks on the way, so the ACL bodies match the
 upstream matrices and the two former `acls` body diffs are gone.
 

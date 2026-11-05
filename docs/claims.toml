@@ -833,9 +833,9 @@ summary = "The current pedant run is recorded in docs/pedant-report.md."
 area = "docs"
 status = "manual"
 surfaces = [
-  { path = "README.md", needle = "full `scripts/run-pedant.sh strict` run on 2026-10-30" },
+  { path = "README.md", needle = "full `scripts/run-pedant.sh strict` run on 2026-11-05" },
 ]
-verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-30 }
+verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-11-05 }
 
 [[claim]]
 id = "readme-pedant-core-totals"
@@ -845,7 +845,7 @@ status = "manual"
 surfaces = [
   { path = "README.md", needle = "652 passed / 0 failed / 8 pending" },
 ]
-verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-30 }
+verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-11-05 }
 
 [[claim]]
 id = "readme-pedant-extended-totals"
@@ -856,7 +856,7 @@ surfaces = [
   { path = "README.md", needle = "All twelve extended tags" },
   { path = "README.md", needle = "All twelve extended tags" },
 ]
-verify = { kind = "manual", ref = "docs/pedant-extended-report.md", checked = 2026-10-30 }
+verify = { kind = "manual", ref = "docs/pedant-extended-report.md", checked = 2026-11-05 }
 
 [[claim]]
 id = "gap-chef-server-rb-importer"
@@ -2070,7 +2070,7 @@ surfaces = [
   { path = "docs/pedant-report.md", needle = "652 passed / 0 failed / 8 pending" },
   { path = "docs/pedant-report.md", needle = "7 examples, 0 failures" },
 ]
-verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-10-30 }
+verify = { kind = "manual", ref = "docs/pedant-report.md", checked = 2026-11-05 }
 
 [[claim]]
 id = "pedant-extended-totals"
@@ -2078,7 +2078,7 @@ summary = "All twelve extended pedant tags are green: 3,284 passed / 0 failed / 
 area = "docs"
 status = "manual"
 surfaces = [ { path = "docs/pedant-extended-report.md", needle = "3,284 passed, 0 failed, 7 pending out of 3,291" } ]
-verify = { kind = "manual", ref = "docs/pedant-extended-report.md", checked = 2026-10-30 }
+verify = { kind = "manual", ref = "docs/pedant-extended-report.md", checked = 2026-11-05 }
 
 [[claim]]
 id = "e2e-harness-stock-default"
