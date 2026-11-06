@@ -5,6 +5,20 @@ const widths = [320, 375, 768, 900, 1440];
 const product = url('/#product');
 const agents = url('/#agents');
 
+/** WCAG contrast ratio between two `rgb(…)` colours. */
+function contrast(foreground: string, background: string): number {
+  const channel = (value: number) => {
+    const scaled = value / 255;
+    return scaled <= 0.03928 ? scaled / 12.92 : ((scaled + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = (colour: string) => {
+    const [r, g, b] = colour.match(/\d+(?:\.\d+)?/g)!.slice(0, 3).map(Number);
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+  };
+  const [lighter, darker] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 test('no horizontal overflow at narrow and wide viewports', async ({ page }) => {
   for (const width of widths) {
     await page.setViewportSize({ width, height: 900 });
@@ -42,6 +56,30 @@ test('mobile navigation opens and closes without JavaScript', async ({ browser }
   await expect(page.locator(`.nav-mobile a[href="${product}"]`)).toBeVisible();
   await expect(page.locator(`.nav-mobile a[href="${agents}"]`)).toBeVisible();
   await expect(page.locator('.nav-mobile a[href$="/releases"]')).toBeVisible();
+  await context.close();
+});
+
+test('the mobile menu keeps the docs button readable on iOS', async ({ browser }) => {
+  const context = await browser.newContext({
+    isMobile: true,
+    hasTouch: true,
+    deviceScaleFactor: 3,
+    viewport: { width: 390, height: 844 },
+    userAgent:
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+  });
+  const page = await context.newPage();
+  await page.goto(url());
+  await page.locator('.nav-mobile summary').click();
+
+  const docs = page.locator('.nav-mobile a', { hasText: 'Docs' });
+  await expect(docs).toBeVisible();
+
+  const { color, background } = await docs.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { color: style.color, background: style.backgroundColor };
+  });
+  expect(contrast(color, background), `${color} on ${background}`).toBeGreaterThanOrEqual(4.5);
   await context.close();
 });
 

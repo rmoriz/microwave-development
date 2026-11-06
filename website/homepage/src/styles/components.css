@@ -136,11 +136,16 @@
   display: block;
   padding: 10px 12px;
   border-radius: var(--radius-sm);
-  color: var(--text);
   text-decoration: none;
 }
 
-.nav-mobile a:hover {
+/* Plain links take the text colour; a `.button` keeps its own colour pair, or
+   the primary button ends up white on white. */
+.nav-mobile a:not(.button) {
+  color: var(--text);
+}
+
+.nav-mobile a:not(.button):hover {
   background: var(--panel-raised);
 }
 
