@@ -1439,6 +1439,10 @@ impl SecretsRepository for SqliteStore {
     async fn remove_secret(&self, group: &str, name: &str) -> Result<(), StoreError> {
         self.remove_secret(group, name)
     }
+
+    async fn secret_stamp(&self, name_prefix: &str) -> Result<Option<String>, StoreError> {
+        SqliteStore::secret_stamp(self, name_prefix)
+    }
 }
 
 #[async_trait]

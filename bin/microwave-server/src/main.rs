@@ -1,22 +1,22 @@
 mod bootstrap;
 mod object_store;
+mod reload;
 
 use clap::{Parser, Subcommand};
 use microwave_api::{router, AppState};
 use microwave_config::{
-    Config, DatabaseDriver, ObjectStoreBackend, SearchBackend, StorageCompression, TenantIssue,
+    Config, DatabaseDriver, ObjectStoreBackend, SearchBackend, StorageCompression,
 };
 use microwave_metrics::{DependencyState, KeygenGauges, Metrics, PoolGauges};
-use microwave_objectstore::{
-    LocalObjectStore, ObjectStore, RoutingObjectStore, TenantSnapshot, TimedObjectStore,
-};
+use microwave_objectstore::{ObjectStore, RoutingObjectStore, TenantSnapshot, TimedObjectStore};
 use microwave_store::{Compression, MetadataStore, SqliteStore};
 use microwave_store_postgres::PostgresStore;
-use object_store::build_snapshot;
-use std::collections::{BTreeMap, BTreeSet};
+use object_store::assemble;
+use reload::{Reloader, Trigger};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use uuid::Uuid;
 
 /// Time allowed to drain in-flight requests after SIGTERM/SIGINT on the TLS
 /// listener. Plain HTTP uses axum's graceful shutdown, which waits for active
@@ -72,6 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", serde_json::to_string_pretty(&config)?);
         }
         Command::Serve { config, check } => {
+            let config_path = config.clone();
             let mut config = Config::load(config.as_deref())?;
             warn_implicit_mcp_superuser(&config);
             // Load and validate the pair before touching the database so a bad
@@ -97,7 +98,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tls.as_ref()
                     .map(|tls| (tls.cert_path.clone(), tls.key_path.clone())),
             ));
-            spawn_sighup_handler(tls_reloader.clone());
+            // Filled once the store and the startup snapshot exist; the
+            // handler logs "reload not ready" until then.
+            let object_store_reload: Arc<tokio::sync::RwLock<Option<Arc<Reloader>>>> =
+                Arc::new(tokio::sync::RwLock::new(None));
+            spawn_sighup_handler(tls_reloader.clone(), object_store_reload.clone());
             if reload_interval_seconds > 0 {
                 spawn_periodic_reloader(tls_reloader.clone(), reload_interval_seconds);
             }
@@ -167,7 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     config.object_store.secret.clone().unwrap_or_default()
                 }
             };
-            let object_store =
+            let (object_store, router) =
                 build_timed_object_store(&config, &secret, store.as_ref(), metrics.clone()).await?;
 
             if check {
@@ -194,6 +199,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 return Ok(());
             }
+
+            // The boot id makes the ctl drop a status left by an older
+            // process. The status is published before the listener accepts,
+            // so a ctl that starts right after can rely on it.
+            let reloader = Arc::new(Reloader::new(
+                config_path,
+                store.clone(),
+                router,
+                PathBuf::from(&config.paths.data_dir),
+                Uuid::new_v4().to_string(),
+            ));
+            if let Err(error) = reloader.write_boot_status().await {
+                tracing::warn!(%error, "failed to write the object store reload status");
+            }
+            *object_store_reload.write().await = Some(reloader);
 
             let bind = config.server.bind.clone();
             let gauge_refresh_seconds = config.otel.gauge_refresh_seconds;
@@ -467,7 +487,7 @@ fn listener_scheme(config: &Config) -> &'static str {
 /// the name clients use instead of the socket it listens on. Without it the
 /// listener scheme and `server.bind` are used, because the server may serve
 /// HTTPS directly.
-fn local_object_store_base_url(config: &Config) -> String {
+pub(crate) fn local_object_store_base_url(config: &Config) -> String {
     match config.server.public_url.as_deref() {
         Some(url) => url.trim_end_matches('/').to_string(),
         None => format!("{}://{}", listener_scheme(config), config.server.bind),
@@ -507,82 +527,25 @@ async fn build_timed_object_store(
     secret: &str,
     store: &dyn MetadataStore,
     metrics: Arc<Metrics>,
-) -> Result<Arc<dyn ObjectStore + Send + Sync>, Box<dyn std::error::Error>> {
-    Ok(timed_object_store(
-        build_object_store(config, secret, store).await?,
-        metrics,
-        config.object_store.backend,
-    ))
+) -> Result<(Arc<dyn ObjectStore + Send + Sync>, Arc<RoutingObjectStore>), Box<dyn std::error::Error>>
+{
+    let router = build_object_store(config, secret, store).await?;
+    let timed = timed_object_store(router.clone(), metrics, config.object_store.backend);
+    Ok((timed, router))
 }
 
 /// Build the router and install the startup snapshot.
 ///
-/// A `local` deployment only ever has a default store. For S3/Garage the
-/// organization table and the configured per-org credentials are cross-checked
-/// before the snapshot is built: an entry for an unknown organization is a
-/// warning and stays inactive, every other issue fails startup with the org
-/// named. No bucket is probed here, so `serve --check` stays network-free.
+/// The build itself lives in [`object_store::assemble`] so the reloader runs
+/// the same loader. No bucket is probed here, so `serve --check` stays
+/// network-free.
 async fn build_object_store(
     config: &Config,
     secret: &str,
     store: &dyn MetadataStore,
 ) -> Result<Arc<RoutingObjectStore>, Box<dyn std::error::Error>> {
     let router = Arc::new(RoutingObjectStore::new(TenantSnapshot::default()));
-
-    if config.object_store.backend == ObjectStoreBackend::Local {
-        let local: Arc<dyn ObjectStore + Send + Sync> = Arc::new(LocalObjectStore::new(
-            Path::new(&config.paths.data_dir).join("bookshelf"),
-            secret,
-            local_object_store_base_url(config),
-        ));
-        let mut snapshot =
-            build_snapshot(&config.object_store, &BTreeMap::new(), &BTreeMap::new())?;
-        snapshot.default = Some(local);
-        router.install(snapshot);
-        return Ok(router);
-    }
-
-    let organizations = store.list_orgs().await?;
-    let organization_names: BTreeSet<String> = organizations
-        .iter()
-        .map(|organization| organization.name.clone())
-        .collect();
-    // Only entries that name an existing organization need their secrets read.
-    let org_ids: BTreeMap<String, String> = organizations
-        .iter()
-        .filter(|organization| {
-            config
-                .object_store
-                .organizations
-                .contains_key(&organization.name)
-        })
-        .map(|organization| (organization.name.clone(), organization.id.clone()))
-        .collect();
-    let configured: BTreeSet<String> = org_ids.keys().cloned().collect();
-    let credentials = bootstrap::load_org_credentials(store, &configured).await?;
-
-    let mut fatal = Vec::new();
-    for issue in
-        microwave_config::tenant_issues(&config.object_store, &organization_names, &credentials)
-    {
-        match issue {
-            TenantIssue::UnknownOrg(organization) => tracing::warn!(
-                organization = %organization,
-                "object_store.organizations names an unknown organization; its entry stays inactive"
-            ),
-            issue => fatal.push(issue),
-        }
-    }
-    if !fatal.is_empty() {
-        let issues: Vec<String> = fatal.iter().map(ToString::to_string).collect();
-        return Err(format!("object store tenant map is invalid: {}", issues.join("; ")).into());
-    }
-
-    router.install(build_snapshot(
-        &config.object_store,
-        &org_ids,
-        &credentials,
-    )?);
+    router.install(assemble(config, store, secret).await?);
     Ok(router)
 }
 
@@ -634,14 +597,32 @@ impl TlsReloader {
 /// Install the SIGHUP handler synchronously, before database bootstrap and the
 /// listener bind. Plain-HTTP deployments get the handler too, so a configured
 /// `ExecReload`/`docker kill --signal=HUP` is always safe.
-fn spawn_sighup_handler(reloader: Arc<TlsReloader>) {
+///
+/// The TLS reload runs first; the tenant routing reload follows through the
+/// slot once startup has filled it. A HUP before that only reloads TLS.
+fn spawn_sighup_handler(
+    tls: Arc<TlsReloader>,
+    object_store: Arc<tokio::sync::RwLock<Option<Arc<Reloader>>>>,
+) {
     #[cfg(unix)]
     match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
         Ok(mut hangup) => {
             tracing::info!("installed SIGHUP handler");
             tokio::spawn(async move {
                 while hangup.recv().await.is_some() {
-                    reloader.reload("SIGHUP").await;
+                    tls.reload("SIGHUP").await;
+                    let reloader = object_store.read().await.clone();
+                    match reloader {
+                        Some(reloader) => {
+                            if let Err(error) = reloader.reload(Trigger::Sighup).await {
+                                tracing::error!(
+                                    %error,
+                                    "object store reload failed; keeping the previous snapshot"
+                                );
+                            }
+                        }
+                        None => tracing::info!("object store reload not ready"),
+                    }
                 }
             });
         }
@@ -654,7 +635,7 @@ fn spawn_sighup_handler(reloader: Arc<TlsReloader>) {
     }
 
     #[cfg(not(unix))]
-    let _ = reloader;
+    let _ = (tls, object_store);
 }
 
 /// Install SIGTERM and SIGINT handlers before database bootstrap and the
@@ -1001,7 +982,7 @@ mod tests {
         config.paths.data_dir = dir.path().to_string_lossy().into_owned();
         let metrics = Arc::new(Metrics::new());
 
-        let store = build_timed_object_store(&config, "secret", &store, metrics.clone())
+        let (store, _router) = build_timed_object_store(&config, "secret", &store, metrics.clone())
             .await
             .unwrap();
         store.health_check().unwrap();

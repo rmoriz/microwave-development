@@ -921,6 +921,14 @@ pub trait SecretsRepository: Send + Sync {
     ) -> Result<String, StoreError>;
 
     async fn remove_secret(&self, group: &str, name: &str) -> Result<(), StoreError>;
+
+    /// Newest `updated_at` of the secrets whose name starts with `name_prefix`,
+    /// or `None` when none exists. The reload timer uses it to notice a
+    /// `set-secret` without reading every value. Backends without a query
+    /// return `None` through the default.
+    async fn secret_stamp(&self, _name_prefix: &str) -> Result<Option<String>, StoreError> {
+        Ok(None)
+    }
 }
 
 /// A Chef `run_converge` report to persist for one node run.

@@ -66,6 +66,15 @@ impl SecretsRepository for PostgresStore {
             Err(StoreError::NotFound(format!("secret {group}.{name}")))
         }
     }
+
+    async fn secret_stamp(&self, name_prefix: &str) -> Result<Option<String>, StoreError> {
+        let pattern = format!("secret:{name_prefix}%");
+        sqlx::query_scalar("SELECT MAX(updated_at) FROM kvpair WHERE key LIKE $1")
+            .bind(pattern)
+            .fetch_one(self.pool())
+            .await
+            .map_err(crate::store::db)
+    }
 }
 
 fn validate_component(label: &str, value: &str) -> Result<(), StoreError> {

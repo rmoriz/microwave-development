@@ -105,6 +105,23 @@ impl SqliteStore {
             Err(StoreError::NotFound(format!("secret {group}.{name}")))
         }
     }
+
+    /// Newest `updated_at` over every secret whose name starts with
+    /// `name_prefix`, or `None` when there is none.
+    ///
+    /// `updated_at` is RFC 3339 to the second, so the lexicographic `MAX` is
+    /// also the newest write. `name_prefix` is matched after `secret:`, so
+    /// callers pass the group including its colon (`"object_store:"`).
+    pub fn secret_stamp(&self, name_prefix: &str) -> Result<Option<String>, StoreError> {
+        let pattern = format!("secret:{name_prefix}%");
+        let connection = self.connection();
+        let stamp = connection.query_row(
+            "SELECT MAX(updated_at) FROM kvpair WHERE key LIKE ?1",
+            rusqlite::params![pattern],
+            |row| row.get(0),
+        )?;
+        Ok(stamp)
+    }
 }
 
 fn validate_component(label: &str, value: &str) -> Result<(), StoreError> {

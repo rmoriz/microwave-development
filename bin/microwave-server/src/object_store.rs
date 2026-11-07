@@ -3,9 +3,15 @@
 //! Installed by startup and, later, swapped by the reloader; both need the
 //! build without the install, so the two stay separate.
 
-use microwave_config::{ObjectStoreBackend, ObjectStoreConfig, OrgCredentials};
-use microwave_objectstore::{ObjectStoreError, S3Config, S3ObjectStore, TenantSnapshot};
-use std::collections::BTreeMap;
+use microwave_config::{
+    Config, ObjectStoreBackend, ObjectStoreConfig, OrgCredentials, TenantIssue,
+};
+use microwave_objectstore::{
+    LocalObjectStore, ObjectStore, ObjectStoreError, S3Config, S3ObjectStore, TenantSnapshot,
+};
+use microwave_store::MetadataStore;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::sync::Arc;
 
 /// Global endpoint, credentials and defaults every entry merges its own fields
@@ -131,6 +137,71 @@ pub fn build_snapshot(
     }
 
     Ok(snapshot)
+}
+
+/// Build a complete snapshot for the given configuration: the `local` default,
+/// or the tenant cross-checks followed by [`build_snapshot`].
+///
+/// Startup and the reloader share this, so the `local` branch exists once. The
+/// caller installs the result (and the reloader probes it first).
+pub(crate) async fn assemble(
+    config: &Config,
+    store: &dyn MetadataStore,
+    secret: &str,
+) -> Result<TenantSnapshot, Box<dyn std::error::Error>> {
+    if config.object_store.backend == ObjectStoreBackend::Local {
+        let local: Arc<dyn ObjectStore + Send + Sync> = Arc::new(LocalObjectStore::new(
+            Path::new(&config.paths.data_dir).join("bookshelf"),
+            secret,
+            crate::local_object_store_base_url(config),
+        ));
+        let mut snapshot =
+            build_snapshot(&config.object_store, &BTreeMap::new(), &BTreeMap::new())?;
+        snapshot.default = Some(local);
+        return Ok(snapshot);
+    }
+
+    let organizations = store.list_orgs().await?;
+    let organization_names: BTreeSet<String> = organizations
+        .iter()
+        .map(|organization| organization.name.clone())
+        .collect();
+    // Only entries that name an existing organization need their secrets read.
+    let org_ids: BTreeMap<String, String> = organizations
+        .iter()
+        .filter(|organization| {
+            config
+                .object_store
+                .organizations
+                .contains_key(&organization.name)
+        })
+        .map(|organization| (organization.name.clone(), organization.id.clone()))
+        .collect();
+    let configured: BTreeSet<String> = org_ids.keys().cloned().collect();
+    let credentials = crate::bootstrap::load_org_credentials(store, &configured).await?;
+
+    let mut fatal = Vec::new();
+    for issue in
+        microwave_config::tenant_issues(&config.object_store, &organization_names, &credentials)
+    {
+        match issue {
+            TenantIssue::UnknownOrg(organization) => tracing::warn!(
+                organization = %organization,
+                "object_store.organizations names an unknown organization; its entry stays inactive"
+            ),
+            issue => fatal.push(issue),
+        }
+    }
+    if !fatal.is_empty() {
+        let issues: Vec<String> = fatal.iter().map(ToString::to_string).collect();
+        return Err(format!("object store tenant map is invalid: {}", issues.join("; ")).into());
+    }
+
+    Ok(build_snapshot(
+        &config.object_store,
+        &org_ids,
+        &credentials,
+    )?)
 }
 
 #[cfg(test)]
