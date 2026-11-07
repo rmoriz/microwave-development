@@ -213,6 +213,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Err(error) = reloader.write_boot_status().await {
                 tracing::warn!(%error, "failed to write the object store reload status");
             }
+            let interval = config.object_store.reload_interval_seconds;
+            if interval > 0 {
+                reload::spawn_periodic_reloader(reloader.clone(), interval);
+            }
             *object_store_reload.write().await = Some(reloader);
 
             let bind = config.server.bind.clone();

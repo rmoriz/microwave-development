@@ -14,6 +14,7 @@ use microwave_store::MetadataStore;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// What asked for the reload. Only used for logging and the status line.
 ///
@@ -202,6 +203,87 @@ impl Reloader {
     }
 }
 
+/// The inputs the periodic timer watches: the config file, the stored
+/// `object_store:` secrets and the org table. It never carries secret values.
+///
+/// `org_count` is deliberately extra: `updated_at` has second precision, so two
+/// org creations inside one second leave the newest timestamp unchanged while
+/// the count still moves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stamp {
+    config_mtime: Option<std::time::SystemTime>,
+    config_len: u64,
+    secrets: Option<String>,
+    orgs: Option<String>,
+    org_count: usize,
+}
+
+/// Collect a stamp. A missing config file is not an error: the timer keeps
+/// running and reloads on the next change.
+async fn stamp(reloader: &Reloader, config_path: Option<&Path>) -> Result<Stamp, std::io::Error> {
+    let (config_mtime, config_len) = match config_path {
+        None => (None, 0),
+        Some(path) => match std::fs::metadata(path) {
+            Ok(metadata) => (metadata.modified().ok(), metadata.len()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, 0),
+            Err(error) => return Err(error),
+        },
+    };
+    let orgs = reloader
+        .store
+        .list_orgs()
+        .await
+        .map_err(std::io::Error::other)?;
+    Ok(Stamp {
+        config_mtime,
+        config_len,
+        secrets: reloader
+            .store
+            .secret_stamp("object_store:")
+            .await
+            .map_err(std::io::Error::other)?,
+        orgs: orgs
+            .iter()
+            .map(|org| org.updated_at.as_str())
+            .max()
+            .map(str::to_string),
+        org_count: orgs.len(),
+    })
+}
+
+/// Poll the stamp and reload only when it changed. A zero interval disables the
+/// timer.
+///
+/// The first stamp is taken before the first tick, so startup never triggers an
+/// unconditional reload. A failed first read is simply compared on the next
+/// tick. Reload errors are the reloader's to log and record in the status.
+pub fn spawn_periodic_reloader(
+    reloader: Arc<Reloader>,
+    interval_seconds: u64,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if interval_seconds == 0 {
+        return None;
+    }
+    Some(tokio::spawn(async move {
+        let config_path = reloader.config_path.clone();
+        let mut last_seen = stamp(&reloader, config_path.as_deref()).await.ok();
+        let mut ticker = tokio::time::interval(Duration::from_secs(interval_seconds));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let Ok(current) = stamp(&reloader, config_path.as_deref()).await else {
+                continue;
+            };
+            if last_seen.as_ref() == Some(&current) {
+                continue;
+            }
+            last_seen = Some(current);
+            let _ = reloader.reload(Trigger::Interval).await;
+        }
+    }))
+}
+
 /// Read the request token, if any.
 fn take_token(path: &Path) -> Option<String> {
     let token = std::fs::read_to_string(path).ok()?;
@@ -280,7 +362,7 @@ fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{consume_token, take_token, Reloader, Trigger};
+    use super::{consume_token, spawn_periodic_reloader, stamp, take_token, Reloader, Trigger};
     use crate::object_store::assemble;
     use microwave_config::Config;
     use microwave_objectstore::{ObjectStore, RoutingObjectStore};
@@ -617,6 +699,155 @@ verify_buckets = false
         );
         // The inherent method stays available for synchronous callers.
         assert_eq!(store.secret_stamp("object_store:").unwrap(), Some(newest));
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_stamp_compares_equal() {
+        let harness = harness().await;
+        let first = stamp(&harness.reloader, Some(&harness.config_path))
+            .await
+            .unwrap();
+        let second = stamp(&harness.reloader, Some(&harness.config_path))
+            .await
+            .unwrap();
+
+        assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn a_missing_config_file_is_not_a_stamp_error() {
+        let harness = harness().await;
+
+        let missing = harness.config_path.with_file_name("gone.toml");
+        let missing_stamp = stamp(&harness.reloader, Some(&missing)).await.unwrap();
+        let no_path = stamp(&harness.reloader, None).await.unwrap();
+
+        assert_eq!(missing_stamp, no_path);
+        assert!(missing_stamp.config_mtime.is_none());
+        assert_eq!(missing_stamp.config_len, 0);
+    }
+
+    #[tokio::test]
+    async fn a_new_object_store_secret_changes_the_stamp() {
+        let harness = harness().await;
+        let before = stamp(&harness.reloader, Some(&harness.config_path))
+            .await
+            .unwrap();
+
+        harness
+            .reloader
+            .store
+            .set_secret("object_store", "acme.access_key", "acme-access")
+            .await
+            .unwrap();
+        let after = stamp(&harness.reloader, Some(&harness.config_path))
+            .await
+            .unwrap();
+
+        assert_ne!(before.secrets, after.secrets);
+        assert_ne!(before, after);
+    }
+
+    #[tokio::test]
+    async fn a_new_organization_changes_the_stamp() {
+        let harness = harness().await;
+        let before = stamp(&harness.reloader, Some(&harness.config_path))
+            .await
+            .unwrap();
+
+        harness
+            .reloader
+            .store
+            .create_org("beta", "Beta")
+            .await
+            .unwrap();
+        let after = stamp(&harness.reloader, Some(&harness.config_path))
+            .await
+            .unwrap();
+
+        // `updated_at` is second precision; the count moves even when the
+        // timestamp does not.
+        assert_eq!(after.org_count, before.org_count + 1);
+        assert_ne!(before, after);
+    }
+
+    #[tokio::test]
+    async fn rewriting_the_config_file_changes_the_stamp() {
+        let harness = harness().await;
+        let before = stamp(&harness.reloader, Some(&harness.config_path))
+            .await
+            .unwrap();
+
+        write_config(
+            &harness.config_path,
+            &base_config(Some("mw-a-longer-new-bucket")),
+        );
+        let after = stamp(&harness.reloader, Some(&harness.config_path))
+            .await
+            .unwrap();
+
+        assert!(after.config_mtime.is_some());
+        assert_ne!(before.config_len, after.config_len);
+        assert_ne!(before, after);
+    }
+
+    #[tokio::test]
+    async fn a_zero_interval_starts_no_timer() {
+        let harness = harness().await;
+
+        assert!(spawn_periodic_reloader(harness.reloader.clone(), 0).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_positive_interval_starts_a_timer() {
+        let harness = harness().await;
+
+        let handle = spawn_periodic_reloader(harness.reloader.clone(), 1).expect("a timer task");
+        handle.abort();
+        let _ = handle.await;
+    }
+
+    /// The real tick path: with a write in place the first interval tick must
+    /// reload and record the `interval` trigger. It is only reached by a changed
+    /// stamp, never by the priming read at spawn.
+    #[tokio::test]
+    async fn the_timer_reloads_a_changed_stamp_but_not_the_primed_one() {
+        let harness = harness().await;
+        let handle = spawn_periodic_reloader(harness.reloader.clone(), 1).expect("a timer task");
+        // Let the task prime its first stamp before the write lands, so the
+        // change is what triggers the reload.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        write_config(&harness.config_path, &base_config(Some("mw-new")));
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if harness.data_dir.join("objectstore.reload").exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the timer must reload the changed config");
+        handle.abort();
+        let _ = handle.await;
+
+        let status = status(&harness.data_dir);
+        assert_eq!(status["trigger"], "interval");
+        assert_eq!(status["outcome"], "ok");
+        assert!(url(&harness).contains("mw-new"));
+    }
+
+    #[tokio::test]
+    async fn an_interval_trigger_is_recorded_in_the_status() {
+        let harness = harness().await;
+        write_config(&harness.config_path, &base_config(Some("mw-new")));
+
+        harness.reloader.reload(Trigger::Interval).await.unwrap();
+
+        let status = status(&harness.data_dir);
+        assert_eq!(status["trigger"], "interval");
+        assert_eq!(status["outcome"], "ok");
     }
 
     struct CaptureWriter(Arc<std::sync::Mutex<Vec<u8>>>);
