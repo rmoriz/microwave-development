@@ -2197,4 +2197,27 @@ fn object_store_duplicate_targets_ignore_padding() {
             .contains("object_store.organizations.beta.bucket"),
         "{error}"
     );
+
+    // The request path ignores one trailing `/`, so the dedupe must as well.
+    let error = Config::from_toml_str(
+        r#"
+        [object_store]
+        backend = "s3"
+
+        [object_store.organizations.acme]
+        bucket = "mw-shared"
+        endpoint = "https://s3.example.com"
+
+        [object_store.organizations.beta]
+        bucket = "mw-shared"
+        endpoint = "https://s3.example.com/"
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("object_store.organizations.beta.bucket"),
+        "{error}"
+    );
 }
