@@ -1894,6 +1894,7 @@ dependencies = [
  "hmac 0.12.1",
  "http",
  "md-5 0.10.6",
+ "microwave-config",
  "microwave-metrics",
  "rcgen",
  "rustls",

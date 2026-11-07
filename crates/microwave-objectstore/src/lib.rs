@@ -9,6 +9,9 @@
 //!
 //! [`RoutingObjectStore`] wraps an installed snapshot of stores and picks one
 //! per organization, so the server can keep a bucket per tenant.
+//!
+//! [`verify_buckets`] probes every bucket of a snapshot with one `HEAD`
+//! request before the snapshot goes live.
 
 use hmac::{Hmac, Mac};
 use md5::{Digest, Md5};
@@ -20,10 +23,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 
+mod probe;
 mod routing;
 mod s3;
 mod timed;
 
+pub use probe::{probe_endpoint, verify_buckets};
 pub use routing::{RoutingObjectStore, TenantSnapshot};
 pub use s3::{ObjectEntry, S3Config, S3ObjectStore};
 pub use timed::TimedObjectStore;
@@ -75,6 +80,12 @@ pub enum ObjectStoreError {
     Http(String),
     #[error("object store returned status {0}")]
     HttpStatus(u16),
+    #[error("bucket {bucket} failed the probe: {source}")]
+    BucketProbe {
+        bucket: String,
+        #[source]
+        source: Box<ObjectStoreError>,
+    },
 }
 
 /// Metadata about a stored blob, served by the `/bookshelf` HTTP routes.
