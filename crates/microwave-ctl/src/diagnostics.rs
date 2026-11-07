@@ -5,7 +5,7 @@ use microwave_config::{
 };
 use microwave_mail::SmtpMailer;
 use microwave_objectstore::{probe_endpoint, S3Config};
-use microwave_store::{SqliteStore, OBJECT_STORE_SECRET_GROUP};
+use microwave_store::{SqliteStore, StoreError, OBJECT_STORE_SECRET_GROUP};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::Path;
@@ -171,12 +171,12 @@ fn collect_config(
 
     if config.object_store.backend != ObjectStoreBackend::Local {
         match tenant_state(context, config) {
-            Ok(state) => {
+            Ok(TenantState::Known { orgs, credentials }) => {
                 // Defensive: `Config::validate` already rejects both, so this
                 // only fires for configs built without validation.
                 if !config.object_store.require_org_bucket {
                     if let Some(bucket) = non_empty(config.object_store.bucket.as_deref()) {
-                        if !valid_bucket_name(bucket) {
+                        if !valid_bucket_name(bucket.trim()) {
                             problems.push(format!(
                                 "object_store.bucket {bucket:?} is not a valid bucket name"
                             ));
@@ -184,25 +184,31 @@ fn collect_config(
                     }
                 }
                 for (organization, entry) in &config.object_store.organizations {
-                    if !valid_bucket_name(&entry.bucket) {
+                    if !valid_bucket_name(entry.bucket.trim()) {
                         problems.push(format!(
                             "object_store.organizations.{organization}.bucket {:?} is not a valid bucket name",
                             entry.bucket
                         ));
                     }
                 }
-                let issues = tenant_issues(&config.object_store, &state.orgs, &state.credentials);
+                let issues = tenant_issues(&config.object_store, &orgs, &credentials);
                 if issues.is_empty() {
                     checks.push(format!(
                         "object_store tenant map {} organization(s)",
-                        state.orgs.len()
+                        orgs.len()
                     ));
                 } else {
                     for issue in issues {
                         problems.push(issue.to_string());
                     }
                 }
-                tenant = Some(Ok(state));
+                tenant = Some(Ok(TenantState::Known { orgs, credentials }));
+            }
+            Ok(TenantState::Unknown) => {
+                // A fresh install has no organization table yet; the mapped
+                // entries cannot be cross-checked, but the config is not wrong.
+                checks.push("object_store tenant map (organization table not readable yet)".into());
+                tenant = Some(Ok(TenantState::Unknown));
             }
             Err(error) => {
                 problems.push(format!(
@@ -307,23 +313,29 @@ fn collect_config(
     (problems, checks, tenant)
 }
 
-/// The organization table and the per-organization object-store credentials.
-struct TenantState {
-    orgs: BTreeSet<String>,
-    credentials: BTreeMap<String, OrgCredentials>,
+/// What the tenant checks can know about the organization table.
+enum TenantState {
+    /// There is no organization table to consult (no database file yet, or a
+    /// database that was never migrated). Mapped entries cannot be
+    /// cross-checked against existing organizations.
+    Unknown,
+    /// The table was read. `orgs` may legitimately be empty.
+    Known {
+        orgs: BTreeSet<String>,
+        credentials: BTreeMap<String, OrgCredentials>,
+    },
 }
 
 /// Read the organization table and the credentials the tenant map needs.
 ///
 /// Only organizations that exist and are mapped get their credential pair
-/// read. A missing database file yields an empty state, mirroring
-/// [`stored_secret`]: the strict check then reports every mapped organization
-/// as unknown, which is honest for an uninitialized database.
+/// read. A missing or unmigrated database yields [`TenantState::Unknown`]
+/// instead of an empty table, so a pre-flight check neither reports every
+/// mapped organization as unknown on a fresh install nor pretends the table
+/// was read.
 fn tenant_state(context: &Context, config: &Config) -> Result<TenantState, String> {
-    let mut state = TenantState {
-        orgs: BTreeSet::new(),
-        credentials: BTreeMap::new(),
-    };
+    let orgs;
+    let mut credentials = BTreeMap::new();
 
     let mut read_credentials = |orgs: &BTreeSet<String>,
                                 get: &dyn Fn(&str) -> Result<Option<String>, String>|
@@ -334,7 +346,7 @@ fn tenant_state(context: &Context, config: &Config) -> Result<TenantState, Strin
             }
             let access_key = get(&format!("{organization}.access_key"))?.unwrap_or_default();
             let secret_key = get(&format!("{organization}.secret_key"))?.unwrap_or_default();
-            state.credentials.insert(
+            credentials.insert(
                 organization.clone(),
                 OrgCredentials {
                     access_key: access_key.trim().to_string(),
@@ -348,19 +360,20 @@ fn tenant_state(context: &Context, config: &Config) -> Result<TenantState, Strin
     match config.database.driver {
         DatabaseDriver::Sqlite => {
             let Some(path) = context.database_path.as_deref() else {
-                return Ok(state);
+                return Ok(TenantState::Unknown);
             };
             if !path.is_file() {
-                return Ok(state);
+                return Ok(TenantState::Unknown);
             }
             let store = SqliteStore::open_read_only(path).map_err(|error| error.to_string())?;
-            state.orgs = store
-                .list_orgs()
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .map(|organization| organization.name)
-                .collect();
-            let orgs = state.orgs.clone();
+            orgs = match store.list_orgs() {
+                Ok(orgs) => orgs
+                    .into_iter()
+                    .map(|organization| organization.name)
+                    .collect(),
+                Err(error) if table_missing(&error) => return Ok(TenantState::Unknown),
+                Err(error) => return Err(error.to_string()),
+            };
             read_credentials(&orgs, &|name| {
                 store
                     .get_secret(OBJECT_STORE_SECRET_GROUP, name)
@@ -368,16 +381,20 @@ fn tenant_state(context: &Context, config: &Config) -> Result<TenantState, Strin
             })?;
         }
         DatabaseDriver::Postgres => {
+            // An unreachable database is a real problem, but a database that
+            // simply predates the first migration reports its missing relation
+            // the same way a fresh SQLite file reports its missing table.
             let store = context
                 .open_existing_metadata_store()
                 .map_err(|error| error.to_string())?;
-            state.orgs = store
-                .run(store.store().list_orgs())
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .map(|organization| organization.name)
-                .collect();
-            let orgs = state.orgs.clone();
+            orgs = match store.run(store.store().list_orgs()) {
+                Ok(orgs) => orgs
+                    .into_iter()
+                    .map(|organization| organization.name)
+                    .collect(),
+                Err(error) if table_missing(&error) => return Ok(TenantState::Unknown),
+                Err(error) => return Err(error.to_string()),
+            };
             read_credentials(&orgs, &|name| {
                 store
                     .run(store.store().get_secret(OBJECT_STORE_SECRET_GROUP, name))
@@ -386,7 +403,14 @@ fn tenant_state(context: &Context, config: &Config) -> Result<TenantState, Strin
         }
     }
 
-    Ok(state)
+    Ok(TenantState::Known { orgs, credentials })
+}
+
+/// Whether the store reports an organization table that does not exist yet.
+fn table_missing(error: &StoreError) -> bool {
+    let message = error.to_string();
+    message.contains("no such table: orgs")
+        || (message.contains("orgs") && message.contains("does not exist"))
 }
 
 /// Report the object-store tenant state and the last reload result.
@@ -405,22 +429,22 @@ pub fn diagnostics(context: &Context, probe: bool) -> Result<(), CtlError> {
 
     if probe {
         println!("probing every configured bucket");
-        let state = match &tenant {
-            Some(Ok(state)) => Some(state),
+        let credentials = match &tenant {
+            Some(Ok(TenantState::Known { credentials, .. })) => Some(credentials),
             _ => None,
         };
-        probe_buckets(context, state, &mut problems)?;
+        probe_buckets(context, credentials, &mut problems)?;
     }
     finish(problems, checks)
 }
 
 /// The strict and organization summary lines. `None` is the local backend,
-/// `Some(Err(..))` an unreadable store.
+/// `Some(Err(..))` an unreadable store and `Unknown` an unreadable table.
 fn summary(strict: bool, tenant: &Option<Result<TenantState, String>>) -> String {
     let organizations = match tenant {
         None => "0".to_string(),
-        Some(Ok(state)) => state.orgs.len().to_string(),
-        Some(Err(_)) => "?".to_string(),
+        Some(Ok(TenantState::Known { orgs, .. })) => orgs.len().to_string(),
+        Some(Ok(TenantState::Unknown)) | Some(Err(_)) => "?".to_string(),
     };
     format!(
         "strict: {}\norganizations: {organizations}",
@@ -454,7 +478,7 @@ fn status_field<'a>(status: &'a serde_json::Value, field: &str) -> &'a str {
 /// failure. The token never appears here.
 fn probe_buckets(
     context: &Context,
-    state: Option<&TenantState>,
+    credentials: Option<&BTreeMap<String, OrgCredentials>>,
     problems: &mut Vec<String>,
 ) -> Result<(), CtlError> {
     let shared = &context.config.object_store;
@@ -525,7 +549,7 @@ fn probe_buckets(
             .unwrap_or_default()
             .trim()
             .to_string();
-        let credentials = state.and_then(|state| state.credentials.get(organization));
+        let credentials = credentials.and_then(|credentials| credentials.get(organization));
         targets.push((
             endpoint,
             bucket.to_string(),
@@ -1175,6 +1199,34 @@ mod tests {
         }
     }
 
+    /// A strict S3 context with `ghost` mapped and no database file yet.
+    fn unmapped_context(dir: &Path) -> Context {
+        let database_path = dir.join("microwave.db");
+        let mut config = microwave_config::Config::default();
+        config.paths.data_dir = dir.join("data").display().to_string();
+        config.database.url = Some(format!("sqlite://{}", database_path.display()));
+        config.object_store.backend = ObjectStoreBackend::S3;
+        config.object_store.endpoint = Some("http://127.0.0.1:1".into());
+        config.object_store.access_key = Some("shared-access".into());
+        config.object_store.secret_key = Some("shared-secret".into());
+        config.object_store.require_org_bucket = true;
+        config.object_store.health_bucket = Some("mw-health".into());
+        config.object_store.organizations.insert(
+            "ghost".to_string(),
+            ObjectStoreOrgConfig {
+                bucket: "mw-ghost".into(),
+                ..Default::default()
+            },
+        );
+
+        Context {
+            database_url: config.resolved_database_url(),
+            database_path: Some(database_path),
+            data_dir: dir.join("data"),
+            config,
+        }
+    }
+
     /// Complete the tenant map for `acme` with a bucket and both secrets.
     fn map_acme(context: &mut Context) {
         context.config.object_store.organizations.insert(
@@ -1246,6 +1298,24 @@ mod tests {
         map_acme(&mut context);
         assert!(check_config(&context).is_ok());
         assert!(diagnostics(&context, false).is_ok());
+    }
+
+    #[test]
+    fn an_unreadable_tenant_table_is_unknown_not_an_org_error() {
+        // No database file yet: startup must not reject a fresh install.
+        let dir = tempfile::tempdir().unwrap();
+        let context = unmapped_context(dir.path());
+        assert!(check_config(&context).is_ok());
+        assert!(diagnostics(&context, false).is_ok());
+
+        // A file that exists but was never migrated is the same state.
+        std::fs::write(context.database_path.as_deref().unwrap(), b"").unwrap();
+        assert!(check_config(&context).is_ok());
+
+        // A migrated, empty table is known-empty: the entry is then unknown.
+        drop(SqliteStore::open(context.database_path.as_deref().unwrap()).unwrap());
+        let error = check_config(&context).unwrap_err();
+        assert!(error.to_string().contains("ghost"), "unexpected: {error}");
     }
 
     #[test]
@@ -1322,7 +1392,7 @@ mod tests {
     }
 
     fn state_with(organizations: usize) -> TenantState {
-        TenantState {
+        TenantState::Known {
             orgs: (0..organizations)
                 .map(|index| format!("org{index}"))
                 .collect::<BTreeSet<_>>(),
@@ -1339,6 +1409,10 @@ mod tests {
         );
         assert_eq!(
             summary(true, &Some(Err("boom".to_string()))),
+            "strict: enabled\norganizations: ?"
+        );
+        assert_eq!(
+            summary(true, &Some(Ok(TenantState::Unknown))),
             "strict: enabled\norganizations: ?"
         );
     }
