@@ -27,6 +27,9 @@ pub struct AppState {
     pub sqlite: Option<Arc<SqliteStore>>,
     pub config: Arc<Config>,
     pub object_store: Arc<dyn ObjectStore + Send + Sync>,
+    /// HMAC key for local `/bookshelf` tokens. Shared with the reloader, which
+    /// stores the rotated key after a reload swaps in the matching local store.
+    pub local_bookshelf_secret: Arc<arc_swap::ArcSwap<String>>,
     pub search: Arc<dyn SearchBackend>,
     /// Process-local request metrics served by `GET /_stats`.
     pub metrics: Arc<Metrics>,
@@ -74,6 +77,9 @@ impl AppState {
         object_store: Arc<dyn ObjectStore + Send + Sync>,
         metrics: Arc<Metrics>,
     ) -> Result<Self, StateError> {
+        let local_bookshelf_secret = Arc::new(arc_swap::ArcSwap::from_pointee(
+            config.object_store.secret.clone().unwrap_or_default(),
+        ));
         let mailer = microwave_mail::build_mailer(&config.mail)?;
         let search = build_search_backend(&config.search, store.clone())?;
         let search: Arc<dyn SearchBackend> = Arc::new(TimedSearch::new(search, metrics.clone()));
@@ -101,6 +107,7 @@ impl AppState {
             sqlite: None,
             config,
             object_store,
+            local_bookshelf_secret,
             search,
             metrics,
             keygen,

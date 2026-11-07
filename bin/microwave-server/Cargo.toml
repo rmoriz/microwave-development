@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+arc-swap.workspace = true
 axum.workspace = true
 axum-server.workspace = true
 clap.workspace = true

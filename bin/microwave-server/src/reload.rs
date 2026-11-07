@@ -69,6 +69,9 @@ pub struct Reloader {
     router: Arc<RoutingObjectStore>,
     data_dir: PathBuf,
     boot_id: String,
+    /// Handle the API verifier reads; swapped together with the local store so
+    /// a rotated local secret takes effect without a restart.
+    local_secret: Arc<arc_swap::ArcSwap<String>>,
     /// Serializes reloads so a SIGHUP waits for a running one instead of
     /// racing the file reads and the snapshot swap.
     lock: tokio::sync::Mutex<()>,
@@ -81,6 +84,7 @@ impl Reloader {
         router: Arc<RoutingObjectStore>,
         data_dir: PathBuf,
         boot_id: String,
+        local_secret: Arc<arc_swap::ArcSwap<String>>,
     ) -> Self {
         Self {
             config_path,
@@ -88,6 +92,7 @@ impl Reloader {
             router,
             data_dir,
             boot_id,
+            local_secret,
             lock: tokio::sync::Mutex::new(()),
         }
     }
@@ -168,6 +173,9 @@ impl Reloader {
             .await
             .map_err(rejected)?;
         self.router.install(snapshot);
+        // Only meaningful for the local backend, where the verifier shares the
+        // key with the store we just installed.
+        self.local_secret.store(Arc::new(secret));
         Ok(())
     }
 
@@ -370,7 +378,10 @@ mod tests {
     use crate::object_store::assemble;
     use microwave_config::Config;
     use microwave_objectstore::{ObjectStore, RoutingObjectStore};
-    use microwave_store::{MetadataStore, SecretsRepository, SqliteStore};
+    use microwave_store::{
+        MetadataStore, SecretsRepository, SqliteStore, OBJECT_STORE_SECRET_GROUP,
+        OBJECT_STORE_SECRET_NAME,
+    };
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::time::Duration;
@@ -420,12 +431,14 @@ verify_buckets = false
         let config = Config::load(Some(&config_path)).unwrap();
         let snapshot = assemble(&config, store.as_ref(), "secret").await.unwrap();
         let router = Arc::new(RoutingObjectStore::new(snapshot));
+        let local_secret = Arc::new(arc_swap::ArcSwap::from_pointee("secret".to_string()));
         let reloader = Arc::new(Reloader::new(
             Some(config_path.clone()),
             store.clone(),
             router.clone(),
             data_dir.clone(),
             "boot-1".into(),
+            local_secret.clone(),
         ));
 
         Harness {
@@ -883,6 +896,52 @@ verify_buckets = false
         let _ = handle.await;
 
         assert_eq!(status(&harness.data_dir)["outcome"], "rejected");
+    }
+
+    /// A rotated local secret must reach the verifier handle together with the
+    /// local store, or every already-handed-out token would keep verifying
+    /// against the old key.
+    #[tokio::test]
+    async fn a_reload_adopts_a_rotated_local_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let config_path = dir.path().join("microwave.toml");
+        write_config(
+            &config_path,
+            &format!(
+                "[paths]\ndata_dir = {:?}\n[object_store]\nbackend = \"local\"\n",
+                data_dir.display().to_string()
+            ),
+        );
+
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let config = Config::load(Some(&config_path)).unwrap();
+        let router = Arc::new(RoutingObjectStore::new(
+            assemble(&config, store.as_ref(), "old-secret")
+                .await
+                .unwrap(),
+        ));
+        let secret = Arc::new(arc_swap::ArcSwap::from_pointee("old-secret".to_string()));
+        let reloader = Reloader::new(
+            Some(config_path),
+            store.clone(),
+            router,
+            data_dir,
+            "boot-1".into(),
+            secret.clone(),
+        );
+        store
+            .set_secret(
+                OBJECT_STORE_SECRET_GROUP,
+                OBJECT_STORE_SECRET_NAME,
+                "rotated-secret",
+            )
+            .unwrap();
+
+        reloader.reload(Trigger::Manual).await.unwrap();
+
+        assert_eq!(secret.load().as_str(), "rotated-secret");
     }
 
     #[tokio::test]

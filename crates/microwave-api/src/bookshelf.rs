@@ -57,14 +57,11 @@ pub(crate) fn authorized(
         return Err(ApiError::forbidden());
     }
 
-    let secret = state
-        .config
-        .object_store
-        .secret
-        .as_deref()
-        .unwrap_or_default();
+    // The reloader swaps this handle together with the local store, so a
+    // rotated secret is honored without a restart.
+    let secret = state.local_bookshelf_secret.load();
     if bookshelf_token_matches_at(
-        secret,
+        secret.as_str(),
         method,
         organization,
         checksum,
@@ -372,4 +369,53 @@ pub fn checksum_map(
         map.insert(check.checksum, entry);
     }
     Ok(serde_json::Value::Object(map))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{authorized, TokenQuery};
+    use crate::AppState;
+    use microwave_config::Config;
+    use microwave_metrics::Metrics;
+    use microwave_objectstore::{bookshelf_token, unix_timestamp, LocalObjectStore, ObjectStore};
+    use microwave_store::SqliteStore;
+    use std::sync::Arc;
+
+    fn state(secret: &str) -> AppState {
+        let mut config = Config::default();
+        config.object_store.secret = Some(secret.to_string());
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let object_store: Arc<dyn ObjectStore + Send + Sync> =
+            Arc::new(LocalObjectStore::new("/nonexistent", secret, "http://test"));
+        AppState::with_metrics(
+            store,
+            Arc::new(config),
+            object_store,
+            Arc::new(Metrics::new()),
+        )
+        .unwrap()
+    }
+
+    /// The verifier reads the shared handle, so a reload that stores a rotated
+    /// secret takes effect without rebuilding the application state.
+    #[test]
+    fn authorized_follows_the_shared_secret_handle() {
+        let checksum = "0123456789abcdef0123456789abcdef";
+        let state = state("old-secret");
+        let expires_at = unix_timestamp() + 60;
+        let query = |token: String| TokenQuery {
+            token: Some(token),
+            exp: Some(expires_at),
+        };
+        let old = bookshelf_token("old-secret", "GET", "acme", checksum, expires_at);
+        assert!(authorized(&state, "GET", "acme", checksum, &query(old.clone())).is_ok());
+
+        state
+            .local_bookshelf_secret
+            .store(Arc::new("rotated-secret".to_string()));
+
+        assert!(authorized(&state, "GET", "acme", checksum, &query(old)).is_err());
+        let new = bookshelf_token("rotated-secret", "GET", "acme", checksum, expires_at);
+        assert!(authorized(&state, "GET", "acme", checksum, &query(new)).is_ok());
+    }
 }
