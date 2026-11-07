@@ -118,3 +118,33 @@ fn validate_component(label: &str, value: &str) -> Result<(), StoreError> {
         Err(StoreError::Invalid(format!("invalid {label} {value:?}")))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{secret_kv_key, SqliteStore};
+
+    /// Per-organization credential names keep the `.` that separates the
+    /// organization from the field.
+    #[test]
+    fn dotted_secret_names_are_stored_verbatim() {
+        assert_eq!(
+            secret_kv_key("object_store", "acme.access_key"),
+            "secret:object_store:acme.access_key"
+        );
+    }
+
+    #[test]
+    fn set_secret_accepts_a_dotted_name() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .set_secret("object_store", "acme.secret_key", "s3cr3t")
+            .unwrap();
+        assert_eq!(
+            store
+                .get_secret("object_store", "acme.secret_key")
+                .unwrap()
+                .as_deref(),
+            Some("s3cr3t")
+        );
+    }
+}

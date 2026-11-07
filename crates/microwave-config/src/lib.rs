@@ -1,6 +1,7 @@
 //! Configuration types for Microwave Server.
 
 pub mod config;
+pub mod tenant_map;
 
 pub use config::{
     is_loopback_host, valid_bucket_name, valid_org_name, AuthConfig, ComplianceProxyConfig, Config,
@@ -11,3 +12,4 @@ pub use config::{
     OrgCredentials, OtelConfig, PathsConfig, RequiredRecipeConfig, SearchBackend, SearchConfig,
     ServerConfig, StorageCompression, StorageConfig, TelemetryConfig, TlsConfig,
 };
+pub use tenant_map::{tenant_issues, TenantIssue};

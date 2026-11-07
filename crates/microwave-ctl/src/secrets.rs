@@ -205,6 +205,10 @@ fn validate_credential(group: &str, name: &str) -> Result<(), CtlError> {
         )));
     };
 
+    if group == "object_store" {
+        return validate_object_store_credential(name);
+    }
+
     if group == "mcp" {
         return microwave_config::valid_org_name(name)
             .then_some(())
@@ -223,6 +227,34 @@ fn validate_credential(group: &str, name: &str) -> Result<(), CtlError> {
             names.join(", ")
         )))
     }
+}
+
+/// The `object_store` group holds the local `/bookshelf` HMAC secret and the
+/// per-organization key pairs `object_store.<org>.access_key` /
+/// `.secret_key`.
+fn validate_object_store_credential(name: &str) -> Result<(), CtlError> {
+    if name == microwave_store::OBJECT_STORE_SECRET_NAME {
+        return Ok(());
+    }
+    let Some((organization, field)) = name.rsplit_once('.') else {
+        return Err(CtlError::message(format!(
+            "unknown credential '{name}' in group 'object_store'; known names: {}, \
+             <organization>.access_key, <organization>.secret_key",
+            microwave_store::OBJECT_STORE_SECRET_NAME
+        )));
+    };
+    if !matches!(field, "access_key" | "secret_key") {
+        return Err(CtlError::message(format!(
+            "unknown credential '{name}' in group 'object_store'; expected \
+             <organization>.access_key or <organization>.secret_key"
+        )));
+    }
+    if !microwave_config::valid_org_name(organization) {
+        return Err(CtlError::message(format!(
+            "invalid organization name '{organization}' for the object_store credential group"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -330,6 +362,36 @@ mod tests {
         assert!(validate_credential("mcp", "Acme").is_err());
         assert!(validate_credential("mcp", "").is_err());
         assert!(validate_credential("mcp", "with/slash").is_err());
+    }
+
+    #[test]
+    fn object_store_group_accepts_per_org_credential_names() {
+        assert!(validate_credential("object_store", "secret").is_ok());
+        assert!(validate_credential("object_store", "acme.access_key").is_ok());
+        assert!(validate_credential("object_store", "acme.secret_key").is_ok());
+        assert!(validate_credential("object_store", "team-1.access_key").is_ok());
+
+        assert!(validate_credential("object_store", "acme.foo").is_err());
+        assert!(validate_credential("object_store", "ACME.access_key").is_err());
+        assert!(validate_credential("object_store", "acme").is_err());
+        assert!(validate_credential("object_store", "acme.").is_err());
+        assert!(validate_credential("object_store", ".access_key").is_err());
+        assert!(validate_credential("object_store", "a.b.access_key").is_err());
+    }
+
+    #[test]
+    fn a_per_org_object_store_secret_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = context_with_store(dir.path());
+
+        set_secret(&context, "object_store", "acme.access_key", "AKIAEXAMPLE").unwrap();
+        show_secret(&context, "object_store", "acme.access_key").unwrap();
+
+        let store = context.open_metadata_store().unwrap();
+        let value = store
+            .run(store.store().get_secret("object_store", "acme.access_key"))
+            .unwrap();
+        assert_eq!(value.as_deref(), Some("AKIAEXAMPLE"));
     }
 
     #[test]
