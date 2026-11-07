@@ -493,6 +493,10 @@ impl ObjectStore for S3ObjectStore {
         }
         Ok(())
     }
+
+    fn bucket(&self) -> Option<&str> {
+        Some(&self.config.bucket)
+    }
 }
 
 #[derive(Debug)]

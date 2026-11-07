@@ -6,6 +6,9 @@
 //!   through the in-process `/bookshelf` routes using HMAC-signed tokens.
 //! * [`S3ObjectStore`] talks to any S3-compatible service (AWS S3, Garage,
 //!   MinIO) using SigV4 request signing and presigned URLs.
+//!
+//! [`RoutingObjectStore`] wraps an installed snapshot of stores and picks one
+//! per organization, so the server can keep a bucket per tenant.
 
 use hmac::{Hmac, Mac};
 use md5::{Digest, Md5};
@@ -17,9 +20,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 
+mod routing;
 mod s3;
 mod timed;
 
+pub use routing::{RoutingObjectStore, TenantSnapshot};
 pub use s3::{ObjectEntry, S3Config, S3ObjectStore};
 pub use timed::TimedObjectStore;
 
@@ -129,6 +134,14 @@ pub trait ObjectStore: Send + Sync {
     /// a successful no-op so test doubles need only implement blob operations.
     fn health_check(&self) -> Result<(), ObjectStoreError> {
         Ok(())
+    }
+
+    /// Name of the backing bucket, when the backend has one.
+    ///
+    /// Local storage has no bucket and returns `None`; the name is only used
+    /// for log lines and never to build keys.
+    fn bucket(&self) -> Option<&str> {
+        None
     }
 }
 

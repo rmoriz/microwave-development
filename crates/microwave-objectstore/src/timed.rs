@@ -98,6 +98,10 @@ impl ObjectStore for TimedObjectStore {
         self.record("health_check", started, result.is_ok());
         result
     }
+
+    fn bucket(&self) -> Option<&str> {
+        self.inner.bucket()
+    }
 }
 
 #[cfg(test)]
