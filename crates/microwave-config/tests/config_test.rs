@@ -1,6 +1,6 @@
 use microwave_config::{
-    Config, DataCollectorStore, DatabaseDriver, MailAuth, MailConfig, MailSecurity, McpConfig,
-    McpOrgConfig, ObjectStoreBackend, SearchBackend, StorageCompression,
+    valid_bucket_name, Config, DataCollectorStore, DatabaseDriver, MailAuth, MailConfig,
+    MailSecurity, McpConfig, McpOrgConfig, ObjectStoreBackend, SearchBackend, StorageCompression,
 };
 use std::sync::Mutex;
 
@@ -20,6 +20,11 @@ fn defaults_are_safe_and_local() {
     assert_eq!(c.search.backend, SearchBackend::Embedded);
     assert_eq!(c.search.timeout_ms, 30_000);
     assert_eq!(c.object_store.backend, ObjectStoreBackend::Local);
+    assert!(c.object_store.organizations.is_empty());
+    assert!(!c.object_store.require_org_bucket);
+    assert_eq!(c.object_store.health_bucket, None);
+    assert_eq!(c.object_store.reload_interval_seconds, 0);
+    assert!(c.object_store.verify_buckets);
     assert_eq!(c.auth.skew_seconds, 900);
     assert_eq!(c.auth.superuser_name, "pivotal");
     assert_eq!(c.keygen.size, 3);
@@ -483,6 +488,319 @@ fn env_overrides_s3_settings() {
     let result = c.apply_env();
     std::env::remove_var("MW_OBJECT_STORE__PATH_STYLE");
     assert!(result.is_err());
+}
+
+#[test]
+fn valid_bucket_name_follows_the_s3_rules() {
+    for name in ["abc", "mw-acme", "mw.acme.prod", "a1b"] {
+        assert!(valid_bucket_name(name), "rejected valid bucket {name}");
+    }
+    let too_long = "a".repeat(64);
+    for name in [
+        "",
+        "ab",
+        "-ab",
+        "ab-",
+        ".ab",
+        "ab.",
+        "A_b",
+        "a_b",
+        too_long.as_str(),
+    ] {
+        assert!(!valid_bucket_name(name), "accepted invalid bucket {name}");
+    }
+}
+
+#[test]
+fn object_store_organizations_parse_a_valid_map() {
+    let c = Config::from_toml_str(
+        r#"
+        [object_store]
+        backend = "s3"
+        endpoint = "https://s3.example.com"
+        access_key = "access"
+        secret_key = "secret"
+        region = "eu-central-1"
+        path_style = false
+
+        [object_store.organizations.acme]
+        bucket = "mw-acme"
+        region = "us-east-1"
+
+        [object_store.organizations."beta-2"]
+        bucket = "mw-beta.example"
+        endpoint = "https://beta.example.com"
+        path_style = true
+    "#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        c.object_store.organizations.keys().collect::<Vec<_>>(),
+        vec!["acme", "beta-2"]
+    );
+    let acme = &c.object_store.organizations["acme"];
+    assert_eq!(acme.bucket, "mw-acme");
+    assert_eq!(acme.region.as_deref(), Some("us-east-1"));
+    assert_eq!(acme.endpoint, None);
+    assert_eq!(acme.path_style, None);
+    let beta = &c.object_store.organizations["beta-2"];
+    assert_eq!(beta.bucket, "mw-beta.example");
+    assert_eq!(beta.endpoint.as_deref(), Some("https://beta.example.com"));
+    assert_eq!(beta.path_style, Some(true));
+}
+
+#[test]
+fn object_store_organizations_reject_invalid_bucket_names() {
+    let too_long = "a".repeat(64);
+    for bucket in ["A_b", "-x", "ab", too_long.as_str()] {
+        let input = format!(
+            r#"
+            [object_store]
+            backend = "s3"
+
+            [object_store.organizations.acme]
+            bucket = "{bucket}"
+            "#
+        );
+        let error = Config::from_toml_str(&input).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("object_store.organizations.acme.bucket"),
+            "bucket {bucket} failed through the wrong rule: {error}"
+        );
+    }
+}
+
+#[test]
+fn object_store_organization_requires_a_bucket() {
+    let error = Config::from_toml_str(
+        r#"
+        [object_store]
+        backend = "s3"
+
+        [object_store.organizations.acme]
+        region = "eu-central-1"
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("object_store.organizations.acme.bucket"),
+        "{error}"
+    );
+}
+
+#[test]
+fn object_store_organizations_reject_duplicate_targets() {
+    let duplicate_global_endpoint = Config::from_toml_str(
+        r#"
+        [object_store]
+        backend = "s3"
+        endpoint = "https://s3.example.com"
+
+        [object_store.organizations.acme]
+        bucket = "mw-shared"
+
+        [object_store.organizations.beta]
+        bucket = "mw-shared"
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        duplicate_global_endpoint
+            .to_string()
+            .contains("object_store.organizations.beta.bucket"),
+        "{duplicate_global_endpoint}"
+    );
+
+    let duplicate_own_endpoint = Config::from_toml_str(
+        r#"
+        [object_store]
+        backend = "s3"
+
+        [object_store.organizations.acme]
+        bucket = "mw-shared"
+        endpoint = "https://s3.example.com"
+
+        [object_store.organizations.beta]
+        bucket = "mw-shared"
+        endpoint = "https://s3.example.com"
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        duplicate_own_endpoint
+            .to_string()
+            .contains("object_store.organizations.beta.bucket"),
+        "{duplicate_own_endpoint}"
+    );
+
+    let distinct_endpoints = Config::from_toml_str(
+        r#"
+        [object_store]
+        backend = "s3"
+
+        [object_store.organizations.acme]
+        bucket = "mw-shared"
+        endpoint = "https://a.example.com"
+
+        [object_store.organizations.beta]
+        bucket = "mw-shared"
+        endpoint = "https://b.example.com"
+        "#,
+    )
+    .unwrap();
+    assert_eq!(distinct_endpoints.object_store.organizations.len(), 2);
+}
+
+#[test]
+fn require_org_bucket_rejects_the_shared_bucket() {
+    let error = Config::from_toml_str(
+        r#"
+        [object_store]
+        backend = "s3"
+        bucket = "mw-shared"
+        health_bucket = "mw-health"
+        require_org_bucket = true
+        "#,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("object_store.bucket"), "{error}");
+
+    let parsed = Config::from_toml_str(
+        r#"
+        [object_store]
+        backend = "s3"
+        health_bucket = "mw-health"
+        require_org_bucket = true
+        "#,
+    )
+    .unwrap();
+    assert!(parsed.object_store.require_org_bucket);
+}
+
+#[test]
+fn require_org_bucket_requires_a_health_bucket() {
+    let error = Config::from_toml_str(
+        r#"
+        [object_store]
+        backend = "s3"
+        require_org_bucket = true
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("object_store.health_bucket"),
+        "{error}"
+    );
+}
+
+#[test]
+fn health_bucket_must_be_a_valid_bucket_name() {
+    for bucket in ["Health", "-health", "hb"] {
+        let input = format!(
+            r#"
+            [object_store]
+            backend = "s3"
+            health_bucket = "{bucket}"
+            "#
+        );
+        let error = Config::from_toml_str(&input).unwrap_err();
+        assert!(
+            error.to_string().contains("object_store.health_bucket"),
+            "health bucket {bucket} failed through the wrong rule: {error}"
+        );
+    }
+}
+
+#[test]
+fn local_object_store_rejects_organizations_and_strict_mode() {
+    let entries = Config::from_toml_str(
+        r#"
+        [object_store]
+        backend = "local"
+
+        [object_store.organizations.acme]
+        bucket = "mw-acme"
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        entries.to_string().contains("object_store.organizations"),
+        "{entries}"
+    );
+
+    let strict = Config::from_toml_str(
+        r#"
+        [object_store]
+        backend = "local"
+        health_bucket = "mw-health"
+        require_org_bucket = true
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        strict
+            .to_string()
+            .contains("object_store.require_org_bucket"),
+        "{strict}"
+    );
+}
+
+#[test]
+fn object_store_organizations_accept_json_from_the_environment() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("MW_OBJECT_STORE__BACKEND", "s3");
+    std::env::set_var(
+        "MW_OBJECT_STORE__ORGANIZATIONS",
+        r#"{"acme":{"bucket":"mw-acme","region":"eu-central-1"}}"#,
+    );
+    let mut c = Config::default();
+    c.apply_env().unwrap();
+    assert_eq!(c.object_store.organizations["acme"].bucket, "mw-acme");
+    assert_eq!(
+        c.object_store.organizations["acme"].region.as_deref(),
+        Some("eu-central-1")
+    );
+
+    std::env::set_var("MW_OBJECT_STORE__ORGANIZATIONS", "{not json");
+    let mut c = Config::default();
+    let error = c.apply_env().unwrap_err();
+
+    std::env::remove_var("MW_OBJECT_STORE__ORGANIZATIONS");
+    std::env::remove_var("MW_OBJECT_STORE__BACKEND");
+    assert!(
+        error.to_string().contains("MW_OBJECT_STORE__ORGANIZATIONS"),
+        "{error}"
+    );
+}
+
+#[test]
+fn object_store_strict_settings_come_from_the_environment() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("MW_OBJECT_STORE__BACKEND", "s3");
+    std::env::set_var("MW_OBJECT_STORE__HEALTH_BUCKET", "mw-health");
+    std::env::set_var("MW_OBJECT_STORE__REQUIRE_ORG_BUCKET", "true");
+    std::env::set_var("MW_OBJECT_STORE__RELOAD_INTERVAL_SECONDS", "60");
+    std::env::set_var("MW_OBJECT_STORE__VERIFY_BUCKETS", "false");
+    let mut c = Config::default();
+    c.apply_env().unwrap();
+    assert_eq!(c.object_store.health_bucket.as_deref(), Some("mw-health"));
+    assert!(c.object_store.require_org_bucket);
+    assert_eq!(c.object_store.reload_interval_seconds, 60);
+    assert!(!c.object_store.verify_buckets);
+    for key in [
+        "MW_OBJECT_STORE__BACKEND",
+        "MW_OBJECT_STORE__HEALTH_BUCKET",
+        "MW_OBJECT_STORE__REQUIRE_ORG_BUCKET",
+        "MW_OBJECT_STORE__RELOAD_INTERVAL_SECONDS",
+        "MW_OBJECT_STORE__VERIFY_BUCKETS",
+    ] {
+        std::env::remove_var(key);
+    }
 }
 
 #[test]

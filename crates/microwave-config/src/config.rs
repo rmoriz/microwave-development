@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -67,6 +68,7 @@ impl Config {
                 });
             }
         }
+        self.object_store.validate()?;
         if self.search.timeout_ms == 0 {
             return Err(ConfigError::InvalidValue {
                 key: "search.timeout_ms".into(),
@@ -254,6 +256,9 @@ impl Config {
     /// - `MW_OBJECT_STORE__BACKEND`, `MW_OBJECT_STORE__BUCKET`, `MW_OBJECT_STORE__ENDPOINT`
     /// - `MW_OBJECT_STORE__REGION`, `MW_OBJECT_STORE__ACCESS_KEY`,
     ///   `MW_OBJECT_STORE__SECRET_KEY`, `MW_OBJECT_STORE__PATH_STYLE`
+    /// - `MW_OBJECT_STORE__ORGANIZATIONS` (whole map as one JSON object),
+    ///   `MW_OBJECT_STORE__REQUIRE_ORG_BUCKET`, `MW_OBJECT_STORE__HEALTH_BUCKET`,
+    ///   `MW_OBJECT_STORE__RELOAD_INTERVAL_SECONDS`, `MW_OBJECT_STORE__VERIFY_BUCKETS`
     /// - `MW_OBJECT_STORE__SECRET` (local bookshelf token secret)
     /// - `MW_AUTH__SKEW_SECONDS`, `MW_AUTH__SUPERUSER_NAME`,
     ///   `MW_AUTH__PASSWORD_RESET_TOKEN_IN_RESPONSE`,
@@ -411,6 +416,28 @@ impl Config {
         }
         if let Ok(value) = std::env::var("MW_OBJECT_STORE__PATH_STYLE") {
             self.object_store.path_style = parse_bool("MW_OBJECT_STORE__PATH_STYLE", &value)?;
+        }
+        if let Ok(value) = std::env::var("MW_OBJECT_STORE__ORGANIZATIONS") {
+            self.object_store.organizations =
+                serde_json::from_str(&value).map_err(|error| ConfigError::InvalidValue {
+                    key: "MW_OBJECT_STORE__ORGANIZATIONS".into(),
+                    value: error.to_string(),
+                })?;
+        }
+        if let Ok(value) = std::env::var("MW_OBJECT_STORE__REQUIRE_ORG_BUCKET") {
+            self.object_store.require_org_bucket =
+                parse_bool("MW_OBJECT_STORE__REQUIRE_ORG_BUCKET", &value)?;
+        }
+        if let Ok(value) = std::env::var("MW_OBJECT_STORE__HEALTH_BUCKET") {
+            self.object_store.health_bucket = non_empty(value);
+        }
+        if let Ok(value) = std::env::var("MW_OBJECT_STORE__RELOAD_INTERVAL_SECONDS") {
+            self.object_store.reload_interval_seconds =
+                parse_value("MW_OBJECT_STORE__RELOAD_INTERVAL_SECONDS", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_OBJECT_STORE__VERIFY_BUCKETS") {
+            self.object_store.verify_buckets =
+                parse_bool("MW_OBJECT_STORE__VERIFY_BUCKETS", &value)?;
         }
         if let Ok(value) = std::env::var("MW_OBJECT_STORE__SECRET") {
             self.object_store.secret = Some(value);
@@ -747,6 +774,22 @@ pub fn valid_org_name(name: &str) -> bool {
         })
 }
 
+/// S3 bucket names: 3 to 63 lowercase ASCII letters, digits, `-` or `.`, with
+/// neither `-` nor `.` at the start or the end.
+pub fn valid_bucket_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    (3..=63).contains(&bytes.len())
+        && bytes.iter().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-' || *byte == b'.'
+        })
+        && bytes
+            .first()
+            .is_some_and(|byte| *byte != b'-' && *byte != b'.')
+        && bytes
+            .last()
+            .is_some_and(|byte| *byte != b'-' && *byte != b'.')
+}
+
 fn parse_bool(key: &str, value: &str) -> Result<bool, ConfigError> {
     match value.to_ascii_lowercase().as_str() {
         "true" | "1" | "yes" => Ok(true),
@@ -1006,6 +1049,8 @@ pub enum SearchBackend {
 #[serde(default)]
 pub struct ObjectStoreConfig {
     pub backend: ObjectStoreBackend,
+    /// Shared bucket. It is also the fallback for organizations without an
+    /// entry; strict mode (`require_org_bucket`) forbids it.
     pub bucket: Option<String>,
     pub endpoint: Option<String>,
     /// Shared secret for local `/bookshelf` HMAC tokens.
@@ -1014,6 +1059,20 @@ pub struct ObjectStoreConfig {
     pub access_key: Option<String>,
     pub secret_key: Option<String>,
     pub path_style: bool,
+    /// Per-organization target buckets, keyed by organization name. Optional
+    /// fields fall back to the global value field by field.
+    pub organizations: BTreeMap<String, ObjectStoreOrgConfig>,
+    /// Tenant mode: unmapped organizations no longer fall back to the shared
+    /// bucket, `health_bucket` is the only probe target, and the shared
+    /// `bucket` must be absent.
+    pub require_org_bucket: bool,
+    /// Bucket the status probe (`HEAD <bucket>`) uses. Required in strict mode.
+    pub health_bucket: Option<String>,
+    /// Interval between automatic reload checks in seconds. `0` disables the
+    /// timer; SIGHUP and `microwave-ctl reload` still reload.
+    pub reload_interval_seconds: u64,
+    /// Probe every configured bucket before a snapshot goes live.
+    pub verify_buckets: bool,
 }
 
 impl Default for ObjectStoreConfig {
@@ -1027,8 +1086,126 @@ impl Default for ObjectStoreConfig {
             access_key: None,
             secret_key: None,
             path_style: true,
+            organizations: BTreeMap::new(),
+            require_org_bucket: false,
+            health_bucket: None,
+            reload_interval_seconds: 0,
+            verify_buckets: true,
         }
     }
+}
+
+impl ObjectStoreConfig {
+    /// Structural validation only: no store access and no organization table.
+    /// The table-dependent checks live in `tenant_map`.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.backend == ObjectStoreBackend::Local {
+            if !self.organizations.is_empty() {
+                return Err(ConfigError::InvalidValue {
+                    key: "object_store.organizations".into(),
+                    value: "requires the s3 or garage backend".into(),
+                });
+            }
+            if self.require_org_bucket {
+                return Err(ConfigError::InvalidValue {
+                    key: "object_store.require_org_bucket".into(),
+                    value: "requires the s3 or garage backend".into(),
+                });
+            }
+        }
+        if self.require_org_bucket {
+            if self.bucket.is_some() {
+                return Err(ConfigError::InvalidValue {
+                    key: "object_store.bucket".into(),
+                    value: "must be absent while object_store.require_org_bucket is true".into(),
+                });
+            }
+            if !has_non_empty(self.health_bucket.as_deref()) {
+                return Err(ConfigError::InvalidValue {
+                    key: "object_store.health_bucket".into(),
+                    value: "required while object_store.require_org_bucket is true".into(),
+                });
+            }
+        }
+        if let Some(health_bucket) = &self.health_bucket {
+            if !valid_bucket_name(health_bucket) {
+                return Err(ConfigError::InvalidValue {
+                    key: "object_store.health_bucket".into(),
+                    value: health_bucket.clone(),
+                });
+            }
+        }
+        let mut targets: BTreeMap<(Option<&str>, &str), &str> = BTreeMap::new();
+        for (organization, entry) in &self.organizations {
+            if !valid_org_name(organization) {
+                return Err(ConfigError::InvalidValue {
+                    key: format!("object_store.organizations.{organization}"),
+                    value: organization.clone(),
+                });
+            }
+            if !valid_bucket_name(&entry.bucket) {
+                return Err(ConfigError::InvalidValue {
+                    key: format!("object_store.organizations.{organization}.bucket"),
+                    value: entry.bucket.clone(),
+                });
+            }
+            if let Some(empty) = [
+                ("endpoint", entry.endpoint.as_deref()),
+                ("region", entry.region.as_deref()),
+            ]
+            .into_iter()
+            .find_map(|(field, value)| {
+                value
+                    .is_some_and(|value| value.trim().is_empty())
+                    .then_some(field)
+            }) {
+                return Err(ConfigError::InvalidValue {
+                    key: format!("object_store.organizations.{organization}.{empty}"),
+                    value: String::new(),
+                });
+            }
+            let endpoint = entry.endpoint.as_deref().or(self.endpoint.as_deref());
+            if let Some(other) = targets.insert((endpoint, entry.bucket.as_str()), organization) {
+                return Err(ConfigError::InvalidValue {
+                    key: format!("object_store.organizations.{organization}.bucket"),
+                    value: format!("duplicate of the target configured for {other}"),
+                });
+            }
+        }
+        for (key, value) in [
+            ("object_store.endpoint", self.endpoint.as_deref()),
+            ("object_store.access_key", self.access_key.as_deref()),
+            ("object_store.secret_key", self.secret_key.as_deref()),
+        ] {
+            if value.is_some_and(|value| value.trim().is_empty()) {
+                return Err(ConfigError::InvalidValue {
+                    key: key.into(),
+                    value: String::new(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One organization's own bucket target. Optional fields fall back to the
+/// global `object_store` value.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ObjectStoreOrgConfig {
+    pub bucket: String,
+    pub endpoint: Option<String>,
+    pub region: Option<String>,
+    pub path_style: Option<bool>,
+}
+
+/// Per-organization credentials, read out of band from the secrets table as
+/// `object_store.<org>.access_key` / `object_store.<org>.secret_key`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct OrgCredentials {
+    pub access_key: String,
+    pub secret_key: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
