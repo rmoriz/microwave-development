@@ -1640,7 +1640,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "microwave-api"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1677,7 +1677,7 @@ dependencies = [
 
 [[package]]
 name = "microwave-authz"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "microwave-store",
  "thiserror",
@@ -1686,7 +1686,7 @@ dependencies = [
 
 [[package]]
 name = "microwave-config"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1697,7 +1697,7 @@ dependencies = [
 
 [[package]]
 name = "microwave-crypto"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "base64 0.23.1",
  "bcrypt",
@@ -1713,7 +1713,7 @@ dependencies = [
 
 [[package]]
 name = "microwave-ctl"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1741,7 +1741,7 @@ dependencies = [
 
 [[package]]
 name = "microwave-ctl-bin"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "assert_cmd",
  "libc",
@@ -1761,11 +1761,11 @@ dependencies = [
 
 [[package]]
 name = "microwave-depsolver"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "microwave-load"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1787,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "microwave-load-bin"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "microwave-load",
@@ -1798,7 +1798,7 @@ dependencies = [
 
 [[package]]
 name = "microwave-mail"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1814,7 +1814,7 @@ dependencies = [
 
 [[package]]
 name = "microwave-metrics"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "http",
  "tokio",
@@ -1822,7 +1822,7 @@ dependencies = [
 
 [[package]]
 name = "microwave-migrate"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1850,7 +1850,7 @@ dependencies = [
 
 [[package]]
 name = "microwave-migrate-bin"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -1869,7 +1869,7 @@ dependencies = [
 
 [[package]]
 name = "microwave-oauth"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1887,7 +1887,7 @@ dependencies = [
 
 [[package]]
 name = "microwave-objectstore"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arc-swap",
  "axum",
@@ -1914,7 +1914,7 @@ dependencies = [
 
 [[package]]
 name = "microwave-otel"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "libc",
@@ -1934,7 +1934,7 @@ dependencies = [
 
 [[package]]
 name = "microwave-server"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arc-swap",
  "assert_cmd",
@@ -1969,7 +1969,7 @@ dependencies = [
 
 [[package]]
 name = "microwave-store"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1989,7 +1989,7 @@ dependencies = [
 
 [[package]]
 name = "microwave-store-postgres"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2003,7 +2003,7 @@ dependencies = [
 
 [[package]]
 name = "microwave-tls"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "microwave-config",
  "rcgen",

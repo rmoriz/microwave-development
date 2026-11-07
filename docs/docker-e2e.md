@@ -126,7 +126,7 @@ The default tag is `latest`, which moves with every stable release. Pin a
 version or digest when a run has to be reproducible:
 
 ```sh
-MW_IMAGE=ghcr.io/rmoriz/microwave-server:0.4.0 docker compose up -d
+MW_IMAGE=ghcr.io/rmoriz/microwave-server:0.5.0 docker compose up -d
 ```
 
 ## Building from source

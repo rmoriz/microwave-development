@@ -33,7 +33,7 @@ docker compose up -d
 This pulls the moving `latest` image. Pin a version for a reproducible run:
 
 ```sh
-MW_IMAGE=ghcr.io/rmoriz/microwave-server:0.4.0 docker compose up -d
+MW_IMAGE=ghcr.io/rmoriz/microwave-server:0.5.0 docker compose up -d
 ```
 
 To build the server from this checkout instead:
