@@ -12,12 +12,11 @@ use std::path::Path;
 use url::Url;
 
 const MAX_REQUIRED_RECIPE_BYTES: u64 = 1_048_576;
-const RELOAD_STATUS_FILE: &str = "objectstore.reload";
 
 /// Load the resolved configuration and validate the values required to serve
 /// requests. External backends are checked for the credentials they need.
 pub fn check_config(context: &Context) -> Result<(), CtlError> {
-    let (problems, checks) = collect_config(context);
+    let (problems, checks, _) = collect_config(context);
     finish(problems, checks)
 }
 
@@ -36,12 +35,20 @@ fn finish(problems: Vec<String>, checks: Vec<String>) -> Result<(), CtlError> {
     }
 }
 
-/// Collect the preflight problems and the checks that passed. Shared by
-/// `check-config` and `diagnostics`; neither touches the network.
-fn collect_config(context: &Context) -> (Vec<String>, Vec<String>) {
+/// Collect the preflight problems, the checks that passed and the tenant
+/// state (`None` for the local backend). Shared by `check-config` and
+/// `diagnostics`; neither touches the network.
+fn collect_config(
+    context: &Context,
+) -> (
+    Vec<String>,
+    Vec<String>,
+    Option<Result<TenantState, String>>,
+) {
     let config = &context.config;
     let mut problems = Vec::new();
     let mut checks = Vec::new();
+    let mut tenant = None;
 
     if config.paths.data_dir.trim().is_empty() {
         problems.push("paths.data_dir must not be empty".to_string());
@@ -195,10 +202,14 @@ fn collect_config(context: &Context) -> (Vec<String>, Vec<String>) {
                         problems.push(issue.to_string());
                     }
                 }
+                tenant = Some(Ok(state));
             }
-            Err(error) => problems.push(format!(
-                "cannot read organizations and object-store credentials: {error}"
-            )),
+            Err(error) => {
+                problems.push(format!(
+                    "cannot read organizations and object-store credentials: {error}"
+                ));
+                tenant = Some(Err(error));
+            }
         }
     }
 
@@ -293,7 +304,7 @@ fn collect_config(context: &Context) -> (Vec<String>, Vec<String>) {
         }
     }
 
-    (problems, checks)
+    (problems, checks, tenant)
 }
 
 /// The organization table and the per-organization object-store credentials.
@@ -384,41 +395,52 @@ fn tenant_state(context: &Context, config: &Config) -> Result<TenantState, Strin
 /// one signed `HEAD`.
 pub fn diagnostics(context: &Context, probe: bool) -> Result<(), CtlError> {
     let config = &context.config;
-    println!(
-        "strict: {}",
-        if config.object_store.require_org_bucket {
-            "enabled"
-        } else {
-            "disabled"
-        }
-    );
+    let (mut problems, checks, tenant) = collect_config(context);
 
-    let state = tenant_state(context, config).ok();
     println!(
-        "organizations: {}",
-        state.as_ref().map_or(0, |state| state.orgs.len())
+        "{}",
+        summary(config.object_store.require_org_bucket, &tenant)
     );
+    println!("{}", reload_summary(&context.data_dir));
 
-    let status_path = context.data_dir.join(RELOAD_STATUS_FILE);
-    match std::fs::read_to_string(&status_path) {
+    if probe {
+        println!("probing every configured bucket");
+        let state = match &tenant {
+            Some(Ok(state)) => Some(state),
+            _ => None,
+        };
+        probe_buckets(context, state, &mut problems)?;
+    }
+    finish(problems, checks)
+}
+
+/// The strict and organization summary lines. `None` is the local backend,
+/// `Some(Err(..))` an unreadable store.
+fn summary(strict: bool, tenant: &Option<Result<TenantState, String>>) -> String {
+    let organizations = match tenant {
+        None => "0".to_string(),
+        Some(Ok(state)) => state.orgs.len().to_string(),
+        Some(Err(_)) => "?".to_string(),
+    };
+    format!(
+        "strict: {}\norganizations: {organizations}",
+        if strict { "enabled" } else { "disabled" }
+    )
+}
+
+fn reload_summary(data_dir: &Path) -> String {
+    match std::fs::read_to_string(data_dir.join(crate::reload::STATUS_FILE)) {
         Ok(contents) => match serde_json::from_str::<serde_json::Value>(&contents) {
-            Ok(status) => println!(
-                "reload: outcome={} trigger={} boot={}",
+            Ok(status) => format!(
+                "reload: outcome={} trigger={} boot id={}",
                 status_field(&status, "outcome"),
                 status_field(&status, "trigger"),
                 status_field(&status, "boot_id")
             ),
-            Err(_) => println!("reload: unreadable"),
+            Err(_) => "reload: unreadable".to_string(),
         },
-        Err(_) => println!("reload: never"),
+        Err(_) => "reload: never".to_string(),
     }
-
-    let (mut problems, checks) = collect_config(context);
-    if probe {
-        println!("probing every configured bucket");
-        probe_buckets(context, state.as_ref(), &mut problems)?;
-    }
-    finish(problems, checks)
 }
 
 fn status_field<'a>(status: &'a serde_json::Value, field: &str) -> &'a str {
@@ -441,6 +463,17 @@ fn probe_buckets(
         .build()
         .map_err(|error| CtlError::message(format!("cannot start the probe runtime: {error}")))?;
 
+    // Same fallback `check_config` accepts: a deployment may keep the shared
+    // keys in the secrets table instead of the config file.
+    let shared_access_key = non_empty(shared.access_key.as_deref())
+        .map(str::to_string)
+        .or_else(|| stored_secret(context, "bookshelf", "access_key_id"))
+        .unwrap_or_default();
+    let shared_secret_key = non_empty(shared.secret_key.as_deref())
+        .map(str::to_string)
+        .or_else(|| stored_secret(context, "bookshelf", "secret_access_key"))
+        .unwrap_or_default();
+
     let mut targets: Vec<(String, String, S3Config)> = Vec::new();
     if !shared.require_org_bucket {
         if let Some(bucket) = non_empty(shared.bucket.as_deref()) {
@@ -452,7 +485,14 @@ fn probe_buckets(
                     .trim()
                     .to_string(),
                 bucket.to_string(),
-                probe_config(shared, None, None),
+                probe_config(
+                    shared,
+                    None,
+                    None,
+                    &shared_access_key,
+                    &shared_secret_key,
+                    bucket,
+                ),
             ));
         }
     }
@@ -465,7 +505,14 @@ fn probe_buckets(
                 .trim()
                 .to_string(),
             bucket.to_string(),
-            probe_config(shared, None, None),
+            probe_config(
+                shared,
+                None,
+                None,
+                &shared_access_key,
+                &shared_secret_key,
+                bucket,
+            ),
         ));
     }
     for (organization, entry) in &shared.organizations {
@@ -482,7 +529,14 @@ fn probe_buckets(
         targets.push((
             endpoint,
             bucket.to_string(),
-            probe_config(shared, Some(entry), credentials),
+            probe_config(
+                shared,
+                Some(entry),
+                credentials,
+                &shared_access_key,
+                &shared_secret_key,
+                bucket,
+            ),
         ));
     }
 
@@ -495,12 +549,15 @@ fn probe_buckets(
     Ok(())
 }
 
-/// Merge an entry's fields and credentials over the global settings, exactly
-/// like the server does.
+/// Merge an entry's fields and credentials over the resolved shared settings,
+/// exactly like the server does.
 fn probe_config(
     shared: &ObjectStoreConfig,
     entry: Option<&ObjectStoreOrgConfig>,
     credentials: Option<&OrgCredentials>,
+    shared_access_key: &str,
+    shared_secret_key: &str,
+    bucket: &str,
 ) -> S3Config {
     let field = |value: Option<&String>| {
         value
@@ -519,15 +576,12 @@ fn probe_config(
         .map(|credentials| credentials.access_key.trim())
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .or_else(|| field(shared.access_key.as_ref()))
-        .unwrap_or_default();
+        .unwrap_or_else(|| shared_access_key.to_string());
     let secret_key = credentials
         .map(|credentials| credentials.secret_key.trim())
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .or_else(|| field(shared.secret_key.as_ref()))
-        .unwrap_or_default();
-    let bucket = entry.map(|entry| entry.bucket.trim()).unwrap_or_default();
+        .unwrap_or_else(|| shared_secret_key.to_string());
     let mut config = S3Config::new(endpoint, bucket, region, access_key, secret_key);
     config.path_style = entry
         .and_then(|entry| entry.path_style)
@@ -909,10 +963,12 @@ pub(crate) fn object_store_backend_name(backend: ObjectStoreBackend) -> &'static
 #[cfg(test)]
 mod tests {
     use super::{
-        check_config, diagnostics, parse_psql_args, resolve_bind, Context, PsqlInvocation,
+        check_config, diagnostics, parse_psql_args, reload_summary, resolve_bind, summary, Context,
+        PsqlInvocation, TenantState,
     };
     use microwave_config::{ObjectStoreBackend, ObjectStoreOrgConfig};
     use microwave_store::{SqliteStore, OBJECT_STORE_SECRET_GROUP};
+    use std::collections::{BTreeMap, BTreeSet};
     use std::io::{BufRead, BufReader, Write};
     use std::net::{TcpListener, ToSocketAddrs};
     use std::path::{Path, PathBuf};
@@ -1237,5 +1293,74 @@ mod tests {
 
         diagnostics(&context, true).unwrap();
         server.join().unwrap();
+    }
+
+    #[test]
+    fn probe_falls_back_to_stored_shared_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut context = tenant_context(dir.path());
+        map_acme(&mut context);
+        context.config.object_store.require_org_bucket = false;
+        context.config.object_store.bucket = Some("mw-global".into());
+        context.config.object_store.access_key = None;
+        context.config.object_store.secret_key = None;
+        let store = SqliteStore::open(context.database_path.as_deref().unwrap()).unwrap();
+        store
+            .set_secret("bookshelf", "access_key_id", "shared-access")
+            .unwrap();
+        store
+            .set_secret("bookshelf", "secret_access_key", "shared-secret")
+            .unwrap();
+        drop(store);
+
+        // Global bucket, health bucket, and the org bucket.
+        let (endpoint, server) = mock_bucket_server(&[200, 200, 200]);
+        context.config.object_store.endpoint = Some(endpoint);
+
+        diagnostics(&context, true).unwrap();
+        server.join().unwrap();
+    }
+
+    fn state_with(organizations: usize) -> TenantState {
+        TenantState {
+            orgs: (0..organizations)
+                .map(|index| format!("org{index}"))
+                .collect::<BTreeSet<_>>(),
+            credentials: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn summary_reports_the_strict_and_organization_state() {
+        assert_eq!(summary(false, &None), "strict: disabled\norganizations: 0");
+        assert_eq!(
+            summary(true, &Some(Ok(state_with(2)))),
+            "strict: enabled\norganizations: 2"
+        );
+        assert_eq!(
+            summary(true, &Some(Err("boom".to_string()))),
+            "strict: enabled\norganizations: ?"
+        );
+    }
+
+    #[test]
+    fn reload_summary_reports_never_unreadable_and_the_last_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(reload_summary(dir.path()), "reload: never");
+
+        let status = dir.path().join(crate::reload::STATUS_FILE);
+        std::fs::write(&status, "not json").unwrap();
+        assert_eq!(reload_summary(dir.path()), "reload: unreadable");
+
+        std::fs::write(
+            &status,
+            "{\"boot_id\":\"b1\",\"token\":\"secret-token\",\"trigger\":\"sighup\",\"outcome\":\"ok\"}",
+        )
+        .unwrap();
+        let line = reload_summary(dir.path());
+        assert!(line.contains("outcome=ok"), "line: {line}");
+        assert!(line.contains("trigger=sighup"), "line: {line}");
+        assert!(line.contains("boot id=b1"), "line: {line}");
+        assert!(!line.contains("secret-token"), "line: {line}");
     }
 }

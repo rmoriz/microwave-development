@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const STATUS_FILE: &str = "objectstore.reload";
+pub(crate) const STATUS_FILE: &str = "objectstore.reload";
 const REQUEST_FILE: &str = "objectstore.reload.request";
 const TIMEOUT_ENV: &str = "MW_RELOAD_TIMEOUT_MS";
 const POLL_ENV: &str = "MW_RELOAD_POLL_MS";
