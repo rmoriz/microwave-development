@@ -81,14 +81,14 @@ pub(crate) fn run(unit: Option<&str>, config: Option<&Path>) -> Result<(), CtlEr
     // status the service never started (or does not run this reload support).
     let status_path = context.data_dir.join(STATUS_FILE);
     let Some(starting) = read_json(&status_path) else {
-        return Err(not_running());
+        return Err(service::not_running());
     };
     let Some(boot_id) = starting
         .get("boot_id")
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
     else {
-        return Err(not_running());
+        return Err(service::not_running());
     };
 
     let token = uuid::Uuid::new_v4().simple().to_string();
@@ -210,13 +210,6 @@ fn duration_from_env(name: &str, default_ms: u64) -> Duration {
         .and_then(|value| value.trim().parse().ok())
         .unwrap_or(default_ms);
     Duration::from_millis(millis)
-}
-
-fn not_running() -> CtlError {
-    CtlError::coded(
-        4,
-        "the microwave-server service is not running; start it before reloading",
-    )
 }
 
 #[cfg(test)]

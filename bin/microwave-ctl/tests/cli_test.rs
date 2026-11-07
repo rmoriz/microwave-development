@@ -846,7 +846,9 @@ mod operational_process_tests {
                is-active) exit \"${MW_TEST_ACTIVE_EXIT:-0}\";;\n\
                reload)\n\
                  token=$(cat \"$MW_PATHS__DATA_DIR/objectstore.reload.request\")\n\
+                 if [ -n \"$MW_TEST_TOKEN_FILE\" ]; then printf '%s' \"$token\" > \"$MW_TEST_TOKEN_FILE\"; fi\n\
                  sed -e \"s/@TOKEN@/$token/g\" -e \"s/@BOOT@/$MW_TEST_BOOT/g\" \"$MW_TEST_TEMPLATE\" > \"$MW_PATHS__DATA_DIR/objectstore.reload\"\n\
+                 exit \"${MW_TEST_RELOAD_EXIT:-0}\"\n\
                  ;;\n\
              esac\n\
              exit 0\n",
@@ -1336,7 +1338,28 @@ mod operational_process_tests {
     }
 
     #[test]
-    fn reload_reports_a_successful_outcome() {
+    fn reload_exits_four_when_systemctl_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = write_strict_config(dir.path());
+        create_mapped_org(dir.path());
+        write_status(dir.path(), "boot-1", None, "2026-11-07T00:00:00Z", "ok");
+
+        let output = ctl(dir.path())
+            .env("MW_SYSTEMCTL", "/definitely/not/here/systemctl")
+            .env("MW_RELOAD_TIMEOUT_MS", "200")
+            .args(["--config", config.to_str().unwrap(), "reload"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(4));
+        assert!(stderr(&output).contains("no systemd service manager"));
+        assert!(
+            !dir.path().join("objectstore.reload.request").exists(),
+            "our request file must be cleaned up"
+        );
+    }
+
+    #[test]
+    fn reload_exits_four_when_systemctl_refuses_the_signal() {
         let dir = tempfile::tempdir().unwrap();
         let config = write_strict_config(dir.path());
         create_mapped_org(dir.path());
@@ -1350,18 +1373,114 @@ mod operational_process_tests {
             .env("MW_TEST_LOG", &log)
             .env("MW_TEST_BOOT", "boot-1")
             .env("MW_TEST_TEMPLATE", &template)
+            .env("MW_TEST_RELOAD_EXIT", "6")
+            .env("MW_RELOAD_TIMEOUT_MS", "200")
+            .args(["--config", config.to_str().unwrap(), "reload"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(4));
+        assert!(stderr(&output).contains("refused the signal"));
+        assert!(
+            !dir.path().join("objectstore.reload.request").exists(),
+            "our request file must be cleaned up"
+        );
+    }
+
+    #[test]
+    fn reload_reports_a_successful_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = write_strict_config(dir.path());
+        create_mapped_org(dir.path());
+        write_status(dir.path(), "boot-1", None, "2026-11-07T00:00:00Z", "ok");
+        let template = status_template(dir.path(), "ok", None);
+        let systemctl = fake_reload_systemctl(dir.path());
+        let log = dir.path().join("systemctl.log");
+        let token_file = dir.path().join("token");
+
+        let output = ctl(dir.path())
+            .env("MW_SYSTEMCTL", &systemctl)
+            .env("MW_TEST_LOG", &log)
+            .env("MW_TEST_BOOT", "boot-1")
+            .env("MW_TEST_TEMPLATE", &template)
+            .env("MW_TEST_TOKEN_FILE", &token_file)
             .env("MW_RELOAD_TIMEOUT_MS", "200")
             .args(["--config", config.to_str().unwrap(), "reload"])
             .output()
             .unwrap();
         assert_success(&output);
         assert!(stdout(&output).contains("reloaded the object store tenant map"));
+        assert!(!stdout(&output).contains("acme-secret"));
+        assert!(!stderr(&output).contains("acme-secret"));
 
+        let token = std::fs::read_to_string(&token_file).unwrap();
         let status = std::fs::read_to_string(dir.path().join("objectstore.reload")).unwrap();
-        assert!(!status.contains("\"token\":null"), "status: {status}");
+        assert!(
+            status.contains(&format!("\"token\":\"{token}\"")),
+            "status must echo our token: {status}"
+        );
         assert!(
             !dir.path().join("objectstore.reload.request").exists(),
             "our request file must be cleaned up"
+        );
+    }
+
+    #[test]
+    fn reload_times_out_when_the_server_never_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = write_strict_config(dir.path());
+        create_mapped_org(dir.path());
+        write_status(dir.path(), "boot-1", None, "2026-11-07T00:00:00Z", "ok");
+        // This systemctl succeeds everywhere but its `reload` writes no status.
+        let systemctl = fake_tool(dir.path(), "systemctl");
+        let log = dir.path().join("systemctl.log");
+
+        let output = ctl(dir.path())
+            .env("MW_SYSTEMCTL", &systemctl)
+            .env("MW_TEST_LOG", &log)
+            .env("MW_RELOAD_TIMEOUT_MS", "50")
+            .args(["--config", config.to_str().unwrap(), "reload"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(stderr(&output).contains("timed out after 50 ms"));
+        assert!(
+            !dir.path().join("objectstore.reload.request").exists(),
+            "our request file must be cleaned up"
+        );
+    }
+
+    #[test]
+    fn reload_is_superseded_by_another_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = write_strict_config(dir.path());
+        create_mapped_org(dir.path());
+        write_status(dir.path(), "boot-1", None, "2026-11-07T00:00:00Z", "ok");
+        let template = dir.path().join("status.json");
+        std::fs::write(
+            &template,
+            "{\"boot_id\":\"@BOOT@\",\"token\":\"someone-else\",\"trigger\":\"sighup\",\
+             \"at\":\"2026-11-07T00:00:05Z\",\"outcome\":\"ok\",\"message\":null}",
+        )
+        .unwrap();
+        let systemctl = fake_reload_systemctl(dir.path());
+        let log = dir.path().join("systemctl.log");
+
+        let output = ctl(dir.path())
+            .env("MW_SYSTEMCTL", &systemctl)
+            .env("MW_TEST_LOG", &log)
+            .env("MW_TEST_BOOT", "boot-1")
+            .env("MW_TEST_TEMPLATE", &template)
+            .env("MW_RELOAD_TIMEOUT_MS", "200")
+            .args(["--config", config.to_str().unwrap(), "reload"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(3));
+        assert!(stderr(&output).contains("another reload answered first"));
+
+        let status = std::fs::read_to_string(dir.path().join("objectstore.reload")).unwrap();
+        assert!(
+            status.contains("\"token\":\"someone-else\""),
+            "status: {status}"
         );
     }
 
@@ -1390,6 +1509,8 @@ mod operational_process_tests {
             .unwrap();
         assert_eq!(output.status.code(), Some(1));
         assert!(stderr(&output).contains("bucket mw-acme is unreachable"));
+        assert!(!stdout(&output).contains("acme-secret"));
+        assert!(!stderr(&output).contains("acme-secret"));
     }
 
     #[test]

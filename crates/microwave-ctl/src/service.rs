@@ -73,25 +73,38 @@ pub fn run(
     }
 }
 
+/// The exit-4 message shared by every "nothing was signalled" path.
+pub(crate) fn not_running() -> CtlError {
+    CtlError::coded(
+        4,
+        "the microwave-server service is not running; start it before reloading",
+    )
+}
+
 /// Trigger a `systemctl reload` on a running unit.
 ///
 /// `systemctl reload` reports success even for a unit that is not running, so
 /// the unit is probed with `is-active --quiet` first and a stopped unit yields
-/// exit code 4. The server itself validates the reload.
+/// exit code 4. A missing systemctl, a failed probe and a refused signal all
+/// use code 4 as well, so scripts can tell "nothing was signalled" from a
+/// rejected snapshot. The server itself validates the reload.
 pub(crate) fn reload(unit: Option<&str>) -> Result<(), CtlError> {
     let unit = resolve_unit(unit)?;
     let systemctl = std::env::var(SYSTEMCTL_ENV).unwrap_or_else(|_| "systemctl".into());
     if !program_available(&systemctl) {
-        return Err(unavailable(&systemctl));
+        return Err(CtlError::coded(4, unavailable(&systemctl).to_string()));
     }
 
     let status = Command::new(&systemctl)
         .args(["is-active", "--quiet", &unit])
         .status()
         .map_err(|error| {
-            CtlError::message(format!(
-                "failed to run {systemctl} for unit {unit}: {error}; manage the service with your init system or set {SYSTEMCTL_ENV} to an explicit systemctl path"
-            ))
+            CtlError::coded(
+                4,
+                format!(
+                    "failed to run {systemctl} for unit {unit}: {error}; manage the service with your init system or set {SYSTEMCTL_ENV} to an explicit systemctl path"
+                ),
+            )
         })?;
     if !status.success() {
         return Err(CtlError::coded(
@@ -102,7 +115,14 @@ pub(crate) fn reload(unit: Option<&str>) -> Result<(), CtlError> {
         ));
     }
 
-    systemctl_action(&systemctl, "reload", &unit)
+    systemctl_action(&systemctl, "reload", &unit).map_err(|error| {
+        CtlError::coded(
+            4,
+            format!(
+                "`{systemctl} reload {unit}` failed; the service is not running or refused the signal: {error}"
+            ),
+        )
+    })
 }
 
 /// Run `microwave-server serve` in this process.
