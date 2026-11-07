@@ -112,6 +112,27 @@ backend = "local"
 # access_key = "GK..."
 # secret_key = "..."
 #
+# Tenant mode: every organization must name its own bucket. The shared `bucket`
+# is then forbidden and a dedicated health bucket carries the status probe.
+# require_org_bucket = false
+# health_bucket = "chef-health"
+# Send one HEAD per configured bucket on startup and reload (needs HeadBucket
+# rights); false skips the probes.
+# verify_buckets = true
+# Seconds between automatic config/secret/org checks; 0 disables the timer.
+# SIGHUP and `microwave-ctl reload` still reload.
+# reload_interval_seconds = 0
+#
+# One entry per organization. `bucket` is required; endpoint, region and
+# path_style fall back to the global values. Per-org credentials never go into
+# this file — store them in the secret store:
+#   microwave-ctl set-secret object_store acme.access_key GK...
+#   microwave-ctl set-secret object_store acme.secret_key ...
+# Outside strict mode an entry without its own keys inherits the global keys.
+# [object_store.organizations."acme"]
+# bucket = "chef-cookbooks-acme"
+# endpoint = "http://host.docker.internal:3900"
+#
 # The endpoint is used for two different purposes: server-side PUT/HEAD/GET/
 # DELETE calls *and* for the presigned URLs handed to chef-client. It must
 # therefore resolve and be reachable from both the server and the clients. For

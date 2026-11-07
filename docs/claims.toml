@@ -1400,6 +1400,17 @@ surfaces = [ { path = "docs/deployment.md", needle = "`local`, `s3`, `garage`" }
 verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "enum ObjectStoreBackend" }
 
 [[claim]]
+id = "readme-org-object-store-buckets"
+summary = "Deployment: per-organization object-store buckets and strict tenant mode."
+area = "deployment"
+status = "verified"
+surfaces = [
+  { path = "docs/deployment.md", needle = "[object_store.organizations.\"acme\"]" },
+  { path = "packaging/microwave.toml.example", needle = "[object_store.organizations.\"acme\"]" },
+]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "require_org_bucket" }
+
+[[claim]]
 id = "deploy-auth-skew-default"
 summary = "The default X-Ops-Timestamp tolerance is 900 seconds."
 area = "deployment"
