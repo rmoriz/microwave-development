@@ -199,8 +199,8 @@ Backends, credentials, and the reachability caveat are in
 | `object_store.access_key`<br/>`MW_OBJECT_STORE__ACCESS_KEY` | Unset by default. Falls back to the `bookshelf.access_key_id` secret. |
 | `object_store.secret_key`<br/>`MW_OBJECT_STORE__SECRET_KEY` | Unset by default. Falls back to the `bookshelf.secret_access_key` secret. |
 | `object_store.path_style`<br/>`MW_OBJECT_STORE__PATH_STYLE` | Default `true`. Keep `true` for Garage/MinIO. |
-| `object_store.organizations."<org>".bucket`<br/>`object_store.organizations."<org>".endpoint`<br/>`object_store.organizations."<org>".region`<br/>`object_store.organizations."<org>".path_style` | No entry by default. Per-organization override; `bucket` is required per entry, the other fields fall back to the global value. Set the whole map in a container with `MW_OBJECT_STORE__ORGANIZATIONS` as one JSON object. See [Per-organization buckets](#per-organization-buckets). |
-| `object_store.require_org_bucket`<br/>`MW_OBJECT_STORE__REQUIRE_ORG_BUCKET` | Default `false`. Every organization must have its own bucket: the shared `bucket` must be absent and `health_bucket` is required. See [Strict tenant mode](#strict-tenant-mode). |
+| `object_store.organizations."<org>".bucket`<br/>`object_store.organizations."<org>".endpoint`<br/>`object_store.organizations."<org>".region`<br/>`object_store.organizations."<org>".path_style` | No entry by default. Per-organization override; `bucket` is required per entry, the other fields fall back to the global value. Set the whole map in a container with `MW_OBJECT_STORE__ORGANIZATIONS` as one JSON object. See [Per-organization buckets](tenant-buckets.md#giving-a-single-organization-its-own-bucket). |
+| `object_store.require_org_bucket`<br/>`MW_OBJECT_STORE__REQUIRE_ORG_BUCKET` | Default `false`. Every organization must have its own bucket: the shared `bucket` must be absent and `health_bucket` is required. See [Strict tenant mode](tenant-buckets.md#turning-strict-mode-on). |
 | `object_store.health_bucket`<br/>`MW_OBJECT_STORE__HEALTH_BUCKET` | No bucket by default. Bucket the `/_status` probe uses. Required in strict mode, where it is the only probe target. |
 | `object_store.verify_buckets`<br/>`MW_OBJECT_STORE__VERIFY_BUCKETS` | Default `true`. Send one `HEAD` per configured bucket on startup and on reload; needs `HeadBucket` rights. `false` disables the probes. |
 | `object_store.reload_interval_seconds`<br/>`MW_OBJECT_STORE__RELOAD_INTERVAL_SECONDS` | Default `0`. Periodic check of the config file, the secret store and the organization table. `0` disables the timer; it is separate from the TLS timer. |
@@ -1316,9 +1316,9 @@ indefinitely.
 
 ### Object store
 
-Every organization can also target its own bucket; see
-[Per-organization buckets](#per-organization-buckets) and
-[Strict tenant mode](#strict-tenant-mode).
+Every organization can also target its own bucket, up to strict tenant mode
+where a shared bucket is no longer allowed. The workflow is in
+[Running tenants on their own buckets](tenant-buckets.md).
 
 ```toml
 [object_store]
@@ -1346,101 +1346,6 @@ secret_key = "..."
   backend signs `/bookshelf` URLs with the per-server HMAC secret instead.
 - Deleting a cookbook garbage-collects unreferenced checksums; with a shared
   bucket, ensure no other writer is using the same prefix.
-
-#### Per-organization buckets
-
-An organization can name its own target bucket. Per-organization buckets need
-the `s3` or `garage` backend; the map and strict mode are rejected with
-`local`. One entry per organization:
-
-```toml
-[object_store.organizations."acme"]
-bucket = "mw-acme"
-# endpoint, region and path_style are optional per entry
-```
-
-`bucket` is required for every entry. `endpoint`, `region` and `path_style`
-fall back to the global value field by field. The map is written with
-organization names; the store still receives only the organization id.
-
-Per-organization credentials come from the secret store, never from the config:
-
-```sh
-microwave-ctl set-secret object_store acme.access_key GK-acme
-microwave-ctl set-secret object_store acme.secret_key ...
-```
-
-Outside strict mode an entry without its own credentials inherits the global
-keys. Inside [strict tenant mode](#strict-tenant-mode) both are required.
-
-Bucket names allow lowercase letters, digits, `-` and `.` only, 3–63
-characters, with no leading or trailing `-` or `.`. Uniqueness is on
-`(endpoint, bucket)`, not on the bucket name alone: two providers may both have
-an `mw-acme`, but two organizations must not share one target. The server
-performs no bucket provisioning, quota or lifecycle work — that is an external
-tool's job.
-
-With `verify_buckets` on (the default) the server sends one `HEAD` per bucket
-before it binds, and the reloader again on every reload; that needs
-`HeadBucket` rights. The key
-layout stays `organization-<org_id>/checksum-<md5>` inside every bucket. Keys
-and checksums are never logged.
-
-An entry that names a deleted organization is logged as a warning by the
-server and stays inactive, so a running server keeps serving.
-`microwave-ctl check-config` and `microwave-ctl diagnostics` report it, and
-`microwave-ctl reload` refuses to signal until it is removed. Both commands
-skip the organization cross-check while the organization table does not exist
-yet, so a fresh install passes its first `ExecStartPre`.
-
-#### Strict tenant mode
-
-`object_store.require_org_bucket = true` makes every organization use its own
-bucket:
-
-- the shared `bucket` must be absent — it is no longer a fallback,
-- `health_bucket` is required and is the only `/_status` probe target,
-- every organization needs an entry and both credentials, or startup fails and
-  every reload is rejected.
-
-An unmapped organization fails loudly instead of writing into the wrong
-bucket: `put`, `get`, `delete` and `metadata` return `500` `NoOrgBucket`,
-`exists` returns `false`, and `presigned_url` errors instead of handing out a
-URL into nowhere. A broken per-organization bucket therefore shows up as a
-failed upload for that organization, not in `/_status`.
-
-An empty organization table is valid, so a fresh strict install starts. The
-first `org-create` then needs its mapping and credentials immediately; the
-command prints both the organization id and the missing steps.
-
-The server key still reaches every bucket where no per-organization key exists.
-Give a tenant its own key where that matters: presigned URLs are signed with
-it, so a leaked URL stays inside one bucket.
-
-Turning strict mode on or off and every map or secret change apply without a
-restart through `microwave-ctl reload` or `SIGHUP`. A rejected snapshot keeps
-the previous one and is reported.
-
-#### Moving an organization to its own bucket
-
-1. create the bucket and the credentials, and `set-secret` them,
-2. `rclone copy` `organization-<org>/` from the shared bucket to the new one,
-3. add the entry and reload — it routes as soon as the snapshot is active, even
-   with strict mode still off,
-4. drain or repeat step 2, because a copy is not quiesced and late writes still
-   land in the shared bucket,
-5. only then flip `require_org_bucket` and reload.
-
-A rollback needs the reverse copy; without it every existing download breaks.
-The layout is identical, so both directions are a plain copy.
-
-#### Re-created organizations
-
-Deleting an organization leaves its bucket and its objects in place. The
-organization **id** is part of the key prefix, so re-creating the same name
-yields a new id and therefore a new prefix: the old blobs stay under the old
-prefix and are unreachable by the new organization unless the external tool
-copies them. `org-create` prints the id so the tool can act on it.
 
 ### The object store caveat
 

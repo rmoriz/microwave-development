@@ -1405,7 +1405,7 @@ summary = "Deployment: per-organization object-store buckets and strict tenant m
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "docs/deployment.md", needle = "[object_store.organizations.\"acme\"]" },
+  { path = "docs/tenant-buckets.md", needle = "[object_store.organizations.\"acme\"]" },
   { path = "packaging/microwave.toml.example", needle = "[object_store.organizations.\"acme\"]" },
 ]
 verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "require_org_bucket" }
