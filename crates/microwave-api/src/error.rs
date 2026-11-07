@@ -226,14 +226,72 @@ impl From<StoreError> for ApiError {
 /// Turn an object-store failure into a logged `500`.
 ///
 /// `operation` is the machine-readable operation for the log line, `message`
-/// the human-readable action. The object key layout is derivable from the org
-/// id, so the checksum (and therefore the key) never appears here.
+/// the human-readable action. The routed store already logged the error
+/// itself, so this line adds the action once instead of repeating it. The
+/// object key layout is derivable from the org id, so the checksum (and
+/// therefore the key) never appears here.
 pub(crate) fn object_store_failure(
     org_id: &str,
     operation: &'static str,
-    error: ObjectStoreError,
+    _error: ObjectStoreError,
     message: &'static str,
 ) -> ApiError {
-    tracing::error!(%error, org_id = %org_id, operation = operation, "{message}");
+    tracing::error!(org_id = %org_id, operation = operation, "{message}");
     ApiError::internal()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::object_store_failure;
+    use microwave_objectstore::ObjectStoreError;
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+        type Writer = Capture;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            Capture(self.0.clone())
+        }
+    }
+
+    /// The routed store logs the backend error; this line only adds the
+    /// action once, so neither the message nor the error repeats.
+    #[test]
+    fn object_store_failure_logs_the_action_without_repeating_the_error() {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(Capture(buffer.clone()))
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            object_store_failure(
+                "acme",
+                "put",
+                ObjectStoreError::HttpStatus(503),
+                "blob upload failed",
+            );
+        });
+
+        let log = String::from_utf8_lossy(&buffer.lock().unwrap()).into_owned();
+        assert!(log.contains("acme"), "{log}");
+        assert!(log.contains("put"), "{log}");
+        assert_eq!(log.matches("blob upload failed").count(), 1, "{log}");
+        assert!(!log.contains("object store returned status 503"), "{log}");
+    }
 }
