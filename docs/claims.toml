@@ -1400,7 +1400,7 @@ surfaces = [ { path = "docs/deployment.md", needle = "`local`, `s3`, `garage`" }
 verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "enum ObjectStoreBackend" }
 
 [[claim]]
-id = "readme-org-object-store-buckets"
+id = "deploy-org-object-store-buckets"
 summary = "Deployment: per-organization object-store buckets and strict tenant mode."
 area = "deployment"
 status = "verified"

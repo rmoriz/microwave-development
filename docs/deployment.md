@@ -193,7 +193,7 @@ Backends, credentials, and the reachability caveat are in
 | Setting | Details |
 |---|---|
 | `object_store.backend`<br/>`MW_OBJECT_STORE__BACKEND` | Default `local`. `local`, `s3`, `garage`. |
-| `object_store.bucket`<br/>`MW_OBJECT_STORE__BUCKET` | Unset by default. Required for `s3`/`garage`; must be absent in strict tenant mode. |
+| `object_store.bucket`<br/>`MW_OBJECT_STORE__BUCKET` | Unset by default. Required for `s3`/`garage` unless strict tenant mode is on, where it must be absent. |
 | `object_store.endpoint`<br/>`MW_OBJECT_STORE__ENDPOINT` | Unset by default. Required for `s3`/`garage`. See the reachability caveat below. |
 | `object_store.region`<br/>`MW_OBJECT_STORE__REGION` | Default `us-east-1`. Must match the S3 gateway region. |
 | `object_store.access_key`<br/>`MW_OBJECT_STORE__ACCESS_KEY` | Unset by default. Falls back to the `bookshelf.access_key_id` secret. |
@@ -1380,8 +1380,8 @@ an `mw-acme`, but two organizations must not share one target. The server
 performs no bucket provisioning, quota or lifecycle work — that is an external
 tool's job.
 
-On startup and on every reload the reloader sends one `HEAD` per bucket (see
-`verify_buckets`, which needs `HeadBucket`). The key layout stays
+With `verify_buckets` on (the default) the reloader sends one `HEAD` per
+bucket on startup and on every reload; that needs `HeadBucket` rights. The key layout stays
 `organization-<org_id>/checksum-<md5>` inside every bucket. Keys and checksums
 are never logged.
 
@@ -2634,7 +2634,7 @@ when the schema already exists and the superuser query succeeds; an empty or
 unreachable database reports `false` without failing the command.
 `diagnostics` reports the strict state, the organization count, unmapped
 organizations, organizations without credentials and the last reload outcome
-without network access; `--probe` additionally sends one `HEAD` per configured
+without object-store network access; `--probe` additionally sends one `HEAD` per configured
 bucket and needs `HeadBucket`. `reconfigure`
 validates and migrates the backend, then reports the resolved backends without
 restarting a server. `ha-status` always reports a single standalone node.
