@@ -535,32 +535,23 @@ fn config_report(context: &Context) -> String {
         ))
     )
     .unwrap();
-    writeln!(
-        out,
-        "endpoint = {}",
-        toml_string(&redacted_url(
-            config.object_store.endpoint.as_deref().unwrap_or("")
-        ))
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "bucket = {}",
-        toml_string(config.object_store.bucket.as_deref().unwrap_or(""))
-    )
-    .unwrap();
+    // Omit unset values: an empty string fails `Config::validate`, so the
+    // report would not load back unchanged.
+    if let Some(endpoint) = config.object_store.endpoint.as_deref() {
+        writeln!(out, "endpoint = {}", toml_string(&redacted_url(endpoint))).unwrap();
+    }
+    if let Some(bucket) = config.object_store.bucket.as_deref() {
+        writeln!(out, "bucket = {}", toml_string(bucket)).unwrap();
+    }
     writeln!(
         out,
         "require_org_bucket = {}",
         config.object_store.require_org_bucket
     )
     .unwrap();
-    writeln!(
-        out,
-        "health_bucket = {}",
-        toml_string(config.object_store.health_bucket.as_deref().unwrap_or(""))
-    )
-    .unwrap();
+    if let Some(health_bucket) = config.object_store.health_bucket.as_deref() {
+        writeln!(out, "health_bucket = {}", toml_string(health_bucket)).unwrap();
+    }
     writeln!(
         out,
         "verify_buckets = {}",
@@ -846,5 +837,44 @@ fn database_driver_name(driver: DatabaseDriver) -> &'static str {
     match driver {
         DatabaseDriver::Sqlite => "sqlite",
         DatabaseDriver::Postgres => "postgresql",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::config_report;
+    use crate::context::Context;
+    use microwave_config::{Config, ObjectStoreBackend, ObjectStoreOrgConfig};
+    use std::path::PathBuf;
+
+    /// In strict mode the shared bucket is unset; an empty `bucket = ""` would
+    /// fail to load back, so the key must be omitted.
+    #[test]
+    fn the_config_report_omits_unset_object_store_values() {
+        let mut config = Config::default();
+        config.object_store.backend = ObjectStoreBackend::S3;
+        config.object_store.require_org_bucket = true;
+        config.object_store.health_bucket = Some("mw-health".into());
+        config.object_store.organizations.insert(
+            "acme".to_string(),
+            ObjectStoreOrgConfig {
+                bucket: "mw-acme".into(),
+                ..Default::default()
+            },
+        );
+        let context = Context {
+            database_url: config.resolved_database_url(),
+            database_path: None,
+            data_dir: PathBuf::from("/nonexistent"),
+            config,
+        };
+
+        let report = config_report(&context);
+        assert!(!report.contains("bucket = \"\""), "{report}");
+        assert!(report.contains("health_bucket = \"mw-health\""), "{report}");
+        assert!(report.contains("bucket = \"mw-acme\""), "{report}");
+        let parsed = Config::from_toml_str(&report).unwrap();
+        assert!(parsed.object_store.require_org_bucket);
+        assert_eq!(parsed.object_store.organizations["acme"].bucket, "mw-acme");
     }
 }
