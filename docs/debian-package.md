@@ -52,7 +52,8 @@ package installs on Debian 12+ and Ubuntu 24.04+. For Ubuntu 22.04, build in a
 `.github/workflows/release.yml` runs on `vX.Y.Z` and `vX.Y.Z-<pre>`
 tag pushes only; there is no manual dispatch and no moving tag. A valid tag
 builds release binaries for linux/amd64 and linux/arm64 and attaches them,
-with checksums, to that GitHub Release, next to the tarballs. The same legs
+with checksums, to that GitHub Release as `.tar.xz` archives at the maximum
+compression preset, next to the packages. The same legs
 push the matching architecture images to `ghcr.io/rmoriz/microwave-server`
 and merge them into one manifest.
 
