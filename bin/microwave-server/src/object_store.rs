@@ -243,17 +243,74 @@ mod tests {
                 path_style: Some(false),
             },
         );
+        let endpoint = "http://127.0.0.1:3901".to_string();
+        let region = "other".to_string();
+        let credentials = credentials("acme-access", "acme-secret");
 
-        let snapshot = build_snapshot(&config, &mapped("org-acme"), &credentials("a", "s"))
-            .expect("overrides build");
+        let store = super::SharedTarget::new(&config)
+            .expect("the shared target builds")
+            .entry_store(
+                "mw-acme",
+                Some(&endpoint),
+                Some(&region),
+                Some(false),
+                credentials.get("acme"),
+            )
+            .expect("the entry builds");
 
-        assert_eq!(
-            snapshot
-                .by_org
-                .get("org-acme")
-                .and_then(|store| store.bucket()),
-            Some("mw-acme")
-        );
+        let merged = store.config();
+        assert_eq!(merged.bucket, "mw-acme");
+        assert_eq!(merged.endpoint, "http://127.0.0.1:3901");
+        assert_eq!(merged.region, "other");
+        assert!(!merged.path_style);
+        // The per-org credentials must win over the shared ones.
+        assert_eq!(merged.access_key, "acme-access");
+        assert_eq!(merged.secret_key, "acme-secret");
+    }
+
+    #[test]
+    fn blank_org_credentials_fall_back_to_the_shared_values() {
+        let config = strict_config();
+
+        for credentials in [
+            None,
+            Some(OrgCredentials {
+                access_key: String::new(),
+                secret_key: String::new(),
+            }),
+            Some(OrgCredentials {
+                access_key: "   ".into(),
+                secret_key: "   ".into(),
+            }),
+        ] {
+            let store = super::SharedTarget::new(&config)
+                .expect("the shared target builds")
+                .entry_store("mw-acme", None, None, None, credentials.as_ref())
+                .expect("the entry builds");
+
+            let merged = store.config();
+            assert_eq!(merged.access_key, "shared-access");
+            assert_eq!(merged.secret_key, "shared-secret");
+            assert_eq!(merged.endpoint, "http://127.0.0.1:3900");
+            assert_eq!(merged.region, "garage");
+            assert!(merged.path_style);
+        }
+    }
+
+    /// The shared default and the health store keep the global target and
+    /// never take the credentials of an entry.
+    #[test]
+    fn the_default_and_health_stores_use_the_global_values() {
+        let config = strict_config();
+
+        let shared = super::SharedTarget::new(&config).expect("the shared target builds");
+        let default = shared.store("shared").expect("the default store");
+        let health = shared.store("mw-health").expect("the health store");
+
+        assert_eq!(default.config().bucket, "shared");
+        assert_eq!(health.config().bucket, "mw-health");
+        assert_eq!(default.config().access_key, "shared-access");
+        assert_eq!(health.config().secret_key, "shared-secret");
     }
 
     #[test]
@@ -289,5 +346,25 @@ mod tests {
             .err()
             .expect("a shared bucket is required outside strict mode");
         assert!(error.to_string().contains("object_store.bucket"), "{error}");
+
+        let mut config = strict_config();
+        config.access_key = None;
+        let error = build_snapshot(&config, &BTreeMap::new(), &BTreeMap::new())
+            .err()
+            .expect("an access key is required for the health store");
+        assert!(
+            error.to_string().contains("object_store.access_key"),
+            "{error}"
+        );
+
+        let mut config = strict_config();
+        config.secret_key = Some("   ".into());
+        let error = build_snapshot(&config, &BTreeMap::new(), &BTreeMap::new())
+            .err()
+            .expect("a secret key is required for the health store");
+        assert!(
+            error.to_string().contains("object_store.secret_key"),
+            "{error}"
+        );
     }
 }
