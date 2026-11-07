@@ -8,7 +8,9 @@ use microwave_config::{
     Config, DatabaseDriver, ObjectStoreBackend, SearchBackend, StorageCompression,
 };
 use microwave_metrics::{DependencyState, KeygenGauges, Metrics, PoolGauges};
-use microwave_objectstore::{ObjectStore, RoutingObjectStore, TenantSnapshot, TimedObjectStore};
+use microwave_objectstore::{
+    verify_buckets, ObjectStore, RoutingObjectStore, TenantSnapshot, TimedObjectStore,
+};
 use microwave_store::{Compression, MetadataStore, SqliteStore};
 use microwave_store_postgres::PostgresStore;
 use object_store::assemble;
@@ -172,6 +174,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     config.object_store.secret.clone().unwrap_or_default()
                 }
             };
+            // Shared with the API verifier and the reloader, so a rotated
+            // local secret is honored by both sides of a reload.
+            let local_secret = Arc::new(arc_swap::ArcSwap::from_pointee(secret.clone()));
             let (object_store, router) =
                 build_timed_object_store(&config, &secret, store.as_ref(), metrics.clone()).await?;
 
@@ -200,6 +205,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
 
+            // Probe before the listener binds, with the exact stores the
+            // router will serve: a typo or a key without `HeadBucket` rights
+            // must fail startup just like it fails a reload.
+            verify_buckets(&config.object_store, &router.current()).await?;
+
             // The boot id makes the ctl drop a status left by an older
             // process. The status is published before the listener accepts,
             // so a ctl that starts right after can rely on it.
@@ -209,6 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 router,
                 PathBuf::from(&config.paths.data_dir),
                 Uuid::new_v4().to_string(),
+                local_secret.clone(),
             ));
             if let Err(error) = reloader.write_boot_status().await {
                 tracing::warn!(%error, "failed to write the object store reload status");
@@ -246,7 +257,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     AppState::with_metrics(store, Arc::new(config), object_store, metrics.clone())
                 }
             };
-            let state = match state {
+            let mut state = match state {
                 Ok(state) => state,
                 Err(error) => {
                     if let Some(otel) = otel {
@@ -257,6 +268,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return Err(error.into());
                 }
             };
+            // The constructor seeded the handle from the config; use the one
+            // the reloader updates instead.
+            state.local_bookshelf_secret = local_secret;
             let state = match webui_key {
                 Some(public_key_pem) => state.with_webui_key(public_key_pem),
                 None => state,

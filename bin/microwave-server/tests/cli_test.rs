@@ -212,6 +212,35 @@ fn serve_check_uses_bookshelf_credentials_from_the_secret_store() {
     );
 }
 
+/// A `--check` passes without a listener; the real start must probe and
+/// refuse a bucket that answers `404`.
+#[test]
+fn serve_refuses_to_start_when_a_bucket_probe_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("server.log");
+    let bind = ephemeral_addr();
+    let endpoint = mock_status_server(404);
+    let mut child = spawn_server(
+        dir.path(),
+        &bind,
+        None,
+        &log,
+        None,
+        &[
+            ("MW_OBJECT_STORE__BACKEND", "s3"),
+            ("MW_OBJECT_STORE__ENDPOINT", endpoint.as_str()),
+            ("MW_OBJECT_STORE__BUCKET", "mw-missing"),
+            ("MW_OBJECT_STORE__ACCESS_KEY", "access"),
+            ("MW_OBJECT_STORE__SECRET_KEY", "secret"),
+        ],
+    );
+
+    let status = wait_for_exit(&mut child, Duration::from_secs(30));
+    assert!(!status.success(), "the server started despite a 404 bucket");
+    let log = std::fs::read_to_string(&log).unwrap();
+    assert!(log.contains("mw-missing"), "log: {log}");
+}
+
 /// A strict install needs a `health_bucket` and fails on any existing
 /// organization that has no entry.
 #[test]
@@ -779,6 +808,33 @@ fn wait_for_plain_status(addr: &str) -> String {
         std::thread::sleep(Duration::from_millis(100));
     }
     panic!("plain HTTP listener never served /_status; last response: {last}");
+}
+
+/// A one-connection-at-a-time server answering every request with `status`.
+/// The accept loop ends with the test process, so the handle is dropped.
+fn mock_status_server(status: u16) -> String {
+    use std::io::{BufRead, BufReader, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status} Error\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+            );
+            let _ = stream.flush();
+        }
+    });
+    endpoint
 }
 
 fn spawn_server(
