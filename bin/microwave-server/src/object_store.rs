@@ -243,29 +243,35 @@ mod tests {
                 path_style: Some(false),
             },
         );
-        let endpoint = "http://127.0.0.1:3901".to_string();
-        let region = "other".to_string();
         let credentials = credentials("acme-access", "acme-secret");
 
+        let snapshot = build_snapshot(&config, &mapped("org-acme"), &credentials)
+            .expect("the overridden entry builds");
+        let store = snapshot
+            .by_org
+            .get("org-acme")
+            .expect("the configured org is routed");
+
+        assert_eq!(store.bucket(), Some("mw-acme"));
+        // The URL pins the whole call-site wiring: the entry's endpoint becomes
+        // the host, its region the credential scope, its access key the signer.
+        // Swapping the `endpoint`/`region` arguments, which are both
+        // `Option<&String>`, would dial region-as-host here.
+        let url = store
+            .presigned_url("GET", "org-acme", "0123456789abcdef0123456789abcdef")
+            .expect("the overridden entry signs");
+        assert!(url.contains("127.0.0.1:3901"), "{url}");
+        assert!(!url.contains("127.0.0.1:3900"), "{url}");
+        assert!(url.contains("other"), "{url}");
+        assert!(url.contains("acme-access"), "{url}");
+
+        // `secret_key` and `path_style` never reach a URL.
         let store = super::SharedTarget::new(&config)
             .expect("the shared target builds")
-            .entry_store(
-                "mw-acme",
-                Some(&endpoint),
-                Some(&region),
-                Some(false),
-                credentials.get("acme"),
-            )
+            .entry_store("mw-acme", None, None, Some(false), credentials.get("acme"))
             .expect("the entry builds");
-
-        let merged = store.config();
-        assert_eq!(merged.bucket, "mw-acme");
-        assert_eq!(merged.endpoint, "http://127.0.0.1:3901");
-        assert_eq!(merged.region, "other");
-        assert!(!merged.path_style);
-        // The per-org credentials must win over the shared ones.
-        assert_eq!(merged.access_key, "acme-access");
-        assert_eq!(merged.secret_key, "acme-secret");
+        assert_eq!(store.config().secret_key, "acme-secret");
+        assert!(!store.config().path_style);
     }
 
     #[test]
@@ -309,6 +315,10 @@ mod tests {
 
         assert_eq!(default.config().bucket, "shared");
         assert_eq!(health.config().bucket, "mw-health");
+        assert_eq!(default.config().endpoint, "http://127.0.0.1:3900");
+        assert_eq!(health.config().endpoint, "http://127.0.0.1:3900");
+        assert_eq!(default.config().region, "garage");
+        assert_eq!(health.config().region, "garage");
         assert_eq!(default.config().access_key, "shared-access");
         assert_eq!(health.config().secret_key, "shared-secret");
     }
