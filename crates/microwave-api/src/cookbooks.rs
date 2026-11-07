@@ -1,4 +1,5 @@
 use crate::chef_json::ChefJson;
+use crate::error::object_store_failure;
 use crate::helpers::{
     base_url, container_authz, location_headers, organization, require_permission,
 };
@@ -913,13 +914,12 @@ pub(crate) fn render_manifest(
     convert_manifest(&mut document, api_version);
     if let Some(state) = state {
         add_download_urls(&mut document, state, org_id).map_err(|error| {
-            tracing::error!(
-                %error,
-                org_id = %org_id,
-                operation = "presigned_url",
-                "presigned download URL failed"
-            );
-            ApiError::internal()
+            object_store_failure(
+                org_id,
+                "presigned_url",
+                error,
+                "presigned download URL failed",
+            )
         })?;
     }
     Ok(document)

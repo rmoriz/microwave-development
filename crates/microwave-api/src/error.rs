@@ -1,5 +1,6 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use microwave_objectstore::ObjectStoreError;
 use microwave_store::StoreError;
 use serde_json::json;
 
@@ -220,4 +221,19 @@ impl From<StoreError> for ApiError {
             }
         }
     }
+}
+
+/// Turn an object-store failure into a logged `500`.
+///
+/// `operation` is the machine-readable operation for the log line, `message`
+/// the human-readable action. The object key layout is derivable from the org
+/// id, so the checksum (and therefore the key) never appears here.
+pub(crate) fn object_store_failure(
+    org_id: &str,
+    operation: &'static str,
+    error: ObjectStoreError,
+    message: &'static str,
+) -> ApiError {
+    tracing::error!(%error, org_id = %org_id, operation = operation, "{message}");
+    ApiError::internal()
 }

@@ -1,5 +1,6 @@
 use crate::bookshelf::{checksum_map, checksums_from_body};
 use crate::chef_json::ChefJson;
+use crate::error::object_store_failure;
 use crate::helpers::{
     base_url, container_authz, location_headers, organization, require_permission,
 };
@@ -42,13 +43,12 @@ async fn create_sandbox(
     let base = base_url(&headers, &state);
     let uri = format!("{base}/organizations/{}/sandboxes/{sandbox_id}", org.name);
     let checksums = checksum_map(checks, &state, &org.id).map_err(|error| {
-        tracing::error!(
-            %error,
-            org_id = %org.id,
-            operation = "presigned_url",
-            "presigned upload URL failed"
-        );
-        ApiError::internal()
+        object_store_failure(
+            &org.id,
+            "presigned_url",
+            error,
+            "presigned upload URL failed",
+        )
     })?;
     Ok((
         StatusCode::CREATED,

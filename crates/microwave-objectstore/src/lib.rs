@@ -62,6 +62,8 @@ pub enum ObjectStoreError {
     InvalidToken,
     #[error("object not found")]
     NotFound,
+    #[error("organization has no object store bucket")]
+    NoOrgBucket,
     #[error("invalid object store configuration: {0}")]
     InvalidConfig(String),
     #[error("object store request failed: {0}")]
@@ -494,6 +496,14 @@ mod tests {
         assert_eq!(
             object_path(Path::new("/data"), "acme", "abc123"),
             PathBuf::from("/data/organization-acme/checksum-abc123")
+        );
+    }
+
+    #[test]
+    fn no_bucket_error_names_the_missing_bucket() {
+        assert_eq!(
+            ObjectStoreError::NoOrgBucket.to_string(),
+            "organization has no object store bucket"
         );
     }
 

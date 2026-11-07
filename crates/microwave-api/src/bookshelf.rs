@@ -1,3 +1,4 @@
+use crate::error::object_store_failure;
 use crate::{ApiError, AppState};
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -113,9 +114,18 @@ async fn download(
     let data = match state.object_store.get(&organization, &checksum) {
         Ok(data) => Bytes::from(data),
         Err(ObjectStoreError::NotFound) => return Err(ApiError::not_found("checksum not found")),
-        Err(_) => return Err(ApiError::internal()),
+        Err(error) => {
+            return Err(object_store_failure(
+                &organization,
+                "get",
+                error,
+                "blob download failed",
+            ))
+        }
     };
-    let metadata = object_metadata(&state, &organization, &checksum);
+    let metadata = object_metadata(&state, &organization, &checksum).map_err(|error| {
+        object_store_failure(&organization, "metadata", error, "object metadata failed")
+    })?;
     let headers = object_headers(&checksum, metadata);
     let total = data.len() as u64;
 
@@ -141,14 +151,15 @@ async fn head(
     Query(query): Query<TokenQuery>,
 ) -> Result<Response, ApiError> {
     authorized(&state, "GET", &organization, &checksum, &query)?;
-    match object_metadata(&state, &organization, &checksum) {
-        Some(metadata) => {
-            let mut headers = object_headers(&checksum, Some(metadata));
-            headers.insert(header::CONTENT_LENGTH, content_length(metadata.len));
-            Ok((headers, StatusCode::OK).into_response())
-        }
-        None => Ok(StatusCode::NOT_FOUND.into_response()),
-    }
+    let Some(metadata) = object_metadata(&state, &organization, &checksum).map_err(|error| {
+        object_store_failure(&organization, "metadata", error, "object metadata failed")
+    })?
+    else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    let mut headers = object_headers(&checksum, Some(metadata));
+    headers.insert(header::CONTENT_LENGTH, content_length(metadata.len));
+    Ok((headers, StatusCode::OK).into_response())
 }
 
 async fn upload(
@@ -189,13 +200,26 @@ async fn delete_object(
 
 /// Fetch metadata, falling back to a plain existence check for backends that
 /// cannot report it. `None` means the object is absent.
-fn object_metadata(state: &AppState, organization: &str, checksum: &str) -> Option<ObjectMetadata> {
+///
+/// A backend error other than `NotFound` (an organization without a bucket in
+/// particular) is returned as `Err` so the caller can answer `500` instead of
+/// pretending the blob is gone.
+fn object_metadata(
+    state: &AppState,
+    organization: &str,
+    checksum: &str,
+) -> Result<Option<ObjectMetadata>, ObjectStoreError> {
     match state.object_store.metadata(organization, checksum) {
-        Ok(Some(metadata)) => Some(metadata),
-        Ok(None) | Err(_) if state.object_store.exists(organization, checksum) => {
-            Some(ObjectMetadata::default())
+        Ok(Some(metadata)) => Ok(Some(metadata)),
+        Ok(None) => {
+            if state.object_store.exists(organization, checksum) {
+                Ok(Some(ObjectMetadata::default()))
+            } else {
+                Ok(None)
+            }
         }
-        _ => None,
+        Err(ObjectStoreError::NotFound) => Ok(None),
+        Err(error) => Err(error),
     }
 }
 
