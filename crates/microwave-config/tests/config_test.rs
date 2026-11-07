@@ -2156,3 +2156,45 @@ fn limits_env_overrides() {
     assert_eq!(config.limits.global.in_flight, 7);
     assert_eq!(config.limits.org.rate_per_second, 11);
 }
+
+#[test]
+fn object_store_duplicate_targets_ignore_padding() {
+    let error = Config::from_toml_str(
+        r#"
+        [object_store]
+        backend = "s3"
+
+        [object_store.organizations.acme]
+        bucket = "mw-shared"
+
+        [object_store.organizations.beta]
+        bucket = " mw-shared "
+        endpoint = "  "
+        "#,
+    );
+    // `endpoint = "  "` is blank after trimming, which the blank rule catches
+    // first, so use two entries with a padded but real endpoint instead.
+    assert!(error.is_err(), "{error:?}");
+
+    let error = Config::from_toml_str(
+        r#"
+        [object_store]
+        backend = "s3"
+
+        [object_store.organizations.acme]
+        bucket = "mw-shared"
+        endpoint = "https://s3.example.com"
+
+        [object_store.organizations.beta]
+        bucket = " mw-shared "
+        endpoint = " https://s3.example.com "
+        "#,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("object_store.organizations.beta.bucket"),
+        "{error}"
+    );
+}
