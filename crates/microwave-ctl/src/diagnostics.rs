@@ -407,10 +407,12 @@ fn tenant_state(context: &Context, config: &Config) -> Result<TenantState, Strin
 }
 
 /// Whether the store reports an organization table that does not exist yet.
+///
+/// Only the missing *relation* counts: a wrong `search_path` also says
+/// "does not exist", but then the server fails later and preflight must say so.
 fn table_missing(error: &StoreError) -> bool {
     let message = error.to_string();
-    message.contains("no such table: orgs")
-        || (message.contains("orgs") && message.contains("does not exist"))
+    message.contains("no such table: orgs") || message.contains("relation \"orgs\" does not exist")
 }
 
 /// Report the object-store tenant state and the last reload result.
@@ -987,11 +989,11 @@ pub(crate) fn object_store_backend_name(backend: ObjectStoreBackend) -> &'static
 #[cfg(test)]
 mod tests {
     use super::{
-        check_config, diagnostics, parse_psql_args, reload_summary, resolve_bind, summary, Context,
-        PsqlInvocation, TenantState,
+        check_config, diagnostics, parse_psql_args, reload_summary, resolve_bind, summary,
+        table_missing, Context, PsqlInvocation, TenantState,
     };
     use microwave_config::{ObjectStoreBackend, ObjectStoreOrgConfig};
-    use microwave_store::{SqliteStore, OBJECT_STORE_SECRET_GROUP};
+    use microwave_store::{SqliteStore, StoreError, OBJECT_STORE_SECRET_GROUP};
     use std::collections::{BTreeMap, BTreeSet};
     use std::io::{BufRead, BufReader, Write};
     use std::net::{TcpListener, ToSocketAddrs};
@@ -1398,6 +1400,27 @@ mod tests {
                 .collect::<BTreeSet<_>>(),
             credentials: BTreeMap::new(),
         }
+    }
+
+    /// A missing table is the only "unknown" case: another `does not exist`
+    /// (a wrong column) or a real failure must still be reported.
+    #[test]
+    fn only_a_missing_orgs_table_counts_as_unknown() {
+        for message in [
+            "sqlite error: no such table: orgs",
+            "postgres error: relation \"orgs\" does not exist",
+        ] {
+            assert!(
+                table_missing(&StoreError::Postgres(message.into())),
+                "{message}"
+            );
+        }
+        assert!(!table_missing(&StoreError::Postgres(
+            "column \"orgs\" does not exist".into()
+        )));
+        assert!(!table_missing(&StoreError::Postgres(
+            "connection refused".into()
+        )));
     }
 
     #[test]
