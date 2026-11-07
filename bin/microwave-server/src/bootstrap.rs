@@ -1,4 +1,4 @@
-use microwave_config::Config;
+use microwave_config::{Config, OrgCredentials};
 use microwave_crypto::{
     generate_rsa_keypair, hash_password, parse_private_key_pem, public_key_fingerprint,
     public_key_pem_from_private,
@@ -8,6 +8,7 @@ use microwave_store::{
     BOOKSHELF_SECRET_GROUP, OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME, OTEL_SECRET_GROUP,
     OTEL_SECRET_NAME, WEBUI_PRIVATE_KEY_NAME, WEBUI_PUBLIC_KEY_NAME, WEBUI_SECRET_GROUP,
 };
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -354,6 +355,41 @@ pub async fn apply_bookshelf_secrets(
     Ok(())
 }
 
+/// Read the per-organization object-store credentials from the secret store.
+///
+/// Callers pass only the organizations they actually route, so the secrets of
+/// every other organization stay unread. Each organization gets an entry even
+/// when a half is missing; the tenant validation reports the gap. Values are
+/// trimmed because an untrimmed key never signs a request correctly.
+pub async fn load_org_credentials(
+    store: &dyn MetadataStore,
+    orgs: &BTreeSet<String>,
+) -> Result<BTreeMap<String, OrgCredentials>, StoreError> {
+    let mut credentials = BTreeMap::new();
+    for organization in orgs {
+        let access_key = store
+            .get_secret(
+                OBJECT_STORE_SECRET_GROUP,
+                &format!("{organization}.access_key"),
+            )
+            .await?;
+        let secret_key = store
+            .get_secret(
+                OBJECT_STORE_SECRET_GROUP,
+                &format!("{organization}.secret_key"),
+            )
+            .await?;
+        credentials.insert(
+            organization.clone(),
+            OrgCredentials {
+                access_key: access_key.unwrap_or_default().trim().to_string(),
+                secret_key: secret_key.unwrap_or_default().trim().to_string(),
+            },
+        );
+    }
+    Ok(credentials)
+}
+
 /// Fill `otel.headers` from the `otel`/`headers` secret when configuration and
 /// environment do not provide headers.
 ///
@@ -520,6 +556,49 @@ mod tests {
                 .as_deref(),
             Some("existing-secret")
         );
+    }
+
+    #[tokio::test]
+    async fn loads_only_the_requested_org_credentials() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        store
+            .set_secret(OBJECT_STORE_SECRET_GROUP, "acme.access_key", "acme-access")
+            .unwrap();
+        store
+            .set_secret(OBJECT_STORE_SECRET_GROUP, "acme.secret_key", "acme-secret")
+            .unwrap();
+        store
+            .set_secret(OBJECT_STORE_SECRET_GROUP, "beta.access_key", "beta-access")
+            .unwrap();
+        store
+            .set_secret(
+                OBJECT_STORE_SECRET_GROUP,
+                "unused.access_key",
+                "unused-access",
+            )
+            .unwrap();
+
+        let credentials =
+            load_org_credentials(&store, &["acme".to_string(), "beta".to_string()].into())
+                .await
+                .unwrap();
+
+        assert_eq!(
+            credentials.get("acme"),
+            Some(&OrgCredentials {
+                access_key: "acme-access".into(),
+                secret_key: "acme-secret".into(),
+            })
+        );
+        assert_eq!(
+            credentials.get("beta").map(|c| c.access_key.as_str()),
+            Some("beta-access")
+        );
+        assert_eq!(
+            credentials.get("beta").map(|c| c.secret_key.as_str()),
+            Some("")
+        );
+        assert!(!credentials.contains_key("unused"));
     }
 }
 

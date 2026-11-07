@@ -212,6 +212,153 @@ fn serve_check_uses_bookshelf_credentials_from_the_secret_store() {
     );
 }
 
+/// A strict install needs a `health_bucket` and fails on any existing
+/// organization that has no entry.
+#[test]
+fn serve_check_rejects_a_strict_config_with_an_unmapped_org() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = microwave_store::SqliteStore::open(&dir.path().join("microwave.db")).unwrap();
+    store.create_org("acme", "Acme").unwrap();
+    drop(store);
+
+    let output = Command::cargo_bin("microwave-server")
+        .unwrap()
+        .args(["serve", "--check"])
+        .env("MW_PATHS__DATA_DIR", dir.path())
+        .env("MW_OBJECT_STORE__BACKEND", "s3")
+        .env("MW_OBJECT_STORE__ENDPOINT", "http://127.0.0.1:3900")
+        .env("MW_OBJECT_STORE__REGION", "garage")
+        .env("MW_OBJECT_STORE__ACCESS_KEY", "access")
+        .env("MW_OBJECT_STORE__SECRET_KEY", "secret")
+        .env("MW_OBJECT_STORE__REQUIRE_ORG_BUCKET", "true")
+        .env("MW_OBJECT_STORE__HEALTH_BUCKET", "mw-health")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("acme"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("has no object_store.organizations entry"),
+        "stderr: {stderr}"
+    );
+}
+
+/// A mapped org without its own secrets is still fatal in strict mode.
+#[test]
+fn serve_check_rejects_a_mapped_org_without_credentials() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = microwave_store::SqliteStore::open(&dir.path().join("microwave.db")).unwrap();
+    store.create_org("acme", "Acme").unwrap();
+    drop(store);
+
+    let output = Command::cargo_bin("microwave-server")
+        .unwrap()
+        .args(["serve", "--check"])
+        .env("MW_PATHS__DATA_DIR", dir.path())
+        .env("MW_OBJECT_STORE__BACKEND", "s3")
+        .env("MW_OBJECT_STORE__ENDPOINT", "http://127.0.0.1:3900")
+        .env("MW_OBJECT_STORE__REGION", "garage")
+        .env("MW_OBJECT_STORE__ACCESS_KEY", "access")
+        .env("MW_OBJECT_STORE__SECRET_KEY", "secret")
+        .env("MW_OBJECT_STORE__REQUIRE_ORG_BUCKET", "true")
+        .env("MW_OBJECT_STORE__HEALTH_BUCKET", "mw-health")
+        .env(
+            "MW_OBJECT_STORE__ORGANIZATIONS",
+            r#"{"acme":{"bucket":"mw-acme"}}"#,
+        )
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("acme"), "stderr: {stderr}");
+    assert!(stderr.contains("access_key"), "stderr: {stderr}");
+}
+
+/// The per-org credentials come from the secrets table, not from the config.
+#[test]
+fn serve_check_accepts_a_strict_config_with_a_mapped_org_and_secrets() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = microwave_store::SqliteStore::open(&dir.path().join("microwave.db")).unwrap();
+    store.create_org("acme", "Acme").unwrap();
+    store
+        .set_secret("object_store", "acme.access_key", "acme-access")
+        .unwrap();
+    store
+        .set_secret("object_store", "acme.secret_key", "acme-secret")
+        .unwrap();
+    drop(store);
+
+    let output = Command::cargo_bin("microwave-server")
+        .unwrap()
+        .args(["serve", "--check"])
+        .env("MW_PATHS__DATA_DIR", dir.path())
+        .env("MW_OBJECT_STORE__BACKEND", "s3")
+        .env("MW_OBJECT_STORE__ENDPOINT", "http://127.0.0.1:3900")
+        .env("MW_OBJECT_STORE__REGION", "garage")
+        .env("MW_OBJECT_STORE__ACCESS_KEY", "access")
+        .env("MW_OBJECT_STORE__SECRET_KEY", "secret")
+        .env("MW_OBJECT_STORE__REQUIRE_ORG_BUCKET", "true")
+        .env("MW_OBJECT_STORE__HEALTH_BUCKET", "mw-health")
+        .env(
+            "MW_OBJECT_STORE__ORGANIZATIONS",
+            r#"{"acme":{"bucket":"mw-acme"}}"#,
+        )
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+}
+
+/// An entry for a deleted organization is only a warning: it must not wedge
+/// startup, and the rest of the snapshot still builds.
+#[test]
+fn serve_check_warns_about_an_unknown_org_and_keeps_starting() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = Command::cargo_bin("microwave-server")
+        .unwrap()
+        .args(["serve", "--check"])
+        .env("MW_PATHS__DATA_DIR", dir.path())
+        .env("MW_OBJECT_STORE__BACKEND", "s3")
+        .env("MW_OBJECT_STORE__ENDPOINT", "http://127.0.0.1:3900")
+        .env("MW_OBJECT_STORE__REGION", "garage")
+        .env("MW_OBJECT_STORE__ACCESS_KEY", "access")
+        .env("MW_OBJECT_STORE__SECRET_KEY", "secret")
+        .env("MW_OBJECT_STORE__REQUIRE_ORG_BUCKET", "true")
+        .env("MW_OBJECT_STORE__HEALTH_BUCKET", "mw-health")
+        .env(
+            "MW_OBJECT_STORE__ORGANIZATIONS",
+            r#"{"ghost":{"bucket":"mw-ghost"}}"#,
+        )
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stdout: {stdout}");
+    assert!(stdout.contains("ghost"), "stdout: {stdout}");
+}
+
+#[test]
+fn serve_check_rejects_strict_mode_with_the_local_backend() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = Command::cargo_bin("microwave-server")
+        .unwrap()
+        .args(["serve", "--check"])
+        .env("MW_PATHS__DATA_DIR", dir.path())
+        .env("MW_OBJECT_STORE__REQUIRE_ORG_BUCKET", "true")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("require_org_bucket"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn serve_check_persists_the_local_object_store_secret() {
     let dir = tempfile::tempdir().unwrap();

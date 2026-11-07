@@ -1,16 +1,19 @@
 mod bootstrap;
+mod object_store;
 
 use clap::{Parser, Subcommand};
 use microwave_api::{router, AppState};
 use microwave_config::{
-    Config, DatabaseDriver, ObjectStoreBackend, SearchBackend, StorageCompression,
+    Config, DatabaseDriver, ObjectStoreBackend, SearchBackend, StorageCompression, TenantIssue,
 };
 use microwave_metrics::{DependencyState, KeygenGauges, Metrics, PoolGauges};
 use microwave_objectstore::{
-    LocalObjectStore, ObjectStore, S3Config, S3ObjectStore, TimedObjectStore,
+    LocalObjectStore, ObjectStore, RoutingObjectStore, TenantSnapshot, TimedObjectStore,
 };
 use microwave_store::{Compression, MetadataStore, SqliteStore};
 use microwave_store_postgres::PostgresStore;
+use object_store::build_snapshot;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -164,7 +167,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     config.object_store.secret.clone().unwrap_or_default()
                 }
             };
-            let object_store = build_timed_object_store(&config, &secret, metrics.clone())?;
+            let object_store =
+                build_timed_object_store(&config, &secret, store.as_ref(), metrics.clone()).await?;
 
             if check {
                 // Never print the database URL: it may contain credentials.
@@ -498,60 +502,88 @@ fn timed_object_store(
 ///
 /// The wrap lives here, next to the build, so the one call site cannot drop it
 /// while the store keeps working silently unmeasured.
-fn build_timed_object_store(
+async fn build_timed_object_store(
     config: &Config,
     secret: &str,
+    store: &dyn MetadataStore,
     metrics: Arc<Metrics>,
 ) -> Result<Arc<dyn ObjectStore + Send + Sync>, Box<dyn std::error::Error>> {
     Ok(timed_object_store(
-        build_object_store(config, secret)?,
+        build_object_store(config, secret, store).await?,
         metrics,
         config.object_store.backend,
     ))
 }
 
-fn build_object_store(
+/// Build the router and install the startup snapshot.
+///
+/// A `local` deployment only ever has a default store. For S3/Garage the
+/// organization table and the configured per-org credentials are cross-checked
+/// before the snapshot is built: an entry for an unknown organization is a
+/// warning and stays inactive, every other issue fails startup with the org
+/// named. No bucket is probed here, so `serve --check` stays network-free.
+async fn build_object_store(
     config: &Config,
     secret: &str,
-) -> Result<Arc<dyn ObjectStore + Send + Sync>, Box<dyn std::error::Error>> {
-    match config.object_store.backend {
-        ObjectStoreBackend::Local => Ok(Arc::new(LocalObjectStore::new(
+    store: &dyn MetadataStore,
+) -> Result<Arc<RoutingObjectStore>, Box<dyn std::error::Error>> {
+    let router = Arc::new(RoutingObjectStore::new(TenantSnapshot::default()));
+
+    if config.object_store.backend == ObjectStoreBackend::Local {
+        let local: Arc<dyn ObjectStore + Send + Sync> = Arc::new(LocalObjectStore::new(
             Path::new(&config.paths.data_dir).join("bookshelf"),
             secret,
             local_object_store_base_url(config),
-        ))),
-        ObjectStoreBackend::S3 | ObjectStoreBackend::Garage => {
-            let endpoint = config
+        ));
+        let mut snapshot =
+            build_snapshot(&config.object_store, &BTreeMap::new(), &BTreeMap::new())?;
+        snapshot.default = Some(local);
+        router.install(snapshot);
+        return Ok(router);
+    }
+
+    let organizations = store.list_orgs().await?;
+    let organization_names: BTreeSet<String> = organizations
+        .iter()
+        .map(|organization| organization.name.clone())
+        .collect();
+    // Only entries that name an existing organization need their secrets read.
+    let org_ids: BTreeMap<String, String> = organizations
+        .iter()
+        .filter(|organization| {
+            config
                 .object_store
-                .endpoint
-                .clone()
-                .ok_or("object_store.endpoint is required for the s3/garage backend")?;
-            let bucket = config
-                .object_store
-                .bucket
-                .clone()
-                .ok_or("object_store.bucket is required for the s3/garage backend")?;
-            let access_key = config
-                .object_store
-                .access_key
-                .clone()
-                .ok_or("object_store.access_key is required for the s3/garage backend")?;
-            let secret_key = config
-                .object_store
-                .secret_key
-                .clone()
-                .ok_or("object_store.secret_key is required for the s3/garage backend")?;
-            let mut s3_config = S3Config::new(
-                endpoint,
-                bucket,
-                config.object_store.region.clone(),
-                access_key,
-                secret_key,
-            );
-            s3_config.path_style = config.object_store.path_style;
-            Ok(Arc::new(S3ObjectStore::new(s3_config)?))
+                .organizations
+                .contains_key(&organization.name)
+        })
+        .map(|organization| (organization.name.clone(), organization.id.clone()))
+        .collect();
+    let configured: BTreeSet<String> = org_ids.keys().cloned().collect();
+    let credentials = bootstrap::load_org_credentials(store, &configured).await?;
+
+    let mut fatal = Vec::new();
+    for issue in
+        microwave_config::tenant_issues(&config.object_store, &organization_names, &credentials)
+    {
+        match issue {
+            TenantIssue::UnknownOrg(organization) => tracing::warn!(
+                organization = %organization,
+                "object_store.organizations names an unknown organization; its entry stays inactive"
+            ),
+            issue => fatal.push(issue),
         }
     }
+    if !fatal.is_empty() {
+        let issues: Vec<String> = fatal.iter().map(ToString::to_string).collect();
+        return Err(format!("object store tenant map is invalid: {}", issues.join("; ")).into());
+    }
+
+    router.install(build_snapshot(
+        &config.object_store,
+        &org_ids,
+        &credentials,
+    )?);
+    Ok(router)
 }
 
 /// Shared TLS reload state for the signal handler and the polling timer.
@@ -783,9 +815,9 @@ async fn reload_tls(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_timed_object_store, local_object_store_base_url, object_store_backend_label,
-        redact_config_for_output, redact_database_url, spawn_gauge_refresh,
-        warn_implicit_mcp_superuser, PoolGauges,
+        build_object_store, build_timed_object_store, local_object_store_base_url,
+        object_store_backend_label, redact_config_for_output, redact_database_url,
+        spawn_gauge_refresh, warn_implicit_mcp_superuser, PoolGauges,
     };
     use microwave_api::AppState;
     use microwave_config::{Config, McpOrgConfig, ObjectStoreBackend};
@@ -960,15 +992,18 @@ mod tests {
     /// label comes from the configured backend rather than the store. This goes
     /// through the same helper the `serve` path uses, so dropping the wrap
     /// there fails here.
-    #[test]
-    fn timed_object_store_wraps_the_store_with_the_backend_label() {
+    #[tokio::test]
+    async fn timed_object_store_wraps_the_store_with_the_backend_label() {
         let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
         let mut config = Config::default();
         config.object_store.backend = ObjectStoreBackend::Local;
         config.paths.data_dir = dir.path().to_string_lossy().into_owned();
         let metrics = Arc::new(Metrics::new());
 
-        let store = build_timed_object_store(&config, "secret", metrics.clone()).unwrap();
+        let store = build_timed_object_store(&config, "secret", &store, metrics.clone())
+            .await
+            .unwrap();
         store.health_check().unwrap();
 
         let series = metrics.object_store_series();
@@ -976,6 +1011,25 @@ mod tests {
         assert_eq!(series[0].backend, "local");
         assert_eq!(series[0].operation, "health_check");
         assert_eq!(series[0].outcome, "ok");
+    }
+
+    /// `local` never routes per organization: the whole deployment shares one
+    /// default store.
+    #[tokio::test]
+    async fn a_local_deployment_gets_only_a_default_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mut config = Config::default();
+        config.object_store.backend = ObjectStoreBackend::Local;
+        config.paths.data_dir = dir.path().to_string_lossy().into_owned();
+
+        let router = build_object_store(&config, "secret", &store).await.unwrap();
+
+        router.health_check().unwrap();
+        assert!(matches!(
+            router.get("some-org", "0123456789abcdef0123456789abcdef"),
+            Err(microwave_objectstore::ObjectStoreError::NotFound)
+        ));
     }
 
     #[test]
