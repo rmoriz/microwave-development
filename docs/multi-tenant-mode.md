@@ -1,14 +1,15 @@
-# Running tenants on their own buckets
+# Multi-tenant mode (MTM)
 
 By default every organization writes into one shared bucket. A larger install
 often wants more separation: one bucket per organization, so a quota, a
-lifecycle rule or a leaked URL only ever touches one tenant.
+lifecycle rule or a leaked URL only ever touches one tenant. Microwave Server
+calls the strict form *multi-tenant mode* (MTM).
 
-Microwave Server supports that in two strengths:
+MTM comes in two strengths:
 
 - **Per-organization buckets** — an organization opts in with one map entry.
   Every other organization keeps using the shared bucket.
-- **Strict tenant mode** — every organization must have its own bucket. The
+- **Multi-tenant mode (MTM)** — every organization must have its own bucket. The
   shared bucket is gone, so there is no silent fallback to the wrong target.
 
 Both work against any plain S3 endpoint (AWS S3, Garage, MinIO). Bucket
@@ -19,13 +20,13 @@ routes, signs and probes.
 
 Before you start, have the following ready:
 
-- the `s3` or `garage` backend — the map and strict mode are rejected with
+- the `s3` or `garage` backend — the map and MTM are rejected with
   `local`,
 - one bucket per organization, named with lowercase letters, digits, `-` and
   `.`, 3–63 characters, no leading or trailing `-` or `.`,
 - a key pair per organization with `HeadBucket`, `PutObject`, `GetObject` and
   `DeleteObject` on that bucket,
-- a health bucket for `/_status` in strict mode,
+- a health bucket for `/_status` in MTM,
 - an endpoint both the server and the clients can resolve.
 
 The bucket name is the only per-organization value you configure; the key pair
@@ -42,7 +43,7 @@ region = "garage"
 path_style = true
 require_org_bucket = true
 health_bucket = "mw-health"
-# no shared `bucket` in strict mode
+# no shared `bucket` in MTM
 ```
 
 `region`, `path_style` and the shared credentials fall back to the global
@@ -51,7 +52,7 @@ The field reference is in
 [Deploying Microwave Server](deployment.md#object-store); this page stays on
 the workflow.
 
-## Turning strict mode on
+## Turning on multi-tenant mode
 
 1. Create the health bucket and one bucket per organization with your own
    tooling.
@@ -79,7 +80,7 @@ steps.
 
 ## Giving a single organization its own bucket
 
-Without strict mode, prepare the bucket and credentials as above, add the map
+Outside MTM, prepare the bucket and credentials as above, add the map
 entry, and reload:
 
 ```toml
@@ -91,7 +92,7 @@ An entry without its own key pair inherits the shared keys. Hand out a separate
 pair where it matters: presigned URLs are signed with the tenant key, so a
 leaked URL stays inside that one bucket.
 
-If you later flip `require_org_bucket`, add an entry and both credentials for
+If you later turn on `require_org_bucket`, add an entry and both credentials for
 every organization first. Until then they still use the shared bucket.
 
 ## Applying a change without a restart
@@ -110,15 +111,15 @@ The copy is not quiesced, so plan on two passes:
 
 1. Create the bucket and credentials, `set-secret` them and add the entry.
 2. Copy `organization-<org_id>/` from the shared bucket to the new one.
-3. Reload. The organization routes to its own bucket with strict mode still
+3. Reload. The organization routes to its own bucket with MTM still
    off.
 4. Copy again to catch writes that landed on the shared bucket in between.
-5. Flip `require_org_bucket` only when the second copy is clean, then reload.
+5. Turn on `require_org_bucket` only when the second copy is clean, then reload.
 
-A rollback is the same copy in reverse before you flip the flag; without it
+A rollback is the same copy in reverse before you turn on the flag; without it
 existing downloads break.
 
-## When something does not line up
+## When something fails
 
 - An organization without a bucket answers `500 NoOrgBucket` and fails
   without writing into the shared bucket. Add the entry and credentials, then

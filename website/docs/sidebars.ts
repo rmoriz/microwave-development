@@ -9,7 +9,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         {type: 'doc', id: 'deployment', label: 'Deployment'},
-        {type: 'doc', id: 'tenant-buckets', label: 'Tenant buckets'},
+        {type: 'doc', id: 'multi-tenant-mode', label: 'Multi-tenant mode (MTM)'},
         {type: 'doc', id: 'cookbook', label: 'Chef cookbook'},
         {type: 'doc', id: 'mcp', label: 'MCP endpoint'},
         {type: 'doc', id: 'request-limits', label: 'Request limits'},

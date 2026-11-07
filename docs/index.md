@@ -15,8 +15,8 @@ Progress.
   migration route from a legacy Chef Infra Server. TLS, SMTP, external
   backends, and the whole runbook are documented in
   [`docs/deployment.md`](./deployment.md).
-- **[Run tenants on their own buckets](./tenant-buckets.md)** — opt-in
-  per-organization buckets and strict tenant mode: the required settings, the
+- **[Run multi-tenant mode (MTM)](./multi-tenant-mode.md)** — opt-in
+  per-organization buckets and the strict form: the required settings, the
   live reload, and the move of an existing organization.
 - **[Install it with Chef](./cookbook.md)** — the cookbook for Debian 13, from a
   single embedded node to a server with every backend on its own host.

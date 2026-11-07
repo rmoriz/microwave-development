@@ -70,7 +70,7 @@ const config: Config = {
           include: [
             'index.md',
             'deployment.md',
-            'tenant-buckets.md',
+            'multi-tenant-mode.md',
             'cookbook.md',
             'mcp.md',
             'request-limits.md',

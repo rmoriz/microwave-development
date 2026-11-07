@@ -1401,11 +1401,11 @@ verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", patter
 
 [[claim]]
 id = "deploy-org-object-store-buckets"
-summary = "Deployment: per-organization object-store buckets and strict tenant mode."
+summary = "Deployment: per-organization object-store buckets and multi-tenant mode (MTM)."
 area = "deployment"
 status = "verified"
 surfaces = [
-  { path = "docs/tenant-buckets.md", needle = "[object_store.organizations.\"acme\"]" },
+  { path = "docs/multi-tenant-mode.md", needle = "[object_store.organizations.\"acme\"]" },
   { path = "packaging/microwave.toml.example", needle = "[object_store.organizations.\"acme\"]" },
 ]
 verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "require_org_bucket" }

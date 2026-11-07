@@ -128,7 +128,7 @@ backend = "local"
 # this file — store them in the secret store:
 #   microwave-ctl set-secret object_store acme.access_key GK...
 #   microwave-ctl set-secret object_store acme.secret_key ...
-# Outside strict mode an entry without its own keys inherits the global keys.
+# Outside MTM an entry without its own keys inherits the global keys.
 # [object_store.organizations."acme"]
 # bucket = "chef-cookbooks-acme"
 # endpoint = "http://host.docker.internal:3900"
