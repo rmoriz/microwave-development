@@ -2,9 +2,55 @@ mod support;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use microwave_api::AppState;
 use microwave_crypto::SignVersion;
+use microwave_objectstore::{ObjectMetadata, ObjectStore, ObjectStoreError};
 use serde_json::{json, Value};
+use std::sync::Arc;
 use tower::ServiceExt;
+
+/// Delegates every blob operation to an inner store but fails to presign.
+struct FailingPresignStore(Arc<dyn ObjectStore + Send + Sync>);
+
+impl ObjectStore for FailingPresignStore {
+    fn put(
+        &self,
+        organization_id: &str,
+        checksum: &str,
+        data: &[u8],
+    ) -> Result<(), ObjectStoreError> {
+        self.0.put(organization_id, checksum, data)
+    }
+
+    fn get(&self, organization_id: &str, checksum: &str) -> Result<Vec<u8>, ObjectStoreError> {
+        self.0.get(organization_id, checksum)
+    }
+
+    fn exists(&self, organization_id: &str, checksum: &str) -> bool {
+        self.0.exists(organization_id, checksum)
+    }
+
+    fn delete(&self, organization_id: &str, checksum: &str) -> Result<bool, ObjectStoreError> {
+        self.0.delete(organization_id, checksum)
+    }
+
+    fn metadata(
+        &self,
+        organization_id: &str,
+        checksum: &str,
+    ) -> Result<Option<ObjectMetadata>, ObjectStoreError> {
+        self.0.metadata(organization_id, checksum)
+    }
+
+    fn presigned_url(
+        &self,
+        _method: &str,
+        _organization_id: &str,
+        _checksum: &str,
+    ) -> Result<String, ObjectStoreError> {
+        Err(ObjectStoreError::NotFound)
+    }
+}
 
 async fn create_org(app: &axum::Router) {
     let response = app
@@ -403,4 +449,49 @@ async fn v2_upload_rejects_a_missing_all_files_checksum() {
             "error": ["Manifest has a checksum that hasn't been uploaded."]
         })
     );
+}
+
+#[tokio::test]
+async fn a_presign_failure_answers_500() {
+    let state = support::state_with_pivotal();
+    let app = support::app(state.clone());
+    create_org(&app).await;
+    let checksum = "5d41402abc4b2a76b9719d911017c592";
+    upload_blob(&app, checksum, "hello").await;
+
+    let manifest = json!({
+        "name": "apache-1.0.0",
+        "cookbook_name": "apache",
+        "version": "1.0.0",
+        "metadata": { "name": "apache", "version": "1.0.0" },
+        "recipes": [{
+            "name": "default.rb",
+            "path": "recipes/default.rb",
+            "checksum": checksum,
+            "specificity": "default",
+        }],
+    });
+    let (status, _) = put_manifest(&app, "apache", "1.0.0", "1", &manifest).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let app = support::app(
+        AppState::new(
+            Arc::clone(&state.store),
+            state.config.clone(),
+            Arc::new(FailingPresignStore(Arc::clone(&state.object_store))),
+        )
+        .unwrap(),
+    );
+    let response = app
+        .oneshot(support::signed_request_with_api_version(
+            "GET",
+            "/organizations/acme/cookbooks/apache/1.0.0",
+            b"",
+            SignVersion::V1_3,
+            "pivotal",
+            "2",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }

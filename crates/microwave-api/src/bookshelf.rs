@@ -332,7 +332,7 @@ pub fn checksum_map(
     checks: Vec<microwave_store::SandboxCheck>,
     state: &AppState,
     org_id: &str,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, ObjectStoreError> {
     let mut map = serde_json::Map::new();
     for check in checks {
         let entry = if check.needs_upload {
@@ -340,12 +340,12 @@ pub fn checksum_map(
                 "needs_upload": true,
                 "url": state
                     .object_store
-                    .presigned_url("PUT", org_id, &check.checksum),
+                    .presigned_url("PUT", org_id, &check.checksum)?,
             })
         } else {
             serde_json::json!({ "needs_upload": false })
         };
         map.insert(check.checksum, entry);
     }
-    serde_json::Value::Object(map)
+    Ok(serde_json::Value::Object(map))
 }

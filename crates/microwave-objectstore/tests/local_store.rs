@@ -49,7 +49,7 @@ fn local_store_presigned_url_uses_bookshelf_path_and_token() {
         "http://localhost:8000",
     );
     let now = microwave_objectstore::unix_timestamp();
-    let url = store.presigned_url("PUT", "acme", HELLO_CHECKSUM);
+    let url = store.presigned_url("PUT", "acme", HELLO_CHECKSUM).unwrap();
     assert_eq!(
         url.split('?').next().unwrap(),
         "http://localhost:8000/bookshelf/organizations/acme/checksums/5d41402abc4b2a76b9719d911017c592"
@@ -149,7 +149,7 @@ fn local_store_presign_expiry_is_configurable() {
     )
     .with_presign_expiry_seconds(120);
     assert_eq!(store.presign_expiry_seconds(), 120);
-    let url = store.presigned_url("GET", "acme", HELLO_CHECKSUM);
+    let url = store.presigned_url("GET", "acme", HELLO_CHECKSUM).unwrap();
     let expires_at = url.split("exp=").nth(1).unwrap().parse::<u64>().unwrap();
     assert!(expires_at >= now + 120);
     assert!(expires_at <= now + 120 + 5);

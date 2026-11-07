@@ -312,7 +312,7 @@ fn presigned_urls_are_not_sent_to_the_server() {
     // The URL is generated locally; this test only checks the key layout and
     // that no HTTP call is involved.
     let store = store("http://127.0.0.1:1");
-    let url = store.presigned_url("GET", "acme", HELLO_CHECKSUM);
+    let url = store.presigned_url("GET", "acme", HELLO_CHECKSUM).unwrap();
     assert!(url.starts_with(
         "http://127.0.0.1:1/chef/organization-acme/checksum-5d41402abc4b2a76b9719d911017c592?"
     ));
@@ -368,7 +368,7 @@ async fn virtual_host_style_requests_target_bucket_subdomain() {
 
     // The mock is addressed by 127.0.0.1, so the virtual-host URL cannot be
     // resolved; verify the URL layout instead of the request.
-    let url = store.presigned_url("GET", "acme", HELLO_CHECKSUM);
+    let url = store.presigned_url("GET", "acme", HELLO_CHECKSUM).unwrap();
     assert!(url.contains("://chef.127.0.0.1:"));
     assert!(url.contains("/organization-acme/checksum-"));
     assert!(mock.requests().is_empty());

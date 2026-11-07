@@ -427,7 +427,12 @@ impl ObjectStore for HangingObjectStore {
         unreachable!()
     }
 
-    fn presigned_url(&self, _method: &str, _organization_id: &str, _checksum: &str) -> String {
+    fn presigned_url(
+        &self,
+        _method: &str,
+        _organization_id: &str,
+        _checksum: &str,
+    ) -> Result<String, ObjectStoreError> {
         unreachable!()
     }
 
@@ -461,7 +466,12 @@ impl ObjectStore for FailingObjectStore {
         unreachable!()
     }
 
-    fn presigned_url(&self, _method: &str, _organization_id: &str, _checksum: &str) -> String {
+    fn presigned_url(
+        &self,
+        _method: &str,
+        _organization_id: &str,
+        _checksum: &str,
+    ) -> Result<String, ObjectStoreError> {
         unreachable!()
     }
 

@@ -461,8 +461,13 @@ impl ObjectStore for S3ObjectStore {
         }))
     }
 
-    fn presigned_url(&self, method: &str, organization_id: &str, checksum: &str) -> String {
-        self.presigned_url_at(method, organization_id, checksum, Utc::now())
+    fn presigned_url(
+        &self,
+        method: &str,
+        organization_id: &str,
+        checksum: &str,
+    ) -> Result<String, ObjectStoreError> {
+        Ok(self.presigned_url_at(method, organization_id, checksum, Utc::now()))
     }
 
     fn health_check(&self) -> Result<(), ObjectStoreError> {

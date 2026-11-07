@@ -83,7 +83,12 @@ impl ObjectStore for TimedObjectStore {
         result
     }
 
-    fn presigned_url(&self, method: &str, organization_id: &str, checksum: &str) -> String {
+    fn presigned_url(
+        &self,
+        method: &str,
+        organization_id: &str,
+        checksum: &str,
+    ) -> Result<String, ObjectStoreError> {
         self.inner.presigned_url(method, organization_id, checksum)
     }
 
@@ -132,8 +137,13 @@ mod tests {
             Ok(false)
         }
 
-        fn presigned_url(&self, _method: &str, _organization_id: &str, _checksum: &str) -> String {
-            "http://example.test/blob".into()
+        fn presigned_url(
+            &self,
+            _method: &str,
+            _organization_id: &str,
+            _checksum: &str,
+        ) -> Result<String, ObjectStoreError> {
+            Ok("http://example.test/blob".into())
         }
     }
 
@@ -187,7 +197,7 @@ mod tests {
         let store = TimedObjectStore::new(Arc::new(FailingStore), metrics.clone(), "local");
         assert!(!store.exists("org", "checksum"));
         assert_eq!(
-            store.presigned_url("GET", "org", "checksum"),
+            store.presigned_url("GET", "org", "checksum").unwrap(),
             "http://example.test/blob"
         );
         assert!(metrics.object_store_series().is_empty());

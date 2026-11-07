@@ -7,6 +7,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
+use microwave_objectstore::ObjectStoreError;
 use microwave_store::{Org, Permission, StoredCookbookVersion};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -911,7 +912,10 @@ pub(crate) fn render_manifest(
     let mut document: Value = serde_json::from_str(manifest).map_err(|_| ApiError::internal())?;
     convert_manifest(&mut document, api_version);
     if let Some(state) = state {
-        add_download_urls(&mut document, state, org_id);
+        add_download_urls(&mut document, state, org_id).map_err(|error| {
+            tracing::error!(%error, "presigned download URL failed");
+            ApiError::internal()
+        })?;
     }
     Ok(document)
 }
@@ -973,25 +977,35 @@ fn convert_manifest(document: &mut Value, api_version: u8) {
     }
 }
 
-pub(crate) fn add_download_urls(manifest: &mut Value, state: &AppState, org_id: &str) {
+pub(crate) fn add_download_urls(
+    manifest: &mut Value,
+    state: &AppState,
+    org_id: &str,
+) -> Result<(), ObjectStoreError> {
     if let Some(files) = manifest.get_mut("all_files").and_then(Value::as_array_mut) {
-        annotate_files(files, state, org_id);
-        return;
+        annotate_files(files, state, org_id)?;
+        return Ok(());
     }
     for segment in SEGMENTS {
         if let Some(files) = manifest.get_mut(segment).and_then(Value::as_array_mut) {
-            annotate_files(files, state, org_id);
+            annotate_files(files, state, org_id)?;
         }
     }
+    Ok(())
 }
 
-fn annotate_files(files: &mut [Value], state: &AppState, org_id: &str) {
+fn annotate_files(
+    files: &mut [Value],
+    state: &AppState,
+    org_id: &str,
+) -> Result<(), ObjectStoreError> {
     for file in files {
         if let Some(checksum) = file.get("checksum").and_then(Value::as_str) {
-            let url = state.object_store.presigned_url("GET", org_id, checksum);
+            let url = state.object_store.presigned_url("GET", org_id, checksum)?;
             file["url"] = json!(url);
         }
     }
+    Ok(())
 }
 
 pub(crate) fn delete_blobs(state: &AppState, org_id: &str, checksums: &[String]) {

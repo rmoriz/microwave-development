@@ -41,13 +41,17 @@ async fn create_sandbox(
         .map_err(ApiError::from)?;
     let base = base_url(&headers, &state);
     let uri = format!("{base}/organizations/{}/sandboxes/{sandbox_id}", org.name);
+    let checksums = checksum_map(checks, &state, &org.id).map_err(|error| {
+        tracing::error!(%error, "presigned upload URL failed");
+        ApiError::internal()
+    })?;
     Ok((
         StatusCode::CREATED,
         location_headers(&uri)?,
         Json(json!({
             "uri": uri,
             "sandbox_id": sandbox_id,
-            "checksums": checksum_map(checks, &state, &org.id)
+            "checksums": checksums
         })),
     ))
 }

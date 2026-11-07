@@ -113,7 +113,12 @@ pub trait ObjectStore: Send + Sync {
     }
 
     /// Build a URL a client can use to `method` the blob directly.
-    fn presigned_url(&self, method: &str, organization_id: &str, checksum: &str) -> String;
+    fn presigned_url(
+        &self,
+        method: &str,
+        organization_id: &str,
+        checksum: &str,
+    ) -> Result<String, ObjectStoreError>;
 
     /// Cheap liveness probe used by `GET /_status`.
     ///
@@ -303,13 +308,18 @@ impl ObjectStore for LocalObjectStore {
         }
     }
 
-    fn presigned_url(&self, method: &str, organization_id: &str, checksum: &str) -> String {
+    fn presigned_url(
+        &self,
+        method: &str,
+        organization_id: &str,
+        checksum: &str,
+    ) -> Result<String, ObjectStoreError> {
         let expires_at = unix_timestamp().saturating_add(self.presign_expiry_seconds);
         let token = self.token_with_expiry(method, organization_id, checksum, expires_at);
-        format!(
+        Ok(format!(
             "{}/bookshelf/organizations/{organization_id}/checksums/{checksum}?token={token}&exp={expires_at}",
             self.base_url
-        )
+        ))
     }
 
     fn health_check(&self) -> Result<(), ObjectStoreError> {
