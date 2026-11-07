@@ -3424,3 +3424,173 @@ fn check_config_rejects_a_mismatched_tls_pair() {
     assert!(!output.status.success());
     assert!(stderr(&output).contains("matching pair"));
 }
+
+/// Strict tenant map that maps `acme-prod` with its own region and path style.
+#[cfg(unix)]
+fn write_tenant_dump_strict_config(dir: &Path) -> PathBuf {
+    let config = dir.join("microwave-tenant.toml");
+    std::fs::write(
+        &config,
+        "[object_store]\n\
+         backend = \"s3\"\n\
+         endpoint = \"http://127.0.0.1:3900\"\n\
+         health_bucket = \"mw-health\"\n\
+         require_org_bucket = true\n\n\
+         [object_store.organizations.\"acme-prod\"]\n\
+         bucket = \"mw-acme-prod\"\n\
+         region = \"eu-west-1\"\n\
+         path_style = false\n",
+    )
+    .unwrap();
+    config
+}
+
+#[cfg(unix)]
+fn set_tenant_credentials(dir: &Path, config: &Path) {
+    create_superuser(dir);
+    for (name, value) in [
+        ("acme-prod.access_key", "acme-access"),
+        ("acme-prod.secret_key", "acme-secret"),
+    ] {
+        assert_success(&run(
+            dir,
+            &[
+                "--config",
+                config.to_str().unwrap(),
+                "set-secret",
+                "object_store",
+                name,
+                value,
+            ],
+        ));
+    }
+}
+
+#[cfg(unix)]
+fn extract_log_archive(archive: &Path, dir: &Path) -> toml::Value {
+    let status = std::process::Command::new("tar")
+        .args([
+            "-xzf",
+            archive.to_str().unwrap(),
+            "-C",
+            dir.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "tar failed to extract {}",
+        archive.display()
+    );
+    let text = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+    toml::from_str(&text).expect("config.toml parses as TOML")
+}
+
+#[cfg(unix)]
+#[test]
+fn gather_logs_tenant_map_carries_buckets_without_credentials() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_tenant_dump_strict_config(dir.path());
+    set_tenant_credentials(dir.path(), &config);
+
+    let archive = dir.path().join("logs.tar.gz");
+    assert_success(&run(
+        dir.path(),
+        &[
+            "--config",
+            config.to_str().unwrap(),
+            "gather-logs",
+            "--output",
+            archive.to_str().unwrap(),
+        ],
+    ));
+
+    let extracted = tempfile::tempdir().unwrap();
+    let parsed = extract_log_archive(&archive, extracted.path());
+    let raw = std::fs::read_to_string(extracted.path().join("config.toml")).unwrap();
+    let org_header = "[object_store.organizations.\"acme-prod\"]";
+    assert!(raw.contains(org_header), "config.toml: {raw}");
+    assert!(!raw.contains("acme-access"));
+    assert!(
+        raw.find("require_org_bucket = true").unwrap() < raw.find(org_header).unwrap(),
+        "shared scalars must precede the tenant sub-tables: {raw}"
+    );
+    let object_store = parsed.get("object_store").expect("object_store table");
+    assert_eq!(
+        object_store
+            .get("require_org_bucket")
+            .and_then(toml::Value::as_bool),
+        Some(true)
+    );
+    let entry = object_store
+        .get("organizations")
+        .and_then(|organizations| organizations.get("acme-prod"))
+        .expect("acme-prod tenant table");
+    assert_eq!(
+        entry.get("bucket").and_then(toml::Value::as_str),
+        Some("mw-acme-prod")
+    );
+    assert_eq!(
+        entry.get("region").and_then(toml::Value::as_str),
+        Some("eu-west-1")
+    );
+    assert_eq!(
+        entry.get("path_style").and_then(toml::Value::as_bool),
+        Some(false)
+    );
+    assert!(entry.get("access_key").is_none());
+    assert!(entry.get("secret_key").is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn config_backup_tenant_map_carries_credentials() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_tenant_dump_strict_config(dir.path());
+    set_tenant_credentials(dir.path(), &config);
+
+    let backup = dir.path().join("backup");
+    assert_success(&run(
+        dir.path(),
+        &[
+            "--config",
+            config.to_str().unwrap(),
+            "backup",
+            backup.to_str().unwrap(),
+            "--config-only",
+            "--yes",
+        ],
+    ));
+
+    let text = std::fs::read_to_string(backup.join("microwave-config.json")).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let object_store = &value["object_store"];
+    assert_eq!(object_store["require_org_bucket"], true);
+    let entry = &object_store["organizations"]["acme-prod"];
+    assert_eq!(entry["bucket"], "mw-acme-prod");
+    assert_eq!(entry["access_key"], "acme-access");
+    assert_eq!(entry["secret_key"], "acme-secret");
+}
+
+#[cfg(unix)]
+#[test]
+fn gather_logs_without_a_tenant_map_still_parses() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("logs.tar.gz");
+    assert_success(&run(
+        dir.path(),
+        &["gather-logs", "--output", archive.to_str().unwrap()],
+    ));
+
+    let extracted = tempfile::tempdir().unwrap();
+    let parsed = extract_log_archive(&archive, extracted.path());
+    let organizations = parsed
+        .get("object_store")
+        .and_then(|object_store| object_store.get("organizations"));
+    assert!(
+        organizations.is_none_or(|organizations| organizations
+            .as_table()
+            .is_some_and(|table| table.is_empty())),
+        "a config without a tenant map must not gain an organizations table"
+    );
+}

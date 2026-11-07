@@ -19,10 +19,12 @@ microwave-migrate = { path = "../../crates/microwave-migrate" }
 microwave-store = { path = "../../crates/microwave-store" }
 microwave-store-postgres = { path = "../../crates/microwave-store-postgres" }
 rcgen.workspace = true
+serde_json.workspace = true
 sqlx.workspace = true
 tar.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
+toml.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
 libc.workspace = true

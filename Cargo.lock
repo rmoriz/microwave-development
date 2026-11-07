@@ -1749,10 +1749,12 @@ dependencies = [
  "microwave-store",
  "microwave-store-postgres",
  "rcgen",
+ "serde_json",
  "sqlx",
  "tar",
  "tempfile",
  "tokio",
+ "toml",
 ]
 
 [[package]]

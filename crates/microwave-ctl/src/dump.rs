@@ -549,6 +549,50 @@ fn config_report(context: &Context) -> String {
         toml_string(config.object_store.bucket.as_deref().unwrap_or(""))
     )
     .unwrap();
+    writeln!(
+        out,
+        "require_org_bucket = {}",
+        config.object_store.require_org_bucket
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "health_bucket = {}",
+        toml_string(config.object_store.health_bucket.as_deref().unwrap_or(""))
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "verify_buckets = {}",
+        config.object_store.verify_buckets
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "reload_interval_seconds = {}",
+        config.object_store.reload_interval_seconds
+    )
+    .unwrap();
+
+    for (organization, entry) in &config.object_store.organizations {
+        writeln!(out).unwrap();
+        writeln!(
+            out,
+            "[object_store.organizations.{}]",
+            toml_string(organization)
+        )
+        .unwrap();
+        writeln!(out, "bucket = {}", toml_string(&entry.bucket)).unwrap();
+        if let Some(endpoint) = &entry.endpoint {
+            writeln!(out, "endpoint = {}", toml_string(&redacted_url(endpoint))).unwrap();
+        }
+        if let Some(region) = &entry.region {
+            writeln!(out, "region = {}", toml_string(region)).unwrap();
+        }
+        if let Some(path_style) = entry.path_style {
+            writeln!(out, "path_style = {path_style}").unwrap();
+        }
+    }
 
     out
 }
