@@ -3574,6 +3574,27 @@ fn config_backup_tenant_map_carries_credentials() {
 
 #[cfg(unix)]
 #[test]
+fn config_only_backup_without_a_tenant_map_needs_no_store() {
+    let data = tempfile::tempdir().unwrap();
+    let backups = tempfile::tempdir().unwrap();
+    let backup = backups.path().join("config-only");
+
+    assert_success(&run(
+        data.path(),
+        &["backup", backup.to_str().unwrap(), "--config-only", "--yes"],
+    ));
+
+    assert!(!data.path().join("microwave.db").exists());
+    let text = std::fs::read_to_string(backup.join("microwave-config.json")).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        value["object_store"]["organizations"],
+        serde_json::json!({})
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn gather_logs_without_a_tenant_map_still_parses() {
     let dir = tempfile::tempdir().unwrap();
     let archive = dir.path().join("logs.tar.gz");

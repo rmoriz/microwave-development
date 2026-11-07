@@ -374,25 +374,33 @@ fn write_config_snapshot(context: &Context, path: &Path) -> Result<(), CtlError>
         CtlError::message(format!("failed to serialize configuration: {error}"))
     })?;
 
-    // A config-only backup is the restore path for the tenant map, so it also
-    // carries the per-organization credentials from the secrets table.
-    let store = context.open_existing_metadata_store()?;
-    if let Some(organizations) = config
-        .get_mut("object_store")
-        .and_then(|object_store| object_store.get_mut("organizations"))
-        .and_then(Value::as_object_mut)
-    {
-        for organization in context.config.object_store.organizations.keys() {
-            let Some(entry) = organizations.get_mut(organization) else {
-                continue;
-            };
-            for (field, suffix) in [("access_key", "access_key"), ("secret_key", "secret_key")] {
-                let secret = store.run(store.store().get_secret(
-                    microwave_store::OBJECT_STORE_SECRET_GROUP,
-                    &format!("{organization}.{suffix}"),
-                ))?;
-                if let Some(value) = secret.filter(|value| !value.is_empty()) {
-                    entry[field] = Value::String(value);
+    // A config-only backup carries the per-organization credentials from the
+    // secrets table as an operator paper trail; `restore` never reads this
+    // file. Only open the metadata store when an organization is mapped, so a
+    // config-only backup still works while the database is suspect.
+    if !context.config.object_store.organizations.is_empty() {
+        let store = context.open_existing_metadata_store()?;
+        if let Some(organizations) = config
+            .get_mut("object_store")
+            .and_then(|object_store| object_store.get_mut("organizations"))
+            .and_then(Value::as_object_mut)
+        {
+            for organization in context.config.object_store.organizations.keys() {
+                let Some(entry) = organizations.get_mut(organization) else {
+                    continue;
+                };
+                for (field, suffix) in [("access_key", "access_key"), ("secret_key", "secret_key")]
+                {
+                    let secret = store.run(store.store().get_secret(
+                        microwave_store::OBJECT_STORE_SECRET_GROUP,
+                        &format!("{organization}.{suffix}"),
+                    ))?;
+                    if let Some(value) = secret
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty())
+                    {
+                        entry[field] = Value::String(value);
+                    }
                 }
             }
         }
