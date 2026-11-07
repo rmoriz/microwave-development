@@ -42,8 +42,15 @@ impl RoutingObjectStore {
         self.snapshot.store(Arc::new(snapshot));
     }
 
-    /// Pick the store for `organization_id`, dropping the snapshot guard so a
-    /// concurrent [`install`](Self::install) never waits on a live call.
+    /// The currently installed snapshot, so a startup probe can verify the
+    /// exact stores the router will serve.
+    pub fn current(&self) -> Arc<TenantSnapshot> {
+        self.snapshot.load_full()
+    }
+
+    /// Pick the store for `organization_id` from the snapshot current at call
+    /// time. The load guard is held only for the lookup, and a concurrent
+    /// [`install`](Self::install) never waits on a live call.
     fn pick(&self, organization_id: &str) -> Option<Arc<dyn ObjectStore + Send + Sync>> {
         let snapshot = self.snapshot.load();
         snapshot
@@ -82,6 +89,16 @@ fn log_failure(
     );
 }
 
+/// Log a call for an organization the snapshot has no store for. There is no
+/// backend bucket to name, so the org id and the operation carry the line.
+fn log_no_org_bucket(organization_id: &str, operation: &'static str) {
+    tracing::error!(
+        organization_id,
+        operation,
+        "organization has no object store bucket"
+    );
+}
+
 impl ObjectStore for RoutingObjectStore {
     fn put(
         &self,
@@ -90,6 +107,7 @@ impl ObjectStore for RoutingObjectStore {
         data: &[u8],
     ) -> Result<(), ObjectStoreError> {
         let Some(store) = self.pick(organization_id) else {
+            log_no_org_bucket(organization_id, "put");
             return Err(ObjectStoreError::NoOrgBucket);
         };
         let result = store.put(organization_id, checksum, data);
@@ -101,6 +119,7 @@ impl ObjectStore for RoutingObjectStore {
 
     fn get(&self, organization_id: &str, checksum: &str) -> Result<Vec<u8>, ObjectStoreError> {
         let Some(store) = self.pick(organization_id) else {
+            log_no_org_bucket(organization_id, "get");
             return Err(ObjectStoreError::NoOrgBucket);
         };
         let result = store.get(organization_id, checksum);
@@ -119,6 +138,7 @@ impl ObjectStore for RoutingObjectStore {
 
     fn delete(&self, organization_id: &str, checksum: &str) -> Result<bool, ObjectStoreError> {
         let Some(store) = self.pick(organization_id) else {
+            log_no_org_bucket(organization_id, "delete");
             return Err(ObjectStoreError::NoOrgBucket);
         };
         let result = store.delete(organization_id, checksum);
@@ -134,6 +154,7 @@ impl ObjectStore for RoutingObjectStore {
         checksum: &str,
     ) -> Result<Option<ObjectMetadata>, ObjectStoreError> {
         let Some(store) = self.pick(organization_id) else {
+            log_no_org_bucket(organization_id, "metadata");
             return Err(ObjectStoreError::NoOrgBucket);
         };
         let result = store.metadata(organization_id, checksum);
@@ -150,6 +171,7 @@ impl ObjectStore for RoutingObjectStore {
         checksum: &str,
     ) -> Result<String, ObjectStoreError> {
         let Some(store) = self.pick(organization_id) else {
+            log_no_org_bucket(organization_id, "presigned_url");
             return Err(ObjectStoreError::NoOrgBucket);
         };
         let result = store.presigned_url(method, organization_id, checksum);

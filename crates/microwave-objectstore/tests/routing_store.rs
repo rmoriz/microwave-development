@@ -193,6 +193,8 @@ fn unmapped_organization_uses_the_default_store() {
 
 #[test]
 fn unmapped_organization_without_default_reports_no_org_bucket() {
+    // Every call logs an error; the log assertion elsewhere must not see them.
+    let _guard = LOG_TEST_LOCK.lock().unwrap();
     let mapped = Double::new("acme-bucket");
     let router = RoutingObjectStore::new(snapshot(None, None, vec![("acme", mapped.clone())]));
 
@@ -342,8 +344,7 @@ fn captured_log() -> String {
     String::from_utf8_lossy(&LOG_CAPTURE.lock().unwrap()).into_owned()
 }
 
-#[test]
-fn a_failing_put_logs_organization_operation_and_bucket_without_the_key() {
+fn init_log() {
     LOG_INIT.call_once(|| {
         let subscriber = tracing_subscriber::fmt()
             .with_ansi(false)
@@ -351,7 +352,11 @@ fn a_failing_put_logs_organization_operation_and_bucket_without_the_key() {
             .finish();
         let _ = tracing::subscriber::set_global_default(subscriber);
     });
+}
 
+#[test]
+fn a_failing_put_logs_organization_operation_and_bucket_without_the_key() {
+    init_log();
     let _guard = LOG_TEST_LOCK.lock().unwrap();
     LOG_CAPTURE.lock().unwrap().clear();
 
@@ -381,4 +386,23 @@ fn a_failing_put_logs_organization_operation_and_bucket_without_the_key() {
         log.contains("bucket is down"),
         "the cause must survive: {log}"
     );
+}
+
+/// An unmapped organization has no backend bucket; the line must still name
+/// the organization and the operation so one broken tenant is attributable.
+#[test]
+fn a_missing_org_bucket_logs_organization_and_operation() {
+    init_log();
+    let _guard = LOG_TEST_LOCK.lock().unwrap();
+    LOG_CAPTURE.lock().unwrap().clear();
+
+    let router = RoutingObjectStore::new(snapshot(None, None, vec![]));
+    router.put("acme", CHEF_BLOB, b"hello").unwrap_err();
+
+    let log = captured_log();
+    assert_eq!(log.lines().count(), 1, "expected one log line, got: {log}");
+    assert!(log.contains("acme"), "org id missing: {log}");
+    assert!(log.contains("put"), "operation missing: {log}");
+    assert!(log.contains("no object store bucket"), "{log}");
+    assert!(!log.contains(CHEF_BLOB), "checksum leaked: {log}");
 }
