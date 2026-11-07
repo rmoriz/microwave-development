@@ -264,6 +264,33 @@ fn org_create_stays_quiet_without_a_strict_config() {
         "stderr: {text}"
     );
     assert!(!text.contains("set-secret"), "stderr: {text}");
+    assert!(!text.contains("not usable yet"), "stderr: {text}");
+    assert!(!text.contains("microwave-ctl reload"), "stderr: {text}");
+}
+
+#[test]
+fn org_create_ignores_an_unknown_org_entry_in_a_non_strict_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("microwave-ghost.toml");
+    std::fs::write(
+        &config,
+        "[object_store]\n\
+         backend = \"s3\"\n\
+         bucket = \"mw-shared\"\n\
+         endpoint = \"http://127.0.0.1:3900\"\n\n\
+         [object_store.organizations.ghost]\n\
+         bucket = \"mw-ghost\"\n",
+    )
+    .unwrap();
+    create_superuser(dir.path());
+
+    let output = ctl(dir.path())
+        .args(["--config", config.to_str().unwrap(), "org-create", "acme"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_printed_id(&output);
+    assert_eq!(stderr(&output), "", "stderr: {}", stderr(&output));
 }
 
 #[test]

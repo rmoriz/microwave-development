@@ -385,6 +385,12 @@ pub fn org_create(
 /// a strict tenant map. The org id already went to stdout, so this stays out of
 /// a scripted consumer's way.
 fn print_tenant_guidance(organization: &str, issues: &[TenantIssue]) {
+    // `UnknownOrg` names an entry for some other, already deleted organization:
+    // it never concerns the org just created and must not trigger the header.
+    let issues: Vec<&TenantIssue> = issues
+        .iter()
+        .filter(|issue| !matches!(issue, TenantIssue::UnknownOrg(_)))
+        .collect();
     if issues.is_empty() {
         return;
     }
