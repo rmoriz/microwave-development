@@ -278,8 +278,12 @@ pub fn spawn_periodic_reloader(
             if last_seen.as_ref() == Some(&current) {
                 continue;
             }
-            last_seen = Some(current);
-            let _ = reloader.reload(Trigger::Interval).await;
+            // Remember the stamp only once the reload went through: a rejected
+            // snapshot must be retried on the next tick instead of sleeping
+            // until an unrelated write moves the stamp.
+            if reloader.reload(Trigger::Interval).await.is_ok() {
+                last_seen = Some(current);
+            }
         }
     }))
 }
@@ -836,6 +840,49 @@ verify_buckets = false
         assert_eq!(status["trigger"], "interval");
         assert_eq!(status["outcome"], "ok");
         assert!(url(&harness).contains("mw-new"));
+    }
+
+    /// A rejected snapshot must keep the old stamp, so the next tick retries
+    /// the same, unchanged change instead of sleeping until an unrelated write.
+    #[tokio::test]
+    async fn a_rejected_reload_is_retried_on_the_next_tick() {
+        let harness = harness().await;
+        let handle = spawn_periodic_reloader(harness.reloader.clone(), 1).expect("a timer task");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // `Bad` is structurally invalid, so every attempt is rejected.
+        write_config(&harness.config_path, &base_config(Some("Bad")));
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if harness.data_dir.join("objectstore.reload").exists()
+                    && status(&harness.data_dir)["outcome"] == "rejected"
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the first tick must reject the invalid config");
+        let first = status(&harness.data_dir)["at"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if status(&harness.data_dir)["at"] != first.as_str() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("an unchanged stamp must be retried after a rejection");
+        handle.abort();
+        let _ = handle.await;
+
+        assert_eq!(status(&harness.data_dir)["outcome"], "rejected");
     }
 
     #[tokio::test]

@@ -575,6 +575,25 @@ fn object_store_organizations_reject_invalid_bucket_names() {
 }
 
 #[test]
+fn object_store_rejects_an_invalid_global_bucket_name() {
+    let too_long = "a".repeat(64);
+    for bucket in ["A_b", "-x", "ab", too_long.as_str()] {
+        let input = format!(
+            r#"
+            [object_store]
+            backend = "s3"
+            bucket = "{bucket}"
+            "#
+        );
+        let error = Config::from_toml_str(&input).unwrap_err();
+        assert!(
+            error.to_string().contains("object_store.bucket"),
+            "bucket {bucket} failed through the wrong rule: {error}"
+        );
+    }
+}
+
+#[test]
 fn object_store_organization_requires_a_bucket() {
     let error = Config::from_toml_str(
         r#"

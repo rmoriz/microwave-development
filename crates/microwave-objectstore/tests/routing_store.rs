@@ -47,13 +47,17 @@ impl Double {
 impl ObjectStore for Double {
     fn put(
         &self,
-        _organization_id: &str,
-        _checksum: &str,
+        organization_id: &str,
+        checksum: &str,
         _data: &[u8],
     ) -> Result<(), ObjectStoreError> {
         self.record("put");
         if self.failing {
-            return Err(ObjectStoreError::Http("bucket is down".into()));
+            // Real backends quote the request URL, which carries the checksum.
+            return Err(ObjectStoreError::Http(format!(
+                "PUT https://{}.example.test/organization-{organization_id}/checksum-{checksum} failed: bucket is down",
+                self.bucket
+            )));
         }
         Ok(())
     }
@@ -368,5 +372,13 @@ fn a_failing_put_logs_organization_operation_and_bucket_without_the_key() {
     assert!(
         !log.contains(&format!("organization-acme/checksum-{CHEF_BLOB}")),
         "the object key must not be logged: {log}"
+    );
+    assert!(
+        log.contains("<checksum>"),
+        "the URL in the backend error must be redacted: {log}"
+    );
+    assert!(
+        log.contains("bucket is down"),
+        "the cause must survive: {log}"
     );
 }

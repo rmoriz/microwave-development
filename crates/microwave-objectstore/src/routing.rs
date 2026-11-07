@@ -56,12 +56,23 @@ impl RoutingObjectStore {
 
 /// Log one failed operation. The org id, the operation and the bucket make the
 /// line actionable; keys and checksums stay out because they are per blob.
+///
+/// A backend error often quotes the request URL, and that URL carries the
+/// checksum. `checksum` is therefore replaced by a placeholder before the
+/// message is logged; an empty `checksum` (health probe) skips the replacement.
 fn log_failure(
     organization_id: &str,
     operation: &'static str,
     store: &dyn ObjectStore,
+    checksum: &str,
     error: &ObjectStoreError,
 ) {
+    let error = error.to_string();
+    let error = if checksum.is_empty() {
+        error
+    } else {
+        error.replace(checksum, "<checksum>")
+    };
     tracing::error!(
         organization_id,
         operation,
@@ -83,7 +94,7 @@ impl ObjectStore for RoutingObjectStore {
         };
         let result = store.put(organization_id, checksum, data);
         if let Err(error) = &result {
-            log_failure(organization_id, "put", store.as_ref(), error);
+            log_failure(organization_id, "put", store.as_ref(), checksum, error);
         }
         result
     }
@@ -94,7 +105,7 @@ impl ObjectStore for RoutingObjectStore {
         };
         let result = store.get(organization_id, checksum);
         if let Err(error) = &result {
-            log_failure(organization_id, "get", store.as_ref(), error);
+            log_failure(organization_id, "get", store.as_ref(), checksum, error);
         }
         result
     }
@@ -112,7 +123,7 @@ impl ObjectStore for RoutingObjectStore {
         };
         let result = store.delete(organization_id, checksum);
         if let Err(error) = &result {
-            log_failure(organization_id, "delete", store.as_ref(), error);
+            log_failure(organization_id, "delete", store.as_ref(), checksum, error);
         }
         result
     }
@@ -127,7 +138,7 @@ impl ObjectStore for RoutingObjectStore {
         };
         let result = store.metadata(organization_id, checksum);
         if let Err(error) = &result {
-            log_failure(organization_id, "metadata", store.as_ref(), error);
+            log_failure(organization_id, "metadata", store.as_ref(), checksum, error);
         }
         result
     }
@@ -143,7 +154,13 @@ impl ObjectStore for RoutingObjectStore {
         };
         let result = store.presigned_url(method, organization_id, checksum);
         if let Err(error) = &result {
-            log_failure(organization_id, "presigned_url", store.as_ref(), error);
+            log_failure(
+                organization_id,
+                "presigned_url",
+                store.as_ref(),
+                checksum,
+                error,
+            );
         }
         result
     }
@@ -159,7 +176,7 @@ impl ObjectStore for RoutingObjectStore {
         };
         let result = store.health_check();
         if let Err(error) = &result {
-            log_failure("-", "health_check", store.as_ref(), error);
+            log_failure("-", "health_check", store.as_ref(), "", error);
         }
         result
     }

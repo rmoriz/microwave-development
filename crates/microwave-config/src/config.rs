@@ -1127,8 +1127,16 @@ impl ObjectStoreConfig {
                 });
             }
         }
+        if let Some(bucket) = &self.bucket {
+            if !valid_bucket_name(bucket.trim()) {
+                return Err(ConfigError::InvalidValue {
+                    key: "object_store.bucket".into(),
+                    value: bucket.clone(),
+                });
+            }
+        }
         if let Some(health_bucket) = &self.health_bucket {
-            if !valid_bucket_name(health_bucket) {
+            if !valid_bucket_name(health_bucket.trim()) {
                 return Err(ConfigError::InvalidValue {
                     key: "object_store.health_bucket".into(),
                     value: health_bucket.clone(),
@@ -1143,7 +1151,7 @@ impl ObjectStoreConfig {
                     value: organization.clone(),
                 });
             }
-            if !valid_bucket_name(&entry.bucket) {
+            if !valid_bucket_name(entry.bucket.trim()) {
                 return Err(ConfigError::InvalidValue {
                     key: format!("object_store.organizations.{organization}.bucket"),
                     value: entry.bucket.clone(),
