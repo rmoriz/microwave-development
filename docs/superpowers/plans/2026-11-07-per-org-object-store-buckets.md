@@ -265,11 +265,12 @@ git commit -m "feat(server): build per-org object store routes at startup"
 ### Task 7: Bucket probe
 
 **Files:**
-- Create: `bin/microwave-server/src/object_store.rs` (extend)
-- Test: module tests with a local HTTP server, mirroring `crates/microwave-objectstore/tests/s3_mock.rs`
+- Create: `crates/microwave-objectstore/src/probe.rs` (in the objectstore crate so `microwave-ctl` can reuse it)
+- Modify: `crates/microwave-objectstore/src/lib.rs` (module, re-exports)
+- Test: `crates/microwave-objectstore/tests/probe.rs` with a local HTTP server, mirroring `tests/s3_mock.rs`
 
 **Interfaces:**
-- Produces: `pub async fn verify_buckets(snapshot: &TenantSnapshot) -> Result<(), ObjectStoreError>`; `pub async fn probe_endpoint(endpoint: &str, bucket: &str, config: &S3Config) -> Result<(), ObjectStoreError>`.
+- Produces: `pub async fn verify_buckets(config: &ObjectStoreConfig, snapshot: &TenantSnapshot) -> Result<(), ObjectStoreError>`; `pub async fn probe_endpoint(endpoint: &str, bucket: &str, config: &S3Config) -> Result<(), ObjectStoreError>`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -277,23 +278,23 @@ A 404 for one bucket rejects; a 200 passes; with `verify_buckets = false` no req
 
 - [ ] **Step 2: Run them and confirm they fail**
 
-Run: `cargo test -p microwave-server verify_buckets`
+Run: `cargo test -p microwave-objectstore --test probe`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
-Probe every entry in `by_org` plus `default` (not `health`, which duplicates the default store) with `health_check()` through `tokio::spawn` plus a semaphore of 8; count in-flight requests in the test double. `serve --check` skips the call because it returns before the server starts; keep `build_object_store` probe-free.
+Probe every entry in `by_org`, `default` and `health` (skip `health` only when it names the same bucket as `default`) with `health_check()` through `tokio::spawn` plus a semaphore of 8; count in-flight requests in the test double. `serve --check` skips the call because it returns before the server starts; keep `build_object_store` probe-free. Gate the whole probe on `config.verify_buckets` and return early.
 
 - [ ] **Step 4: Run the tests**
 
-Run: `cargo test -p microwave-server`
+Run: `cargo test -p microwave-objectstore`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add bin/microwave-server
-git commit -m "feat(server): verify tenant buckets before use"
+git add crates/microwave-objectstore
+git commit -m "feat(objectstore): verify tenant buckets before use"
 ```
 
 ---

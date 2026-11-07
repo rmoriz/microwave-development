@@ -112,7 +112,6 @@ async fn reachable_buckets_pass_the_probe() {
     let (endpoint, mock) = start_mock(0).await;
     let mut snapshot = TenantSnapshot {
         default: Some(store(&endpoint, "chef")),
-        // The health store duplicates the default store; it must not be probed.
         health: Some(store(&endpoint, "health-bucket")),
         ..TenantSnapshot::default()
     };
@@ -126,7 +125,45 @@ async fn reachable_buckets_pass_the_probe() {
 
     let mut requests = mock.requests();
     requests.sort();
-    assert_eq!(requests, ["HEAD /acme-bucket", "HEAD /chef"]);
+    assert_eq!(
+        requests,
+        ["HEAD /acme-bucket", "HEAD /chef", "HEAD /health-bucket"]
+    );
+}
+
+/// In strict mode the default store is absent, so the health bucket is the
+/// only probe target of a fresh install and must actually be probed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_health_bucket_is_probed_when_it_is_the_only_target() {
+    let (endpoint, mock) = start_mock(0).await;
+    let snapshot = TenantSnapshot {
+        health: Some(store(&endpoint, "health-bucket")),
+        ..TenantSnapshot::default()
+    };
+
+    verify_buckets(&probe_config(true), &snapshot)
+        .await
+        .unwrap();
+
+    assert_eq!(mock.requests(), ["HEAD /health-bucket"]);
+}
+
+/// A health bucket equal to the default bucket is the same target and gets one
+/// request, not two.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_health_bucket_equal_to_the_default_is_probed_once() {
+    let (endpoint, mock) = start_mock(0).await;
+    let snapshot = TenantSnapshot {
+        default: Some(store(&endpoint, "chef")),
+        health: Some(store(&endpoint, "chef")),
+        ..TenantSnapshot::default()
+    };
+
+    verify_buckets(&probe_config(true), &snapshot)
+        .await
+        .unwrap();
+
+    assert_eq!(mock.requests(), ["HEAD /chef"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

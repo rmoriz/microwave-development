@@ -44,10 +44,11 @@ pub async fn probe_endpoint(
 
 /// Probe every bucket a snapshot would serve before it is installed.
 ///
-/// Probes all `by_org` stores plus `default`; `health` is skipped because it is
-/// the default bucket outside strict mode and absent in strict mode. At most
-/// eight requests run at once, and the first failure rejects the whole
-/// snapshot — so a typo shows up before traffic moves.
+/// Probes all `by_org` stores, `default` and `health`. `health` is skipped only
+/// when it names the same bucket as `default`, where the two stores would send
+/// an identical request. At most eight requests run at once, and the first
+/// failure rejects the whole snapshot — so a typo shows up before traffic
+/// moves.
 ///
 /// Returns `Ok` without touching the snapshot when `verify_buckets` is off.
 pub async fn verify_buckets(
@@ -65,6 +66,17 @@ pub async fn verify_buckets(
         .collect();
     if let Some(default) = &snapshot.default {
         targets.push((None, Arc::clone(default)));
+    }
+    if let Some(health) = &snapshot.health {
+        // Outside strict mode the health bucket often repeats the default
+        // bucket; probing it twice would send one redundant `HEAD`.
+        let same_target = snapshot
+            .default
+            .as_ref()
+            .is_some_and(|default| default.bucket() == health.bucket());
+        if !same_target {
+            targets.push((None, Arc::clone(health)));
+        }
     }
     if targets.is_empty() {
         return Ok(());
