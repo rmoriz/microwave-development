@@ -78,8 +78,13 @@ impl SharedTarget {
             .filter(|key| !key.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| self.secret_key.clone());
+        // Validation only sees the trimmed endpoint, so trim here too: a
+        // padded value would otherwise reach the request URL unchanged.
+        let endpoint = endpoint
+            .map(|endpoint| endpoint.trim())
+            .filter(|endpoint| !endpoint.is_empty());
         let mut config = S3Config::new(
-            endpoint.map_or(self.endpoint.as_str(), String::as_str),
+            endpoint.map_or(self.endpoint.as_str(), |endpoint| endpoint),
             bucket,
             region.map_or(self.region.as_str(), String::as_str),
             access_key,
@@ -237,6 +242,29 @@ mod tests {
 
     fn mapped(id: &str) -> BTreeMap<String, String> {
         BTreeMap::from([("acme".to_string(), id.to_string())])
+    }
+
+    /// Validation compares the trimmed endpoint, so the build must trim it
+    /// too; otherwise the space survives into every request URL.
+    #[test]
+    fn a_padded_org_endpoint_is_trimmed_before_the_store_is_built() {
+        let mut config = strict_config();
+        config.organizations.insert(
+            "acme".to_string(),
+            ObjectStoreOrgConfig {
+                bucket: "mw-acme".into(),
+                endpoint: Some("  http://127.0.0.1:3900/  ".into()),
+                ..Default::default()
+            },
+        );
+
+        let snapshot = build_snapshot(&config, &mapped("org-acme"), &credentials("a", "s"))
+            .expect("a padded endpoint is valid");
+        let url = snapshot.by_org["org-acme"]
+            .presigned_url("GET", "org-acme", "0123456789abcdef0123456789abcdef")
+            .unwrap();
+        assert!(!url.contains(' '), "{url}");
+        assert!(url.starts_with("http://127.0.0.1:3900/"), "{url}");
     }
 
     #[test]

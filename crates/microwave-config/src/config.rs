@@ -1172,13 +1172,13 @@ impl ObjectStoreConfig {
                     value: String::new(),
                 });
             }
-            // The build path trims both fields; compare the trimmed form so
-            // padded values cannot slip past the duplicate rule.
+            // The request path trims whitespace and ignores a trailing `/`;
+            // normalise the same way so neither slips past the duplicate rule.
             let endpoint = entry
                 .endpoint
                 .as_deref()
                 .or(self.endpoint.as_deref())
-                .map(str::trim);
+                .map(|endpoint| endpoint.trim().trim_end_matches('/'));
             if let Some(other) = targets.insert((endpoint, entry.bucket.trim()), organization) {
                 return Err(ConfigError::InvalidValue {
                     key: format!("object_store.organizations.{organization}.bucket"),
