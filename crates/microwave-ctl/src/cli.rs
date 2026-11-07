@@ -362,9 +362,21 @@ pub enum Command {
         #[arg(long, value_name = "UNIT")]
         unit: Option<String>,
     },
-    /// Send SIGHUP to the service. Microwave runs as one systemd unit, so this
-    /// maps to `systemctl restart` (a configuration reload in this
-    /// deployment). Accepts the upstream optional SERVICE_NAME.
+    /// Legitimately reload the object store and the tenant map without a
+    /// restart. Validates the tenant map and credentials locally, signals the
+    /// server, and waits for the outcome. Accepts the upstream optional
+    /// SERVICE_NAME.
+    Reload {
+        /// Upstream service name. Treated as the systemd unit when `--unit` is
+        /// omitted.
+        service: Option<String>,
+        /// systemd unit name.
+        #[arg(long, value_name = "UNIT")]
+        unit: Option<String>,
+    },
+    /// Send SIGHUP to the service. This stays a full `systemctl restart`; use
+    /// `reload` for a real reload without a restart. Accepts the upstream
+    /// optional SERVICE_NAME.
     Hup {
         /// Upstream service name. Treated as the systemd unit when `--unit` is
         /// omitted.
@@ -905,6 +917,24 @@ mod tests {
 
         let cli = Cli::try_parse_from(["microwave-ctl", "service-list"]).unwrap();
         assert!(matches!(cli.command, Command::ServiceList { unit: None }));
+    }
+
+    #[test]
+    fn parses_reload_alone_and_with_a_unit() {
+        let cli = Cli::try_parse_from(["microwave-ctl", "reload"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Reload {
+                service: None,
+                unit: None
+            }
+        ));
+
+        let cli = Cli::try_parse_from(["microwave-ctl", "reload", "--unit", "demo"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Reload { ref unit, .. } if unit.as_deref() == Some("demo")
+        ));
     }
 
     #[test]

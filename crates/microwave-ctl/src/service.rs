@@ -73,6 +73,38 @@ pub fn run(
     }
 }
 
+/// Trigger a `systemctl reload` on a running unit.
+///
+/// `systemctl reload` reports success even for a unit that is not running, so
+/// the unit is probed with `is-active --quiet` first and a stopped unit yields
+/// exit code 4. The server itself validates the reload.
+pub(crate) fn reload(unit: Option<&str>) -> Result<(), CtlError> {
+    let unit = resolve_unit(unit)?;
+    let systemctl = std::env::var(SYSTEMCTL_ENV).unwrap_or_else(|_| "systemctl".into());
+    if !program_available(&systemctl) {
+        return Err(unavailable(&systemctl));
+    }
+
+    let status = Command::new(&systemctl)
+        .args(["is-active", "--quiet", &unit])
+        .status()
+        .map_err(|error| {
+            CtlError::message(format!(
+                "failed to run {systemctl} for unit {unit}: {error}; manage the service with your init system or set {SYSTEMCTL_ENV} to an explicit systemctl path"
+            ))
+        })?;
+    if !status.success() {
+        return Err(CtlError::coded(
+            4,
+            format!(
+                "the microwave-server service is not running; start it before reloading. Check `{systemctl} status {unit}` or run `microwave-ctl service start`."
+            ),
+        ));
+    }
+
+    systemctl_action(&systemctl, "reload", &unit)
+}
+
 /// Run `microwave-server serve` in this process.
 ///
 /// `MW_SERVER_BIN` wins; otherwise a `microwave-server` next to the current

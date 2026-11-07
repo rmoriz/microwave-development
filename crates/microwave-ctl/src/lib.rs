@@ -16,6 +16,7 @@ mod keys;
 mod maintenance;
 mod pedant;
 mod pg;
+mod reload;
 mod rotation;
 mod secrets;
 mod service;
@@ -106,10 +107,13 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
                 false,
             );
         }
+        Command::Reload { service, unit } => {
+            let unit = unit.or(service);
+            return reload::run(unit.as_deref(), cli.config.as_deref());
+        }
         Command::Hup { service, unit } => {
             let unit = unit.or(service);
-            // The server is one systemd unit, so a HUP is implemented as a
-            // restart. This is the same action as `service restart`.
+            // A HUP stays a full restart; `reload` is the real reload.
             return service::run(
                 ServiceAction::Restart,
                 unit.as_deref(),
@@ -148,6 +152,7 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
         Command::Start { .. }
         | Command::Stop { .. }
         | Command::Restart { .. }
+        | Command::Reload { .. }
         | Command::Hup { .. }
         | Command::Tail { .. }
         | Command::ServiceList { .. } => unreachable!("service alias was handled above"),

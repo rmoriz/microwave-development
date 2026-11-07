@@ -20,6 +20,10 @@ pub enum CtlError {
     /// into the process exit code without printing an additional error.
     #[error("command exited with status {0}")]
     Exit(u8),
+    /// An error with a dedicated process exit code. The binaries print the
+    /// message and exit with `code`.
+    #[error("{message}")]
+    Coded { code: u8, message: String },
     #[error("{0}")]
     Message(String),
 }
@@ -27,6 +31,14 @@ pub enum CtlError {
 impl CtlError {
     pub fn message(message: impl Into<String>) -> Self {
         Self::Message(message.into())
+    }
+
+    /// An error that exits with a dedicated code.
+    pub fn coded(code: u8, message: impl Into<String>) -> Self {
+        Self::Coded {
+            code,
+            message: message.into(),
+        }
     }
 
     /// Convert a child process status into a [`CtlError::Exit`].

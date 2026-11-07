@@ -832,6 +832,111 @@ mod operational_process_tests {
         path
     }
 
+    /// A fake systemctl whose `reload` writes the request token into a status
+    /// template, so the poll sees the server's answer.
+    fn fake_reload_systemctl(dir: &Path) -> PathBuf {
+        let path = dir.join("systemctl");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\n\
+             if [ -n \"$MW_TEST_LOG\" ]; then\n\
+               printf '%s\\n' \"$@\" >> \"$MW_TEST_LOG\"\n\
+             fi\n\
+             case \"$1\" in\n\
+               is-active) exit \"${MW_TEST_ACTIVE_EXIT:-0}\";;\n\
+               reload)\n\
+                 token=$(cat \"$MW_PATHS__DATA_DIR/objectstore.reload.request\")\n\
+                 sed -e \"s/@TOKEN@/$token/g\" -e \"s/@BOOT@/$MW_TEST_BOOT/g\" \"$MW_TEST_TEMPLATE\" > \"$MW_PATHS__DATA_DIR/objectstore.reload\"\n\
+                 ;;\n\
+             esac\n\
+             exit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// A strict tenant-map config with acme mapped to its own bucket.
+    fn write_strict_config(dir: &Path) -> PathBuf {
+        let config = dir.join("microwave.toml");
+        std::fs::write(
+            &config,
+            "[object_store]\n\
+             backend = \"s3\"\n\
+             endpoint = \"http://127.0.0.1:3900\"\n\
+             health_bucket = \"mw-health\"\n\
+             require_org_bucket = true\n\n\
+             [object_store.organizations.acme]\n\
+             bucket = \"mw-acme\"\n",
+        )
+        .unwrap();
+        config
+    }
+
+    /// A strict config that does not map acme.
+    fn write_unmapped_strict_config(dir: &Path) -> PathBuf {
+        let config = dir.join("microwave-unmapped.toml");
+        std::fs::write(
+            &config,
+            "[object_store]\n\
+             backend = \"s3\"\n\
+             endpoint = \"http://127.0.0.1:3900\"\n\
+             health_bucket = \"mw-health\"\n\
+             require_org_bucket = true\n",
+        )
+        .unwrap();
+        config
+    }
+
+    fn create_org(dir: &Path) {
+        assert_success(
+            &ctl(dir)
+                .args(["user-create", "pivotal", "--password", "pivotal-password"])
+                .output()
+                .unwrap(),
+        );
+        assert_success(&ctl(dir).args(["org-create", "acme"]).output().unwrap());
+    }
+
+    fn create_mapped_org(dir: &Path) {
+        create_org(dir);
+        for (name, value) in [
+            ("acme.access_key", "acme-access"),
+            ("acme.secret_key", "acme-secret"),
+        ] {
+            assert_success(
+                &ctl(dir)
+                    .args(["set-secret", "object_store", name, value])
+                    .output()
+                    .unwrap(),
+            );
+        }
+    }
+
+    fn write_status(dir: &Path, boot_id: &str, token: Option<&str>, at: &str, outcome: &str) {
+        let token = token.map_or_else(|| "null".to_string(), |token| format!("\"{token}\""));
+        std::fs::write(
+            dir.join("objectstore.reload"),
+            format!(
+                "{{\"boot_id\":\"{boot_id}\",\"token\":{token},\"trigger\":\"boot\",\"at\":\"{at}\",\"outcome\":\"{outcome}\",\"message\":null}}"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn status_template(dir: &Path, outcome: &str, message: Option<&str>) -> PathBuf {
+        let template = dir.join("status.json");
+        let message = message.map_or_else(|| "null".to_string(), |text| format!("\"{text}\""));
+        std::fs::write(
+            &template,
+            format!(
+                "{{\"boot_id\":\"@BOOT@\",\"token\":\"@TOKEN@\",\"trigger\":\"sighup\",\"at\":\"2026-11-07T00:00:01Z\",\"outcome\":\"{outcome}\",\"message\":{message}}}"
+            ),
+        )
+        .unwrap();
+        template
+    }
+
     fn pedant_tags(log: &Path) -> Vec<String> {
         std::fs::read_to_string(log)
             .unwrap_or_default()
@@ -1171,6 +1276,120 @@ mod operational_process_tests {
             .unwrap();
         assert!(!unit.status.success());
         assert!(stderr(&unit).contains("--unit is not valid"));
+    }
+
+    #[test]
+    fn reload_rejects_a_missing_tenant_entry_before_signalling() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = write_unmapped_strict_config(dir.path());
+        create_org(dir.path());
+        let systemctl = fake_tool(dir.path(), "systemctl");
+        let log = dir.path().join("systemctl.log");
+
+        let output = ctl(dir.path())
+            .env("MW_SYSTEMCTL", &systemctl)
+            .env("MW_TEST_LOG", &log)
+            .args(["--config", config.to_str().unwrap(), "reload"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let text = stderr(&output);
+        assert!(
+            text.contains("no object_store.organizations entry"),
+            "stderr: {text}"
+        );
+        assert!(text.contains("issue(s)"), "stderr: {text}");
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap_or_default(),
+            "",
+            "systemctl must not run before the tenant map is valid"
+        );
+    }
+
+    #[test]
+    fn reload_exits_four_when_the_service_is_inactive() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = write_strict_config(dir.path());
+        create_mapped_org(dir.path());
+        write_status(dir.path(), "boot-1", None, "2026-11-07T00:00:00Z", "ok");
+        let systemctl = fake_reload_systemctl(dir.path());
+        let log = dir.path().join("systemctl.log");
+
+        let output = ctl(dir.path())
+            .env("MW_SYSTEMCTL", &systemctl)
+            .env("MW_TEST_LOG", &log)
+            .env("MW_TEST_ACTIVE_EXIT", "3")
+            .env("MW_RELOAD_TIMEOUT_MS", "200")
+            .args(["--config", config.to_str().unwrap(), "reload"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(4));
+        assert!(stderr(&output).contains("not running"));
+        assert_eq!(
+            pedant_tags(&log),
+            vec![
+                "is-active".to_string(),
+                "--quiet".to_string(),
+                "microwave-server".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn reload_reports_a_successful_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = write_strict_config(dir.path());
+        create_mapped_org(dir.path());
+        write_status(dir.path(), "boot-1", None, "2026-11-07T00:00:00Z", "ok");
+        let template = status_template(dir.path(), "ok", None);
+        let systemctl = fake_reload_systemctl(dir.path());
+        let log = dir.path().join("systemctl.log");
+
+        let output = ctl(dir.path())
+            .env("MW_SYSTEMCTL", &systemctl)
+            .env("MW_TEST_LOG", &log)
+            .env("MW_TEST_BOOT", "boot-1")
+            .env("MW_TEST_TEMPLATE", &template)
+            .env("MW_RELOAD_TIMEOUT_MS", "200")
+            .args(["--config", config.to_str().unwrap(), "reload"])
+            .output()
+            .unwrap();
+        assert_success(&output);
+        assert!(stdout(&output).contains("reloaded the object store tenant map"));
+
+        let status = std::fs::read_to_string(dir.path().join("objectstore.reload")).unwrap();
+        assert!(!status.contains("\"token\":null"), "status: {status}");
+        assert!(
+            !dir.path().join("objectstore.reload.request").exists(),
+            "our request file must be cleaned up"
+        );
+    }
+
+    #[test]
+    fn reload_reports_a_rejected_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = write_strict_config(dir.path());
+        create_mapped_org(dir.path());
+        write_status(dir.path(), "boot-1", None, "2026-11-07T00:00:00Z", "ok");
+        let template = status_template(
+            dir.path(),
+            "rejected",
+            Some("bucket mw-acme is unreachable"),
+        );
+        let systemctl = fake_reload_systemctl(dir.path());
+        let log = dir.path().join("systemctl.log");
+
+        let output = ctl(dir.path())
+            .env("MW_SYSTEMCTL", &systemctl)
+            .env("MW_TEST_LOG", &log)
+            .env("MW_TEST_BOOT", "boot-1")
+            .env("MW_TEST_TEMPLATE", &template)
+            .env("MW_RELOAD_TIMEOUT_MS", "200")
+            .args(["--config", config.to_str().unwrap(), "reload"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(stderr(&output).contains("bucket mw-acme is unreachable"));
     }
 
     #[test]
