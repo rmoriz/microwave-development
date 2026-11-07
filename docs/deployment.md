@@ -1380,14 +1380,15 @@ an `mw-acme`, but two organizations must not share one target. The server
 performs no bucket provisioning, quota or lifecycle work — that is an external
 tool's job.
 
-The router still sends one `HEAD` per bucket on startup and on reload (see
+On startup and on every reload the reloader sends one `HEAD` per bucket (see
 `verify_buckets`, which needs `HeadBucket`). The key layout stays
 `organization-<org_id>/checksum-<md5>` inside every bucket. Keys and checksums
 are never logged.
 
-An entry that names a deleted organization logs a warning and stays inactive,
-so it cannot wedge a reload. `microwave-ctl check-config` and
-`microwave-ctl diagnostics` report it.
+An entry that names a deleted organization is logged as a warning by the
+server and stays inactive, so a running server keeps serving.
+`microwave-ctl check-config` and `microwave-ctl diagnostics` report it, and
+`microwave-ctl reload` refuses to signal until it is removed.
 
 #### Strict tenant mode
 
@@ -2626,8 +2627,8 @@ microwave-ctl service status
 `status` reports the data directory, driver, database path, whether the
 database is readable, and whether the superuser exists. `check-config` loads the
 resolved configuration and validates the data directory, database URL/driver,
-bind address, search backend, object-store credentials, TLS certificate/key
-pair, and superuser name, without binding a listener. For PostgreSQL it
+bind address, search backend, object-store credentials, the tenant map, TLS
+certificate/key pair, and superuser name, without binding a listener. For PostgreSQL it
 connects without changing the schema and reports `database_readable: true`
 when the schema already exists and the superuser query succeeds; an empty or
 unreachable database reports `false` without failing the command.
