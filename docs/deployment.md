@@ -1380,8 +1380,9 @@ an `mw-acme`, but two organizations must not share one target. The server
 performs no bucket provisioning, quota or lifecycle work — that is an external
 tool's job.
 
-With `verify_buckets` on (the default) the reloader sends one `HEAD` per
-bucket on startup and on every reload; that needs `HeadBucket` rights. The key
+With `verify_buckets` on (the default) the server sends one `HEAD` per bucket
+before it binds, and the reloader again on every reload; that needs
+`HeadBucket` rights. The key
 layout stays `organization-<org_id>/checksum-<md5>` inside every bucket. Keys
 and checksums are never logged.
 

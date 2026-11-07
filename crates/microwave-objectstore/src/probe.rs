@@ -69,7 +69,9 @@ pub async fn verify_buckets(
     }
     if let Some(health) = &snapshot.health {
         // Outside strict mode the health bucket often repeats the default
-        // bucket; probing it twice would send one redundant `HEAD`.
+        // bucket; probing it twice would send one redundant `HEAD`. Both
+        // stores are built from the one shared endpoint, so the bucket name
+        // alone identifies the target.
         let same_target = snapshot
             .default
             .as_ref()

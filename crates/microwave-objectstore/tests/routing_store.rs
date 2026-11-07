@@ -193,8 +193,10 @@ fn unmapped_organization_uses_the_default_store() {
 
 #[test]
 fn unmapped_organization_without_default_reports_no_org_bucket() {
-    // Every call logs an error; the log assertion elsewhere must not see them.
+    // Every call logs an error; keep them away from the log assertion.
+    init_log();
     let _guard = LOG_TEST_LOCK.lock().unwrap();
+    LOG_CAPTURE.lock().unwrap().clear();
     let mapped = Double::new("acme-bucket");
     let router = RoutingObjectStore::new(snapshot(None, None, vec![("acme", mapped.clone())]));
 
