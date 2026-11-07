@@ -100,7 +100,16 @@ impl Reloader {
     /// the rejection is recorded in the status file.
     pub async fn reload(&self, trigger: Trigger) -> Result<(), ReloadError> {
         let _guard = self.lock.lock().await;
-        let token = self.read_token();
+        // Only the token this reload actually read may be consumed. A token
+        // written while this reload runs belongs to the queued reload.
+        let taken = take_token(&self.request_path());
+        // A queued reload must not erase an unanswered answer with
+        // `token: null`: when this reload read no request, echo the token of
+        // the previous same-boot status so the ctl still matches. The boot id
+        // keeps a status from an older process out.
+        let echo = taken
+            .clone()
+            .or_else(|| answered_token(&self.status_path(), &self.boot_id));
         let result = self.run(trigger).await;
 
         let (outcome, message) = match &result {
@@ -108,19 +117,18 @@ impl Reloader {
             Err(error) => ("rejected", Some(error.to_string())),
         };
         if let Err(error) = self.write_status(
-            token.as_deref(),
+            echo.as_deref(),
             &trigger.to_string(),
             outcome,
             message.as_deref(),
         ) {
             tracing::error!(%error, "failed to write the object store reload status");
         }
-        // The token is consumed even on rejection so the ctl never reads a
-        // stale answer from a later request.
-        if let Err(error) = std::fs::remove_file(self.data_dir.join(REQUEST_FILE)) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!(%error, "failed to remove the object store reload request");
-            }
+        // Compare-and-delete: a request file rewritten meanwhile stays for the
+        // queued reload. A read token is consumed even on rejection so the ctl
+        // never reads a stale answer from a later request.
+        if let Some(token) = taken {
+            consume_token(&self.request_path(), &token);
         }
 
         match result {
@@ -162,10 +170,12 @@ impl Reloader {
         Ok(())
     }
 
-    fn read_token(&self) -> Option<String> {
-        let token = std::fs::read_to_string(self.data_dir.join(REQUEST_FILE)).ok()?;
-        let token = token.trim();
-        (!token.is_empty()).then(|| token.to_string())
+    fn request_path(&self) -> PathBuf {
+        self.data_dir.join(REQUEST_FILE)
+    }
+
+    fn status_path(&self) -> PathBuf {
+        self.data_dir.join(STATUS_FILE)
     }
 
     /// Write the status through a temp file and a rename, so a poller never
@@ -190,6 +200,45 @@ impl Reloader {
             status.to_string().as_bytes(),
         )
     }
+}
+
+/// Read the request token, if any.
+fn take_token(path: &Path) -> Option<String> {
+    let token = std::fs::read_to_string(path).ok()?;
+    let token = token.trim();
+    (!token.is_empty()).then(|| token.to_string())
+}
+
+/// Remove the request file only while it still holds `token`.
+///
+/// A token written while the reload was running stays in place for the queued
+/// reload instead of being answered by the wrong status.
+fn consume_token(path: &Path, token: &str) {
+    let still = std::fs::read_to_string(path).ok();
+    if still.as_deref().map(str::trim) != Some(token) {
+        return;
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(%error, "failed to remove the object store reload request")
+        }
+    }
+}
+
+/// The token of the previous status, when it belongs to this boot.
+///
+/// A queued reload that read no request file echoes it instead of overwriting
+/// the answer with `token: null`.
+fn answered_token(path: &Path, boot_id: &str) -> Option<String> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    let status: serde_json::Value = serde_json::from_str(&contents).ok()?;
+    if status.get("boot_id")?.as_str()? != boot_id {
+        return None;
+    }
+    let token = status.get("token")?.as_str()?.trim();
+    (!token.is_empty()).then(|| token.to_string())
 }
 
 /// Publish `contents` with a rename. Unix callers get mode `0640`.
@@ -231,7 +280,7 @@ fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Reloader, Trigger};
+    use super::{consume_token, take_token, Reloader, Trigger};
     use crate::object_store::assemble;
     use microwave_config::Config;
     use microwave_objectstore::{ObjectStore, RoutingObjectStore};
@@ -244,7 +293,7 @@ mod tests {
 
     struct Harness {
         _dir: tempfile::TempDir,
-        reloader: Reloader,
+        reloader: Arc<Reloader>,
         router: Arc<RoutingObjectStore>,
         org_id: String,
         data_dir: PathBuf,
@@ -285,13 +334,13 @@ verify_buckets = false
         let config = Config::load(Some(&config_path)).unwrap();
         let snapshot = assemble(&config, store.as_ref(), "secret").await.unwrap();
         let router = Arc::new(RoutingObjectStore::new(snapshot));
-        let reloader = Reloader::new(
+        let reloader = Arc::new(Reloader::new(
             Some(config_path.clone()),
             store.clone(),
             router.clone(),
             data_dir.clone(),
             "boot-1".into(),
-        );
+        ));
 
         Harness {
             _dir: dir,
@@ -423,6 +472,112 @@ verify_buckets = false
         assert_eq!(status["trigger"], "boot");
         assert_eq!(status["outcome"], "ok");
         assert!(status["token"].is_null());
+        assert!(!harness.data_dir.join("objectstore.reload.request").exists());
+    }
+
+    fn write_status_file(data_dir: &Path, boot_id: &str, token: &str) {
+        let status = serde_json::json!({
+            "boot_id": boot_id,
+            "token": token,
+            "trigger": "manual",
+            "at": "2026-11-07T00:00:00Z",
+            "outcome": "ok",
+            "message": null,
+        });
+        std::fs::write(data_dir.join("objectstore.reload"), status.to_string()).unwrap();
+    }
+
+    fn base_config_at(bucket: &str, endpoint: &str, verify: bool) -> String {
+        base_config(Some(bucket))
+            .replace("http://127.0.0.1:3900", endpoint)
+            .replace(
+                "verify_buckets = false",
+                &format!("verify_buckets = {verify}"),
+            )
+    }
+
+    #[tokio::test]
+    async fn consume_token_only_removes_the_token_it_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("request");
+        std::fs::write(&path, "newer\n").unwrap();
+
+        consume_token(&path, "older");
+        assert_eq!(
+            take_token(&path).as_deref(),
+            Some("newer"),
+            "a rewritten file survives"
+        );
+
+        consume_token(&path, "newer");
+        assert_eq!(take_token(&path), None, "the answered token is removed");
+    }
+
+    #[tokio::test]
+    async fn a_tokenless_reload_keeps_the_previous_answer() {
+        let harness = harness().await;
+        write_status_file(&harness.data_dir, "boot-1", "tok-previous");
+        write_config(&harness.config_path, &base_config(Some("mw-new")));
+
+        harness.reloader.reload(Trigger::Manual).await.unwrap();
+
+        assert_eq!(status(&harness.data_dir)["token"], "tok-previous");
+    }
+
+    #[tokio::test]
+    async fn a_status_from_another_boot_supplies_no_token() {
+        let harness = harness().await;
+        write_status_file(&harness.data_dir, "other-boot", "tok-stale");
+        write_config(&harness.config_path, &base_config(Some("mw-new")));
+
+        harness.reloader.reload(Trigger::Manual).await.unwrap();
+
+        assert!(status(&harness.data_dir)["token"].is_null());
+    }
+
+    /// The first reload holds the lock while the token is written; its
+    /// compare-and-delete must leave the file for the queued reload, which
+    /// answers it. The listener accepts and never responds, so the bucket
+    /// probe blocks until its 1.5 s timeout.
+    #[tokio::test]
+    async fn a_token_written_during_a_running_reload_is_answered_by_the_queued_one() {
+        let harness = harness().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hold = tokio::spawn(async move {
+            let mut sockets = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                sockets.push(socket);
+            }
+        });
+        write_config(
+            &harness.config_path,
+            &base_config_at("mw-new", &format!("http://{addr}"), true),
+        );
+
+        let first = tokio::spawn({
+            let reloader = harness.reloader.clone();
+            async move { reloader.reload(Trigger::Manual).await }
+        });
+        // Let the first reload pass its token read before racing it.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::fs::write(
+            harness.data_dir.join("objectstore.reload.request"),
+            "tok-queued\n",
+        )
+        .unwrap();
+        let second = tokio::spawn({
+            let reloader = harness.reloader.clone();
+            async move { reloader.reload(Trigger::Manual).await }
+        });
+
+        first.await.unwrap().unwrap_err();
+        second.await.unwrap().unwrap_err();
+        hold.abort();
+
+        let status = status(&harness.data_dir);
+        assert_eq!(status["token"], "tok-queued");
+        assert_eq!(status["outcome"], "rejected");
         assert!(!harness.data_dir.join("objectstore.reload.request").exists());
     }
 
