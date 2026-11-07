@@ -74,6 +74,14 @@ class WorkflowTest(unittest.TestCase):
             self.assertIn(f"{binary} --version", run)
         self.assertIn("{{.Architecture}}", run)
 
+    def test_archives_are_xz_at_maximum_compression(self):
+        steps = self.workflow["jobs"]["build"]["steps"]
+        package = next(step for step in steps if step.get("name") == "Package")["run"]
+        self.assertIn("xz -9e -T0", package)
+        self.assertIn('.tar.xz"', package)
+        self.assertNotIn(".tar.gz", package)
+        self.assertIn(".tar.xz.sha256", package)
+
     def test_manifest_uses_the_tag_script(self):
         manifest = yaml.safe_dump(self.workflow["jobs"]["manifest"])
         self.assertIn("scripts/release-image-manifest-tags.sh", manifest)
