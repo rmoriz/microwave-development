@@ -1,6 +1,7 @@
 use microwave_config::{
     valid_bucket_name, Config, DataCollectorStore, DatabaseDriver, MailAuth, MailConfig,
-    MailSecurity, McpConfig, McpOrgConfig, ObjectStoreBackend, SearchBackend, StorageCompression,
+    MailSecurity, McpConfig, McpOrgConfig, ObjectStoreBackend, ObjectStoreOrgConfig, SearchBackend,
+    StorageCompression,
 };
 use std::sync::Mutex;
 
@@ -748,6 +749,94 @@ fn local_object_store_rejects_organizations_and_strict_mode() {
             .contains("object_store.require_org_bucket"),
         "{strict}"
     );
+}
+
+#[test]
+fn object_store_blank_global_values_are_rejected() {
+    for field in ["endpoint", "access_key", "secret_key"] {
+        let input = format!(
+            r#"
+            [object_store]
+            backend = "s3"
+            {field} = ""
+            "#
+        );
+        let error = Config::from_toml_str(&input).unwrap_err();
+        assert!(
+            error.to_string().contains(&format!("object_store.{field}")),
+            "blank {field} failed through the wrong rule: {error}"
+        );
+    }
+}
+
+#[test]
+fn object_store_blank_env_credentials_are_rejected() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("MW_OBJECT_STORE__BACKEND", "s3");
+    for field in ["ACCESS_KEY", "SECRET_KEY"] {
+        std::env::set_var(format!("MW_OBJECT_STORE__{field}"), "");
+        let mut c = Config::default();
+        let error = c.apply_env().unwrap_err();
+        std::env::remove_var(format!("MW_OBJECT_STORE__{field}"));
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("object_store.{}", field.to_ascii_lowercase())),
+            "blank {field} failed through the wrong rule: {error}"
+        );
+    }
+    std::env::remove_var("MW_OBJECT_STORE__BACKEND");
+}
+
+#[test]
+fn object_store_organization_blank_optional_values_are_rejected() {
+    for field in ["endpoint", "region"] {
+        let input = format!(
+            r#"
+            [object_store]
+            backend = "s3"
+
+            [object_store.organizations.acme]
+            bucket = "mw-acme"
+            {field} = ""
+            "#
+        );
+        let error = Config::from_toml_str(&input).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("object_store.organizations.acme.{field}")),
+            "blank entry {field} failed through the wrong rule: {error}"
+        );
+    }
+}
+
+#[test]
+fn object_store_organization_keys_must_be_valid_org_names() {
+    let mut config = Config::default();
+    config.object_store.backend = ObjectStoreBackend::S3;
+    config.object_store.organizations.insert(
+        "team-1".to_string(),
+        ObjectStoreOrgConfig {
+            bucket: "mw-team-1".to_string(),
+            ..ObjectStoreOrgConfig::default()
+        },
+    );
+    config.validate().expect("valid org name");
+
+    config.object_store.organizations.insert(
+        "ACME".to_string(),
+        ObjectStoreOrgConfig {
+            bucket: "mw-acme".to_string(),
+            ..ObjectStoreOrgConfig::default()
+        },
+    );
+    let error = config.validate().expect_err("invalid org name");
+    assert!(matches!(
+        error,
+        microwave_config::ConfigError::InvalidValue { ref key, ref value }
+            if key == "object_store.organizations.ACME" && value == "ACME"
+    ));
 }
 
 #[test]
