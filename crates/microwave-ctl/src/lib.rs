@@ -255,6 +255,7 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
         }
         Command::Maintenance { action } => secrets::maintenance(&context, action),
         Command::CheckConfig => diagnostics::check_config(&context),
+        Command::Diagnostics { probe } => diagnostics::diagnostics(&context, probe),
         Command::Reconfigure => commands::reconfigure(&context),
         Command::HaStatus => diagnostics::ha_status(&context),
         Command::Psql { args } => {

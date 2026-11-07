@@ -1725,6 +1725,7 @@ dependencies = [
  "microwave-crypto",
  "microwave-mail",
  "microwave-migrate",
+ "microwave-objectstore",
  "microwave-store",
  "microwave-store-postgres",
  "microwave-tls",

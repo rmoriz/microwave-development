@@ -1,16 +1,44 @@
 use crate::{context::Context, CtlError};
-use microwave_config::{DatabaseDriver, ObjectStoreBackend, SearchBackend};
+use microwave_config::{
+    tenant_issues, valid_bucket_name, Config, DatabaseDriver, ObjectStoreBackend,
+    ObjectStoreConfig, ObjectStoreOrgConfig, OrgCredentials, SearchBackend,
+};
 use microwave_mail::SmtpMailer;
-use microwave_store::SqliteStore;
+use microwave_objectstore::{probe_endpoint, S3Config};
+use microwave_store::{SqliteStore, OBJECT_STORE_SECRET_GROUP};
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::Path;
 use url::Url;
 
 const MAX_REQUIRED_RECIPE_BYTES: u64 = 1_048_576;
+const RELOAD_STATUS_FILE: &str = "objectstore.reload";
 
 /// Load the resolved configuration and validate the values required to serve
 /// requests. External backends are checked for the credentials they need.
 pub fn check_config(context: &Context) -> Result<(), CtlError> {
+    let (problems, checks) = collect_config(context);
+    finish(problems, checks)
+}
+
+/// Print the passing checks and turn the problems into one aggregate error.
+fn finish(problems: Vec<String>, checks: Vec<String>) -> Result<(), CtlError> {
+    if problems.is_empty() {
+        for check in checks {
+            println!("ok: {check}");
+        }
+        Ok(())
+    } else {
+        Err(CtlError::message(format!(
+            "configuration check failed:\n  - {}",
+            problems.join("\n  - ")
+        )))
+    }
+}
+
+/// Collect the preflight problems and the checks that passed. Shared by
+/// `check-config` and `diagnostics`; neither touches the network.
+fn collect_config(context: &Context) -> (Vec<String>, Vec<String>) {
     let config = &context.config;
     let mut problems = Vec::new();
     let mut checks = Vec::new();
@@ -95,12 +123,15 @@ pub fn check_config(context: &Context) -> Result<(), CtlError> {
         ObjectStoreBackend::Local => checks.push("object_store local".to_string()),
         backend => {
             let name = object_store_backend_name(backend);
+            let strict = config.object_store.require_org_bucket;
             if non_empty(config.object_store.endpoint.as_deref()).is_none() {
                 problems.push(format!(
                     "object_store.endpoint is required for the {name} backend"
                 ));
             }
-            if non_empty(config.object_store.bucket.as_deref()).is_none() {
+            // Strict mode has no shared bucket; `Config::validate` already
+            // rejects one being configured.
+            if !strict && non_empty(config.object_store.bucket.as_deref()).is_none() {
                 problems.push(format!(
                     "object_store.bucket is required for the {name} backend"
                 ));
@@ -122,12 +153,52 @@ pub fn check_config(context: &Context) -> Result<(), CtlError> {
                 ));
             }
             if non_empty(config.object_store.endpoint.as_deref()).is_some()
-                && non_empty(config.object_store.bucket.as_deref()).is_some()
+                && (strict || non_empty(config.object_store.bucket.as_deref()).is_some())
                 && access_key.is_some()
                 && secret_key.is_some()
             {
                 checks.push(format!("object_store {name}"));
             }
+        }
+    }
+
+    if config.object_store.backend != ObjectStoreBackend::Local {
+        match tenant_state(context, config) {
+            Ok(state) => {
+                // Defensive: `Config::validate` already rejects both, so this
+                // only fires for configs built without validation.
+                if !config.object_store.require_org_bucket {
+                    if let Some(bucket) = non_empty(config.object_store.bucket.as_deref()) {
+                        if !valid_bucket_name(bucket) {
+                            problems.push(format!(
+                                "object_store.bucket {bucket:?} is not a valid bucket name"
+                            ));
+                        }
+                    }
+                }
+                for (organization, entry) in &config.object_store.organizations {
+                    if !valid_bucket_name(&entry.bucket) {
+                        problems.push(format!(
+                            "object_store.organizations.{organization}.bucket {:?} is not a valid bucket name",
+                            entry.bucket
+                        ));
+                    }
+                }
+                let issues = tenant_issues(&config.object_store, &state.orgs, &state.credentials);
+                if issues.is_empty() {
+                    checks.push(format!(
+                        "object_store tenant map {} organization(s)",
+                        state.orgs.len()
+                    ));
+                } else {
+                    for issue in issues {
+                        problems.push(issue.to_string());
+                    }
+                }
+            }
+            Err(error) => problems.push(format!(
+                "cannot read organizations and object-store credentials: {error}"
+            )),
         }
     }
 
@@ -222,17 +293,246 @@ pub fn check_config(context: &Context) -> Result<(), CtlError> {
         }
     }
 
-    if problems.is_empty() {
-        for check in checks {
-            println!("ok: {check}");
+    (problems, checks)
+}
+
+/// The organization table and the per-organization object-store credentials.
+struct TenantState {
+    orgs: BTreeSet<String>,
+    credentials: BTreeMap<String, OrgCredentials>,
+}
+
+/// Read the organization table and the credentials the tenant map needs.
+///
+/// Only organizations that exist and are mapped get their credential pair
+/// read. A missing database file yields an empty state, mirroring
+/// [`stored_secret`]: the strict check then reports every mapped organization
+/// as unknown, which is honest for an uninitialized database.
+fn tenant_state(context: &Context, config: &Config) -> Result<TenantState, String> {
+    let mut state = TenantState {
+        orgs: BTreeSet::new(),
+        credentials: BTreeMap::new(),
+    };
+
+    let mut read_credentials = |orgs: &BTreeSet<String>,
+                                get: &dyn Fn(&str) -> Result<Option<String>, String>|
+     -> Result<(), String> {
+        for organization in orgs {
+            if !config.object_store.organizations.contains_key(organization) {
+                continue;
+            }
+            let access_key = get(&format!("{organization}.access_key"))?.unwrap_or_default();
+            let secret_key = get(&format!("{organization}.secret_key"))?.unwrap_or_default();
+            state.credentials.insert(
+                organization.clone(),
+                OrgCredentials {
+                    access_key: access_key.trim().to_string(),
+                    secret_key: secret_key.trim().to_string(),
+                },
+            );
         }
         Ok(())
-    } else {
-        Err(CtlError::message(format!(
-            "configuration check failed:\n  - {}",
-            problems.join("\n  - ")
-        )))
+    };
+
+    match config.database.driver {
+        DatabaseDriver::Sqlite => {
+            let Some(path) = context.database_path.as_deref() else {
+                return Ok(state);
+            };
+            if !path.is_file() {
+                return Ok(state);
+            }
+            let store = SqliteStore::open_read_only(path).map_err(|error| error.to_string())?;
+            state.orgs = store
+                .list_orgs()
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|organization| organization.name)
+                .collect();
+            let orgs = state.orgs.clone();
+            read_credentials(&orgs, &|name| {
+                store
+                    .get_secret(OBJECT_STORE_SECRET_GROUP, name)
+                    .map_err(|error| error.to_string())
+            })?;
+        }
+        DatabaseDriver::Postgres => {
+            let store = context
+                .open_existing_metadata_store()
+                .map_err(|error| error.to_string())?;
+            state.orgs = store
+                .run(store.store().list_orgs())
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|organization| organization.name)
+                .collect();
+            let orgs = state.orgs.clone();
+            read_credentials(&orgs, &|name| {
+                store
+                    .run(store.store().get_secret(OBJECT_STORE_SECRET_GROUP, name))
+                    .map_err(|error| error.to_string())
+            })?;
+        }
     }
+
+    Ok(state)
+}
+
+/// Report the object-store tenant state and the last reload result.
+///
+/// Offline unless `probe` is set, in which case every configured bucket gets
+/// one signed `HEAD`.
+pub fn diagnostics(context: &Context, probe: bool) -> Result<(), CtlError> {
+    let config = &context.config;
+    println!(
+        "strict: {}",
+        if config.object_store.require_org_bucket {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+
+    let state = tenant_state(context, config).ok();
+    println!(
+        "organizations: {}",
+        state.as_ref().map_or(0, |state| state.orgs.len())
+    );
+
+    let status_path = context.data_dir.join(RELOAD_STATUS_FILE);
+    match std::fs::read_to_string(&status_path) {
+        Ok(contents) => match serde_json::from_str::<serde_json::Value>(&contents) {
+            Ok(status) => println!(
+                "reload: outcome={} trigger={} boot={}",
+                status_field(&status, "outcome"),
+                status_field(&status, "trigger"),
+                status_field(&status, "boot_id")
+            ),
+            Err(_) => println!("reload: unreadable"),
+        },
+        Err(_) => println!("reload: never"),
+    }
+
+    let (mut problems, checks) = collect_config(context);
+    if probe {
+        println!("probing every configured bucket");
+        probe_buckets(context, state.as_ref(), &mut problems)?;
+    }
+    finish(problems, checks)
+}
+
+fn status_field<'a>(status: &'a serde_json::Value, field: &str) -> &'a str {
+    status
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("-")
+}
+
+/// Send one `HEAD` per configured bucket, sequentially, and record each
+/// failure. The token never appears here.
+fn probe_buckets(
+    context: &Context,
+    state: Option<&TenantState>,
+    problems: &mut Vec<String>,
+) -> Result<(), CtlError> {
+    let shared = &context.config.object_store;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| CtlError::message(format!("cannot start the probe runtime: {error}")))?;
+
+    let mut targets: Vec<(String, String, S3Config)> = Vec::new();
+    if !shared.require_org_bucket {
+        if let Some(bucket) = non_empty(shared.bucket.as_deref()) {
+            targets.push((
+                shared
+                    .endpoint
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string(),
+                bucket.to_string(),
+                probe_config(shared, None, None),
+            ));
+        }
+    }
+    if let Some(bucket) = non_empty(shared.health_bucket.as_deref()) {
+        targets.push((
+            shared
+                .endpoint
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            bucket.to_string(),
+            probe_config(shared, None, None),
+        ));
+    }
+    for (organization, entry) in &shared.organizations {
+        let bucket = entry.bucket.trim();
+        if bucket.is_empty() {
+            continue;
+        }
+        let endpoint = non_empty(entry.endpoint.as_deref())
+            .or_else(|| non_empty(shared.endpoint.as_deref()))
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let credentials = state.and_then(|state| state.credentials.get(organization));
+        targets.push((
+            endpoint,
+            bucket.to_string(),
+            probe_config(shared, Some(entry), credentials),
+        ));
+    }
+
+    for (endpoint, bucket, config) in targets {
+        match runtime.block_on(probe_endpoint(&endpoint, &bucket, &config)) {
+            Ok(()) => println!("ok: bucket {bucket}"),
+            Err(error) => problems.push(format!("bucket {bucket}: {error}")),
+        }
+    }
+    Ok(())
+}
+
+/// Merge an entry's fields and credentials over the global settings, exactly
+/// like the server does.
+fn probe_config(
+    shared: &ObjectStoreConfig,
+    entry: Option<&ObjectStoreOrgConfig>,
+    credentials: Option<&OrgCredentials>,
+) -> S3Config {
+    let field = |value: Option<&String>| {
+        value
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let endpoint = entry
+        .and_then(|entry| field(entry.endpoint.as_ref()))
+        .or_else(|| field(shared.endpoint.as_ref()))
+        .unwrap_or_default();
+    let region = entry
+        .and_then(|entry| field(entry.region.as_ref()))
+        .unwrap_or_else(|| shared.region.clone());
+    let access_key = credentials
+        .map(|credentials| credentials.access_key.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| field(shared.access_key.as_ref()))
+        .unwrap_or_default();
+    let secret_key = credentials
+        .map(|credentials| credentials.secret_key.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| field(shared.secret_key.as_ref()))
+        .unwrap_or_default();
+    let bucket = entry.map(|entry| entry.bucket.trim()).unwrap_or_default();
+    let mut config = S3Config::new(endpoint, bucket, region, access_key, secret_key);
+    config.path_style = entry
+        .and_then(|entry| entry.path_style)
+        .unwrap_or(shared.path_style);
+    config
 }
 
 /// Resolve the configured bind to a socket address.
@@ -608,9 +908,14 @@ pub(crate) fn object_store_backend_name(backend: ObjectStoreBackend) -> &'static
 
 #[cfg(test)]
 mod tests {
-    use super::{check_config, parse_psql_args, resolve_bind, Context, PsqlInvocation};
-    use std::net::ToSocketAddrs;
-    use std::path::PathBuf;
+    use super::{
+        check_config, diagnostics, parse_psql_args, resolve_bind, Context, PsqlInvocation,
+    };
+    use microwave_config::{ObjectStoreBackend, ObjectStoreOrgConfig};
+    use microwave_store::{SqliteStore, OBJECT_STORE_SECRET_GROUP};
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{TcpListener, ToSocketAddrs};
+    use std::path::{Path, PathBuf};
 
     fn parse(arguments: &[&str]) -> PsqlInvocation {
         let raw: Vec<String> = arguments.iter().map(|value| value.to_string()).collect();
@@ -786,5 +1091,151 @@ mod tests {
     #[test]
     fn rejects_options_without_a_value() {
         assert!(parse_psql_args(&["--options".to_string()]).is_err());
+    }
+
+    /// A `Context` on a temporary directory with a real SQLite database that
+    /// already holds the `acme` organization, and a strict S3 config.
+    fn tenant_context(dir: &Path) -> Context {
+        let database_path = dir.join("microwave.db");
+        let store = SqliteStore::open(&database_path).unwrap();
+        store.create_org("acme", "Acme").unwrap();
+        drop(store);
+
+        let mut config = microwave_config::Config::default();
+        config.paths.data_dir = dir.join("data").display().to_string();
+        config.database.url = Some(format!("sqlite://{}", database_path.display()));
+        config.object_store.backend = ObjectStoreBackend::S3;
+        config.object_store.endpoint = Some("http://127.0.0.1:1".into());
+        config.object_store.access_key = Some("shared-access".into());
+        config.object_store.secret_key = Some("shared-secret".into());
+        config.object_store.require_org_bucket = true;
+        config.object_store.health_bucket = Some("mw-health".into());
+
+        Context {
+            database_url: config.resolved_database_url(),
+            database_path: Some(database_path),
+            data_dir: dir.join("data"),
+            config,
+        }
+    }
+
+    /// Complete the tenant map for `acme` with a bucket and both secrets.
+    fn map_acme(context: &mut Context) {
+        context.config.object_store.organizations.insert(
+            "acme".to_string(),
+            ObjectStoreOrgConfig {
+                bucket: "mw-acme".into(),
+                ..Default::default()
+            },
+        );
+        let store = SqliteStore::open(context.database_path.as_deref().unwrap()).unwrap();
+        store
+            .set_secret(OBJECT_STORE_SECRET_GROUP, "acme.access_key", "org-access")
+            .unwrap();
+        store
+            .set_secret(OBJECT_STORE_SECRET_GROUP, "acme.secret_key", "org-secret")
+            .unwrap();
+    }
+
+    /// A one-shot HTTP server answering each accepted connection with the
+    /// next status in `statuses`.
+    fn mock_bucket_server(statuses: &[u16]) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let statuses = statuses.to_vec();
+        let handle = std::thread::spawn(move || {
+            for status in statuses {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                }
+                let reason = match status {
+                    200 => "OK",
+                    404 => "Not Found",
+                    _ => "Error",
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} {reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+                )
+                .unwrap();
+                stream.flush().unwrap();
+            }
+        });
+        (endpoint, handle)
+    }
+
+    #[test]
+    fn diagnostics_and_check_config_report_an_unmapped_org() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut context = tenant_context(dir.path());
+
+        let error = diagnostics(&context, false).unwrap_err();
+        assert!(
+            error.to_string().contains("acme"),
+            "unexpected error: {error}"
+        );
+        let error = check_config(&context).unwrap_err();
+        assert!(
+            error.to_string().contains("acme"),
+            "unexpected error: {error}"
+        );
+
+        map_acme(&mut context);
+        assert!(check_config(&context).is_ok());
+        assert!(diagnostics(&context, false).is_ok());
+    }
+
+    #[test]
+    fn diagnostics_only_probes_with_the_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut context = tenant_context(dir.path());
+        map_acme(&mut context);
+        context.config.object_store.require_org_bucket = false;
+        context.config.object_store.bucket = Some("mw-bucket".into());
+        context.config.object_store.health_bucket = None;
+        context.config.object_store.organizations.clear();
+
+        // Nothing listens on port 1, so the offline run must not connect.
+        assert!(diagnostics(&context, false).is_ok());
+        let error = diagnostics(&context, true).unwrap_err();
+        assert!(
+            error.to_string().contains("mw-bucket"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn probe_reports_a_missing_bucket() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut context = tenant_context(dir.path());
+        map_acme(&mut context);
+        let (endpoint, server) = mock_bucket_server(&[404, 404]);
+        context.config.object_store.endpoint = Some(endpoint);
+
+        let error = diagnostics(&context, true).unwrap_err();
+        server.join().unwrap();
+        assert!(
+            error.to_string().contains("mw-acme"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn probe_passes_when_every_bucket_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut context = tenant_context(dir.path());
+        map_acme(&mut context);
+        let (endpoint, server) = mock_bucket_server(&[200, 200]);
+        context.config.object_store.endpoint = Some(endpoint);
+
+        diagnostics(&context, true).unwrap();
+        server.join().unwrap();
     }
 }

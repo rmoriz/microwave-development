@@ -263,6 +263,14 @@ pub enum Command {
 
     /// Load configuration and run preflight checks.
     CheckConfig,
+    /// Report the object-store tenant state and the last reload result without
+    /// touching the network. `--probe` additionally sends one `HEAD` per
+    /// configured bucket.
+    Diagnostics {
+        /// Send one `HEAD` request per configured bucket.
+        #[arg(long)]
+        probe: bool,
+    },
     /// Validate the configuration, initialize or migrate the metadata backend,
     /// and report the resolved backends. This does not restart a running
     /// server or change existing data.
@@ -935,6 +943,24 @@ mod tests {
             cli.command,
             Command::Reload { ref unit, .. } if unit.as_deref() == Some("demo")
         ));
+    }
+
+    #[test]
+    fn parses_check_config_and_diagnostics_probe() {
+        assert!(matches!(
+            Cli::try_parse_from(["microwave-ctl", "check-config"])
+                .unwrap()
+                .command,
+            Command::CheckConfig
+        ));
+
+        let cli = Cli::try_parse_from(["microwave-ctl", "diagnostics"]).unwrap();
+        assert!(matches!(cli.command, Command::Diagnostics { probe: false }));
+
+        let cli = Cli::try_parse_from(["microwave-ctl", "diagnostics", "--probe"]).unwrap();
+        assert!(matches!(cli.command, Command::Diagnostics { probe: true }));
+
+        assert!(Cli::try_parse_from(["microwave-ctl", "check-config", "--probe"]).is_err());
     }
 
     #[test]
