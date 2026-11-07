@@ -42,7 +42,12 @@ async fn create_sandbox(
     let base = base_url(&headers, &state);
     let uri = format!("{base}/organizations/{}/sandboxes/{sandbox_id}", org.name);
     let checksums = checksum_map(checks, &state, &org.id).map_err(|error| {
-        tracing::error!(%error, "presigned upload URL failed");
+        tracing::error!(
+            %error,
+            org_id = %org.id,
+            operation = "presigned_url",
+            "presigned upload URL failed"
+        );
         ApiError::internal()
     })?;
     Ok((

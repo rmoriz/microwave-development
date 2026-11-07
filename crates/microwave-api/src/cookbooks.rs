@@ -913,7 +913,12 @@ pub(crate) fn render_manifest(
     convert_manifest(&mut document, api_version);
     if let Some(state) = state {
         add_download_urls(&mut document, state, org_id).map_err(|error| {
-            tracing::error!(%error, "presigned download URL failed");
+            tracing::error!(
+                %error,
+                org_id = %org_id,
+                operation = "presigned_url",
+                "presigned download URL failed"
+            );
             ApiError::internal()
         })?;
     }

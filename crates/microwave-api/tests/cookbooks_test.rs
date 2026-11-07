@@ -6,8 +6,33 @@ use microwave_api::AppState;
 use microwave_crypto::SignVersion;
 use microwave_objectstore::{ObjectMetadata, ObjectStore, ObjectStoreError};
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::io::Write;
+use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
+use tracing_subscriber::fmt::MakeWriter;
+
+/// Captures formatted log lines so a test can pin their fields.
+#[derive(Clone, Default)]
+struct LogCapture(Arc<Mutex<Vec<u8>>>);
+
+impl Write for LogCapture {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for LogCapture {
+    type Writer = LogCapture;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
 
 /// Delegates every blob operation to an inner store but fails to presign.
 struct FailingPresignStore(Arc<dyn ObjectStore + Send + Sync>);
@@ -482,6 +507,15 @@ async fn a_presign_failure_answers_500() {
         )
         .unwrap(),
     );
+
+    let capture = LogCapture::default();
+    let writer = capture.clone();
+    tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .try_init()
+        .ok();
+
     let response = app
         .oneshot(support::signed_request_with_api_version(
             "GET",
@@ -494,4 +528,20 @@ async fn a_presign_failure_answers_500() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+    let org = state.store.find_org("acme").await.unwrap().unwrap();
+    let line = logs
+        .lines()
+        .find(|line| line.contains("presigned download URL failed"))
+        .unwrap_or_else(|| panic!("presign failure log line missing from {logs:?}"));
+    assert!(
+        line.contains(&format!("org_id={}", org.id)),
+        "log line: {line}"
+    );
+    assert!(
+        line.contains("operation=\"presigned_url\""),
+        "log line: {line}"
+    );
+    assert!(!line.contains(checksum), "log line: {line}");
 }
