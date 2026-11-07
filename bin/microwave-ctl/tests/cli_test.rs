@@ -6,7 +6,7 @@ use microwave_crypto::{
 use microwave_store::{ActorType, SqliteStore};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -164,6 +164,133 @@ fn org_create_list_show_and_delete() {
     let missing = run(dir.path(), &["org-show", "acme"]);
     assert!(!missing.status.success());
     assert!(stderr(&missing).contains("not found"));
+}
+
+/// Strict tenant map that does not mention `acme` at all.
+fn write_unmapped_strict_config(dir: &Path) -> PathBuf {
+    let config = dir.join("microwave-unmapped.toml");
+    std::fs::write(
+        &config,
+        "[object_store]\n\
+         backend = \"s3\"\n\
+         endpoint = \"http://127.0.0.1:3900\"\n\
+         health_bucket = \"mw-health\"\n\
+         require_org_bucket = true\n",
+    )
+    .unwrap();
+    config
+}
+
+/// Strict tenant map that already maps `acme`, without credentials.
+fn write_mapped_strict_config(dir: &Path) -> PathBuf {
+    let config = dir.join("microwave-mapped.toml");
+    std::fs::write(
+        &config,
+        "[object_store]\n\
+         backend = \"s3\"\n\
+         endpoint = \"http://127.0.0.1:3900\"\n\
+         health_bucket = \"mw-health\"\n\
+         require_org_bucket = true\n\n\
+         [object_store.organizations.acme]\n\
+         bucket = \"mw-acme\"\n",
+    )
+    .unwrap();
+    config
+}
+
+fn create_superuser(dir: &Path) {
+    assert_success(&run(
+        dir,
+        &["user-create", "pivotal", "--password", "pivotal-password"],
+    ));
+}
+
+/// The org id is printed on stdout as a hex UUID.
+fn assert_printed_id(output: &Output) {
+    let text = stdout(output);
+    let id = text
+        .lines()
+        .find_map(|line| line.strip_prefix("id: "))
+        .unwrap_or_else(|| panic!("no id line in stdout: {text}"));
+    assert_eq!(id.len(), 32, "id is not an undashed UUID: {id}");
+    assert!(
+        id.chars().all(|c| c.is_ascii_hexdigit()),
+        "id carries non-hex characters: {id}"
+    );
+}
+
+#[test]
+fn org_create_prints_the_id_and_tenant_guidance_on_a_strict_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_unmapped_strict_config(dir.path());
+    create_superuser(dir.path());
+
+    let output = ctl(dir.path())
+        .args(["--config", config.to_str().unwrap(), "org-create", "acme"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_printed_id(&output);
+
+    let text = stderr(&output);
+    assert!(
+        text.contains("[object_store.organizations.\"acme\"]"),
+        "stderr: {text}"
+    );
+    assert!(
+        text.contains("microwave-ctl set-secret object_store acme.access_key"),
+        "stderr: {text}"
+    );
+    assert!(
+        text.contains("microwave-ctl set-secret object_store acme.secret_key"),
+        "stderr: {text}"
+    );
+    assert!(text.contains("microwave-ctl reload"), "stderr: {text}");
+    assert!(text.contains("not usable yet"), "stderr: {text}");
+}
+
+#[test]
+fn org_create_stays_quiet_without_a_strict_config() {
+    let dir = tempfile::tempdir().unwrap();
+    create_superuser(dir.path());
+
+    let output = run(dir.path(), &["org-create", "acme"]);
+    assert_success(&output);
+    assert_printed_id(&output);
+
+    let text = stderr(&output);
+    assert!(
+        !text.contains("object_store.organizations"),
+        "stderr: {text}"
+    );
+    assert!(!text.contains("set-secret"), "stderr: {text}");
+}
+
+#[test]
+fn org_create_only_lists_missing_credentials_for_a_mapped_org() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_mapped_strict_config(dir.path());
+    create_superuser(dir.path());
+
+    let output = ctl(dir.path())
+        .args(["--config", config.to_str().unwrap(), "org-create", "acme"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let text = stderr(&output);
+    assert!(
+        text.contains("microwave-ctl set-secret object_store acme.access_key"),
+        "stderr: {text}"
+    );
+    assert!(
+        text.contains("microwave-ctl set-secret object_store acme.secret_key"),
+        "stderr: {text}"
+    );
+    assert!(
+        !text.contains("[object_store.organizations."),
+        "the entry exists already: {text}"
+    );
 }
 
 #[test]

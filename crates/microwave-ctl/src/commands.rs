@@ -4,8 +4,10 @@ use crate::{
     CtlError,
 };
 use microwave_authz::create_organization;
+use microwave_config::{tenant_issues, TenantIssue};
 use microwave_crypto::{generate_rsa_keypair, hash_password, parse_public_key_pem};
-use microwave_store::{ActorType, Org, StoreError, User, UserProfile};
+use microwave_store::{ActorType, Org, StoreError, User, UserProfile, OBJECT_STORE_SECRET_GROUP};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -343,6 +345,7 @@ pub fn org_create(
     };
 
     println!("Created organization {} ({})", org.name, org.full_name);
+    println!("id: {}", org.id);
     println!(
         "Created validator client {} with the default key",
         client.name
@@ -364,7 +367,59 @@ pub fn org_create(
     }
 
     print_or_write_private_key(&format!("client {}", client.name), &private_key, filename)?;
+
+    // The new org is not in the store's tenant snapshot yet. Under a strict
+    // tenant map it cannot serve until both the map entry and the credentials
+    // exist, so spell out exactly what is missing. The credentials map is empty
+    // on purpose: a fresh org never has any.
+    let issues = tenant_issues(
+        &context.config.object_store,
+        &BTreeSet::from([org.name.clone()]),
+        &BTreeMap::new(),
+    );
+    print_tenant_guidance(&org.name, &issues);
     Ok(())
+}
+
+/// Warn on stderr and print the steps that make a fresh organization usable on
+/// a strict tenant map. The org id already went to stdout, so this stays out of
+/// a scripted consumer's way.
+fn print_tenant_guidance(organization: &str, issues: &[TenantIssue]) {
+    if issues.is_empty() {
+        return;
+    }
+    let missing_entry = issues
+        .iter()
+        .any(|issue| matches!(issue, TenantIssue::MissingEntry(_)));
+    let missing_fields: Vec<&str> = issues
+        .iter()
+        .filter_map(|issue| match issue {
+            TenantIssue::MissingCredential(_, field) => Some(*field),
+            _ => None,
+        })
+        .collect();
+
+    eprintln!("warning: this organization is not usable yet");
+    eprintln!();
+    if missing_entry {
+        eprintln!("Add the missing tenant mapping:");
+        eprintln!();
+        eprintln!("[object_store.organizations.\"{organization}\"]");
+        eprintln!("bucket = \"<bucket>\"");
+        eprintln!();
+    }
+    if !missing_fields.is_empty() {
+        eprintln!("Set the missing credentials:");
+        eprintln!();
+        for field in missing_fields {
+            eprintln!(
+                "  microwave-ctl set-secret {OBJECT_STORE_SECRET_GROUP} {organization}.{field} <{}>",
+                field.replace('_', "-")
+            );
+        }
+        eprintln!();
+    }
+    eprintln!("Apply both, then run `microwave-ctl reload`.");
 }
 
 fn provision_validator(
