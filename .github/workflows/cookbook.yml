@@ -36,7 +36,7 @@ concurrency:
 
 jobs:
   specs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
       run:
@@ -59,7 +59,7 @@ jobs:
   # The matrix is built here because a job-level `if` cannot read it: a manual
   # dispatch names one suite, every other event gets all three.
   select:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.select.outputs.matrix }}
     steps:
@@ -76,7 +76,7 @@ jobs:
 
   kitchen:
     needs: select
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Cold runs install PostgreSQL, a 1.1 GB OpenSearch deb and the Garage binary
     # per backend; the cache below only saves the download.
     timeout-minutes: 90
@@ -110,6 +110,14 @@ jobs:
       # Kitchen truncates .kitchen/logs on every invocation.
       - name: Kitchen suite ${{ matrix.suite }}
         run: bundle exec rake ${{ matrix.task }}
+      # The containers write the apt cache as root; `lock` and `partial` are
+      # unreadable to the cache action's tar and make its save fail.
+      - name: Hand the apt cache back to the runner
+        if: always()
+        run: |
+          if [ -d test/fixtures/cache ]; then
+            sudo chown -R "$(id -u):$(id -g)" test/fixtures/cache
+          fi
       - uses: actions/upload-artifact@v7
         if: failure() || cancelled()
         with:
