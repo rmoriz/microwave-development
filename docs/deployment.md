@@ -467,6 +467,24 @@ default; `limits.enabled = false` turns every gate into a no-op at runtime. See
 | `limits.principal.in_flight`<br/>`MW_LIMITS__PRINCIPAL__IN_FLIGHT` | Default `4`. Concurrent requests per principal. |
 | `limits.organizations.<name>` | Unset by default. Per-organization override of `rate_per_second`, `burst`, and `in_flight`; only set keys win. The name follows the organization naming rules. |
 
+#### Object quotas
+
+Opt-in, hard ceilings on stored objects per organization. The full behaviour,
+the `403` shape and the diagnostics are described in [Object quotas](quotas.md).
+
+| Setting | Details |
+|---|---|
+| `quotas.enabled`<br/>`MW_QUOTAS__ENABLED` | Default `true`. Master switch; `false` ignores every entry below. |
+| `quotas.organizations`<br/>`MW_QUOTAS__ORGANIZATIONS` | Unset by default. JSON object keyed by organization name, like `MW_OBJECT_STORE__ORGANIZATIONS`. Each value may carry the `max_*` keys below. |
+| `quotas.organizations.<name>.max_nodes` | Unset by default. Maximum nodes. |
+| `quotas.organizations.<name>.max_cookbook_versions` | Unset by default. Maximum cookbook versions; artifact versions share the ceiling. |
+| `quotas.organizations.<name>.max_environments` | Unset by default. Maximum custom environments; `_default` is exempt. |
+| `quotas.organizations.<name>.max_roles` | Unset by default. Maximum roles. |
+| `quotas.organizations.<name>.max_policy_revisions` | Unset by default. Maximum policy revisions. |
+
+The `max_*` keys also have the environment form
+`MW_QUOTAS__ORGANIZATIONS` (one JSON object), not one variable per organization.
+
 #### Key cache, Data Collector and integrations
 
 Background services and the optional Automate integrations. Forwarding,

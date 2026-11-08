@@ -1,6 +1,7 @@
+use microwave_config::OrgQuotas;
 use microwave_store::{
     AuthzRepository, Container, Group, IdentityRepository, ObjectRepository, Org, Permission,
-    StoreError,
+    QuotaRepository, StoreError,
 };
 
 pub const DEFAULT_CONTAINERS: [&str; 12] = [
@@ -34,13 +35,16 @@ pub async fn create_organization<S>(
     full_name: &str,
     creator_user_id: &str,
     creator_authz_id: &str,
+    quotas: Option<OrgQuotas>,
 ) -> Result<Org, StoreError>
 where
-    S: IdentityRepository + AuthzRepository + ObjectRepository + ?Sized,
+    S: IdentityRepository + AuthzRepository + ObjectRepository + QuotaRepository + ?Sized,
 {
     let org = store.create_org(name, full_name).await?;
+    store.set_org_quotas(&org.id, quotas);
 
     if let Err(error) = apply_default_policy(store, &org, creator_user_id, creator_authz_id).await {
+        store.set_org_quotas(&org.id, None);
         let _ = store.delete_org(&org.id).await;
         return Err(error);
     }

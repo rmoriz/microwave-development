@@ -74,6 +74,7 @@ const config: Config = {
             'cookbook.md',
             'mcp.md',
             'request-limits.md',
+            'quotas.md',
             'opentelemetry.md',
             'debian-package.md',
             'http-parity.md',

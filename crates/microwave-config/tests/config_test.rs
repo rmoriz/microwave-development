@@ -1885,6 +1885,8 @@ fn shipped_example_config_parses_with_safe_defaults() {
     assert_eq!(c.mcp.max_result_bytes, 1_048_576);
     assert_eq!(c.mcp.max_upload_bytes, 10_485_760);
     assert!(c.mcp.organizations.is_empty());
+    assert!(c.quotas.enabled);
+    assert!(c.quotas.organizations.is_empty());
     assert!(!c.otel.enabled);
     assert_eq!(c.otel.protocol, "http/protobuf");
     assert!(c.otel.headers.is_empty());
@@ -2220,4 +2222,56 @@ fn object_store_duplicate_targets_ignore_padding() {
             .contains("object_store.organizations.beta.bucket"),
         "{error}"
     );
+}
+
+#[test]
+fn quotas_default_to_enabled_and_empty() {
+    let c = Config::default();
+    assert!(c.quotas.enabled);
+    assert!(c.quotas.organizations.is_empty());
+    assert_eq!(c.quotas.org("acme"), None);
+}
+
+#[test]
+fn quotas_parse_every_field_and_accept_zero() {
+    let c = Config::from_toml_str(
+        "[quotas]\nenabled = true\n[quotas.organizations.acme]\nmax_nodes = 0\nmax_cookbook_versions = 5000\nmax_environments = 20\nmax_roles = 100\nmax_policy_revisions = 200\n",
+    )
+    .unwrap();
+    let acme = c.quotas.org("acme").expect("active entry");
+    assert_eq!(acme.max_nodes, Some(0));
+    assert_eq!(acme.max_cookbook_versions, Some(5000));
+    assert_eq!(acme.max_environments, Some(20));
+    assert_eq!(acme.max_roles, Some(100));
+    assert_eq!(acme.max_policy_revisions, Some(200));
+
+    let disabled = Config::from_toml_str(
+        "[quotas]\nenabled = false\n[quotas.organizations.acme]\nmax_nodes = 5\n",
+    )
+    .unwrap();
+    assert_eq!(disabled.quotas.org("acme"), None);
+}
+
+#[test]
+fn quotas_reject_an_invalid_organization_name() {
+    let error = Config::from_toml_str("[quotas.organizations.BadOrg]\nmax_nodes = 5\n")
+        .expect_err("invalid name");
+    assert!(matches!(
+        error,
+        microwave_config::ConfigError::InvalidValue { ref key, ref value }
+            if key == "quotas.organizations.BadOrg" && value == "BadOrg"
+    ));
+}
+
+#[test]
+fn quotas_env_overrides() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("MW_QUOTAS__ENABLED", "false");
+    std::env::set_var("MW_QUOTAS__ORGANIZATIONS", r#"{"acme":{"max_nodes":7}}"#);
+    let mut config = Config::default();
+    config.apply_env().unwrap();
+    std::env::remove_var("MW_QUOTAS__ENABLED");
+    std::env::remove_var("MW_QUOTAS__ORGANIZATIONS");
+    assert!(!config.quotas.enabled);
+    assert_eq!(config.quotas.organizations["acme"].max_nodes, Some(7));
 }

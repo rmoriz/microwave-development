@@ -215,6 +215,9 @@ impl From<StoreError> for ApiError {
             StoreError::NotFound(message) => Self::not_found(message),
             StoreError::Invalid(message) => Self::bad_request(message),
             StoreError::Forbidden(message) => Self::forbidden_with(message),
+            StoreError::Quota { kind, limit } => {
+                Self::forbidden_with(format!("{kind} limit of {limit} reached"))
+            }
             other => {
                 tracing::error!(error = %other, "store error");
                 Self::internal()

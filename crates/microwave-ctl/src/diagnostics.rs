@@ -16,7 +16,8 @@ const MAX_REQUIRED_RECIPE_BYTES: u64 = 1_048_576;
 /// Load the resolved configuration and validate the values required to serve
 /// requests. External backends are checked for the credentials they need.
 pub fn check_config(context: &Context) -> Result<(), CtlError> {
-    let (problems, checks, _) = collect_config(context);
+    let (mut problems, checks, warnings, _) = collect_config(context);
+    problems.extend(warnings);
     finish(problems, checks)
 }
 
@@ -35,19 +36,24 @@ fn finish(problems: Vec<String>, checks: Vec<String>) -> Result<(), CtlError> {
     }
 }
 
-/// Collect the preflight problems, the checks that passed and the tenant
-/// state (`None` for the local backend). Shared by `check-config` and
-/// `diagnostics`; neither touches the network.
-fn collect_config(
-    context: &Context,
-) -> (
+/// Problems, passing checks, warnings and the tenant state (see
+/// [`collect_config`]).
+type Collected = (
+    Vec<String>,
     Vec<String>,
     Vec<String>,
     Option<Result<TenantState, String>>,
-) {
+);
+
+/// Collect the preflight problems, the checks that passed, the warnings and
+/// the tenant state (`None` for the local backend). Shared by `check-config`
+/// and `diagnostics`; neither touches the network. `check-config` treats the
+/// warnings as problems, `diagnostics` only prints them.
+fn collect_config(context: &Context) -> Collected {
     let config = &context.config;
     let mut problems = Vec::new();
     let mut checks = Vec::new();
+    let mut warnings = Vec::new();
     let mut tenant = None;
 
     if config.paths.data_dir.trim().is_empty() {
@@ -169,45 +175,69 @@ fn collect_config(
         }
     }
 
-    if config.object_store.backend != ObjectStoreBackend::Local {
+    if config.object_store.backend != ObjectStoreBackend::Local
+        || !config.quotas.organizations.is_empty()
+    {
         match tenant_state(context, config) {
             Ok(TenantState::Known { orgs, credentials }) => {
-                // Defensive: `Config::validate` already rejects both, so this
-                // only fires for configs built without validation.
-                if !config.object_store.require_org_bucket {
-                    if let Some(bucket) = non_empty(config.object_store.bucket.as_deref()) {
-                        if !valid_bucket_name(bucket.trim()) {
+                if config.object_store.backend != ObjectStoreBackend::Local {
+                    // Defensive: `Config::validate` already rejects both, so
+                    // this only fires for configs built without validation.
+                    if !config.object_store.require_org_bucket {
+                        if let Some(bucket) = non_empty(config.object_store.bucket.as_deref()) {
+                            if !valid_bucket_name(bucket.trim()) {
+                                problems.push(format!(
+                                    "object_store.bucket {bucket:?} is not a valid bucket name"
+                                ));
+                            }
+                        }
+                    }
+                    for (organization, entry) in &config.object_store.organizations {
+                        if !valid_bucket_name(entry.bucket.trim()) {
                             problems.push(format!(
-                                "object_store.bucket {bucket:?} is not a valid bucket name"
+                                "object_store.organizations.{organization}.bucket {:?} is not a valid bucket name",
+                                entry.bucket
                             ));
                         }
                     }
-                }
-                for (organization, entry) in &config.object_store.organizations {
-                    if !valid_bucket_name(entry.bucket.trim()) {
-                        problems.push(format!(
-                            "object_store.organizations.{organization}.bucket {:?} is not a valid bucket name",
-                            entry.bucket
+                    let issues = tenant_issues(&config.object_store, &orgs, &credentials);
+                    if issues.is_empty() {
+                        checks.push(format!(
+                            "object_store tenant map {} organization(s)",
+                            orgs.len()
                         ));
+                    } else {
+                        for issue in issues {
+                            problems.push(issue.to_string());
+                        }
                     }
                 }
-                let issues = tenant_issues(&config.object_store, &orgs, &credentials);
-                if issues.is_empty() {
-                    checks.push(format!(
-                        "object_store tenant map {} organization(s)",
-                        orgs.len()
-                    ));
-                } else {
-                    for issue in issues {
-                        problems.push(issue.to_string());
+                if !config.quotas.organizations.is_empty() {
+                    for organization in config.quotas.organizations.keys() {
+                        if !orgs.contains(organization) {
+                            warnings.push(format!(
+                                "quotas.organizations.{organization} names an unknown organization"
+                            ));
+                        }
                     }
+                    checks.push(format!(
+                        "quotas: {} organization(s)",
+                        config.quotas.organizations.len()
+                    ));
                 }
                 tenant = Some(Ok(TenantState::Known { orgs, credentials }));
             }
             Ok(TenantState::Unknown) => {
                 // A fresh install has no organization table yet; the mapped
                 // entries cannot be cross-checked, but the config is not wrong.
-                checks.push("object_store tenant map (organization table not readable yet)".into());
+                if config.object_store.backend != ObjectStoreBackend::Local {
+                    checks.push(
+                        "object_store tenant map (organization table not readable yet)".into(),
+                    );
+                }
+                if !config.quotas.organizations.is_empty() {
+                    checks.push("quotas: (organization table not readable yet)".into());
+                }
                 tenant = Some(Ok(TenantState::Unknown));
             }
             Err(error) => {
@@ -310,7 +340,7 @@ fn collect_config(
         }
     }
 
-    (problems, checks, tenant)
+    (problems, checks, warnings, tenant)
 }
 
 /// What the tenant checks can know about the organization table.
@@ -421,13 +451,17 @@ fn table_missing(error: &StoreError) -> bool {
 /// one signed `HEAD`.
 pub fn diagnostics(context: &Context, probe: bool) -> Result<(), CtlError> {
     let config = &context.config;
-    let (mut problems, checks, tenant) = collect_config(context);
+    let (mut problems, checks, warnings, tenant) = collect_config(context);
 
     println!(
         "{}",
         summary(config.object_store.require_org_bucket, &tenant)
     );
+    println!("{}", quotas_summary(config));
     println!("{}", reload_summary(&context.data_dir));
+    for warning in &warnings {
+        println!("warn: {warning}");
+    }
 
     if probe {
         println!("probing every configured bucket");
@@ -440,8 +474,9 @@ pub fn diagnostics(context: &Context, probe: bool) -> Result<(), CtlError> {
     finish(problems, checks)
 }
 
-/// The strict and organization summary lines. `None` is the local backend,
-/// `Some(Err(..))` an unreadable store and `Unknown` an unreadable table.
+/// The strict and organization summary lines. `None` is the local backend
+/// without quotas (the organization table is never read), `Some(Err(..))` an
+/// unreadable store and `Unknown` an unreadable table.
 fn summary(strict: bool, tenant: &Option<Result<TenantState, String>>) -> String {
     let organizations = match tenant {
         None => "0".to_string(),
@@ -452,6 +487,17 @@ fn summary(strict: bool, tenant: &Option<Result<TenantState, String>>) -> String
         "strict: {}\norganizations: {organizations}",
         if strict { "enabled" } else { "disabled" }
     )
+}
+
+fn quotas_summary(config: &Config) -> String {
+    if !config.quotas.enabled {
+        "quotas: disabled".to_string()
+    } else {
+        format!(
+            "quotas: {} organization(s)",
+            config.quotas.organizations.len()
+        )
+    }
 }
 
 fn reload_summary(data_dir: &Path) -> String {
@@ -989,8 +1035,8 @@ pub(crate) fn object_store_backend_name(backend: ObjectStoreBackend) -> &'static
 #[cfg(test)]
 mod tests {
     use super::{
-        check_config, diagnostics, parse_psql_args, reload_summary, resolve_bind, summary,
-        table_missing, Context, PsqlInvocation, TenantState,
+        check_config, diagnostics, parse_psql_args, quotas_summary, reload_summary, resolve_bind,
+        summary, table_missing, Context, PsqlInvocation, TenantState,
     };
     use microwave_config::{ObjectStoreBackend, ObjectStoreOrgConfig};
     use microwave_store::{SqliteStore, StoreError, OBJECT_STORE_SECRET_GROUP};
@@ -1438,6 +1484,66 @@ mod tests {
             summary(true, &Some(Ok(TenantState::Unknown))),
             "strict: enabled\norganizations: ?"
         );
+    }
+
+    fn context_with_org(dir: &tempfile::TempDir, org: &str) -> Context {
+        let path = dir.path().join("microwave.db");
+        let store = SqliteStore::open(&path).unwrap();
+        store.create_org(org, org).unwrap();
+        drop(store);
+        let mut context = context_with_pool_size(10);
+        context.database_path = Some(path);
+        context
+            .config
+            .quotas
+            .organizations
+            .insert("ghost".into(), Default::default());
+        context
+    }
+
+    #[test]
+    fn check_config_reports_an_unknown_quota_organization() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = check_config(&context_with_org(&dir, "acme")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("quotas.organizations.ghost names an unknown organization"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn diagnostics_warns_about_an_unknown_quota_organization() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(diagnostics(&context_with_org(&dir, "acme"), false).is_ok());
+    }
+
+    #[test]
+    fn check_config_accepts_a_known_quota_organization() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut context = context_with_org(&dir, "acme");
+        context.config.quotas.organizations.clear();
+        context
+            .config
+            .quotas
+            .organizations
+            .insert("acme".into(), Default::default());
+        assert!(check_config(&context).is_ok());
+    }
+
+    #[test]
+    fn quotas_summary_counts_entries_and_reports_disabled() {
+        let mut context = context_with_pool_size(10);
+        context
+            .config
+            .quotas
+            .organizations
+            .insert("acme".into(), Default::default());
+        assert_eq!(quotas_summary(&context.config), "quotas: 1 organization(s)");
+
+        context.config.quotas.enabled = false;
+        assert_eq!(quotas_summary(&context.config), "quotas: disabled");
     }
 
     #[test]

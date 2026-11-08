@@ -20,10 +20,14 @@ use crate::objects::{NewNode, StoredDataBagItem, StoredNode, StoredObject};
 use crate::policies::{
     StoredPolicy, StoredPolicyGroup, StoredPolicyGroupAssociation, StoredPolicyRevision,
 };
+use crate::quotas::{QuotaKind, QuotaPolicy};
 use crate::reports::StoredNodeRun;
 use crate::sandboxes::SandboxCheck;
 use crate::sqlite::{SqliteStore, StoreError};
 use async_trait::async_trait;
+use microwave_config::OrgQuotas;
+use microwave_metrics::Metrics;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[async_trait]
@@ -1487,6 +1491,30 @@ impl ReportRepository for SqliteStore {
         node_name: &str,
     ) -> Result<Option<StoredNodeRun>, StoreError> {
         self.latest_node_run(org_id, node_name)
+    }
+}
+
+impl crate::QuotaRepository for SqliteStore {
+    fn set_quotas(&self, policy: QuotaPolicy) {
+        self.quotas
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .replace(policy);
+    }
+
+    fn set_org_quotas(&self, org_id: &str, quotas: Option<OrgQuotas>) {
+        self.quotas
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_org(org_id, quotas);
+    }
+
+    fn quota_limit(&self, org_id: &str, kind: QuotaKind) -> Option<u64> {
+        SqliteStore::quota_limit(self, org_id, kind)
+    }
+
+    fn set_metrics(&self, metrics: Arc<Metrics>) {
+        SqliteStore::set_metrics(self, metrics);
     }
 }
 

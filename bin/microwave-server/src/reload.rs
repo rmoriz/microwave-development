@@ -72,6 +72,9 @@ pub struct Reloader {
     /// Handle the API verifier reads; swapped together with the local store so
     /// a rotated local secret takes effect without a restart.
     local_secret: Arc<arc_swap::ArcSwap<String>>,
+    /// Live quota section, shared with the API so an added entry applies
+    /// without a restart. Installed together with the policy.
+    quotas_config: Arc<arc_swap::ArcSwap<microwave_config::QuotasConfig>>,
     /// Serializes reloads so a SIGHUP waits for a running one instead of
     /// racing the file reads and the snapshot swap.
     lock: tokio::sync::Mutex<()>,
@@ -85,6 +88,7 @@ impl Reloader {
         data_dir: PathBuf,
         boot_id: String,
         local_secret: Arc<arc_swap::ArcSwap<String>>,
+        quotas_config: Arc<arc_swap::ArcSwap<microwave_config::QuotasConfig>>,
     ) -> Self {
         Self {
             config_path,
@@ -93,6 +97,7 @@ impl Reloader {
             data_dir,
             boot_id,
             local_secret,
+            quotas_config,
             lock: tokio::sync::Mutex::new(()),
         }
     }
@@ -172,7 +177,13 @@ impl Reloader {
         verify_buckets(&config.object_store, &snapshot)
             .await
             .map_err(rejected)?;
+        // Resolve only after the snapshot proved usable, then swap both.
+        let quotas = crate::quotas::resolve(&config, self.store.as_ref())
+            .await
+            .map_err(rejected)?;
         self.router.install(snapshot);
+        self.quotas_config.store(Arc::new(config.quotas.clone()));
+        self.store.set_quotas(quotas);
         // Only meaningful for the local backend, where the verifier shares the
         // key with the store we just installed.
         self.local_secret.store(Arc::new(secret));
@@ -379,8 +390,8 @@ mod tests {
     use microwave_config::Config;
     use microwave_objectstore::{ObjectStore, RoutingObjectStore};
     use microwave_store::{
-        MetadataStore, SecretsRepository, SqliteStore, OBJECT_STORE_SECRET_GROUP,
-        OBJECT_STORE_SECRET_NAME,
+        MetadataStore, QuotaKind, QuotaRepository, SecretsRepository, SqliteStore,
+        OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME,
     };
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -391,6 +402,8 @@ mod tests {
     struct Harness {
         _dir: tempfile::TempDir,
         reloader: Arc<Reloader>,
+        store: Arc<SqliteStore>,
+        quotas: Arc<arc_swap::ArcSwap<microwave_config::QuotasConfig>>,
         router: Arc<RoutingObjectStore>,
         org_id: String,
         data_dir: PathBuf,
@@ -432,6 +445,7 @@ verify_buckets = false
         let snapshot = assemble(&config, store.as_ref(), "secret").await.unwrap();
         let router = Arc::new(RoutingObjectStore::new(snapshot));
         let local_secret = Arc::new(arc_swap::ArcSwap::from_pointee("secret".to_string()));
+        let quotas = Arc::new(arc_swap::ArcSwap::from_pointee(config.quotas.clone()));
         let reloader = Arc::new(Reloader::new(
             Some(config_path.clone()),
             store.clone(),
@@ -439,11 +453,14 @@ verify_buckets = false
             data_dir.clone(),
             "boot-1".into(),
             local_secret.clone(),
+            quotas.clone(),
         ));
 
         Harness {
             _dir: dir,
             reloader,
+            quotas,
+            store,
             router,
             org_id: org.id,
             data_dir,
@@ -534,6 +551,87 @@ verify_buckets = false
         assert!(logs.contains("ghost"), "logs: {logs}");
         assert_eq!(status(&harness.data_dir)["outcome"], "ok");
         assert!(url(&harness).contains("mw-new"));
+    }
+
+    #[tokio::test]
+    async fn a_changed_quota_applies_to_the_store() {
+        let harness = harness().await;
+        write_config(
+            &harness.config_path,
+            &format!(
+                "{}[quotas.organizations.acme]\nmax_nodes = 0\n",
+                base_config(Some("mw-new"))
+            ),
+        );
+        harness.reloader.reload(Trigger::Manual).await.unwrap();
+        assert_eq!(
+            harness.store.quota_limit(&harness.org_id, QuotaKind::Node),
+            Some(0)
+        );
+        assert_eq!(
+            harness
+                .quotas
+                .load()
+                .organizations
+                .get("acme")
+                .and_then(|quotas| quotas.max_nodes),
+            Some(0)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_reload_keeps_the_previous_quota() {
+        let harness = harness().await;
+        write_config(
+            &harness.config_path,
+            &format!(
+                "{}[quotas.organizations.acme]\nmax_nodes = 5\n",
+                base_config(Some("mw-new"))
+            ),
+        );
+        harness.reloader.reload(Trigger::Manual).await.unwrap();
+        assert_eq!(
+            harness.store.quota_limit(&harness.org_id, QuotaKind::Node),
+            Some(5)
+        );
+
+        write_config(&harness.config_path, &base_config(None));
+        harness.reloader.reload(Trigger::Manual).await.unwrap_err();
+        assert_eq!(
+            harness.store.quota_limit(&harness.org_id, QuotaKind::Node),
+            Some(5)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_quota_organization_only_warns() {
+        let harness = harness().await;
+        write_config(
+            &harness.config_path,
+            &format!(
+                "{}[quotas.organizations.ghost]\nmax_nodes = 1\n",
+                base_config(Some("mw-new"))
+            ),
+        );
+
+        let capture = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let writer = capture.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || CaptureWriter(writer.clone()))
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+
+        harness.reloader.reload(Trigger::Manual).await.unwrap();
+        drop(guard);
+
+        let logs = String::from_utf8(capture.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("ghost"), "logs: {logs}");
+        assert_eq!(status(&harness.data_dir)["outcome"], "ok");
+        assert_eq!(
+            harness.store.quota_limit(&harness.org_id, QuotaKind::Node),
+            None
+        );
     }
 
     #[tokio::test]
@@ -923,6 +1021,7 @@ verify_buckets = false
                 .unwrap(),
         ));
         let secret = Arc::new(arc_swap::ArcSwap::from_pointee("old-secret".to_string()));
+        let quotas = Arc::new(arc_swap::ArcSwap::from_pointee(config.quotas.clone()));
         let reloader = Reloader::new(
             Some(config_path),
             store.clone(),
@@ -930,6 +1029,7 @@ verify_buckets = false
             data_dir,
             "boot-1".into(),
             secret.clone(),
+            quotas,
         );
         store
             .set_secret(

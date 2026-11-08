@@ -1,5 +1,6 @@
 mod bootstrap;
 mod object_store;
+mod quotas;
 mod reload;
 
 use clap::{Parser, Subcommand};
@@ -174,9 +175,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     config.object_store.secret.clone().unwrap_or_default()
                 }
             };
+            store.set_quotas(quotas::resolve(&config, store.as_ref()).await?);
             // Shared with the API verifier and the reloader, so a rotated
             // local secret is honored by both sides of a reload.
             let local_secret = Arc::new(arc_swap::ArcSwap::from_pointee(secret.clone()));
+            // Shared with the API, so an entry a reload adds applies to the
+            // next organization creation instead of the startup snapshot.
+            let quotas_config = Arc::new(arc_swap::ArcSwap::from_pointee(config.quotas.clone()));
             let (object_store, router) =
                 build_timed_object_store(&config, &secret, store.as_ref(), metrics.clone()).await?;
 
@@ -220,6 +225,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 PathBuf::from(&config.paths.data_dir),
                 Uuid::new_v4().to_string(),
                 local_secret.clone(),
+                quotas_config.clone(),
             ));
             if let Err(error) = reloader.write_boot_status().await {
                 tracing::warn!(%error, "failed to write the object store reload status");
@@ -268,9 +274,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return Err(error.into());
                 }
             };
-            // The constructor seeded the handle from the config; use the one
+            // The constructor seeded the handles from the config; use the ones
             // the reloader updates instead.
             state.local_bookshelf_secret = local_secret;
+            state.quotas = quotas_config;
             let state = match webui_key {
                 Some(public_key_pem) => state.with_webui_key(public_key_pem),
                 None => state,

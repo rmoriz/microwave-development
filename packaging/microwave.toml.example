@@ -354,6 +354,17 @@ enabled = false
 # rate_per_second = 50
 # in_flight = 8
 
+# Per-organization object quotas. Absent means unlimited; 0 is a valid ceiling.
+# The auto-created `_default` environment never counts. See docs/quotas.md.
+# [quotas]
+# enabled = true
+# [quotas.organizations."acme"]
+# max_nodes = 500
+# max_cookbook_versions = 5000
+# max_environments = 20
+# max_roles = 100
+# max_policy_revisions = 200
+
 [telemetry]
 # Reserved for compatibility. Microwave never phones home: telemetry is
 # disabled by default and no outbound sender is implemented.

@@ -69,6 +69,7 @@ async fn create_org(
         &full_name,
         &auth.principal.actor_id,
         &auth.principal.authz_id,
+        state.quotas.load().org(&name),
     )
     .await
     .map_err(ApiError::from)?;
@@ -77,6 +78,7 @@ async fn create_org(
         match provision_validator(&state, &org, &auth.principal.authz_id, &public_key).await {
             Ok(client) => client,
             Err(error) => {
+                state.store.set_org_quotas(&org.id, None);
                 let _ = state.store.delete_org(&org.id).await;
                 return Err(error);
             }

@@ -77,6 +77,15 @@ pub(crate) fn run(unit: Option<&str>, config: Option<&Path>) -> Result<(), CtlEr
         ));
     }
 
+    reload_running(&context, unit)?;
+    println!("reloaded the object store tenant map");
+    Ok(())
+}
+
+/// Signal the running service and wait for its answer, without re-validating
+/// the tenant map. Callers that touch the stored tenant secrets validate
+/// first; `org-create` only needs the reload for the quota policy.
+pub(crate) fn reload_running(context: &Context, unit: Option<&str>) -> Result<(), CtlError> {
     // The boot id keeps a status from an older process out. Without a boot
     // status the service never started (or does not run this reload support).
     let status_path = context.data_dir.join(STATUS_FILE);
@@ -114,10 +123,7 @@ pub(crate) fn run(unit: Option<&str>, config: Option<&Path>) -> Result<(), CtlEr
     remove_while_ours(&request_path, &token);
 
     match outcome {
-        Outcome::Ok => {
-            println!("reloaded the object store tenant map");
-            Ok(())
-        }
+        Outcome::Ok => Ok(()),
         Outcome::Rejected(message) => Err(CtlError::coded(1, message)),
         Outcome::Timeout => Err(CtlError::coded(
             2,

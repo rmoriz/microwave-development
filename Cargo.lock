@@ -1679,6 +1679,7 @@ dependencies = [
 name = "microwave-authz"
 version = "0.5.0"
 dependencies = [
+ "microwave-config",
  "microwave-store",
  "thiserror",
  "tokio",
@@ -1975,6 +1976,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "flate2",
+ "microwave-config",
  "microwave-metrics",
  "microwave-store-postgres",
  "rusqlite",
@@ -1984,6 +1986,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -1993,11 +1996,13 @@ version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "microwave-config",
  "microwave-metrics",
  "microwave-store",
  "serde_json",
  "sqlx",
  "tokio",
+ "tracing",
  "uuid",
 ]
 

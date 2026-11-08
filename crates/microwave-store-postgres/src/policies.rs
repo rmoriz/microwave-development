@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use microwave_store::{
-    decode_serialized, encode_serialized, Compression, PolicyRepository, StoreError, StoredPolicy,
-    StoredPolicyGroup, StoredPolicyGroupAssociation, StoredPolicyRevision,
+    decode_serialized, encode_serialized, Compression, PolicyRepository, QuotaTarget, StoreError,
+    StoredPolicy, StoredPolicyGroup, StoredPolicyGroupAssociation, StoredPolicyRevision,
 };
 use serde_json::Value;
 use sqlx::postgres::Postgres;
@@ -28,6 +28,12 @@ impl PolicyRepository for PostgresStore {
         let revision_row_id = new_id();
         let serialized_object = encode_serialized(body, self.compression())?;
         let mut transaction = self.pool().begin().await.map_err(db)?;
+        self.enforce_quota(
+            &mut transaction,
+            org_id,
+            QuotaTarget::PolicyRevision { name, revision_id },
+        )
+        .await?;
         let (policy_id, policy_authz_id) =
             ensure_policy(&mut transaction, org_id, name, creator_authz_id).await?;
         insert_revision(
@@ -335,6 +341,15 @@ impl PolicyRepository for PostgresStore {
 
         let timestamp = now();
         let mut transaction = self.pool().begin().await.map_err(db)?;
+        self.enforce_quota(
+            &mut transaction,
+            org_id,
+            QuotaTarget::PolicyRevision {
+                name: policy_name,
+                revision_id,
+            },
+        )
+        .await?;
         let (policy_id, _) =
             ensure_policy(&mut transaction, org_id, policy_name, creator_authz_id).await?;
         let (_, group_authz_id) = ensure_policy_group(

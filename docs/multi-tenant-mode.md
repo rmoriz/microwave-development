@@ -33,6 +33,9 @@ The bucket name is the only per-organization value you configure; the key pair
 never enters the config file. It lives in the secret store as
 `object_store.<org>.access_key` and `object_store.<org>.secret_key`.
 
+MTM and [object quotas](quotas.md) complement each other: the buckets hold the
+blobs, the quotas cap the metadata rows. Neither requires the other.
+
 The smallest strict configuration looks like this:
 
 ```toml

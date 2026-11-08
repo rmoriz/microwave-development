@@ -1,6 +1,6 @@
 use chrono::{SecondsFormat, Utc};
 use microwave_metrics::Metrics;
-use microwave_store::{Compression, DbSystem, StoreError, StoreTimer};
+use microwave_store::{Compression, DbSystem, QuotaPolicy, StoreError, StoreTimer};
 use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
 use std::sync::{Arc, RwLock};
@@ -22,7 +22,8 @@ const DEFAULT_POOL_SIZE: usize = 10;
 pub struct PostgresStore {
     pool: PgPool,
     compression: Compression,
-    metrics: Arc<RwLock<Option<Arc<Metrics>>>>,
+    pub(crate) metrics: Arc<RwLock<Option<Arc<Metrics>>>>,
+    pub(crate) quotas: Arc<RwLock<QuotaPolicy>>,
 }
 
 impl PostgresStore {
@@ -59,6 +60,7 @@ impl PostgresStore {
             pool,
             compression,
             metrics: Arc::new(RwLock::new(None)),
+            quotas: Arc::new(RwLock::new(QuotaPolicy::default())),
         };
         store.migrate().await?;
         Ok(store)
@@ -107,6 +109,7 @@ impl PostgresStore {
             pool,
             compression,
             metrics: Arc::new(RwLock::new(None)),
+            quotas: Arc::new(RwLock::new(QuotaPolicy::default())),
         })
     }
 
@@ -117,6 +120,7 @@ impl PostgresStore {
             pool,
             compression: Compression::default(),
             metrics: Arc::new(RwLock::new(None)),
+            quotas: Arc::new(RwLock::new(QuotaPolicy::default())),
         }
     }
 
@@ -126,6 +130,7 @@ impl PostgresStore {
             pool,
             compression,
             metrics: Arc::new(RwLock::new(None)),
+            quotas: Arc::new(RwLock::new(QuotaPolicy::default())),
         }
     }
 

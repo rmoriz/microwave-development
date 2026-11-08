@@ -334,12 +334,15 @@ pub fn org_create(
         full_name,
         &creator.id,
         &creator.authz_id,
+        context.config.quotas.org(name),
     ))?;
 
     let client = match provision_validator(&store, &org, &creator.authz_id, &public_key) {
         Ok(client) => client,
         Err(error) => {
+            // Delete first: if the delete fails the live org keeps its entry.
             let _ = store.run(store.store().delete_org(&org.id));
+            store.store().set_org_quotas(&org.id, None);
             return Err(error);
         }
     };
@@ -367,6 +370,18 @@ pub fn org_create(
     }
 
     print_or_write_private_key(&format!("client {}", client.name), &private_key, filename)?;
+
+    // The quota policy is process-local, so the ctl's own store handle is a
+    // different one from the server's. Ask the server to reload its config so
+    // the entry applies from the first request instead of the next restart.
+    if context.config.quotas.enabled && context.config.quotas.organizations.contains_key(name) {
+        match crate::reload::reload_running(context, None) {
+            Ok(()) => println!("Reloaded the running server to apply its quota entry"),
+            Err(error) => eprintln!(
+                "warning: the organization was created, but the running server could not be reloaded ({error}); its quota applies after the next reload or restart"
+            ),
+        }
+    }
 
     // The new org is not in the store's tenant snapshot yet. Under a strict
     // tenant map it cannot serve until both the map entry and the credentials

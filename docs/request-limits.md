@@ -35,6 +35,10 @@ on its own, which is why `503` is used instead of `429`.
   logged with their request id, and visible as gauges and counters on `/_stats`
   and over OTLP.
 
+Object quotas are separate from these limits: they are per-organization hard
+ceilings on stored objects, not on request pressure. See
+[Object quotas](quotas.md).
+
 ## Defaults
 
 The defaults fit a small single-node server. Raise them as the hardware, the

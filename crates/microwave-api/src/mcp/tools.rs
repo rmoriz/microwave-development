@@ -1251,7 +1251,13 @@ fn result_count(result: &CallToolResult) -> usize {
 /// become stable short strings; other client errors keep their message.
 fn api_error_result(error: ApiError) -> CallToolResult {
     let message = if error.status == StatusCode::FORBIDDEN {
-        "forbidden".to_string()
+        // Quota rejections carry a useful fixed text (`node limit of 1
+        // reached`); a plain permission failure keeps the terse form.
+        if error.message.contains(" limit of ") && error.message.ends_with(" reached") {
+            error.message
+        } else {
+            "forbidden".to_string()
+        }
     } else if error.status == StatusCode::NOT_FOUND {
         "not found".to_string()
     } else if error.status.is_server_error() {

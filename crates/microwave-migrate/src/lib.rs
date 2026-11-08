@@ -27,6 +27,8 @@
 //! The migrator does not take `database.pool_size`; its PostgreSQL connections
 //! keep the store's default pool size because snapshot traffic is a single
 //! sequential stream.
+//!
+//! Quota checks are not installed on the import store, so imports bypass them.
 
 use chrono::{SecondsFormat, Utc};
 pub use microwave_store::Compression;

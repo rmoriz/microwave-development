@@ -2,6 +2,7 @@ use crate::authz::Permission;
 use crate::compression::{decode_serialized, encode_serialized};
 use crate::derivations::environment_constraints;
 use crate::identity::{new_id, now};
+use crate::quotas::QuotaTarget;
 use crate::sqlite::{in_placeholders, SqliteStore, StoreError};
 use rusqlite::{params, params_from_iter, OptionalExtension, Transaction};
 
@@ -66,6 +67,7 @@ impl SqliteStore {
             let serialized_object = encode_serialized(body, self.compression())?;
             let mut connection = self.connection();
             let tx = connection.transaction()?;
+            self.enforce_quota(&tx, org_id, QuotaTarget::Node { name })?;
             let authz_id = create_object_authz(&tx, org_id, "nodes", creator_authz_id)?;
             tx.execute(
                 "INSERT INTO nodes
@@ -588,6 +590,9 @@ impl SqliteStore {
         let serialized_object = encode_serialized(body, self.compression())?;
         let mut connection = self.connection();
         let tx = connection.transaction()?;
+        if let Some(target) = QuotaTarget::for_named_table(table, name) {
+            self.enforce_quota(&tx, org_id, target)?;
+        }
         let authz_id = create_object_authz(&tx, org_id, container_name, creator_authz_id)?;
         let sql = format!(
             "INSERT INTO {table}

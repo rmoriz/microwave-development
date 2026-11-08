@@ -18,6 +18,7 @@ pub struct Config {
     pub keygen: KeygenConfig,
     pub depsolver: DepsolverConfig,
     pub limits: LimitsConfig,
+    pub quotas: QuotasConfig,
     pub license: LicenseConfig,
     pub stats: StatsConfig,
     pub otel: OtelConfig,
@@ -68,6 +69,9 @@ impl Config {
                 });
             }
         }
+        self.quotas
+            .validate()
+            .map_err(|(key, value)| ConfigError::InvalidValue { key, value })?;
         self.object_store.validate()?;
         if self.search.timeout_ms == 0 {
             return Err(ConfigError::InvalidValue {
@@ -237,6 +241,9 @@ impl Config {
         };
 
         config.apply_env()?;
+        // Environment overrides are applied after the TOML validation, so
+        // validate the merged result again before anyone serves with it.
+        config.validate()?;
         Ok(config)
     }
 
@@ -276,6 +283,7 @@ impl Config {
     ///   `MW_LIMITS__ORG__RATE_PER_SECOND`, `MW_LIMITS__ORG__BURST`,
     ///   `MW_LIMITS__ORG__IN_FLIGHT`, `MW_LIMITS__PRINCIPAL__RATE_PER_SECOND`,
     ///   `MW_LIMITS__PRINCIPAL__BURST`, `MW_LIMITS__PRINCIPAL__IN_FLIGHT`
+    /// - `MW_QUOTAS__ENABLED`, `MW_QUOTAS__ORGANIZATIONS`
     /// - `MW_LICENSE__NODE_LICENSE`, `MW_LICENSE__UPGRADE_URL`
     /// - `MW_STATS__USERNAME`, `MW_STATS__PASSWORD`
     /// - `MW_OTEL__ENABLED`, `MW_OTEL__ENDPOINT`, `MW_OTEL__PROTOCOL`,
@@ -574,6 +582,16 @@ impl Config {
         if let Ok(value) = std::env::var("MW_LIMITS__PRINCIPAL__IN_FLIGHT") {
             self.limits.principal.in_flight =
                 parse_value("MW_LIMITS__PRINCIPAL__IN_FLIGHT", value)?;
+        }
+        if let Ok(value) = std::env::var("MW_QUOTAS__ENABLED") {
+            self.quotas.enabled = parse_bool("MW_QUOTAS__ENABLED", &value)?;
+        }
+        if let Ok(value) = std::env::var("MW_QUOTAS__ORGANIZATIONS") {
+            self.quotas.organizations =
+                serde_json::from_str(&value).map_err(|error| ConfigError::InvalidValue {
+                    key: "MW_QUOTAS__ORGANIZATIONS".into(),
+                    value: error.to_string(),
+                })?;
         }
         if let Ok(value) = std::env::var("MW_LICENSE__NODE_LICENSE") {
             self.license.node_license = parse_value("MW_LICENSE__NODE_LICENSE", value)?;
@@ -1573,6 +1591,59 @@ impl LimitsConfig {
         }
         Ok(())
     }
+}
+
+/// Per-organization object quotas, opt-in through the presence of an entry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct QuotasConfig {
+    /// Master switch. When false every entry stays in the file but stops
+    /// acting.
+    pub enabled: bool,
+    /// Per-organization ceilings, keyed by organization name.
+    pub organizations: std::collections::BTreeMap<String, OrgQuotas>,
+}
+
+impl Default for QuotasConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            organizations: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+impl QuotasConfig {
+    /// The active ceiling set for one organization, or `None` when quotas are
+    /// disabled or the name has no entry.
+    pub fn org(&self, name: &str) -> Option<OrgQuotas> {
+        if !self.enabled {
+            return None;
+        }
+        self.organizations.get(name).cloned()
+    }
+
+    /// Reject organization names that violate the naming rules.
+    pub fn validate(&self) -> Result<(), (String, String)> {
+        for name in self.organizations.keys() {
+            if !valid_org_name(name) {
+                return Err((format!("quotas.organizations.{name}"), name.clone()));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Hard ceilings for one organization. An unset field means unlimited; zero is
+/// a valid ceiling.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct OrgQuotas {
+    pub max_nodes: Option<u64>,
+    pub max_cookbook_versions: Option<u64>,
+    pub max_environments: Option<u64>,
+    pub max_roles: Option<u64>,
+    pub max_policy_revisions: Option<u64>,
 }
 
 impl Default for LimitsConfig {

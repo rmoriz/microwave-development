@@ -1,6 +1,7 @@
 use crate::compression::{decode_serialized, encode_serialized, Compression};
 use crate::identity::{conflict, new_id, now};
 use crate::objects::create_object_authz;
+use crate::quotas::QuotaTarget;
 use crate::sqlite::{SqliteStore, StoreError};
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde_json::Value;
@@ -61,6 +62,11 @@ impl SqliteStore {
         let serialized_object = encode_serialized(body, self.compression())?;
         let mut connection = self.connection();
         let tx = connection.transaction()?;
+        self.enforce_quota(
+            &tx,
+            org_id,
+            QuotaTarget::PolicyRevision { name, revision_id },
+        )?;
         let (policy_id, policy_authz_id) = ensure_policy(&tx, org_id, name, creator_authz_id)?;
         insert_revision(
             &tx,
@@ -352,6 +358,14 @@ impl SqliteStore {
         let now = now();
         let mut connection = self.connection();
         let tx = connection.transaction()?;
+        self.enforce_quota(
+            &tx,
+            org_id,
+            QuotaTarget::PolicyRevision {
+                name: policy_name,
+                revision_id,
+            },
+        )?;
         let (policy_id, _) = ensure_policy(&tx, org_id, policy_name, creator_authz_id)?;
         let (_, group_authz_id) = ensure_policy_group(
             &tx,

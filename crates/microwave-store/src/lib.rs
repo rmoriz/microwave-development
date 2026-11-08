@@ -15,6 +15,7 @@ mod migration;
 mod oauth;
 mod objects;
 mod policies;
+mod quotas;
 mod reports;
 mod sandboxes;
 mod secrets;
@@ -26,8 +27,8 @@ pub use authz::{Acl, AclEntry, Container, Group, GroupMembers, Permission};
 pub use backend::{
     ArtifactRepository, AuthzRepository, CookbookRepository, HealthRepository, IdentityRepository,
     KvRepository, MembershipRepository, MetadataStore, NewNodeRun, NodeRunFilter, OAuthRepository,
-    ObjectRepository, PolicyRepository, PoolStats, ReportRepository, SandboxRepository,
-    SecretsRepository,
+    ObjectRepository, PolicyRepository, PoolStats, QuotaRepository, ReportRepository,
+    SandboxRepository, SecretsRepository,
 };
 pub use compression::{
     decode_serialized, decode_serialized_optional, encode_serialized, encode_serialized_optional,
@@ -44,6 +45,7 @@ pub use objects::{NewNode, StoredDataBagItem, StoredNode, StoredObject};
 pub use policies::{
     StoredPolicy, StoredPolicyGroup, StoredPolicyGroupAssociation, StoredPolicyRevision,
 };
+pub use quotas::{count_sql, reject_if_full, QuotaKind, QuotaPolicy, QuotaTarget};
 pub use reports::{normalize_rfc3339, NodeRunSummary, StoredNodeRun};
 pub use sandboxes::SandboxCheck;
 pub use secrets::{

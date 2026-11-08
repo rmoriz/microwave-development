@@ -27,6 +27,8 @@ Progress.
   admission, source, organization, and principal limits: what they protect,
   their defaults, how tokens and in-flight slots are counted, and how to tune
   them.
+- **[Cap what a tenant stores](./quotas.md)** — opt-in, hard object ceilings per
+  organization: the five kinds, the exact `403`, diagnostics, and the reload.
 - **[Monitor it with OpenTelemetry](./opentelemetry.md)** — opt-in OTLP/HTTP
   metric export, off by default: the collector setup, the exact series with
   their types and attributes, whole-server and per-org queries, and the

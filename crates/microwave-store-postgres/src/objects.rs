@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use microwave_store::{
-    decode_serialized, encode_serialized, NewNode, ObjectRepository, Permission, StoreError,
-    StoredDataBagItem, StoredNode, StoredObject,
+    decode_serialized, encode_serialized, NewNode, ObjectRepository, Permission, QuotaTarget,
+    StoreError, StoredDataBagItem, StoredNode, StoredObject,
 };
 use sqlx::postgres::{PgRow, Postgres};
 use sqlx::{Row, Transaction};
@@ -22,6 +22,9 @@ impl PostgresStore {
         let timestamp = now();
         let serialized_object = encode_serialized(body, self.compression())?;
         let mut transaction = self.pool().begin().await.map_err(db)?;
+        if let Some(target) = QuotaTarget::for_named_table(table, name) {
+            self.enforce_quota(&mut transaction, org_id, target).await?;
+        }
         let authz_id =
             create_object_authz(&mut transaction, org_id, container_name, creator_authz_id).await?;
         let sql = format!(
@@ -260,6 +263,8 @@ impl ObjectRepository for PostgresStore {
             let timestamp = now();
             let serialized_object = encode_serialized(body, self.compression())?;
             let mut transaction = self.pool().begin().await.map_err(db)?;
+            self.enforce_quota(&mut transaction, org_id, QuotaTarget::Node { name })
+                .await?;
             let authz_id =
                 create_object_authz(&mut transaction, org_id, "nodes", creator_authz_id).await?;
             sqlx::query(

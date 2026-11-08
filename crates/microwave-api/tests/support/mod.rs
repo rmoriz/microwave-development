@@ -115,9 +115,16 @@ pub fn add_user(state: &AppState, username: &str, email: &str, admin: bool) -> U
 
 pub async fn add_org(state: &AppState, name: &str) -> Org {
     let creator = state.sqlite().find_user("pivotal").unwrap().unwrap();
-    microwave_authz::create_organization(state.sqlite(), name, name, &creator.id, &creator.authz_id)
-        .await
-        .unwrap()
+    microwave_authz::create_organization(
+        state.sqlite(),
+        name,
+        name,
+        &creator.id,
+        &creator.authz_id,
+        None,
+    )
+    .await
+    .unwrap()
 }
 
 pub fn associate(state: &AppState, org: &Org, user: &User) {

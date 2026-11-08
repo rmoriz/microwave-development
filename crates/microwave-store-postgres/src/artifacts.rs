@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use microwave_store::{
-    decode_serialized, encode_serialized, ArtifactRepository, Permission, StoreError,
+    decode_serialized, encode_serialized, ArtifactRepository, Permission, QuotaTarget, StoreError,
     StoredCookbookArtifact, StoredCookbookArtifactVersion,
 };
 use sqlx::postgres::Postgres;
@@ -113,6 +113,12 @@ impl ArtifactRepository for PostgresStore {
         let timestamp = now();
         let serialized_object = encode_serialized(manifest, self.compression())?;
         let mut transaction = self.pool().begin().await.map_err(db)?;
+        self.enforce_quota(
+            &mut transaction,
+            org_id,
+            QuotaTarget::CookbookArtifactVersion { name, identifier },
+        )
+        .await?;
 
         let existing: Option<(i64, String)> = sqlx::query_as(
             "SELECT id, authz_id FROM cookbook_artifacts WHERE org_id = $1 AND name = $2",

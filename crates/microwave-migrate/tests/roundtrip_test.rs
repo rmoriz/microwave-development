@@ -65,10 +65,17 @@ async fn exported_snapshot_round_trips_identity_authz_and_objects() {
         .add_actor_key(&alice.id, ActorType::User, "default", PUBLIC_KEY)
         .unwrap();
 
-    let acme = create_organization(&store, "acme", "Acme Corp", &alice.id, &alice.authz_id)
-        .await
-        .unwrap();
-    let beta = create_organization(&store, "beta", "Beta Inc", &bob.id, &bob.authz_id)
+    let acme = create_organization(
+        &store,
+        "acme",
+        "Acme Corp",
+        &alice.id,
+        &alice.authz_id,
+        None,
+    )
+    .await
+    .unwrap();
+    let beta = create_organization(&store, "beta", "Beta Inc", &bob.id, &bob.authz_id, None)
         .await
         .unwrap();
 

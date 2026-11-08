@@ -13,6 +13,7 @@ const sidebars: SidebarsConfig = {
         {type: 'doc', id: 'cookbook', label: 'Chef cookbook'},
         {type: 'doc', id: 'mcp', label: 'MCP endpoint'},
         {type: 'doc', id: 'request-limits', label: 'Request limits'},
+        {type: 'doc', id: 'quotas', label: 'Object quotas'},
         {type: 'doc', id: 'opentelemetry', label: 'OpenTelemetry metrics'},
         {type: 'doc', id: 'debian-package', label: 'Debian packages'},
         {type: 'doc', id: 'http-parity', label: 'HTTP API parity'},

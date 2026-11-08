@@ -6,7 +6,7 @@ use microwave_api::AppState;
 use microwave_config::{Config, McpOrgConfig};
 use microwave_crypto::SignVersion;
 use microwave_objectstore::md5_hex;
-use microwave_store::{NewNodeRun, Org, Permission};
+use microwave_store::{NewNodeRun, Org, Permission, QuotaRepository};
 use serde_json::{json, Value};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -2255,4 +2255,144 @@ async fn disabled_limits_pass_through_mcp() {
             StatusCode::OK
         );
     }
+}
+
+async fn allow_create(state: &AppState, org: &Org, container: &str) {
+    let authz_id = state
+        .store
+        .find_acl_target(&org.id, "containers", container)
+        .await
+        .unwrap()
+        .unwrap_or_else(|| panic!("missing container {container}"));
+    state
+        .sqlite()
+        .set_acl_for_permission_split(
+            &authz_id,
+            Permission::Create,
+            &["agent".to_string()],
+            &[],
+            &[],
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn create_node_over_a_quota_answers_is_error() {
+    let (state, org, app) = agent_fixture(mcp_config_with_principal("acme", "a", "agent")).await;
+    allow_create(&state, &org, "nodes").await;
+    state.sqlite().set_org_quotas(
+        &org.id,
+        Some(microwave_config::OrgQuotas {
+            max_nodes: Some(1),
+            ..Default::default()
+        }),
+    );
+    let created = call_tool(
+        &app,
+        "acme",
+        "a",
+        1,
+        "create_node",
+        json!({ "name": "web1" }),
+    )
+    .await;
+    assert_eq!(created["name"], "web1");
+    let result = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        2,
+        "create_node",
+        json!({ "name": "web2" }),
+    )
+    .await;
+    assert_eq!(result["result"]["isError"], json!(true));
+    assert_eq!(
+        result["result"]["content"][0]["text"],
+        "node limit of 1 reached"
+    );
+}
+
+#[tokio::test]
+async fn create_environment_over_a_quota_answers_is_error() {
+    let (state, org, app) = agent_fixture(mcp_config_with_principal("acme", "a", "agent")).await;
+    allow_create(&state, &org, "environments").await;
+    state.sqlite().set_org_quotas(
+        &org.id,
+        Some(microwave_config::OrgQuotas {
+            max_environments: Some(1),
+            ..Default::default()
+        }),
+    );
+    let created = call_tool(
+        &app,
+        "acme",
+        "a",
+        1,
+        "create_environment",
+        json!({ "name": "first" }),
+    )
+    .await;
+    assert_eq!(created["name"], "first");
+    let result = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        2,
+        "create_environment",
+        json!({ "name": "second" }),
+    )
+    .await;
+    assert_eq!(result["result"]["isError"], json!(true));
+    assert_eq!(
+        result["result"]["content"][0]["text"],
+        "environment limit of 1 reached"
+    );
+}
+
+#[tokio::test]
+async fn upload_cookbook_version_over_a_quota_answers_is_error() {
+    let (state, org, app) = agent_fixture(mcp_config_with_principal("acme", "a", "agent")).await;
+    allow_create(&state, &org, "cookbooks").await;
+    state.sqlite().set_org_quotas(
+        &org.id,
+        Some(microwave_config::OrgQuotas {
+            max_cookbook_versions: Some(1),
+            ..Default::default()
+        }),
+    );
+    call_tool(
+        &app,
+        "acme",
+        "a",
+        1,
+        "upload_cookbook_version",
+        upload_args(
+            "apache",
+            "1.0.0",
+            json!([inline_file(
+                "recipes/default.rb",
+                "Y29va2Jvb2sgY29udGVudHM="
+            )]),
+        ),
+    )
+    .await;
+    let result = call_tool_raw(
+        &app,
+        "acme",
+        "a",
+        2,
+        "upload_cookbook_version",
+        upload_args(
+            "apache",
+            "2.0.0",
+            json!([inline_file("recipes/default.rb", "c2Vjb25kIGNvb2tib29r")]),
+        ),
+    )
+    .await;
+    assert_eq!(result["result"]["isError"], json!(true));
+    assert_eq!(
+        result["result"]["content"][0]["text"],
+        "cookbook version limit of 1 reached"
+    );
 }

@@ -56,6 +56,7 @@ async fn fixture_with_keygen(size: usize, workers: usize, warm_up: bool) -> Fixt
         "Acme Corp",
         &admin.id,
         &admin.authz_id,
+        None,
     )
     .await
     .unwrap();

@@ -9,7 +9,8 @@ pub use config::{
     KeygenConfig, LicenseConfig, LimitsConfig, LimitsGlobalConfig, LimitsOrgConfig,
     LimitsOrgOverride, LimitsPrincipalConfig, LimitsRateConfig, MailAuth, MailConfig, MailSecurity,
     McpConfig, McpOrgConfig, ObjectStoreBackend, ObjectStoreConfig, ObjectStoreOrgConfig,
-    OrgCredentials, OtelConfig, PathsConfig, RequiredRecipeConfig, SearchBackend, SearchConfig,
-    ServerConfig, StorageCompression, StorageConfig, TelemetryConfig, TlsConfig,
+    OrgCredentials, OrgQuotas, OtelConfig, PathsConfig, QuotasConfig, RequiredRecipeConfig,
+    SearchBackend, SearchConfig, ServerConfig, StorageCompression, StorageConfig, TelemetryConfig,
+    TlsConfig,
 };
 pub use tenant_map::{tenant_issues, TenantIssue};

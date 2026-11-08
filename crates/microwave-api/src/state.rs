@@ -30,6 +30,9 @@ pub struct AppState {
     /// HMAC key for local `/bookshelf` tokens. Shared with the reloader, which
     /// stores the rotated key after a reload swaps in the matching local store.
     pub local_bookshelf_secret: Arc<arc_swap::ArcSwap<String>>,
+    /// Quota section of the live configuration. Shared with the reloader, so an
+    /// entry added by a reload applies to the next organization creation.
+    pub quotas: Arc<arc_swap::ArcSwap<microwave_config::QuotasConfig>>,
     pub search: Arc<dyn SearchBackend>,
     /// Process-local request metrics served by `GET /_stats`.
     pub metrics: Arc<Metrics>,
@@ -102,12 +105,14 @@ impl AppState {
                 tracing::warn!("mail uses plaintext SMTP (security = none); use this only for trusted local relays");
             }
         }
+        let quotas = Arc::new(arc_swap::ArcSwap::from_pointee(config.quotas.clone()));
         Ok(Self {
             store,
             sqlite: None,
             config,
             object_store,
             local_bookshelf_secret,
+            quotas,
             search,
             metrics,
             keygen,

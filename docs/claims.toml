@@ -2449,3 +2449,69 @@ area = "docs"
 status = "verified"
 surfaces = [ { path = "docs/request-limits.md", needle = "after authentication" } ]
 verify = { kind = "grep", path = "crates/microwave-api/src/mcp/mod.rs", pattern = "check_org_principal" }
+
+[[claim]]
+id = "quotas-guide-published"
+summary = "The object-quotas guide is part of the published docs site."
+area = "docs"
+status = "verified"
+surfaces = [
+  { path = "docs/quotas.md", needle = "Object quotas" },
+  { path = "docs/index.md", needle = "quotas.md" },
+  { path = "website/docs/sidebars.ts", needle = "quotas" },
+]
+verify = { kind = "grep", path = "website/docs/docusaurus.config.ts", pattern = "quotas.md" }
+
+[[claim]]
+id = "quotas-hard-and-403"
+summary = "A quota is hard and a creation over it answers 403 while updates still work."
+area = "docs"
+status = "verified"
+surfaces = [
+  { path = "docs/quotas.md", needle = "A quota is a hard, per-organization ceiling on one object kind." },
+  { path = "docs/quotas.md", needle = "the same `PUT` on an existing object still updates it" },
+]
+verify = { kind = "grep", path = "crates/microwave-store/src/sqlite.rs", pattern = "limit of" }
+
+[[claim]]
+id = "quotas-zero-and-default-exempt"
+summary = "Zero is a valid ceiling and the _default environment never counts."
+area = "docs"
+status = "verified"
+surfaces = [
+  { path = "docs/quotas.md", needle = "Zero is a valid ceiling" },
+  { path = "docs/quotas.md", needle = "`max_environments = 0` still creates an organization" },
+]
+verify = { kind = "grep", path = "crates/microwave-store/src/quotas.rs", pattern = "name <> '_default'" }
+
+[[claim]]
+id = "quotas-independent-of-limits"
+summary = "Quotas do not share the limits.enabled switch."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/quotas.md", needle = "Quotas are independent of" } ]
+verify = { kind = "grep", path = "crates/microwave-config/src/config.rs", pattern = "pub quotas: QuotasConfig" }
+
+[[claim]]
+id = "quotas-metric-series"
+summary = "A rejection lands on the request-limit metric series with a quota scope."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/quotas.md", needle = "microwave_server_limits_total" } ]
+verify = { kind = "grep", path = "crates/microwave-store/src/quotas.rs", pattern = "record_limit" }
+
+[[claim]]
+id = "quotas-org-create-immediate"
+summary = "A pre-provisioned entry acts from the first request because org-create registers it."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/quotas.md", needle = "org-create" } ]
+verify = { kind = "grep", path = "crates/microwave-authz/src/org.rs", pattern = "set_org_quotas" }
+
+[[claim]]
+id = "quotas-migrate-bypass"
+summary = "Migration imports run without quotas."
+area = "docs"
+status = "verified"
+surfaces = [ { path = "docs/quotas.md", needle = "a restore is never truncated" } ]
+verify = { kind = "grep", path = "crates/microwave-migrate/src/lib.rs", pattern = "Quota checks are not installed" }

@@ -1,7 +1,8 @@
 use crate::compression::Compression;
+use crate::quotas::{count_quota, reject_if_full, QuotaKind, QuotaPolicy, QuotaTarget};
 use crate::timing::{DbSystem, StoreTimer};
 use microwave_metrics::Metrics;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, Transaction};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Duration;
@@ -23,6 +24,8 @@ pub enum StoreError {
     Compression(String),
     #[error("forbidden: {0}")]
     Forbidden(String),
+    #[error("{kind} limit of {limit} reached")]
+    Quota { kind: QuotaKind, limit: u64 },
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -32,6 +35,7 @@ pub struct SqliteStore {
     connection: Arc<Mutex<Connection>>,
     compression: Compression,
     metrics: Arc<RwLock<Option<Arc<Metrics>>>>,
+    pub(crate) quotas: RwLock<QuotaPolicy>,
 }
 
 impl SqliteStore {
@@ -59,6 +63,7 @@ impl SqliteStore {
             connection: Arc::new(Mutex::new(connection)),
             compression,
             metrics: Arc::new(RwLock::new(None)),
+            quotas: RwLock::new(QuotaPolicy::default()),
         })
     }
 
@@ -76,6 +81,7 @@ impl SqliteStore {
             connection: Arc::new(Mutex::new(connection)),
             compression,
             metrics: Arc::new(RwLock::new(None)),
+            quotas: RwLock::new(QuotaPolicy::default()),
         })
     }
 
@@ -95,6 +101,7 @@ impl SqliteStore {
             connection: Arc::new(Mutex::new(connection)),
             compression: Compression::default(),
             metrics: Arc::new(RwLock::new(None)),
+            quotas: RwLock::new(QuotaPolicy::default()),
         })
     }
 
@@ -113,6 +120,44 @@ impl SqliteStore {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *slot = Some(metrics);
+    }
+
+    pub(crate) fn quota_metrics(&self) -> Option<Arc<Metrics>> {
+        self.metrics
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub(crate) fn quota_limit(&self, org_id: &str, kind: QuotaKind) -> Option<u64> {
+        self.quotas
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .limit(org_id, kind)
+    }
+
+    /// Reject a creation that would exceed the organization's ceiling.
+    ///
+    /// SQLite has a single write connection, so the count inside this
+    /// transaction is already serialized against other creators.
+    pub(crate) fn enforce_quota(
+        &self,
+        tx: &Transaction<'_>,
+        org_id: &str,
+        target: QuotaTarget<'_>,
+    ) -> Result<(), StoreError> {
+        if target.is_exempt() {
+            return Ok(());
+        }
+        let kind = target.kind();
+        let Some(limit) = self.quota_limit(org_id, kind) else {
+            return Ok(());
+        };
+        if target.exists_sqlite(tx, org_id)? {
+            return Ok(());
+        }
+        let count = count_quota(tx, org_id, kind)?;
+        reject_if_full(self.quota_metrics().as_deref(), org_id, kind, limit, count)
     }
 
     /// Start timing one store operation, or a no-op guard when no registry is

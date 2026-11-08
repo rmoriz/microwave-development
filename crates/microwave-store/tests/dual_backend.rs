@@ -10,9 +10,11 @@
 //! parallel against a shared database and against the existing
 //! `microwave-store-postgres` integration tests.
 
+use microwave_config::OrgQuotas;
+use microwave_metrics::Metrics;
 use microwave_store::{
     ActorType, GroupMembers, MetadataStore, NewNode, NewNodeRun, NodeRunFilter, Org, Permission,
-    SqliteStore, StoreError, UserPatch, UserProfile,
+    QuotaKind, QuotaPolicy, SqliteStore, StoreError, UserPatch, UserProfile,
 };
 use std::sync::{Arc, Once, OnceLock};
 use uuid::Uuid;
@@ -3170,6 +3172,610 @@ mod suite {
         cleanup_org(store.as_ref(), &other.id).await;
         Vec::new()
     }
+
+    pub async fn quota_nodes(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let metrics = Arc::new(Metrics::new());
+        store.set_metrics(metrics.clone());
+        let fixture = fixture(store.as_ref()).await;
+        let org = &fixture.org;
+        let creator = fixture.creator_authz_id.as_str();
+        let mut policy = QuotaPolicy::default();
+        policy.set_org(
+            &org.id,
+            Some(OrgQuotas {
+                max_nodes: Some(1),
+                ..Default::default()
+            }),
+        );
+        store.set_quotas(policy);
+
+        store
+            .create_node(
+                &org.id,
+                NewNode {
+                    name: "web1",
+                    body: r#"{"name":"web1","run_list":[]}"#,
+                    environment: "_default",
+                    policy_name: None,
+                    policy_group: None,
+                    creator_authz_id: creator,
+                },
+            )
+            .await
+            .expect("first node");
+
+        let error = store
+            .create_node(
+                &org.id,
+                NewNode {
+                    name: "web2",
+                    body: r#"{"name":"web2","run_list":[]}"#,
+                    environment: "_default",
+                    policy_name: None,
+                    policy_group: None,
+                    creator_authz_id: creator,
+                },
+            )
+            .await
+            .expect_err("second node over the limit");
+        assert_eq!(error.to_string(), "node limit of 1 reached");
+        assert!(matches!(
+            error,
+            StoreError::Quota {
+                kind: QuotaKind::Node,
+                limit: 1
+            }
+        ));
+        let series = metrics.limit_series();
+        assert!(series.iter().any(|series| {
+            series.scope == "quota:node" && series.outcome == "rejected" && series.org == org.id
+        }));
+
+        // Re-upload of the existing row at the ceiling stays a 409.
+        let conflict = store
+            .create_node(
+                &org.id,
+                NewNode {
+                    name: "web1",
+                    body: r#"{"name":"web1","run_list":[]}"#,
+                    environment: "_default",
+                    policy_name: None,
+                    policy_group: None,
+                    creator_authz_id: creator,
+                },
+            )
+            .await
+            .expect_err("duplicate");
+        assert!(matches!(conflict, StoreError::Conflict(_)), "{conflict}");
+
+        store
+            .delete_node(&org.id, "web1")
+            .await
+            .expect("delete frees the slot");
+        store
+            .create_node(
+                &org.id,
+                NewNode {
+                    name: "web2",
+                    body: r#"{"name":"web2","run_list":[]}"#,
+                    environment: "_default",
+                    policy_name: None,
+                    policy_group: None,
+                    creator_authz_id: creator,
+                },
+            )
+            .await
+            .expect("slot after delete");
+
+        // A different organization without an entry is unlimited.
+        let other = {
+            let other_fixture = super::fixture(store.as_ref()).await;
+            store
+                .create_node(
+                    &other_fixture.org.id,
+                    NewNode {
+                        name: "web1",
+                        body: r#"{"name":"web1","run_list":[]}"#,
+                        environment: "_default",
+                        policy_name: None,
+                        policy_group: None,
+                        creator_authz_id: &other_fixture.creator_authz_id,
+                    },
+                )
+                .await
+                .expect("unlimited org");
+            other_fixture
+        };
+
+        cleanup_org(store.as_ref(), &org.id).await;
+        cleanup_org(store.as_ref(), &other.org.id).await;
+        Vec::new()
+    }
+
+    pub async fn quota_nodes_concurrent(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let fixture = fixture(store.as_ref()).await;
+        let org = &fixture.org;
+        let mut policy = QuotaPolicy::default();
+        policy.set_org(
+            &org.id,
+            Some(OrgQuotas {
+                max_nodes: Some(2),
+                ..Default::default()
+            }),
+        );
+        store.set_quotas(policy);
+
+        let creator = fixture.creator_authz_id.clone();
+        let results = run_concurrently(4, {
+            let store = Arc::clone(store);
+            let org_id = org.id.clone();
+            let creator = creator.clone();
+            move |index| {
+                let store = Arc::clone(&store);
+                let org_id = org_id.clone();
+                let creator = creator.clone();
+                async move {
+                    let name = format!("web{index}");
+                    let body = format!(r#"{{"name":"{name}","run_list":[]}}"#);
+                    store
+                        .create_node(
+                            &org_id,
+                            NewNode {
+                                name: &name,
+                                body: &body,
+                                environment: "_default",
+                                policy_name: None,
+                                policy_group: None,
+                                creator_authz_id: &creator,
+                            },
+                        )
+                        .await
+                        .is_ok()
+                }
+            }
+        })
+        .await;
+        assert_eq!(results.iter().filter(|ok| **ok).count(), 2, "{results:?}");
+        // `count_nodes` is global; parallel matrix tests share a PostgreSQL
+        // database, so count this organization's nodes instead.
+        assert_eq!(store.list_nodes(&org.id).await.expect("list").len(), 2);
+
+        cleanup_org(store.as_ref(), &org.id).await;
+        Vec::new()
+    }
+
+    pub async fn quota_cookbooks(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let fixture = fixture(store.as_ref()).await;
+        let org = &fixture.org;
+        let creator = fixture.creator_authz_id.as_str();
+        let cookbook_name = unique("quota-cookbook");
+        let artifact_name = unique("quota-artifact");
+        let manifest = format!(r#"{{"name":"{cookbook_name}","version":"1.0.0"}}"#);
+        let mut policy = QuotaPolicy::default();
+        policy.set_org(
+            &org.id,
+            Some(OrgQuotas {
+                max_cookbook_versions: Some(1),
+                ..Default::default()
+            }),
+        );
+        store.set_quotas(policy);
+
+        store
+            .create_cookbook_version(
+                &org.id,
+                &cookbook_name,
+                "1.0.0",
+                &manifest,
+                &[],
+                false,
+                creator,
+            )
+            .await
+            .expect("first cookbook version");
+
+        let error = store
+            .create_cookbook_version(
+                &org.id,
+                &cookbook_name,
+                "2.0.0",
+                &format!(r#"{{"name":"{cookbook_name}","version":"2.0.0"}}"#),
+                &[],
+                false,
+                creator,
+            )
+            .await
+            .expect_err("second cookbook version over the limit");
+        assert_eq!(error.to_string(), "cookbook version limit of 1 reached");
+
+        // Re-upload of the existing version at the ceiling stays a conflict.
+        let conflict = store
+            .create_cookbook_version(
+                &org.id,
+                &cookbook_name,
+                "1.0.0",
+                &manifest,
+                &[],
+                false,
+                creator,
+            )
+            .await
+            .expect_err("duplicate cookbook version");
+        assert!(matches!(conflict, StoreError::Conflict(_)), "{conflict}");
+
+        // Artifact versions share the kind and its ceiling.
+        let artifact_error = store
+            .create_cookbook_artifact_version(
+                &org.id,
+                &artifact_name,
+                "1.0.0",
+                &format!(r#"{{"name":"{artifact_name}","version":"1.0.0"}}"#),
+                &[],
+                creator,
+            )
+            .await
+            .expect_err("artifact version over the limit");
+        assert_eq!(
+            artifact_error.to_string(),
+            "cookbook version limit of 1 reached"
+        );
+
+        store
+            .delete_cookbook_version(&org.id, &cookbook_name, "1.0.0")
+            .await
+            .expect("delete frees the slot");
+
+        // A stored artifact version is the one allowed row; a new artifact is
+        // rejected, its re-upload keeps the conflict answer.
+        store
+            .create_cookbook_artifact_version(
+                &org.id,
+                &artifact_name,
+                "1.0.0",
+                &format!(r#"{{"name":"{artifact_name}","version":"1.0.0"}}"#),
+                &[],
+                creator,
+            )
+            .await
+            .expect("artifact after delete");
+        let other_artifact = store
+            .create_cookbook_artifact_version(
+                &org.id,
+                &unique("quota-artifact-other"),
+                "1.0.0",
+                &format!(r#"{{"name":"{artifact_name}","version":"1.0.0"}}"#),
+                &[],
+                creator,
+            )
+            .await
+            .expect_err("second artifact over the limit");
+        assert_eq!(
+            other_artifact.to_string(),
+            "cookbook version limit of 1 reached"
+        );
+        let artifact_conflict = store
+            .create_cookbook_artifact_version(
+                &org.id,
+                &artifact_name,
+                "1.0.0",
+                &format!(r#"{{"name":"{artifact_name}","version":"1.0.0"}}"#),
+                &[],
+                creator,
+            )
+            .await
+            .expect_err("duplicate artifact version");
+        assert!(
+            matches!(artifact_conflict, StoreError::Conflict(_)),
+            "{artifact_conflict}"
+        );
+
+        store
+            .delete_cookbook_artifact_version(&org.id, &artifact_name, "1.0.0")
+            .await
+            .expect("deleted artifact frees the slot");
+        store
+            .create_cookbook_version(
+                &org.id,
+                &cookbook_name,
+                "2.0.0",
+                &format!(r#"{{"name":"{cookbook_name}","version":"2.0.0"}}"#),
+                &[],
+                false,
+                creator,
+            )
+            .await
+            .expect("slot after delete");
+
+        let other = {
+            let other_fixture = super::fixture(store.as_ref()).await;
+            store
+                .create_cookbook_version(
+                    &other_fixture.org.id,
+                    &cookbook_name,
+                    "3.0.0",
+                    &format!(r#"{{"name":"{cookbook_name}","version":"3.0.0"}}"#),
+                    &[],
+                    false,
+                    &other_fixture.creator_authz_id,
+                )
+                .await
+                .expect("unlimited org");
+            other_fixture
+        };
+
+        cleanup_org(store.as_ref(), &org.id).await;
+        cleanup_org(store.as_ref(), &other.org.id).await;
+        Vec::new()
+    }
+
+    pub async fn quota_environments(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let fixture = fixture(store.as_ref()).await;
+        let org = &fixture.org;
+        let creator = fixture.creator_authz_id.as_str();
+        let mut policy = QuotaPolicy::default();
+        policy.set_org(
+            &org.id,
+            Some(OrgQuotas {
+                max_environments: Some(2),
+                ..Default::default()
+            }),
+        );
+        store.set_quotas(policy);
+
+        for name in ["first", "second"] {
+            store
+                .create_environment(&org.id, name, &format!(r#"{{"name":"{name}"}}"#), creator)
+                .await
+                .expect("environment under the limit");
+        }
+        let error = store
+            .create_environment(&org.id, "third", r#"{"name":"third"}"#, creator)
+            .await
+            .expect_err("third environment over the limit");
+        assert_eq!(error.to_string(), "environment limit of 2 reached");
+
+        // `_default` is exempt, so it still fits at the ceiling.
+        store
+            .create_environment(&org.id, "_default", r#"{"name":"_default"}"#, creator)
+            .await
+            .expect("_default is exempt from the ceiling");
+
+        // An exempt `_default` leaves the whole ceiling for custom names.
+        let one = {
+            let other_fixture = super::fixture(store.as_ref()).await;
+            store.set_org_quotas(
+                &other_fixture.org.id,
+                Some(OrgQuotas {
+                    max_environments: Some(1),
+                    ..Default::default()
+                }),
+            );
+            store
+                .create_environment(
+                    &other_fixture.org.id,
+                    "_default",
+                    r#"{"name":"_default"}"#,
+                    &other_fixture.creator_authz_id,
+                )
+                .await
+                .expect("_default fits a ceiling of one");
+            store
+                .create_environment(
+                    &other_fixture.org.id,
+                    "first",
+                    r#"{"name":"first"}"#,
+                    &other_fixture.creator_authz_id,
+                )
+                .await
+                .expect("one custom environment fits");
+            let error = store
+                .create_environment(
+                    &other_fixture.org.id,
+                    "second",
+                    r#"{"name":"second"}"#,
+                    &other_fixture.creator_authz_id,
+                )
+                .await
+                .expect_err("second custom environment over the limit");
+            assert_eq!(error.to_string(), "environment limit of 1 reached");
+            other_fixture
+        };
+
+        // Zero still admits the auto-created `_default`.
+        let zero = {
+            let other_fixture = super::fixture(store.as_ref()).await;
+            store.set_org_quotas(
+                &other_fixture.org.id,
+                Some(OrgQuotas {
+                    max_environments: Some(0),
+                    ..Default::default()
+                }),
+            );
+            store
+                .create_environment(
+                    &other_fixture.org.id,
+                    "_default",
+                    r#"{"name":"_default"}"#,
+                    &other_fixture.creator_authz_id,
+                )
+                .await
+                .expect("_default fits a ceiling of zero");
+            let error = store
+                .create_environment(
+                    &other_fixture.org.id,
+                    "first",
+                    r#"{"name":"first"}"#,
+                    &other_fixture.creator_authz_id,
+                )
+                .await
+                .expect_err("custom environment over a ceiling of zero");
+            assert_eq!(error.to_string(), "environment limit of 0 reached");
+            other_fixture
+        };
+
+        cleanup_org(store.as_ref(), &org.id).await;
+        cleanup_org(store.as_ref(), &one.org.id).await;
+        cleanup_org(store.as_ref(), &zero.org.id).await;
+        Vec::new()
+    }
+
+    pub async fn quota_roles(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let fixture = fixture(store.as_ref()).await;
+        let org = &fixture.org;
+        let creator = fixture.creator_authz_id.as_str();
+        let mut policy = QuotaPolicy::default();
+        policy.set_org(
+            &org.id,
+            Some(OrgQuotas {
+                max_roles: Some(1),
+                ..Default::default()
+            }),
+        );
+        store.set_quotas(policy);
+
+        store
+            .create_role(&org.id, "first", r#"{"name":"first"}"#, creator)
+            .await
+            .expect("first role");
+        let error = store
+            .create_role(&org.id, "second", r#"{"name":"second"}"#, creator)
+            .await
+            .expect_err("second role over the limit");
+        assert_eq!(error.to_string(), "role limit of 1 reached");
+
+        let conflict = store
+            .create_role(&org.id, "first", r#"{"name":"first"}"#, creator)
+            .await
+            .expect_err("duplicate role");
+        assert!(matches!(conflict, StoreError::Conflict(_)), "{conflict}");
+
+        store
+            .delete_role(&org.id, "first")
+            .await
+            .expect("delete frees the slot");
+        store
+            .create_role(&org.id, "second", r#"{"name":"second"}"#, creator)
+            .await
+            .expect("slot after delete");
+
+        let other = {
+            let other_fixture = super::fixture(store.as_ref()).await;
+            store
+                .create_role(
+                    &other_fixture.org.id,
+                    "first",
+                    r#"{"name":"first"}"#,
+                    &other_fixture.creator_authz_id,
+                )
+                .await
+                .expect("unlimited org");
+            other_fixture
+        };
+
+        cleanup_org(store.as_ref(), &org.id).await;
+        cleanup_org(store.as_ref(), &other.org.id).await;
+        Vec::new()
+    }
+
+    pub async fn quota_policies(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let fixture = fixture(store.as_ref()).await;
+        let org = &fixture.org;
+        let creator = fixture.creator_authz_id.as_str();
+        let policy_name = unique("quota-policy");
+        let group_name = unique("quota-group");
+        let first_body =
+            format!(r#"{{"name":"{policy_name}","revision_id":"1.0.0","run_list":[]}}"#);
+        let second_body =
+            format!(r#"{{"name":"{policy_name}","revision_id":"2.0.0","run_list":[]}}"#);
+        let group_body = format!(r#"{{"name":"{group_name}"}}"#);
+        let mut policy = QuotaPolicy::default();
+        policy.set_org(
+            &org.id,
+            Some(OrgQuotas {
+                max_policy_revisions: Some(1),
+                ..Default::default()
+            }),
+        );
+        store.set_quotas(policy);
+
+        store
+            .create_policy_revision(&org.id, &policy_name, "1.0.0", &first_body, creator)
+            .await
+            .expect("first policy revision");
+        let error = store
+            .create_policy_revision(&org.id, &policy_name, "2.0.0", &second_body, creator)
+            .await
+            .expect_err("second policy revision over the limit");
+        assert_eq!(error.to_string(), "policy revision limit of 1 reached");
+
+        store
+            .create_policy_group(&org.id, &group_name, &group_body, creator)
+            .await
+            .expect("policy group");
+
+        // Reusing the existing revision is not a new row; a new revision is.
+        store
+            .associate_policy_revision(
+                &org.id,
+                &group_name,
+                &policy_name,
+                "1.0.0",
+                &first_body,
+                &group_body,
+                creator,
+            )
+            .await
+            .expect("association to the existing revision");
+        let error = store
+            .associate_policy_revision(
+                &org.id,
+                &group_name,
+                &policy_name,
+                "2.0.0",
+                &second_body,
+                &group_body,
+                creator,
+            )
+            .await
+            .expect_err("association creating a revision over the limit");
+        assert_eq!(error.to_string(), "policy revision limit of 1 reached");
+
+        store
+            .delete_policy_revision(&org.id, &policy_name, "1.0.0")
+            .await
+            .expect("delete frees the slot");
+        store
+            .associate_policy_revision(
+                &org.id,
+                &group_name,
+                &policy_name,
+                "2.0.0",
+                &second_body,
+                &group_body,
+                creator,
+            )
+            .await
+            .expect("association after delete");
+
+        let other = {
+            let other_fixture = super::fixture(store.as_ref()).await;
+            store
+                .create_policy_revision(
+                    &other_fixture.org.id,
+                    &policy_name,
+                    "3.0.0",
+                    &format!(r#"{{"name":"{policy_name}","revision_id":"3.0.0","run_list":[]}}"#),
+                    &other_fixture.creator_authz_id,
+                )
+                .await
+                .expect("unlimited org");
+            other_fixture
+        };
+
+        cleanup_org(store.as_ref(), &org.id).await;
+        cleanup_org(store.as_ref(), &other.org.id).await;
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3213,6 +3819,12 @@ matrix!(
         bulk_lookups,
         reports,
         checksums,
+        quota_nodes,
+        quota_nodes_concurrent,
+        quota_cookbooks,
+        quota_environments,
+        quota_roles,
+        quota_policies,
     ]
 );
 
@@ -3234,5 +3846,11 @@ matrix!(
         bulk_lookups,
         reports,
         checksums,
+        quota_nodes,
+        quota_nodes_concurrent,
+        quota_cookbooks,
+        quota_environments,
+        quota_roles,
+        quota_policies,
     ]
 );

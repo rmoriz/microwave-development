@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use microwave_store::{
     decode_serialized, encode_serialized, parse_version, CookbookRepository, Permission,
-    StoreError, StoredCookbookVersion,
+    QuotaTarget, StoreError, StoredCookbookVersion,
 };
 use sqlx::postgres::Postgres;
 use sqlx::{Row, Transaction};
@@ -27,6 +27,12 @@ impl CookbookRepository for PostgresStore {
         let serialized_object = encode_serialized(manifest, self.compression())?;
         let meta_deps = microwave_store::cookbook_dependencies(manifest);
         let mut transaction = self.pool().begin().await.map_err(db)?;
+        self.enforce_quota(
+            &mut transaction,
+            org_id,
+            QuotaTarget::CookbookVersion { name, version },
+        )
+        .await?;
 
         let existing: Option<(i64, String)> =
             sqlx::query_as("SELECT id, authz_id FROM cookbooks WHERE org_id = $1 AND name = $2")

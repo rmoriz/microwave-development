@@ -2,6 +2,7 @@ use crate::compression::{decode_serialized, encode_serialized};
 use crate::cookbooks::cleanup_unreferenced_checksums;
 use crate::identity::{conflict, now};
 use crate::objects::create_object_authz;
+use crate::quotas::QuotaTarget;
 use crate::sqlite::{SqliteStore, StoreError};
 use rusqlite::{params, OptionalExtension};
 
@@ -102,6 +103,11 @@ impl SqliteStore {
         let serialized_object = encode_serialized(manifest, self.compression())?;
         let mut connection = self.connection();
         let tx = connection.transaction()?;
+        self.enforce_quota(
+            &tx,
+            org_id,
+            QuotaTarget::CookbookArtifactVersion { name, identifier },
+        )?;
 
         let existing: Option<(i64, String)> = tx
             .query_row(

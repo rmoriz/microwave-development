@@ -1,5 +1,6 @@
 use crate::compression::{decode_serialized, encode_serialized};
 use crate::identity::{conflict, new_id, now};
+use crate::quotas::QuotaTarget;
 use crate::sqlite::{SqliteStore, StoreError};
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::{BTreeSet, HashMap};
@@ -37,6 +38,7 @@ impl SqliteStore {
         let meta_deps = crate::cookbook_dependencies(manifest);
         let mut connection = self.connection();
         let tx = connection.transaction()?;
+        self.enforce_quota(&tx, org_id, QuotaTarget::CookbookVersion { name, version })?;
 
         let existing: Option<(i64, String)> = tx
             .query_row(

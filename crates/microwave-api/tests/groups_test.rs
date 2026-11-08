@@ -363,6 +363,7 @@ async fn replacement_group_members_are_validated_and_apply_per_bucket() {
         "Acme Corp",
         &creator.id,
         &creator.authz_id,
+        None,
     )
     .await
     .unwrap();

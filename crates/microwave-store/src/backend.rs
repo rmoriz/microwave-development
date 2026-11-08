@@ -38,9 +38,13 @@ use crate::objects::{NewNode, StoredDataBagItem, StoredNode, StoredObject};
 use crate::policies::{
     StoredPolicy, StoredPolicyGroup, StoredPolicyGroupAssociation, StoredPolicyRevision,
 };
+use crate::quotas::{QuotaKind, QuotaPolicy};
 use crate::sandboxes::SandboxCheck;
 use crate::sqlite::StoreError;
 use async_trait::async_trait;
+use microwave_config::OrgQuotas;
+use microwave_metrics::Metrics;
+use std::sync::Arc;
 
 /// Identity and key material.
 #[async_trait]
@@ -992,6 +996,18 @@ pub trait ReportRepository: Send + Sync {
     ) -> Result<Option<crate::StoredNodeRun>, StoreError>;
 }
 
+/// Installed per-organization object quotas.
+pub trait QuotaRepository: Send + Sync {
+    /// Replace the whole installed policy.
+    fn set_quotas(&self, policy: QuotaPolicy);
+    /// Install or clear the ceilings for one organization.
+    fn set_org_quotas(&self, org_id: &str, quotas: Option<OrgQuotas>);
+    /// The ceiling for one kind, or `None` when unlimited.
+    fn quota_limit(&self, org_id: &str, kind: QuotaKind) -> Option<u64>;
+    /// Registry for quota rejections.
+    fn set_metrics(&self, metrics: Arc<Metrics>);
+}
+
 /// The complete metadata store contract.
 ///
 /// The server holds `Arc<dyn MetadataStore>`. The legacy `MigrationRepository`
@@ -1010,6 +1026,7 @@ pub trait MetadataStore:
     + HealthRepository
     + SecretsRepository
     + ReportRepository
+    + QuotaRepository
     + Send
     + Sync
 {
@@ -1029,6 +1046,7 @@ impl<T> MetadataStore for T where
         + HealthRepository
         + SecretsRepository
         + ReportRepository
+        + QuotaRepository
         + Send
         + Sync
 {
