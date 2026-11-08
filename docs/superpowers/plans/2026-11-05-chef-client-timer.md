@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Basis ist `main`; nur `docker-e2e/` ändern, plus dieses Plan-Dokument.
+- Basis ist `main`; nur `examples/docker-e2e/` ändern, plus dieses Plan-Dokument.
 - Festes Intervall: `interval "10min"`, `splay "1min"`, `delay_after_boot "10min"`.
 - Kein `chef-client`-Cookbook, keine neuen Berkshelf-Abhängigkeiten.
 - Client-Binary `/opt/cinc/bin/cinc-client`, Config-Verzeichnis `/etc/cinc`.
@@ -33,12 +33,12 @@
 ### Task 1: Timer-Cookbook und Rollen-Einbindung
 
 **Files:**
-- Create: `docker-e2e/seed/site-cookbooks/e2e_timer/metadata.rb`
-- Create: `docker-e2e/seed/site-cookbooks/e2e_timer/recipes/default.rb`
-- Create: `docker-e2e/seed/site-cookbooks/e2e_marker/metadata.rb`
-- Create: `docker-e2e/seed/site-cookbooks/e2e_marker/recipes/default.rb`
-- Modify: `docker-e2e/seed/seed.sh` (Upload-Schleife und `role.rb`)
-- Modify: `docker-e2e/README.md` (Seed-Schritte)
+- Create: `examples/docker-e2e/seed/site-cookbooks/e2e_timer/metadata.rb`
+- Create: `examples/docker-e2e/seed/site-cookbooks/e2e_timer/recipes/default.rb`
+- Create: `examples/docker-e2e/seed/site-cookbooks/e2e_marker/metadata.rb`
+- Create: `examples/docker-e2e/seed/site-cookbooks/e2e_marker/recipes/default.rb`
+- Modify: `examples/docker-e2e/seed/seed.sh` (Upload-Schleife und `role.rb`)
+- Modify: `examples/docker-e2e/README.md` (Seed-Schritte)
 
 **Interfaces:**
 - Consumes: `chef_client_systemd_timer` aus Cinc 19; das gestagte `/etc/cinc/client.rb` und `/etc/cinc/node.json` aus `client/converge.sh`.
@@ -107,7 +107,7 @@ Nummerierung bleibt sonst unverändert.
 - [ ] **Step 7: Stack neu bauen und seeden**
 
 ```sh
-cd docker-e2e
+cd examples/docker-e2e
 docker compose build node-debian node-ubuntu node-fedora node-amazon
 docker compose up -d
 docker compose wait seed
@@ -138,7 +138,7 @@ list-timers cinc-client.timer` zeigt den nächsten Lauf.
 - [ ] **Step 9: Commit**
 
 ```sh
-git add docker-e2e/seed/site-cookbooks/e2e_timer docker-e2e/seed/site-cookbooks/e2e_marker docker-e2e/seed/seed.sh docker-e2e/README.md
+git add examples/docker-e2e/seed/site-cookbooks/e2e_timer examples/docker-e2e/seed/site-cookbooks/e2e_marker examples/docker-e2e/seed/seed.sh examples/docker-e2e/README.md
 git commit -m "test(e2e): converge the nodes every ten minutes"
 ```
 
@@ -219,7 +219,7 @@ Nur bei Änderungen; Nachricht `test(e2e): harden the converge timer`.
 ### Task 3: Dokumentation
 
 **Files:**
-- Modify: `docker-e2e/README.md`
+- Modify: `examples/docker-e2e/README.md`
 
 **Interfaces:**
 - Consumes: Verhalten aus Tasks 1-2.
@@ -235,7 +235,7 @@ Intervalls an. Ein fehlgeschlagener Lauf lässt den Timer aktiv.
 - [ ] **Step 2: Prüfen**
 
 ```sh
-cd docker-e2e
+cd examples/docker-e2e
 grep -n 'cinc-client.timer\|every ten minutes\|within one interval' README.md
 docker compose config --quiet
 ```
@@ -243,6 +243,6 @@ docker compose config --quiet
 - [ ] **Step 3: Commit**
 
 ```sh
-git add docker-e2e/README.md
+git add examples/docker-e2e/README.md
 git commit -m "docs(e2e): describe the periodic converge timer"
 ```

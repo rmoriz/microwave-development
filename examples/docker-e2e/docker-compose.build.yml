@@ -6,7 +6,7 @@
 services:
   microwave:
     build:
-      context: ..
+      context: ../..
       dockerfile: Dockerfile
       args:
         RUST_VERSION: ${RUST_VERSION:-1}

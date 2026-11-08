@@ -40,8 +40,8 @@
 ### Task 1: Split pull and build Compose files
 
 **Files:**
-- Modify: `docker-e2e/docker-compose.yml`
-- Create: `docker-e2e/docker-compose.build.yml`
+- Modify: `examples/docker-e2e/docker-compose.yml`
+- Create: `examples/docker-e2e/docker-compose.build.yml`
 - Create: `scripts/tests/test_docker_e2e_compose.py`
 
 **Interfaces:**
@@ -51,7 +51,7 @@
 - [ ] **Step 1: Write the failing config test**
 
 Create `scripts/tests/test_docker_e2e_compose.py`. It uses
-`subprocess.run` with `cwd=ROOT / "docker-e2e"`, skips the class when
+`subprocess.run` with `cwd=ROOT / "examples" / "docker-e2e"`, skips the class when
 `docker compose version` fails, and asserts:
 
 ```python
@@ -102,7 +102,7 @@ top comment to describe the two modes and their commands.
 
 - [ ] **Step 4: Add the overlay**
 
-Create `docker-e2e/docker-compose.build.yml`:
+Create `examples/docker-e2e/docker-compose.build.yml`:
 
 ```yaml
 # Source-build overlay for the e2e stack:
@@ -128,7 +128,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add docker-e2e/docker-compose.yml docker-e2e/docker-compose.build.yml scripts/tests/test_docker_e2e_compose.py
+git add examples/docker-e2e/docker-compose.yml examples/docker-e2e/docker-compose.build.yml scripts/tests/test_docker_e2e_compose.py
 git commit -m "feat(docker-e2e): pull the image by default and build on demand"
 ```
 
@@ -137,7 +137,7 @@ git commit -m "feat(docker-e2e): pull the image by default and build on demand"
 ### Task 2: Document both modes
 
 **Files:**
-- Modify: `docker-e2e/README.md`
+- Modify: `examples/docker-e2e/README.md`
 
 - [ ] **Step 1: Update the service description and usage**
 
@@ -148,7 +148,7 @@ repository root with the overlay.
 Replace the usage block with:
 
 ```sh
-cd docker-e2e
+cd examples/docker-e2e
 docker compose up -d
 ```
 
@@ -184,7 +184,7 @@ Expected: exit 0.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docker-e2e/README.md
+git add examples/docker-e2e/README.md
 git commit -m "docs(docker-e2e): explain pull and source-build modes"
 ```
 
@@ -211,7 +211,7 @@ Add a `DocsPageTest` to `scripts/tests/test_docker_e2e_compose.py`. It reads
 
 ```python
 def test_page_names_every_service_and_no_other(self):
-    compose = yaml.safe_load((ROOT / "docker-e2e" / "docker-compose.yml").read_text())
+    compose = yaml.safe_load((ROOT / "examples" / "docker-e2e" / "docker-compose.yml").read_text())
     for service in compose["services"]:
         self.assertIn(f"microwave-e2e-{service}-1", self.page)
     names = set(re.findall(r"microwave-e2e-([a-z-]+)-1", self.page))
@@ -219,7 +219,7 @@ def test_page_names_every_service_and_no_other(self):
 
 def test_page_quick_start_and_ports(self):
     self.assertIn("git clone https://github.com/rmoriz/microwave-development.git", self.page)
-    self.assertIn("cd docker-e2e", self.page)
+    self.assertIn("cd examples/docker-e2e", self.page)
     self.assertIn("docker compose up -d", self.page)
     self.assertIn("18080", self.page)
     self.assertIn("127.0.0.1:18081", self.page)
@@ -244,7 +244,7 @@ Create `docs/docker-e2e.md`. Sections in this order:
    fixtures are not production credentials.
 2. Prerequisites: Docker Engine with Compose v2, a couple of GB of disk, network
    during the first start. No Rust toolchain, because the default pulls.
-3. Quick start with the clone URL, `cd docker-e2e` and `docker compose up -d`,
+3. Quick start with the clone URL, `cd examples/docker-e2e` and `docker compose up -d`,
    plus the `docker compose logs -f seed` and node log follow-up. State that
    `seed` must finish and that the nodes start on their own afterwards.
 4. Services table with three columns: container, purpose, published port. Every
@@ -266,7 +266,7 @@ Create `docs/docker-e2e.md`. Sections in this order:
 9. Tear down with `docker compose down -v`.
 10. "Limits" list: the fixtures, the moving `latest`, the privileged node
     containers and the API port listening on all interfaces.
-11. Links to [`docker-e2e/README.md`](../docker-e2e/README.md) and
+11. Links to [`examples/docker-e2e/README.md`](../examples/docker-e2e/README.md) and
     [`deployment.md`](deployment.md).
 
 Use the repository's prose style: short factual sentences, no marketing.
@@ -285,7 +285,7 @@ Add `'docker-e2e.md'` to the `include` list in
 Add three `[[claim]]` entries to `docs/claims.toml` in the `tooling` area: the
 pull default with the pin form, the loopback console and its fixture login, and
 the source-build overlay with the teardown. Each `verify` is `kind = "grep"`
-against `docker-e2e/docker-compose.yml` or `docker-e2e/README.md` for the fact
+against `examples/docker-e2e/docker-compose.yml` or `examples/docker-e2e/README.md` for the fact
 the page states, and each `surface` needle is a sentence that exists verbatim in
 `docs/docker-e2e.md`.
 
@@ -297,7 +297,7 @@ python3 scripts/check-claims.py
 cd website/docs && npm run build && npm run typecheck
 ```
 
-Expected: tests and claims pass; the build renders `/docker-e2e/` and the
+Expected: tests and claims pass; the build renders `/examples/docker-e2e/` and the
 typecheck is clean.
 
 - [ ] **Step 6: Commit**
@@ -325,7 +325,7 @@ Expected: all pass.
 - [ ] **Step 2: Check both rendered configs**
 
 ```bash
-cd docker-e2e
+cd examples/docker-e2e
 docker compose config --images
 docker compose -f docker-compose.yml -f docker-compose.build.yml config --images
 ```

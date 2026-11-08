@@ -19,8 +19,8 @@
 - `SESSION_COOKIE_SECURE=false` because the stack is plain HTTP.
 - Console port is `127.0.0.1:${MW_CONSOLE_PORT:-18081}:3000`.
 - Demo credentials: `MW_CONSOLE_USER=e2e-console`, `MW_CONSOLE_PASSWORD=e2e-console-password`, `MW_CONSOLE_EMAIL=e2e-console@example.com`.
-- `auth.webui_key = true` in `docker-e2e/microwave/microwave.toml`.
-- No new files outside `docker-e2e/` and its README.
+- `auth.webui_key = true` in `examples/docker-e2e/microwave/microwave.toml`.
+- No new files outside `examples/docker-e2e/` and its README.
 
 ## Review Focus
 
@@ -35,7 +35,7 @@
 ### Task 1: Seed the demo console user
 
 **Files:**
-- Modify: `docker-e2e/seed/seed.sh`
+- Modify: `examples/docker-e2e/seed/seed.sh`
 
 **Interfaces:**
 - Consumes: `$SHARED/knife-server.rb` and `$SHARED/knife.rb` written earlier in the script; the existing `log`, `SERVER`, `ORG` variables.
@@ -82,7 +82,7 @@ console_password: $CONSOLE_PASSWORD
 - [ ] **Step 5: Start the server and run the seed twice**
 
 ```sh
-cd docker-e2e
+cd examples/docker-e2e
 docker compose up -d microwave
 docker compose run --rm seed
 docker compose run --rm seed
@@ -103,7 +103,7 @@ Expected: the user exists with `e2e-console@example.com`; `admins` lists `e2e-co
 - [ ] **Step 7: Commit**
 
 ```sh
-git add docker-e2e/seed/seed.sh
+git add examples/docker-e2e/seed/seed.sh
 git commit -m "test(e2e): seed a demo console user"
 ```
 
@@ -112,8 +112,8 @@ git commit -m "test(e2e): seed a demo console user"
 ### Task 2: Hand the WebUI key to the console volume
 
 **Files:**
-- Modify: `docker-e2e/docker-compose.yml`
-- Modify: `docker-e2e/microwave/microwave.toml`
+- Modify: `examples/docker-e2e/docker-compose.yml`
+- Modify: `examples/docker-e2e/microwave/microwave.toml`
 
 **Interfaces:**
 - Consumes: the server's materialized key at `/mw-data/webui_priv.pem`.
@@ -121,7 +121,7 @@ git commit -m "test(e2e): seed a demo console user"
 
 - [ ] **Step 1: Enable the WebUI key in the e2e config**
 
-Append to `docker-e2e/microwave/microwave.toml`:
+Append to `examples/docker-e2e/microwave/microwave.toml`:
 
 ```toml
 [auth]
@@ -159,7 +159,7 @@ Add `console-key:` to the `volumes:` block.
 - [ ] **Step 4: Rebuild the server and run the handoff**
 
 ```sh
-cd docker-e2e
+cd examples/docker-e2e
 docker compose up -d --build microwave
 docker compose up --exit-code-from console-key console-key
 ```
@@ -189,7 +189,7 @@ Expected: `pub-present` and a count of at least 1.
 - [ ] **Step 7: Commit**
 
 ```sh
-git add docker-e2e/docker-compose.yml docker-e2e/microwave/microwave.toml
+git add examples/docker-e2e/docker-compose.yml examples/docker-e2e/microwave/microwave.toml
 git commit -m "test(e2e): hand the webui key to the console"
 ```
 
@@ -198,7 +198,7 @@ git commit -m "test(e2e): hand the webui key to the console"
 ### Task 3: Run the console
 
 **Files:**
-- Modify: `docker-e2e/docker-compose.yml`
+- Modify: `examples/docker-e2e/docker-compose.yml`
 
 **Interfaces:**
 - Consumes: `console-key` (Task 2), the seeded user (Task 1).
@@ -254,7 +254,7 @@ git commit -m "test(e2e): hand the webui key to the console"
 - [ ] **Step 2: Bring the stack up**
 
 ```sh
-cd docker-e2e
+cd examples/docker-e2e
 docker compose up -d
 docker compose ps cinc-console
 ```
@@ -307,7 +307,7 @@ Expected: `401`.
 - [ ] **Step 7: Commit**
 
 ```sh
-git add docker-e2e/docker-compose.yml
+git add examples/docker-e2e/docker-compose.yml
 git commit -m "test(e2e): run cinc-console against the stack"
 ```
 
@@ -316,7 +316,7 @@ git commit -m "test(e2e): run cinc-console against the stack"
 ### Task 4: Document the console
 
 **Files:**
-- Modify: `docker-e2e/README.md`
+- Modify: `examples/docker-e2e/README.md`
 
 **Interfaces:**
 - Consumes: the service names, port and credentials from Tasks 1–3.
@@ -340,7 +340,7 @@ Rows for `MW_CONSOLE_PORT` (default `18081`), `MW_CONSOLE_USER`, `MW_CONSOLE_PAS
 - [ ] **Step 5: Verify links and commands**
 
 ```sh
-cd docker-e2e
+cd examples/docker-e2e
 grep -n 'cinc-console\|18081\|e2e-console' README.md
 docker compose config >/dev/null
 ```
@@ -350,6 +350,6 @@ Expected: the new mentions are present; the compose file still validates.
 - [ ] **Step 6: Commit**
 
 ```sh
-git add docker-e2e/README.md
+git add examples/docker-e2e/README.md
 git commit -m "docs(e2e): document the console fixture"
 ```

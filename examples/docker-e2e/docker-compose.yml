@@ -1,7 +1,7 @@
 # Microwave Server end-to-end test stack.
 #
 # Pull the published image (default):
-#   cd docker-e2e
+#   cd examples/docker-e2e
 #   docker compose up -d
 #
 # Build the server from this checkout instead:

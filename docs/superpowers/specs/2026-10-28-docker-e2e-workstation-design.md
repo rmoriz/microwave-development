@@ -97,11 +97,11 @@ the pgdg repo and the newest version.
 - Both Dockerfiles take `ARG BASE_IMAGE=debian:trixie`, `ARG
   CINC_WORKSTATION_VERSION=26.4.0`, and a downloads base URL, then
   `dpkg -i` the arch-matched `cinc-workstation_<version>-1_<dpkg arch>.deb`.
-- `docker-e2e/workstation/Dockerfile` also installs `systemd`, `systemd-sysv`,
+- `examples/docker-e2e/workstation/Dockerfile` also installs `systemd`, `systemd-sysv`,
   `curl`, `ca-certificates`, `procps`, `git`, `less`, `vim-tiny`, OpenCode from
   the installer moved to `/usr/local/bin/opencode`, masks getty units, sets
   `STOPSIGNAL SIGRTMIN+3` and `CMD ["/sbin/init"]`.
-- `docker-e2e/seed/Dockerfile` keeps `WORKDIR /seed`, the script copies, and
+- `examples/docker-e2e/seed/Dockerfile` keeps `WORKDIR /seed`, the script copies, and
   the entrypoint; the `gem install`, `build-essential`, and minitar
   uninstall lines are removed.
 - `workstation-prepare.service` (oneshot, `RemainAfterExit`, enabled): waits

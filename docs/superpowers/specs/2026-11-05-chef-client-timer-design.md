@@ -51,12 +51,12 @@ noch laufenden initialen Converge fällt. Die Ressource setzt den Timer auf
 
 ## Änderungen
 
-1. Neues Site-Cookbook `docker-e2e/seed/site-cookbooks/e2e_timer` mit
+1. Neues Site-Cookbook `examples/docker-e2e/seed/site-cookbooks/e2e_timer` mit
    `metadata.rb` und `recipes/default.rb` (die Ressource aus Approach).
-2. `docker-e2e/seed/seed.sh`: `recipe[e2e_timer]` hinter die beiden Wrapper in
+2. `examples/docker-e2e/seed/seed.sh`: `recipe[e2e_timer]` hinter die beiden Wrapper in
    den `run_list` von `role.rb`. Der bestehende Upload-Loop lädt das neue
    Cookbook mit.
-3. `docker-e2e/README.md`: Timer, Intervall, Splay und der Hinweis, dass
+3. `examples/docker-e2e/README.md`: Timer, Intervall, Splay und der Hinweis, dass
    Änderungen aus Console/MCP damit innerhalb von zehn Minuten ankommen.
 
 ## Verifikation

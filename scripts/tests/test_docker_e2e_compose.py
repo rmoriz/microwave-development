@@ -8,7 +8,7 @@ import unittest
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-STACK = ROOT / "docker-e2e"
+STACK = ROOT / "examples" / "docker-e2e"
 OVERLAY = ["-f", "docker-compose.yml", "-f", "docker-compose.build.yml"]
 
 
@@ -72,7 +72,9 @@ class ComposeTest(unittest.TestCase):
 
 class DocsPageTest(unittest.TestCase):
     def setUp(self):
-        self.compose_text = (ROOT / "docker-e2e" / "docker-compose.yml").read_text()
+        self.compose_text = (
+            ROOT / "examples" / "docker-e2e" / "docker-compose.yml"
+        ).read_text()
         self.page = (ROOT / "docs" / "docker-e2e.md").read_text()
 
     def compose_default(self, variable):
@@ -98,7 +100,7 @@ class DocsPageTest(unittest.TestCase):
             "git clone https://github.com/rmoriz/microwave-development.git",
             self.page,
         )
-        self.assertIn("cd docker-e2e", self.page)
+        self.assertIn("cd examples/docker-e2e", self.page)
         self.assertIn("docker compose up -d", self.page)
 
     def test_page_ports_come_from_the_compose_defaults(self):
@@ -125,7 +127,9 @@ class DocsPageTest(unittest.TestCase):
         self.assertIn(f"organizations/{org}/mcp", self.page)
 
     def test_page_allowed_hosts_match_the_server_config(self):
-        server = (ROOT / "docker-e2e" / "microwave" / "microwave.toml").read_text()
+        server = (
+            ROOT / "examples" / "docker-e2e" / "microwave" / "microwave.toml"
+        ).read_text()
         match = re.search(r"allowed_hosts = \[(.*?)\]", server)
         self.assertIsNotNone(match)
         for host in re.findall(r'"([^"]+)"', match.group(1)):

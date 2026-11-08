@@ -1,6 +1,6 @@
 # Docker e2e stack
 
-`docker-e2e/` is a Compose stack that runs a Microwave Server test end to end:
+`examples/docker-e2e/` is a Compose stack that runs a Microwave Server test end to end:
 a Microwave server, a seeded organization with cookbooks and a role, four Linux
 nodes that converge with Cinc Client, a web console, and a workstation with
 knife and OpenCode. Everything runs in containers; the host only needs Docker.
@@ -29,7 +29,7 @@ is a separate path and compiles inside Docker.
 ```sh
 git clone https://github.com/rmoriz/microwave-development.git
 cd microwave-development
-cd docker-e2e
+cd examples/docker-e2e
 docker compose up -d
 ```
 
@@ -165,6 +165,6 @@ organization and the seed resets the node fixtures.
 
 ## Where the details are
 
-- [`docker-e2e/README.md`](../docker-e2e/README.md) — the stack's mechanics,
+- [`examples/docker-e2e/README.md`](../examples/docker-e2e/README.md) — the stack's mechanics,
   every knob, and the repeated-run and console-key notes.
 - [`deployment.md`](deployment.md) — running the server outside this stack.

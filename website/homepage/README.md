@@ -102,7 +102,7 @@ A header layer would add real cache headers on top of the fixed
 - Confirm the GitHub URL in `src/data/site.ts` is the public repository.
 - Confirm the Cinc claim. It currently says “Tested with Cinc Client 19 on
   Debian, Ubuntu, and Fedora.” That was verified by running
-  `docker-e2e/docker-compose.yml` and checking all three nodes. Re-run that
+  `examples/docker-e2e/docker-compose.yml` and checking all three nodes. Re-run that
   stack before changing the claim.
 - Check the privacy page once hosting is final. It names GitHub Pages as the
   host and links GitHub's privacy statement, but names no retention period.

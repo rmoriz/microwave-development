@@ -48,7 +48,7 @@
 ### Task 1: Seed image on Debian plus Cinc Workstation
 
 **Files:**
-- Modify: `docker-e2e/seed/Dockerfile`
+- Modify: `examples/docker-e2e/seed/Dockerfile`
 
 **Interfaces:**
 - Produces: an image whose `berks` and `knife` come from
@@ -56,7 +56,7 @@
 
 - [ ] **Step 1: Confirm the current image lacks the packaged toolchain**
 
-Run: `cd docker-e2e/seed && docker build -t mw-seed-before . && docker run --rm --entrypoint bash mw-seed-before -c 'command -v berks'`
+Run: `cd examples/docker-e2e/seed && docker build -t mw-seed-before . && docker run --rm --entrypoint bash mw-seed-before -c 'command -v berks'`
 Expected: PASS builds; `berks` resolves under `/usr/local/bin` from the gem.
 
 - [ ] **Step 2: Rewrite the Dockerfile**
@@ -96,7 +96,7 @@ the Cinc Workstation package.
 
 - [ ] **Step 3: Build and verify the toolchain**
 
-Run: `cd docker-e2e/seed && docker build -t mw-seed-after . && docker run --rm --entrypoint bash mw-seed-after -c 'knife --version && berks --version && ruby -v'`
+Run: `cd examples/docker-e2e/seed && docker build -t mw-seed-after . && docker run --rm --entrypoint bash mw-seed-after -c 'knife --version && berks --version && ruby -v'`
 Expected: `knife: 19.3.4`, `8.1.23`, no gem install step, and `berks` resolves.
 
 - [ ] **Step 4: Verify Supermarket vendoring still works without the minitar pin**
@@ -107,7 +107,7 @@ Expected: exit 0.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docker-e2e/seed/Dockerfile
+git add examples/docker-e2e/seed/Dockerfile
 git commit -m "build(e2e): move seed image to Debian and Cinc Workstation"
 ```
 
@@ -116,11 +116,11 @@ git commit -m "build(e2e): move seed image to Debian and Cinc Workstation"
 ### Task 2: Replace the postgres cookbook with a postgresql wrapper
 
 **Files:**
-- Create: `docker-e2e/seed/site-cookbooks/e2e_postgresql/metadata.rb`
-- Create: `docker-e2e/seed/site-cookbooks/e2e_postgresql/recipes/default.rb`
-- Modify: `docker-e2e/seed/seed.sh`
-- Modify: `docker-e2e/client/Dockerfile`
-- Modify: `docker-e2e/README.md` (postgres notes and defaults)
+- Create: `examples/docker-e2e/seed/site-cookbooks/e2e_postgresql/metadata.rb`
+- Create: `examples/docker-e2e/seed/site-cookbooks/e2e_postgresql/recipes/default.rb`
+- Modify: `examples/docker-e2e/seed/seed.sh`
+- Modify: `examples/docker-e2e/client/Dockerfile`
+- Modify: `examples/docker-e2e/README.md` (postgres notes and defaults)
 
 **Interfaces:**
 - Consumes: Task 1's seed image.
@@ -198,10 +198,10 @@ RUN /opt/cinc/embedded/bin/gem install --no-document deepsort:0.5.0 inifile:3.0.
 - [ ] **Step 4: Build and verify the image prep**
 
 Run:
-`docker build --build-arg BASE_IMAGE=ubuntu:24.04 -t mw-node-check docker-e2e/client && docker run --rm --entrypoint bash mw-node-check -c '/opt/cinc/embedded/bin/ruby -e "require \"deepsort\"; require \"inifile\"" && command -v lsb_release && command -v gpg'`
+`docker build --build-arg BASE_IMAGE=ubuntu:24.04 -t mw-node-check examples/docker-e2e/client && docker run --rm --entrypoint bash mw-node-check -c '/opt/cinc/embedded/bin/ruby -e "require \"deepsort\"; require \"inifile\"" && command -v lsb_release && command -v gpg'`
 Expected: exit 0, `lsb_release` and `gpg` resolve.
 
-Run: `docker build --build-arg BASE_IMAGE=fedora:41 -t mw-node-check-fedora docker-e2e/client`
+Run: `docker build --build-arg BASE_IMAGE=fedora:41 -t mw-node-check-fedora examples/docker-e2e/client`
 Expected: exit 0.
 
 - [ ] **Step 5: Verify the wrapper resolves and vendors**
@@ -212,7 +212,7 @@ Expected: `postgresql`, `yum`, and `e2e_postgresql` vendor without errors.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add docker-e2e/seed docker-e2e/client/Dockerfile
+git add examples/docker-e2e/seed examples/docker-e2e/client/Dockerfile
 git commit -m "feat(e2e): install PostgreSQL 18 through the postgresql cookbook"
 ```
 
@@ -221,11 +221,11 @@ git commit -m "feat(e2e): install PostgreSQL 18 through the postgresql cookbook"
 ### Task 3: Workstation image, prepare unit, and OpenCode config
 
 **Files:**
-- Create: `docker-e2e/workstation/Dockerfile`
-- Create: `docker-e2e/workstation/workstation-prepare.sh`
-- Create: `docker-e2e/workstation/workstation-prepare.service`
-- Create: `docker-e2e/workstation/opencode.json`
-- Create: `docker-e2e/workstation/AGENTS.md`
+- Create: `examples/docker-e2e/workstation/Dockerfile`
+- Create: `examples/docker-e2e/workstation/workstation-prepare.sh`
+- Create: `examples/docker-e2e/workstation/workstation-prepare.service`
+- Create: `examples/docker-e2e/workstation/opencode.json`
+- Create: `examples/docker-e2e/workstation/AGENTS.md`
 
 **Interfaces:**
 - Produces: image `mw-workstation-e2e`, unit `workstation-prepare.service`,
@@ -362,7 +362,7 @@ a disposable e2e environment.
 
 - [ ] **Step 4: Build and verify the image**
 
-Run: `cd docker-e2e/workstation && docker build -t mw-workstation-check . && docker run --rm --entrypoint bash mw-workstation-check -c 'knife --version && opencode --version && ls -l /work/opencode.json /etc/systemd/system/multi-user.target.wants/workstation-prepare.service'`
+Run: `cd examples/docker-e2e/workstation && docker build -t mw-workstation-check . && docker run --rm --entrypoint bash mw-workstation-check -c 'knife --version && opencode --version && ls -l /work/opencode.json /etc/systemd/system/multi-user.target.wants/workstation-prepare.service'`
 Expected: exit 0 and both commands print versions.
 
 - [ ] **Step 5: Validate that OpenCode reads the MCP config**
@@ -377,7 +377,7 @@ microwave` because the Compose network is absent here.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add docker-e2e/workstation
+git add examples/docker-e2e/workstation
 git commit -m "feat(e2e): add a workstation image with knife and OpenCode"
 ```
 
@@ -386,8 +386,8 @@ git commit -m "feat(e2e): add a workstation image with knife and OpenCode"
 ### Task 4: Compose service and server MCP configuration
 
 **Files:**
-- Modify: `docker-e2e/docker-compose.yml`
-- Modify: `docker-e2e/microwave/microwave.toml`
+- Modify: `examples/docker-e2e/docker-compose.yml`
+- Modify: `examples/docker-e2e/microwave/microwave.toml`
 
 **Interfaces:**
 - Consumes: Task 3's image and unit.
@@ -457,7 +457,7 @@ store = "local"
 DNS name always fails it; run the check on a copy with a literal bind. The real
 bind is exercised when the stack starts in Task 6.
 
-Run: `cd docker-e2e && sed 's/^bind = "microwave:8000"/bind = "127.0.0.1:8000"/' microwave/microwave.toml > /tmp/mw-check.toml && docker run --rm -v /tmp/mw-check.toml:/c.toml:ro --entrypoint microwave-ctl microwave-server:e2e --config /c.toml check-config`
+Run: `cd examples/docker-e2e && sed 's/^bind = "microwave:8000"/bind = "127.0.0.1:8000"/' microwave/microwave.toml > /tmp/mw-check.toml && docker run --rm -v /tmp/mw-check.toml:/c.toml:ro --entrypoint microwave-ctl microwave-server:e2e --config /c.toml check-config`
 Expected: exit 0 with `ok:` lines for data_dir, database, bind, search,
 object_store, keygen, and the data collector. Build the server image first if
 absent.
@@ -465,7 +465,7 @@ absent.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docker-e2e/docker-compose.yml docker-e2e/microwave/microwave.toml
+git add examples/docker-e2e/docker-compose.yml examples/docker-e2e/microwave/microwave.toml
 git commit -m "feat(e2e): add workstation service and enable MCP"
 ```
 
@@ -474,7 +474,7 @@ git commit -m "feat(e2e): add workstation service and enable MCP"
 ### Task 5: Documentation
 
 **Files:**
-- Modify: `docker-e2e/README.md`
+- Modify: `examples/docker-e2e/README.md`
 
 **Interfaces:**
 - Consumes: names and defaults from Tasks 1–4.
@@ -504,7 +504,7 @@ workstation and that the stack has no published workstation port.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add docker-e2e/README.md
+git add examples/docker-e2e/README.md
 git commit -m "docs(e2e): document the workstation and PostgreSQL 18"
 ```
 
@@ -516,7 +516,7 @@ git commit -m "docs(e2e): document the workstation and PostgreSQL 18"
 
 - [ ] **Step 1: Start from a clean volume set**
 
-Run: `cd docker-e2e && docker compose down -v && docker compose up -d --build`
+Run: `cd examples/docker-e2e && docker compose down -v && docker compose up -d --build`
 Expected: build succeeds for all five services.
 
 - [ ] **Step 2: Wait for the stack**
@@ -564,6 +564,6 @@ Run: `docker compose down -v`
 - [ ] **Step 8: Commit any fixups**
 
 ```bash
-git add -A docker-e2e
+git add -A examples/docker-e2e
 git commit -m "fix(e2e): address verification findings"
 ```

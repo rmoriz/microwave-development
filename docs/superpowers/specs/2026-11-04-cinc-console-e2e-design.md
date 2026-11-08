@@ -18,7 +18,7 @@ deployment.
 
 - `docker compose up` brings up a console at `127.0.0.1:${MW_CONSOLE_PORT:-18081}`
   that can log in and browse the `e2e` organization.
-- `docker-e2e/microwave/microwave.toml` sets `auth.webui_key = true`.
+- `examples/docker-e2e/microwave/microwave.toml` sets `auth.webui_key = true`.
 - The console gets the materialized `webui_priv.pem`, never `pivotal.pem`.
 - A seeded, documented demo user (`e2e-console`) can log in; it is an org
   member and in `admins`.

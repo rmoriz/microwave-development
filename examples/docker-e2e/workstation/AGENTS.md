@@ -1,6 +1,6 @@
 # Workstation notes
 
-This container is part of the disposable `docker-e2e` stack.
+This container is part of the disposable `examples/docker-e2e` stack.
 
 - `knife` is preconfigured for organization `e2e` against
   `http://microwave:8000`; plain `knife node list`, `knife cookbook list`, and

@@ -199,7 +199,7 @@ Four verifiable numbers, each with a link to evidence:
 | --- | --- | --- |
 | 3,284 | extended Pedant examples passing, 0 failures | `docs/pedant-extended-report.md` |
 | 0 | compatibility shims needed for the strict `chef-client` converge | `docs/chef-client-e2e-report.md` |
-| 3 | distros in the Cinc Client 19 Compose e2e stack | `docker-e2e/README.md` |
+| 3 | distros in the Cinc Client 19 Compose e2e stack | `examples/docker-e2e/README.md` |
 | 1 | binary to run; SQLite by default | `README.md` |
 
 The Cinc claim is only promoted to “tested” after the e2e stack is run during
@@ -530,7 +530,7 @@ Accordions use native `<details>`. Target under 10KB gzipped.
 | Drop-in replacement | `README.md` line 5 | Supporting line, compatibility |
 | 3,284 extended Pedant examples passing | `README.md` line 238 | Proof strip, link |
 | Strict stock `chef-client` converge with shims off | `README.md` line 26, `docs/chef-client-e2e-report.md` | Proof strip, link |
-| Cinc Client 19 on Debian, Ubuntu, Fedora | `docker-e2e/README.md` lines 13–16, 126 | Cinc section; verify by running the stack, otherwise use “ships a stack” |
+| Cinc Client 19 on Debian, Ubuntu, Fedora | `examples/docker-e2e/README.md` lines 13–16, 126 | Cinc section; verify by running the stack, otherwise use “ships a stack” |
 | SQLite default, PostgreSQL supported | `README.md` line 14 | Under the hood |
 | S3/Garage and OpenSearch/Elasticsearch | `README.md` line 23 | Under the hood |
 | `chef-server-ctl` alias | `README.md` line 17 | Compatibility, tooling |

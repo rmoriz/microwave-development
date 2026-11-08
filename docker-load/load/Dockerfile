@@ -36,7 +36,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Cinc Client from cinc.sh, installed exactly as docker-e2e/client/Dockerfile
+# Cinc Client from cinc.sh, installed exactly as examples/docker-e2e/client/Dockerfile
 # does on Debian.
 RUN set -eux; \
     curl -fsSL https://omnitruck.cinc.sh/install.sh | bash -s -- -v "${CINC_VERSION}"; \

@@ -12,7 +12,7 @@ image remains local-only and is still built by Compose on first use.
 
 ## Goals
 
-- `docker compose up -d` in `docker-e2e/` pulls the public `latest` image and
+- `docker compose up -d` in `examples/docker-e2e/` pulls the public `latest` image and
   starts the stack without Rust or a large local build.
 - `docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`
   builds `microwave` from the repository root Dockerfile and tags it locally.

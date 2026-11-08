@@ -378,7 +378,7 @@ Expected: FAIL because the sections do not exist.
 | --- | --- | --- |
 | 3,284 | extended Pedant examples passing, 0 failures | `https://github.com/rmoriz/microwave-development/blob/main/docs/pedant-extended-report.md` |
 | 0 | compatibility shims needed for the strict `chef-client` converge | `https://github.com/rmoriz/microwave-development/blob/main/docs/chef-client-e2e-report.md` |
-| 3 | distros in the Cinc Client 19 Compose e2e stack | `https://github.com/rmoriz/microwave-development/tree/main/docker-e2e` |
+| 3 | distros in the Cinc Client 19 Compose e2e stack | `https://github.com/rmoriz/microwave-development/tree/main/examples/docker-e2e` |
 | 1 | binary to run; SQLite by default | `https://github.com/rmoriz/microwave-development#readme` |
 
 `CincSection.astro` with `id="product"`:
@@ -1073,7 +1073,7 @@ git commit -m "feat(website): add SEO, social image, and 404"
 Run:
 
 ```bash
-cd docker-e2e
+cd examples/docker-e2e
 docker compose up -d --build
 docker compose wait seed
 docker compose logs seed | tail -40
@@ -1104,7 +1104,7 @@ Do not claim “tested”.
 - [ ] **Step 3: Tear down**
 
 ```bash
-cd docker-e2e
+cd examples/docker-e2e
 docker compose down -v
 ```
 

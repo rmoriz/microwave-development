@@ -2159,7 +2159,7 @@ status = "verified"
 surfaces = [
   { path = "docs/docker-e2e.md", needle = "is pulled from `ghcr.io/rmoriz/microwave-server` by default" },
 ]
-verify = { kind = "grep", path = "docker-e2e/docker-compose.yml", pattern = "MW_IMAGE:-ghcr\\.io/rmoriz/microwave-server:latest" }
+verify = { kind = "grep", path = "examples/docker-e2e/docker-compose.yml", pattern = "MW_IMAGE:-ghcr\\.io/rmoriz/microwave-server:latest" }
 
 [[claim]]
 id = "docker-e2e-pin-version"
@@ -2169,7 +2169,7 @@ status = "verified"
 surfaces = [
   { path = "docs/docker-e2e.md", needle = "MW_IMAGE=ghcr.io/rmoriz/microwave-server:0.5.0" },
 ]
-verify = { kind = "grep", path = "docker-e2e/README.md", pattern = "MW_IMAGE=ghcr\\.io/rmoriz/microwave-server:0\\.5\\.0" }
+verify = { kind = "grep", path = "examples/docker-e2e/README.md", pattern = "MW_IMAGE=ghcr\\.io/rmoriz/microwave-server:0\\.5\\.0" }
 
 [[claim]]
 id = "docker-e2e-console-loopback"
@@ -2179,7 +2179,7 @@ status = "verified"
 surfaces = [
   { path = "docs/docker-e2e.md", needle = "127.0.0.1:18081" },
 ]
-verify = { kind = "grep", path = "docker-e2e/docker-compose.yml", pattern = "127\\.0\\.0\\.1:\\$\\{MW_CONSOLE_PORT:-18081\\}" }
+verify = { kind = "grep", path = "examples/docker-e2e/docker-compose.yml", pattern = "127\\.0\\.0\\.1:\\$\\{MW_CONSOLE_PORT:-18081\\}" }
 
 [[claim]]
 id = "docker-e2e-console-fixture-user"
@@ -2189,7 +2189,7 @@ status = "verified"
 surfaces = [
   { path = "docs/docker-e2e.md", needle = "| `e2e-console` |" },
 ]
-verify = { kind = "grep", path = "docker-e2e/docker-compose.yml", pattern = "MW_CONSOLE_USER:-e2e-console" }
+verify = { kind = "grep", path = "examples/docker-e2e/docker-compose.yml", pattern = "MW_CONSOLE_USER:-e2e-console" }
 
 [[claim]]
 id = "docker-e2e-console-fixture-password"
@@ -2199,7 +2199,7 @@ status = "verified"
 surfaces = [
   { path = "docs/docker-e2e.md", needle = "e2e-console-password" },
 ]
-verify = { kind = "grep", path = "docker-e2e/docker-compose.yml", pattern = "MW_CONSOLE_PASSWORD:-e2e-console-password" }
+verify = { kind = "grep", path = "examples/docker-e2e/docker-compose.yml", pattern = "MW_CONSOLE_PASSWORD:-e2e-console-password" }
 
 [[claim]]
 id = "docker-e2e-mcp-token"
@@ -2209,7 +2209,7 @@ status = "verified"
 surfaces = [
   { path = "docs/docker-e2e.md", needle = "e2e-mcp-token" },
 ]
-verify = { kind = "grep", path = "docker-e2e/docker-compose.yml", pattern = "MW_MCP_TOKEN:-e2e-mcp-token" }
+verify = { kind = "grep", path = "examples/docker-e2e/docker-compose.yml", pattern = "MW_MCP_TOKEN:-e2e-mcp-token" }
 
 [[claim]]
 id = "docker-e2e-mcp-endpoint"
@@ -2219,7 +2219,7 @@ status = "verified"
 surfaces = [
   { path = "docs/docker-e2e.md", needle = "organizations/e2e/mcp" },
 ]
-verify = { kind = "grep", path = "docker-e2e/docker-compose.yml", pattern = "MW_ORG:-e2e" }
+verify = { kind = "grep", path = "examples/docker-e2e/docker-compose.yml", pattern = "MW_ORG:-e2e" }
 
 [[claim]]
 id = "docker-e2e-mcp-allowed-host"
@@ -2229,7 +2229,7 @@ status = "verified"
 surfaces = [
   { path = "docs/docker-e2e.md", needle = "`allowed_hosts` to\n`microwave:8000`" },
 ]
-verify = { kind = "grep", path = "docker-e2e/microwave/microwave.toml", pattern = "allowed_hosts = \\[\"microwave:8000\"\\]" }
+verify = { kind = "grep", path = "examples/docker-e2e/microwave/microwave.toml", pattern = "allowed_hosts = \\[\"microwave:8000\"\\]" }
 
 [[claim]]
 id = "docker-e2e-source-overlay"
@@ -2239,7 +2239,7 @@ status = "verified"
 surfaces = [
   { path = "docs/docker-e2e.md", needle = "docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build" },
 ]
-verify = { kind = "grep", path = "docker-e2e/README.md", pattern = "docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build" }
+verify = { kind = "grep", path = "examples/docker-e2e/README.md", pattern = "docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build" }
 
 [[claim]]
 id = "docker-e2e-teardown"
@@ -2249,7 +2249,7 @@ status = "verified"
 surfaces = [
   { path = "docs/docker-e2e.md", needle = "docker compose down -v" },
 ]
-verify = { kind = "grep", path = "docker-e2e/README.md", pattern = "docker compose down -v" }
+verify = { kind = "grep", path = "examples/docker-e2e/README.md", pattern = "docker compose down -v" }
 
 [[claim]]
 id = "cookbook-guide-minimal"
