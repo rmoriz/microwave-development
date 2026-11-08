@@ -1,0 +1,53 @@
+[server]
+# Bind to the Compose service name, not 0.0.0.0. microwave-server builds the
+# presigned /bookshelf URLs from this value, so the seed container and the
+# Chef nodes must be able to reach it by this name.
+bind = "microwave:8000"
+
+[paths]
+data_dir = "/var/lib/microwave"
+
+[database]
+# PostgreSQL 19 beta. Fixture credentials, matching the postgres service.
+driver = "postgres"
+url = "postgres://microwave:microwave@postgres:5432/microwave"
+
+[search]
+backend = "opensearch"
+url = "http://opensearch:9200"
+
+[object_store]
+# Presigned URLs carry this endpoint, so it must resolve from the seed and the
+# nodes as well: the Compose service name, not a host-side address.
+backend = "garage"
+endpoint = "http://garage:3900"
+bucket = "chef-cookbooks"
+region = "garage"
+path_style = true
+access_key = "GK60459373BB628A8B007A69FB"
+secret_key = "72ab6d386bc67fe916f63773bf5b5d1498eb252f3829e774dc11c673f16e96e6"
+
+[keygen]
+size = 3
+workers = 1
+warm_up = true
+
+[mcp]
+enabled = true
+# Requests from inside the Compose network carry this Host header. Without the
+# entry the MCP transport rejects them with 403.
+allowed_hosts = ["microwave:8000"]
+
+[mcp.organizations.e2e]
+token = "e2e-mcp-token"
+principal = "pivotal"
+writes = true
+
+[data_collector]
+# Keep run reports so the MCP run tools have data to return.
+store = "local"
+
+[auth]
+# The console signs web impersonation with its own keypair instead of
+# pivotal.pem. Created on first start in the data directory.
+webui_key = true

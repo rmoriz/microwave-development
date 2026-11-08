@@ -1,0 +1,6 @@
+name 'e2e_timer'
+maintainer 'Microwave E2E'
+license 'Apache-2.0'
+description 'Runs Cinc Client every ten minutes on e2e nodes'
+version '1.0.0'
+chef_version '>= 16.0'

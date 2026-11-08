@@ -1,0 +1,6 @@
+name 'e2e_marker'
+maintainer 'Microwave E2E'
+license 'Apache-2.0'
+description 'Writes a marker file from a node attribute for timer verification'
+version '1.0.0'
+chef_version '>= 16.0'

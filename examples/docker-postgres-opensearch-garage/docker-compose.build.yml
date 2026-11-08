@@ -1,0 +1,13 @@
+# Source-build overlay for the e2e stack:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# The local tag keeps a source build from overwriting the pulled
+# ghcr.io/...:latest image. Set MW_IMAGE to pin a different tag.
+services:
+  microwave:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        RUST_VERSION: ${RUST_VERSION:-1}
+    image: ${MW_IMAGE:-microwave-server:e2e}

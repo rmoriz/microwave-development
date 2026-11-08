@@ -101,10 +101,10 @@ committing Rust. The homepage has no linter beyond `astro check`.
 
 ## docker-e2e notes
 
-- `docker-e2e/docker-compose.yml` owns the node images
+- `examples/docker-e2e/docker-compose.yml` owns the node images
   (`microwave-e2e-node-debian`, `-ubuntu`, `-fedora`, `-amazon`). Verify node
   image changes with `docker compose build node-debian node-ubuntu
-  node-fedora node-amazon` from `docker-e2e/`, not with ad-hoc `docker build`.
+  node-fedora node-amazon` from `examples/docker-e2e/`, not with ad-hoc `docker build`.
 - Clean up every check image and container in the same step that created it.
   One-off builds such as the `mw-node-check` / `mw-workstation-check` tags in
   `docs/superpowers/plans/` pile up, shadow the real stack names, and confuse
@@ -112,9 +112,13 @@ committing Rust. The homepage has no linter beyond `astro check`.
   `docker rm -f` its containers and `docker rmi` the image before moving on —
   also when the check passed. Never leave `mw-*` tags or `*check*` containers
   behind.
-- `docker-e2e/client/Dockerfile` is shared by all nodes and branches on the
+- `examples/docker-e2e/client/Dockerfile` is shared by all nodes and branches on the
   base image (`apt-get`, `ID=amzn`, `dnf`); a change there affects every node,
   so build all four after touching it.
+- `examples/docker-postgres-opensearch-garage` is a copy of that stack with
+  external PostgreSQL, OpenSearch and Garage backends. It duplicates the node
+  services, `client/`, seed and workstation files; keep shared changes in sync
+  and give it its own Compose project name and ports.
 - After a base image bump, remove what the bump superseded: the old
   `<distro>:<tag>` tags (`fedora:41` …) and any pulled-but-unpinned images
   such as `amazonlinux:2027`. Only the tags pinned in `docker-compose.yml`

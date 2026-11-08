@@ -1,0 +1,419 @@
+# Microwave Server end-to-end test stack.
+#
+# Pull the published image (default):
+#   cd examples/docker-postgres-opensearch-garage
+#   docker compose up -d
+#
+# Build the server from this checkout instead:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# Services:
+#   microwave    - microwave-server, pulled from ghcr.io/rmoriz/microwave-server
+#                  by default (override the tag with MW_IMAGE)
+#   seed         - knife + Berkshelf: downloads nginx/postgresql from Supermarket,
+#                  uploads them, creates the role, writes client config
+#   console-key  - copies the WebUI private key out of the data volume for the
+#                  console user
+#   cinc-console - browser UI for the stack, logged in with the seeded demo
+#                  user
+#   node-debian  - Debian node running Cinc Client against the role
+#   node-ubuntu  - Ubuntu node running Cinc Client against the role
+#   node-fedora  - Fedora node running Cinc Client against the role
+#   node-amazon  - Amazon Linux node running Cinc Client against the role
+#   workstation  - knife + OpenCode against the stack, for `docker exec`
+#   postgres     - PostgreSQL 19 (beta) metadata store, internal only
+#   opensearch   - OpenSearch 3.9.0 search backend, internal only
+#   garage       - Garage 2.5.0 S3 store, official image, internal only
+#   garage-bootstrap - one-shot layout/bucket/key provisioning for garage
+#
+# The workstation, seed and node images are still built locally; only the
+# project's own server image is published.
+#
+# The microwave listener binds to its Compose DNS name instead of 0.0.0.0 so
+# the presigned /bookshelf URLs it hands to knife and the nodes are reachable
+# from the other containers. Cookbook blobs go to Garage through the same rule:
+# the object-store endpoint is `garage:3900`, which resolves across the Compose
+# network for the seed, the nodes and the server.
+name: microwave-e2e-backends
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:19beta2-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: microwave
+      POSTGRES_USER: microwave
+      POSTGRES_PASSWORD: microwave
+    volumes:
+      # PostgreSQL 18+ keeps PGDATA below the major version; the volume is the
+      # parent.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U microwave -d microwave"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  opensearch:
+    image: ${OPENSEARCH_IMAGE:-opensearchproject/opensearch:3.9.0}
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' >/dev/null || exit 1",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 24
+      start_period: 20s
+
+  garage:
+    image: ${GARAGE_IMAGE:-dxflrs/garage:v2.5.0}
+    restart: unless-stopped
+    command: ["/garage", "-c", "/etc/garage.toml", "server"]
+    volumes:
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+      - ../../packaging/garage.toml:/etc/garage.toml:ro
+    healthcheck:
+      test: ["CMD", "/garage", "-c", "/etc/garage.toml", "status"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  # The official Garage image has no shell, so the bootstrap cannot run as a
+  # command in the server container: the node id is only known at runtime.
+  # This short-lived sidecar shares garage's network namespace, which keeps
+  # rpc_public_addr 127.0.0.1 valid, and provisions through the local CLI.
+  garage-bootstrap:
+    build:
+      context: ./garage
+    image: ${MW_GARAGE_BOOTSTRAP_IMAGE:-microwave-garage-bootstrap:e2e}
+    depends_on:
+      garage:
+        condition: service_healthy
+    network_mode: "service:garage"
+    restart: "no"
+    environment:
+      MW_S3_BUCKET: ${MW_S3_BUCKET:-chef-cookbooks}
+      MW_S3_ACCESS_KEY: ${MW_S3_ACCESS_KEY:-GK60459373BB628A8B007A69FB}
+      MW_S3_SECRET_KEY: ${MW_S3_SECRET_KEY:-72ab6d386bc67fe916f63773bf5b5d1498eb252f3829e774dc11c673f16e96e6}
+      MW_GARAGE_CAPACITY: ${MW_GARAGE_CAPACITY:-1G}
+    volumes:
+      - ../../packaging/garage.toml:/etc/garage.toml:ro
+      # The CLI authenticates with the node key stored in the metadata
+      # directory; without it every command fails with "Unable to read node
+      # key".
+      - garage-meta:/var/lib/garage/meta
+
+  microwave:
+    image: ${MW_IMAGE:-ghcr.io/rmoriz/microwave-server:latest}
+    command:
+      [
+        "microwave-ctl",
+        "service",
+        "start",
+        "--foreground",
+        "--config",
+        "/etc/microwave/microwave.toml",
+      ]
+    environment:
+      MW_CONFIG: /etc/microwave/microwave.toml
+      # The healthcheck runs inside this container and must use the same
+      # name the listener is bound to.
+      MW_HEALTHCHECK_HOST: microwave
+      MW_HTTP_PORT: "8000"
+      # The TOML below carries the same values as a fallback; these make the
+      # MW_S3_* knobs reach both the bootstrap and the server.
+      MW_OBJECT_STORE__BUCKET: ${MW_S3_BUCKET:-chef-cookbooks}
+      MW_OBJECT_STORE__ACCESS_KEY: ${MW_S3_ACCESS_KEY:-GK60459373BB628A8B007A69FB}
+      MW_OBJECT_STORE__SECRET_KEY: ${MW_S3_SECRET_KEY:-72ab6d386bc67fe916f63773bf5b5d1498eb252f3829e774dc11c673f16e96e6}
+      RUST_LOG: ${RUST_LOG:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+      garage:
+        condition: service_healthy
+      # The startup bucket probe fails hard, so the seed's bucket and key must
+      # already exist.
+      garage-bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      - microwave-data:/var/lib/microwave
+      - ./microwave/microwave.toml:/etc/microwave/microwave.toml:ro
+    ports:
+      - "${MW_E2E_PORT:-18082}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://microwave:8000/_status >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 10s
+
+  seed:
+    build:
+      context: ./seed
+    depends_on:
+      microwave:
+        condition: service_healthy
+      garage-bootstrap:
+        condition: service_completed_successfully
+    environment:
+      MW_SERVER_URL: http://microwave:8000
+      MW_ORG: ${MW_ORG:-e2e}
+      MW_ORG_FULL_NAME: ${MW_ORG_FULL_NAME:-Microwave E2E}
+      # Demo console login the seed recreates on every run. Fixtures, not
+      # production credentials.
+      MW_CONSOLE_USER: ${MW_CONSOLE_USER:-e2e-console}
+      MW_CONSOLE_PASSWORD: ${MW_CONSOLE_PASSWORD:-e2e-console-password}
+      MW_CONSOLE_EMAIL: ${MW_CONSOLE_EMAIL:-}
+      ROLE_NAME: ${ROLE_NAME:-e2e_role}
+      # Supermarket cookbook names and versions. Both are the newest releases
+      # of their cookbook: nginx 12.3.4 is resource-only (the e2e_nginx wrapper
+      # in seed/site-cookbooks drives nginx_install/nginx_service), postgresql
+      # 13.0.5 is resource-only too (the e2e_postgresql wrapper drives
+      # postgresql_install with PostgreSQL 18).
+      NGINX_COOKBOOK: ${NGINX_COOKBOOK:-nginx}
+      NGINX_VERSION: ${NGINX_VERSION:-12.3.4}
+      POSTGRES_COOKBOOK: ${POSTGRES_COOKBOOK:-postgresql}
+      POSTGRES_VERSION: ${POSTGRES_VERSION:-13.0.5}
+      # Recipes placed in the role's run_list. e2e_nginx and e2e_postgresql are
+      # the local wrapper cookbooks for the resource-only Supermarket ones.
+      NGINX_RECIPE: ${NGINX_RECIPE:-e2e_nginx}
+      POSTGRES_RECIPE: ${POSTGRES_RECIPE:-e2e_postgresql}
+      # Client names used by the node services; leftovers are deleted before
+      # the role is created so repeated runs can bootstrap again.
+      NODE_NAMES: ${NODE_NAMES:-node-debian node-ubuntu node-fedora node-amazon}
+    volumes:
+      # Read the bootstrap superuser key the server writes on first start.
+      - microwave-data:/mw-data:ro
+      # Pass the validator key and client config to the test nodes.
+      - chef-shared:/shared
+
+  # Copies the materialized WebUI key out of the data volume for the console
+  # user (uid 1000). The console cannot read the 0600 original, which the server
+  # account owns.
+  console-key:
+    image: ${ALPINE_IMAGE:-alpine:3.22}
+    depends_on:
+      microwave:
+        condition: service_healthy
+    volumes:
+      - microwave-data:/mw-data:ro
+      - console-key:/key
+    command:
+      [
+        "sh",
+        "-c",
+        "set -e; test -s /mw-data/webui_priv.pem; cp /mw-data/webui_priv.pem /key/webui_priv.pem; chown 1000:1000 /key/webui_priv.pem; chmod 0400 /key/webui_priv.pem",
+      ]
+    restart: "no"
+
+  # Browser UI for the stack. Fixture credentials from the seed; the key is
+  # mounted read-only from the handoff volume.
+  cinc-console:
+    image: ${CINC_CONSOLE_IMAGE:-ghcr.io/cinc-project/cinc-console:latest}
+    depends_on:
+      microwave:
+        condition: service_healthy
+      console-key:
+        condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /app/.next/cache:size=128m,mode=1777
+    environment:
+      NODE_ENV: production
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
+      CINC_SERVER_URL: http://microwave:8000
+      CINC_WEBUI_KEY_FILE: /key/webui_priv.pem
+      # Fixture, fixed on purpose so repeated runs keep the session secret.
+      SESSION_SECRET: ${MW_CONSOLE_SESSION_SECRET:-e2e-console-session-secret-32-chars-min}
+      # The stack is plain HTTP.
+      SESSION_COOKIE_SECURE: "false"
+      # /authenticate_user is signed by the superuser.
+      CINC_AUTH_ACTOR: pivotal
+    volumes:
+      - console-key:/key:ro
+    ports:
+      - "127.0.0.1:${MW_CONSOLE_PORT:-18083}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/healthz >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  workstation:
+    build:
+      context: ./workstation
+    image: ${MW_WORKSTATION_IMAGE:-microwave-workstation:e2e}
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      # Optional override; the image already bakes the e2e token in.
+      MW_MCP_TOKEN: ${MW_MCP_TOKEN:-e2e-mcp-token}
+    # The entrypoint prepares the box and then sleeps, so the service is used
+    # with `docker compose exec workstation …` or `./shell`. Nothing is
+    # published.
+    volumes:
+      # Read-only hand-over of the knife config the seed wrote.
+      - chef-shared:/shared:ro
+      # Keep the OpenCode login and session state across `up` runs.
+      - workstation-opencode:/root/.local/share/opencode
+      - workstation-opencode-config:/root/.config/opencode
+    # A workstation whose prepare script never succeeded has no knife config and
+    # no MCP connection; surface that instead of only showing "running".
+    healthcheck:
+      test: ["CMD-SHELL", "test -r /root/work/.chef/knife.rb"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 120s
+
+  node-debian:
+    build:
+      context: ./client
+      args:
+        BASE_IMAGE: ${DEBIAN_IMAGE:-debian:trixie}
+        CINC_VERSION: ${CINC_VERSION:-19}
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      NODE_NAME: node-debian
+      # Plain-text unit output on the console instead of ANSI escapes.
+      SYSTEMD_COLORS: "0"
+    # A TTY gives the container a /dev/console. systemd writes its console
+    # output there, so `docker compose logs` shows the boot and converge
+    # progress instead of staying empty.
+    tty: true
+    # systemd as PID 1 keeps the container alive after the converge and lets
+    # the service resource manage nginx. This needs the privileges and the
+    # cgroup mount below.
+    privileged: true
+    cgroup: host
+    stop_signal: SIGRTMIN+3
+    tmpfs:
+      - /run
+      - /tmp
+    volumes:
+      - chef-shared:/shared:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+  node-ubuntu:
+    build:
+      context: ./client
+      args:
+        BASE_IMAGE: ${UBUNTU_IMAGE:-ubuntu:26.04}
+        CINC_VERSION: ${CINC_VERSION:-19}
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      NODE_NAME: node-ubuntu
+      # Plain-text unit output on the console instead of ANSI escapes.
+      SYSTEMD_COLORS: "0"
+    # A TTY gives the container a /dev/console. systemd writes its console
+    # output there, so `docker compose logs` shows the boot and converge
+    # progress instead of staying empty.
+    tty: true
+    privileged: true
+    cgroup: host
+    stop_signal: SIGRTMIN+3
+    tmpfs:
+      - /run
+      - /tmp
+    volumes:
+      - chef-shared:/shared:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+  node-fedora:
+    build:
+      context: ./client
+      args:
+        BASE_IMAGE: ${FEDORA_IMAGE:-fedora:45}
+        CINC_VERSION: ${CINC_VERSION:-19}
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      NODE_NAME: node-fedora
+      # Plain-text unit output on the console instead of ANSI escapes.
+      SYSTEMD_COLORS: "0"
+    # A TTY gives the container a /dev/console. systemd writes its console
+    # output there, so `docker compose logs` shows the boot and converge
+    # progress instead of staying empty.
+    tty: true
+    privileged: true
+    cgroup: host
+    stop_signal: SIGRTMIN+3
+    tmpfs:
+      - /run
+      - /tmp
+    volumes:
+      - chef-shared:/shared:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+  node-amazon:
+    build:
+      context: ./client
+      args:
+        BASE_IMAGE: ${AMAZON_IMAGE:-amazonlinux:2023}
+        CINC_VERSION: ${CINC_VERSION:-19}
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      NODE_NAME: node-amazon
+      # Plain-text unit output on the console instead of ANSI escapes.
+      SYSTEMD_COLORS: "0"
+    tty: true
+    privileged: true
+    cgroup: host
+    stop_signal: SIGRTMIN+3
+    tmpfs:
+      - /run
+      - /tmp
+    volumes:
+      - chef-shared:/shared:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+volumes:
+  microwave-data:
+  console-key:
+  chef-shared:
+  workstation-opencode:
+  workstation-opencode-config:
+  postgres-data:
+  opensearch-data:
+  garage-meta:
+  garage-data:

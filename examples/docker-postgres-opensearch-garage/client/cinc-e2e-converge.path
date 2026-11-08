@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch the seed generation marker for changes
+
+[Path]
+# The seed rewrites this file at the start of every run. Nodes that are still
+# running from an earlier `docker compose up` pick the change up here and
+# converge again, including re-registration with the validator.
+PathChanged=/shared/run-id
+Unit=cinc-e2e-reconverge.service
+
+[Install]
+WantedBy=multi-user.target
