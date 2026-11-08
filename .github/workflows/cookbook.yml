@@ -48,7 +48,7 @@ jobs:
       # directory and a relative value would resolve twice.
       BUNDLE_GEMFILE: ${{ github.workspace }}/cookbooks/microwave/Gemfile
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
@@ -92,7 +92,7 @@ jobs:
       # run without an accepted license. The rake tasks set it as well.
       CHEF_LICENSE: accept-no-persist
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Docker
         run: docker compose version
       # The suite caches downloaded debs on the host; the key follows the

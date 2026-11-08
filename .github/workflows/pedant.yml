@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Nightly and manual only: the PR gate must pass without Ruby.
       - uses: ruby/setup-ruby@v1
         with:
