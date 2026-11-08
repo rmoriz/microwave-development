@@ -159,9 +159,9 @@ a wide cookbook upload cannot block node registration.
 Kind spellings: `node`, `cookbook version`, `environment`, `role`, `policy
 revision`. MCP tools surface the same text as an `isError` result. Each
 rejection logs `WARN` with the organization id, the kind and the limit, and
-increments a `quota_rejections_total{kind}` counter on the metrics handle the
-store already holds for its timings (a per-kind series next to the existing
-limit metrics).
+counts on the existing request-limit series as
+`microwave_server_limits_total{scope="quota:<kind>",org="<org>",outcome="rejected"}`,
+so `/_stats`, OTLP and the cardinality caps work unchanged.
 
 ### What stays allowed
 
@@ -191,17 +191,19 @@ limit metrics).
 
 ## Implementation shape
 
-- `microwave-config`: `QuotasConfig`/`OrgQuotasConfig`, defaults, validation,
+- `microwave-config`: `QuotasConfig`/`OrgQuotas`, defaults, validation,
   environment overlay, `packaging/microwave.toml.example` block.
-- `microwave-store`: `QuotaKind`, `OrgQuotas`, `QuotaPolicy` (map keyed by
-  organization id) and a `StoreError::Quota { kind, limit }` whose `Display` is
-  the message above. `MetadataStore::set_quotas` replaces the whole policy,
-  `set_org_quotas` merges one id; both backends hold an `RwLock<QuotaPolicy>`
-  and implement the check in the five `create_*` methods and in
-  `ensure_policy_revision`. The count helper takes the open transaction: on
-  SQLite a `self.`-based count would re-lock the `Mutex` the `create_*` already
-  holds and deadlock.
-- `microwave-metrics`: the per-kind rejection counter series.
+- `microwave-store`: `QuotaKind`, `QuotaTarget`, `QuotaPolicy` (map keyed by
+  organization id; `OrgQuotas` comes from `microwave-config`) and a
+  `StoreError::Quota { kind, limit }` whose `Display` is the message above.
+  `MetadataStore::set_quotas` replaces the whole policy, `set_org_quotas`
+  merges one id; both backends hold an `RwLock<QuotaPolicy>` and implement the
+  check in the five `create_*` methods and in `associate_policy_revision`. The
+  count helper takes the open transaction: on SQLite a `self.`-based count
+  would re-lock the `Mutex` the `create_*` already holds and deadlock.
+  `microwave-store` gains the `microwave-config` dependency for `OrgQuotas`.
+  Rejections reuse `Metrics::record_limit` with scope `quota:<kind>` and
+  outcome `rejected`, so no metrics series is added.
 - `microwave-authz`: `create_organization` gains a `quotas: Option<OrgQuotas>`
   argument and registers it on the fresh organization id before the default
   policy, so the entry is live immediately. Both callers pass the entry for the
