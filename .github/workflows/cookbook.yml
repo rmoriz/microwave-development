@@ -98,7 +98,7 @@ jobs:
       # The suite caches downloaded debs on the host; the key follows the
       # fixture files and the suite, because keys are immutable and all jobs
       # would otherwise overwrite each other's entry.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: cookbooks/microwave/test/fixtures/cache
           key: kitchen-apt-${{ matrix.suite }}-${{ hashFiles('cookbooks/microwave/test/fixtures/docker-compose.yml', 'cookbooks/microwave/test/fixtures/node/Dockerfile') }}
@@ -110,7 +110,7 @@ jobs:
       # Kitchen truncates .kitchen/logs on every invocation.
       - name: Kitchen suite ${{ matrix.suite }}
         run: bundle exec rake ${{ matrix.task }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure() || cancelled()
         with:
           name: kitchen-logs-${{ matrix.suite }}

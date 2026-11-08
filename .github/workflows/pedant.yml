@@ -29,7 +29,7 @@ jobs:
         env:
           PEDANT_ARTIFACTS: ${{ runner.temp }}/pedant-artifacts
         run: scripts/run-pedant.sh strict
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: pedant-artifacts
