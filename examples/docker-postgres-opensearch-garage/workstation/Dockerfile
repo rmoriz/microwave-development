@@ -4,9 +4,9 @@
 # stages the knife config the seed wrote and warms the MCP client, then keeps
 # the container alive for `docker compose exec` and `./shell`.
 #
-# knife and Berkshelf come from the Cinc Workstation package; OpenCode is
-# installed from the official installer and configured against the stack's MCP
-# endpoint in /root/work.
+# knife and Berkshelf come from the Cinc Workstation package, the `cinc` CLI
+# from the cinc-cli release tarballs, and OpenCode from the official installer
+# configured against the stack's MCP endpoint in /root/work.
 #
 # Everything runs as root: the box is disposable and only talks to the local
 # e2e stack.
@@ -15,6 +15,11 @@ FROM ${BASE_IMAGE}
 
 ARG CINC_WORKSTATION_VERSION=26.4.0
 ARG CINC_WORKSTATION_URL=https://downloads.cinc.sh/files/stable/cinc-workstation
+
+# cinc-cli is a separate Go program published as release tarballs only; it is
+# not part of the Cinc Workstation package and has no apt repository.
+ARG CINC_CLI_VERSION=0.28.0
+ARG CINC_CLI_URL=https://github.com/cinc-project/cinc-cli/releases/download
 
 # Pinned: the installer layer is cached by command text, and the MCP warm-up in
 # workstation-prepare depends on 2.2.0's reload behaviour.
@@ -49,6 +54,23 @@ RUN set -eux; \
     dpkg -i /tmp/cinc-workstation.deb; \
     rm -f /tmp/cinc-workstation.deb; \
     knife --version
+
+# Same architecture split as above; verify the tarball against the release's
+# SHA256SUMS before unpacking it.
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    asset="cinc_v${CINC_CLI_VERSION}_linux_${arch}.tar.gz"; \
+    dir="${asset%.tar.gz}"; \
+    url="${CINC_CLI_URL}/v${CINC_CLI_VERSION}"; \
+    cd /tmp; \
+    curl -fsSLO "$url/$asset"; \
+    curl -fsSLO "$url/SHA256SUMS"; \
+    echo "$(awk -v asset="$asset" '$2 == asset {print $1}' SHA256SUMS)  $asset" \
+        | sha256sum -c -; \
+    tar -xzf "$asset"; \
+    install -m 0755 "$dir/cinc" /usr/local/bin/cinc; \
+    rm -rf "$asset" "$dir" SHA256SUMS; \
+    cinc version | grep -qx "cinc v${CINC_CLI_VERSION}"
 
 RUN curl -fsSL https://opencode.ai/v2/install \
         | bash -s -- --no-modify-path --version "$OPENCODE_VERSION" \

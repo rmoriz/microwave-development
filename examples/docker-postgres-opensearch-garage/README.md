@@ -24,8 +24,9 @@ separate containers instead of the embedded defaults:
    boots systemd as PID 1, registers with the validator, converges with
    `role[e2e_role]`, and stays running so the result can be inspected with
    `docker exec`.
-5. **workstation** — Cinc Workstation and OpenCode, for driving the stack by
-   hand. Not published; reach it with `docker compose exec` or `./shell`.
+5. **workstation** — Cinc Workstation, the `cinc` CLI and OpenCode, for driving
+   the stack by hand. Not published; reach it with `docker compose exec` or
+   `./shell`.
 6. **cinc-console** — the official web UI, logged in with the seeded demo user.
    Published on `127.0.0.1:18083` only.
 
@@ -201,6 +202,20 @@ The container runs everything as root, including OpenCode; there is no
 unprivileged user and no init system in the image. The staged knife config is
 `/root/work/.chef` (`KNIFE_HOME`), so `knife` works from any shell in the
 container.
+
+The `cinc` CLI from [cinc-cli](https://github.com/cinc-project/cinc-cli) is on
+`PATH` (`cinc version`). It does not read the knife config; it uses its own TOML
+profile at `/root/.cinc/credentials`, which the seed does not write, so
+`cinc node list` fails until a profile exists:
+
+```sh
+docker compose exec workstation cinc config create \
+  --server-url http://microwave:8000/organizations/e2e \
+  --client-name pivotal \
+  --client-key /root/work/.chef/pivotal.pem
+```
+
+`knife` stays the preconfigured path; `cinc` is there for testing the CLI.
 
 Check the MCP connection with `docker compose exec workstation opencode mcp list`.
 
