@@ -40,6 +40,19 @@ printf '%s\n' 'chef_repo_path "/root/work"' >>"$CHEF_DIR/knife.rb"
 
 echo "workstation: knife is configured for $(knife node list | wc -l) nodes"
 
+# cinc-cli does not read knife.rb; it keeps its own TOML profile. Mirror the
+# staged server and client into it so `cinc node list` works like `knife node
+# list` without a manual `cinc config create`.
+echo "workstation: configuring the cinc CLI"
+server_url="$(sed -n 's/^chef_server_url "\(.*\)"$/\1/p' "$CHEF_DIR/knife.rb")"
+client_name="$(sed -n 's/^node_name "\(.*\)"$/\1/p' "$CHEF_DIR/knife.rb")"
+cinc config create \
+    --server-url "$server_url" \
+    --client-name "$client_name" \
+    --client-key "$CHEF_DIR/pivotal.pem" >/dev/null
+cinc config validate
+echo "workstation: cinc is configured for $(cinc node list | wc -l) nodes"
+
 # OpenCode 2.2.0 only registers configured MCP servers on a configuration
 # reload; the first start of its background service reports an empty list.
 # Warm the service up and reload once so the endpoint is connected before the

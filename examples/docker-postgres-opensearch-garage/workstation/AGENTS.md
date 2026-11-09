@@ -6,10 +6,10 @@ This container is part of the disposable `examples/docker-postgres-opensearch-ga
   `http://microwave:8000`; plain `knife node list`, `knife cookbook list`, and
   the other commands work without flags. The config and the superuser key live
   in `/root/work/.chef` (`KNIFE_HOME`).
-- The `cinc` CLI (cinc-cli) is on `PATH`; it ignores the knife config and reads
-  `/root/.cinc/credentials`, which is empty until `cinc config create` writes a
-  profile against `http://microwave:8000/organizations/e2e` with
-  `/root/work/.chef/pivotal.pem`.
+- The `cinc` CLI (cinc-cli) is on `PATH` and preconfigured for the same server
+  and organization through its own TOML profile at `/root/.cinc/credentials`
+  (written by `workstation-prepare` from the staged knife config); `cinc node
+  list` works like `knife node list`.
 - The workspace is the pinned `chef_repo_path`, so a bare `knife list` returns
   the server root only when the shell is in `/root/work`; elsewhere use
   `knife node list`, `knife cookbook list`, or an absolute `knife list /nodes`.

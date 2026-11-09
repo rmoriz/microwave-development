@@ -204,18 +204,10 @@ unprivileged user and no init system in the image. The staged knife config is
 container.
 
 The `cinc` CLI from [cinc-cli](https://github.com/cinc-project/cinc-cli) is on
-`PATH` (`cinc version`). It does not read the knife config; it uses its own TOML
-profile at `/root/.cinc/credentials`, which the seed does not write, so
-`cinc node list` fails until a profile exists:
-
-```sh
-docker compose exec workstation cinc config create \
-  --server-url http://microwave:8000/organizations/e2e \
-  --client-name pivotal \
-  --client-key /root/work/.chef/pivotal.pem
-```
-
-`knife` stays the preconfigured path; `cinc` is there for testing the CLI.
+`PATH` (`cinc version`) and already points at the same `e2e` organization. It
+does not read the knife config; `workstation-prepare` writes the equivalent TOML
+profile to `/root/.cinc/credentials`, so `cinc node list` works alongside
+`knife node list`.
 
 Check the MCP connection with `docker compose exec workstation opencode mcp list`.
 
