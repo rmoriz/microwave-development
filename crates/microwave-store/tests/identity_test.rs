@@ -1,4 +1,4 @@
-use microwave_store::{ActorType, SqliteStore, UserPatch, UserProfile};
+use microwave_store::{ActorType, Permission, SqliteStore, UserPatch, UserProfile};
 
 #[test]
 fn creates_and_finds_org_user_client_and_keys() {
@@ -167,4 +167,30 @@ fn filters_users_by_email_and_external_uid() {
         vec!["saml"]
     );
     assert!(!saml.admin);
+}
+
+#[test]
+fn create_user_copies_custom_container_aces() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    let container = store.ensure_global_container("users").unwrap();
+    let reader = store
+        .create_user("reader", "reader@example.com", "bcrypt", "h", "s", false)
+        .unwrap();
+    store
+        .set_acl(
+            &container.authz_id,
+            Permission::Read,
+            Some(&reader.authz_id),
+            None,
+        )
+        .unwrap();
+    let created = store
+        .create_user("copied", "copied@example.com", "bcrypt", "h", "s", false)
+        .unwrap();
+    let entries = store.get_acl_entries(&created.authz_id).unwrap();
+    let read = entries
+        .iter()
+        .find(|entry| entry.permission == Permission::Read)
+        .expect("read ACE");
+    assert!(read.users.contains(&"reader".to_string()), "{read:?}");
 }

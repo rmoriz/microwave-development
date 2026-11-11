@@ -727,6 +727,45 @@ mod suite {
         Vec::new()
     }
 
+    pub async fn users_inherit_container_acl(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let name = unique("inherited-user");
+        let user = store
+            .create_user(
+                &name,
+                &format!("{name}@example.com"),
+                "bcrypt",
+                "h",
+                "s",
+                false,
+            )
+            .await
+            .expect("create user");
+        let entries = store
+            .get_acl_entries(&user.authz_id)
+            .await
+            .expect("user acl");
+        for permission in [
+            Permission::Create,
+            Permission::Read,
+            Permission::Update,
+            Permission::Delete,
+        ] {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.permission == permission)
+                .unwrap_or_else(|| panic!("missing {permission:?} ACE"));
+            assert!(
+                entry.groups.contains(&"::server-admins".to_string()),
+                "server-admins missing from {permission:?}: {entry:?}"
+            );
+            assert!(
+                entry.users.contains(&name),
+                "user missing from its own {permission:?} ACE: {entry:?}"
+            );
+        }
+        Vec::new()
+    }
+
     pub async fn global_containers(store: &Arc<dyn MetadataStore>) -> Vec<String> {
         let users = store
             .ensure_global_container("users")
@@ -3890,6 +3929,7 @@ matrix!(
         identity,
         authz,
         global_containers,
+        users_inherit_container_acl,
         objects,
         environment_constraints,
         cookbooks,
@@ -3918,6 +3958,7 @@ matrix!(
         identity,
         authz,
         global_containers,
+        users_inherit_container_acl,
         objects,
         environment_constraints,
         cookbooks,

@@ -1,5 +1,4 @@
 use crate::sqlite::{in_placeholders, SqliteStore, StoreError};
-use crate::Permission;
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{params, params_from_iter, OptionalExtension, Row};
 use uuid::Uuid;
@@ -267,9 +266,11 @@ impl SqliteStore {
         let authz_id = new_id();
         let now = now();
         let email = email.map(str::to_lowercase);
-        // Every user ACL includes the global server-admins group (except for
-        // grant), matching the account service's default. Ensure it exists
-        // before opening the write transaction.
+        // A new account inherits the ACL of the global `users` container and
+        // gets every permission on itself, matching erchef's
+        // `create_entity_with_container_acl`. The `server-admins` grants come
+        // from the container, not from a hard-coded list.
+        let users_container = self.ensure_global_container("users")?;
         let server_admins = self.ensure_global_group("server-admins")?;
         let mut connection = self.connection();
         let transaction = connection.transaction()?;
@@ -325,19 +326,20 @@ impl SqliteStore {
             )
             .map_err(StoreError::Sqlite)?;
         crate::objects::grant_actor_all(&transaction, &authz_id, &authz_id)?;
-        for permission in [
-            Permission::Create,
-            Permission::Read,
-            Permission::Update,
-            Permission::Delete,
-        ] {
-            transaction.execute(
-                "INSERT OR IGNORE INTO authz_acl_group
-                 (target_authz_id, permission, group_authz_id)
-                 VALUES (?1, ?2, ?3)",
-                params![authz_id, permission.as_str(), server_admins.authz_id],
-            )?;
-        }
+        transaction.execute(
+            "INSERT OR IGNORE INTO authz_acl_actor
+             (target_authz_id, permission, actor_authz_id)
+             SELECT ?1, permission, actor_authz_id
+             FROM authz_acl_actor WHERE target_authz_id = ?2",
+            params![authz_id, users_container.authz_id],
+        )?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO authz_acl_group
+             (target_authz_id, permission, group_authz_id)
+             SELECT ?1, permission, group_authz_id
+             FROM authz_acl_group WHERE target_authz_id = ?2",
+            params![authz_id, users_container.authz_id],
+        )?;
         if admin {
             transaction.execute(
                 "INSERT OR IGNORE INTO authz_group_actors (group_authz_id, actor_authz_id)
