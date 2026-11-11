@@ -79,7 +79,8 @@ async fn creates_a_client_and_reads_principals() {
     let client = support::response_json(response).await;
     assert_eq!(client["name"], "web1");
     assert_eq!(client["validator"], false);
-    assert_eq!(client["admin"], false);
+    // Upstream's client document has no admin field, and neither does ours.
+    assert!(client.get("admin").is_none());
 
     let response = app
         .clone()
@@ -816,7 +817,7 @@ async fn newly_created_validator_can_create_clients() {
 }
 
 #[tokio::test]
-async fn reports_the_admin_flag_of_a_client() {
+async fn creates_clients_with_the_admins_group_in_sync() {
     let state = support::state_with_pivotal();
     let app = support::app(state.clone());
     create_org(&app).await;
@@ -849,9 +850,19 @@ async fn reports_the_admin_flag_of_a_client() {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK, "{name}");
         let client = support::response_json(response).await;
-        assert_eq!(client["admin"], admin, "{name}");
+        assert!(client.get("admin").is_none(), "{name}");
         assert_eq!(admins_group_members(&state, name), admin, "{name}");
     }
+}
+
+fn stored_admin(state: &microwave_api::AppState, name: &str) -> bool {
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
+    state
+        .sqlite()
+        .find_client(&org.id, name)
+        .unwrap()
+        .unwrap()
+        .admin
 }
 
 fn admins_group_members(state: &microwave_api::AppState, name: &str) -> bool {
@@ -904,8 +915,9 @@ async fn updates_of_the_admin_flag_track_the_admins_group() {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let updated = support::response_json(response).await;
-        assert_eq!(updated["admin"], admin);
+        assert!(updated.get("admin").is_none());
         assert_eq!(admins_group_members(&state, "worker"), admin);
+        assert_eq!(stored_admin(&state, "worker"), admin);
 
         let response = app
             .clone()
@@ -919,28 +931,94 @@ async fn updates_of_the_admin_flag_track_the_admins_group() {
             .await
             .unwrap();
         let fetched = support::response_json(response).await;
-        assert_eq!(fetched["admin"], admin);
+        assert!(fetched.get("admin").is_none());
     }
 }
 
 #[tokio::test]
-async fn the_admin_flag_follows_the_group_when_the_stored_flag_is_stale() {
+async fn a_normal_client_cannot_promote_itself_to_admin() {
     let state = support::state_with_pivotal();
     let app = support::app(state.clone());
     create_org(&app).await;
 
+    let body = json!({"name":"worker","validator":false,"public_key": support::PUBLIC_KEY});
     let response = app
         .clone()
         .oneshot(support::signed_request(
             "POST",
             "/organizations/acme/clients",
-            br#"{"name":"legacy","validator":false}"#,
+            body.to_string().as_bytes(),
             SignVersion::V1_3,
             "pivotal",
         ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
+
+    let (status, _) = request(
+        &app,
+        "PUT",
+        "/organizations/acme/clients/worker",
+        br#"{"name":"worker","admin":true}"#,
+        "worker",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(!admins_group_members(&state, "worker"));
+
+    // The v0 string form parses to the same value and is refused too.
+    let (status, _) = request_v0(
+        &app,
+        "PUT",
+        "/organizations/acme/clients/worker",
+        br#"{"name":"worker","admin":"true"}"#,
+        "worker",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(!admins_group_members(&state, "worker"));
+
+    let (status, fetched) = request(
+        &app,
+        "GET",
+        "/organizations/acme/clients/worker",
+        b"",
+        "pivotal",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(fetched.get("admin").is_none());
+
+    // Admins and the superuser may still promote clients.
+    let (status, updated) = request(
+        &app,
+        "PUT",
+        "/organizations/acme/clients/worker",
+        br#"{"name":"worker","admin":true}"#,
+        "pivotal",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(updated.get("admin").is_none());
+    assert!(admins_group_members(&state, "worker"));
+}
+
+#[tokio::test]
+async fn the_admins_group_governs_the_self_promotion_guard() {
+    let state = support::state_with_pivotal();
+    let app = support::app(state.clone());
+    create_org(&app).await;
+
+    let body = json!({"name":"legacy","validator":false,"public_key": support::PUBLIC_KEY});
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/organizations/acme/clients",
+        body.to_string().as_bytes(),
+        "pivotal",
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
 
     // Rows written before the flag was mirrored keep `admin = 0` while the
     // group is authoritative.
@@ -961,18 +1039,18 @@ async fn the_admin_flag_follows_the_group_when_the_stored_flag_is_stale() {
         .unwrap();
     assert!(!client.admin);
 
-    let response = app
-        .clone()
-        .oneshot(support::signed_request(
-            "GET",
-            "/organizations/acme/clients/legacy",
-            b"",
-            SignVersion::V1_3,
-            "pivotal",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let fetched = support::response_json(response).await;
-    assert_eq!(fetched["admin"], true);
+    // The client may re-send `admin = true` because the group already says it
+    // is an admin, so a read-modify-write of its own document keeps working.
+    let (status, updated) = request(
+        &app,
+        "PUT",
+        "/organizations/acme/clients/legacy",
+        br#"{"name":"legacy","admin":true}"#,
+        "legacy",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(updated.get("admin").is_none());
+    assert!(stored_admin(&state, "legacy"));
+    assert!(admins_group_members(&state, "legacy"));
 }

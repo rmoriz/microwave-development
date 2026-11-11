@@ -225,6 +225,17 @@ async fn update_client(
         return Err(ApiError::forbidden());
     }
 
+    // A normal client may manage itself, but must not be able to promote
+    // itself to admin. An existing admin re-sending `true` stays valid, so a
+    // read-modify-write of its own document keeps working.
+    if admin == Some(true)
+        && auth.principal.actor_type == ActorType::Client
+        && auth.principal.name == client.name
+        && !client_is_admin(&state, org, &client).await?
+    {
+        return Err(ApiError::forbidden());
+    }
+
     let private_key_flag = match body.get("private_key") {
         None => false,
         Some(Value::Bool(value)) => *value,
@@ -506,7 +517,7 @@ fn client_error(error: StoreError) -> ApiError {
 
 /// A client is an admin exactly when it sits in the org's `admins` group: the
 /// stored flag is only a mirror, so rows written before the flag was kept in
-/// sync still report the truth.
+/// sync still answer the self-promotion check truthfully.
 async fn client_is_admin(state: &AppState, org: &Org, client: &Client) -> Result<bool, ApiError> {
     let Some(group) = state
         .store
@@ -573,7 +584,6 @@ async fn client_json(
         "name": client.name,
         "clientname": client.name,
         "validator": client.validator,
-        "admin": client_is_admin(state, org, client).await?,
         "orgname": org.name,
         "json_class": "Chef::ApiClient",
         "chef_type": "client",
