@@ -116,9 +116,37 @@ pub fn is_superuser(auth: &AuthContext) -> bool {
     auth.is_superuser
 }
 
+/// Whether `username` is the configured bootstrap superuser.
+pub fn is_configured_superuser(state: &AppState, username: &str) -> bool {
+    username.eq_ignore_ascii_case(&state.config.auth.superuser_name)
+}
+
+/// Require a permission on one of the global containers.
+///
+/// Upstream authorizes `GET/POST /users` and `GET/POST /organizations` through
+/// the `users` and `organizations` containers; the superuser bypasses the
+/// check like it does everywhere else.
+pub async fn require_global_container_permission(
+    state: &AppState,
+    auth: &AuthContext,
+    container: &str,
+    permission: Permission,
+) -> Result<(), ApiError> {
+    if is_superuser(auth) {
+        return Ok(());
+    }
+    let container = state
+        .store
+        .find_global_container(container)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(ApiError::internal)?;
+    require_permission(state, auth, &container.authz_id, permission).await
+}
+
 /// Whether the caller is the configured superuser or a member of the global
-/// `server-admins` group. Upstream grants the global organizations container
-/// to this set.
+/// `server-admins` group. Superseded by the container ACL checks; the only
+/// caller left is the organization listing, which Task 5 rewires.
 pub async fn is_server_admin(state: &AppState, auth: &AuthContext) -> Result<bool, ApiError> {
     if auth.is_superuser {
         return Ok(true);

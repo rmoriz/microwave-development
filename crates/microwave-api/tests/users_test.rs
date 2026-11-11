@@ -251,16 +251,20 @@ async fn list_users_verbose_returns_profile_objects() {
 }
 
 #[tokio::test]
-async fn list_users_requires_the_platform_superuser() {
+async fn list_users_requires_the_users_container() {
     let state = support::state_with_pivotal();
     support::add_user(&state, "admin", "admin@example.com", true);
     support::add_user(&state, "normal", "normal@example.com", false);
     let app = support::app(state);
 
-    for user in ["admin", "normal"] {
+    // Upstream grants server-admins read on the global `users` container;
+    // ordinary users hold no ACE there.
+    for user in ["pivotal", "admin"] {
         let (status, _) = get(&app, "/users", user).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "user {user}");
+        assert_eq!(status, StatusCode::OK, "user {user}");
     }
+    let (status, _) = get(&app, "/users", "normal").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "user normal");
 }
 
 #[tokio::test]
@@ -433,18 +437,21 @@ async fn v0_update_accepts_public_key_and_rotates_private_key() {
 }
 
 #[tokio::test]
-async fn delete_user_requires_the_superuser() {
+async fn delete_user_requires_the_delete_acl() {
     let state = support::state_with_pivotal();
     support::add_user(&state, "admin", "admin@example.com", true);
+    support::add_user(&state, "normal", "normal@example.com", false);
     support::add_user(&state, "alice", "alice@example.com", false);
     let app = support::app(state);
 
-    let (status, _, _) = send(&app, "DELETE", "/users/alice", b"", "2", "admin").await;
+    // A server-admin holds delete on other accounts through the inherited
+    // `users` container ACE; an ordinary user holds none.
+    let (status, _, _) = send(&app, "DELETE", "/users/alice", b"", "2", "normal").await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _) = get(&app, "/users/alice", "pivotal").await;
     assert_eq!(status, StatusCode::OK);
 
-    let (status, _, _) = send(&app, "DELETE", "/users/alice", b"", "2", "pivotal").await;
+    let (status, _, _) = send(&app, "DELETE", "/users/alice", b"", "2", "admin").await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = get(&app, "/users/alice", "pivotal").await;
     assert_eq!(status, StatusCode::NOT_FOUND);

@@ -1,5 +1,8 @@
 use crate::chef_json::ChefJson;
-use crate::helpers::{base_url, is_superuser, location_headers, require_superuser};
+use crate::helpers::{
+    base_url, is_configured_superuser, location_headers, require_global_container_permission,
+    require_permission, require_superuser,
+};
 use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::body::Bytes;
 use axum::extract::{Extension, Path, Query, State};
@@ -9,7 +12,7 @@ use axum::{Json, Router};
 use microwave_crypto::{
     hash_password, needs_upgrade, parse_public_key_pem, verify_password, PasswordHash,
 };
-use microwave_store::{ActorType, User, UserPatch, UserProfile};
+use microwave_store::{ActorType, Permission, User, UserPatch, UserProfile};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 
@@ -32,7 +35,7 @@ async fn list_users(
     Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    require_superuser(&auth)?;
+    require_global_container_permission(&state, &auth, "users", Permission::Read).await?;
     let base = base_url(&headers, &state);
 
     if params.get("verbose").map(String::as_str) == Some("true") {
@@ -81,7 +84,7 @@ async fn create_user(
     headers: HeaderMap,
     ChefJson(body): ChefJson<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
-    require_superuser(&auth)?;
+    require_global_container_permission(&state, &auth, "users", Permission::Create).await?;
     let body = body
         .as_object()
         .ok_or_else(|| ApiError::bad_request("request body must be a JSON object"))?;
@@ -212,7 +215,7 @@ async fn get_user(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("user {username}")))?;
 
-    authorize_read(&state, &auth, &user).await?;
+    require_permission(&state, &auth, &user.authz_id, Permission::Read).await?;
     Ok(Json(user_json(&state, &user, api_version).await?))
 }
 
@@ -230,11 +233,19 @@ async fn update_user(
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("user {username}")))?;
-    require_superuser(&auth)?;
 
     let body = body
         .as_object()
         .ok_or_else(|| ApiError::bad_request("request body must be a JSON object"))?;
+    // Upstream only allows the superuser to touch these fields; everything
+    // else is an ordinary update on the target user's ACL.
+    let sensitive = body.contains_key("external_authentication_uid")
+        || body.contains_key("recovery_authentication_enabled");
+    if sensitive || is_configured_superuser(&state, &current.username) {
+        require_superuser(&auth)?;
+    } else {
+        require_permission(&state, &auth, &current.authz_id, Permission::Update).await?;
+    }
     let new_username = username_from_body(body)?;
     validate_username(&new_username)?;
     let display_name = required_string(body, "display_name")?.to_string();
@@ -348,7 +359,17 @@ async fn delete_user(
     Extension(auth): Extension<AuthContext>,
     Path(username): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    require_superuser(&auth)?;
+    let user = state
+        .store
+        .find_user(&username)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::not_found(format!("user {username}")))?;
+    if is_configured_superuser(&state, &user.username) {
+        require_superuser(&auth)?;
+    } else {
+        require_permission(&state, &auth, &user.authz_id, Permission::Delete).await?;
+    }
     state
         .store
         .delete_user(&username)
@@ -433,21 +454,6 @@ fn prepare_update_key(
         Some(public_key) => UpdateKey::Supplied(public_key),
         None => UpdateKey::None,
     })
-}
-
-async fn authorize_read(state: &AppState, auth: &AuthContext, user: &User) -> Result<(), ApiError> {
-    if is_superuser(auth) || auth.principal.actor_id == user.id {
-        return Ok(());
-    }
-    if state
-        .store
-        .users_share_org(&auth.principal.actor_id, &user.id)
-        .await
-        .map_err(ApiError::from)?
-    {
-        return Ok(());
-    }
-    Err(ApiError::forbidden())
 }
 
 fn username_from_body(body: &serde_json::Map<String, Value>) -> Result<String, ApiError> {
