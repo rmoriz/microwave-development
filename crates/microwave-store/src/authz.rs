@@ -16,6 +16,19 @@ pub struct Group {
     pub name: String,
 }
 
+/// A container that is not scoped to an organization.
+///
+/// Upstream keeps the global `users` and `organizations` containers in
+/// `containers` under the placeholder global org id, and authorizes account
+/// and organization creation through their ACLs. ACL responses render them
+/// without an organization prefix, like global groups.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalContainer {
+    pub id: String,
+    pub authz_id: String,
+    pub name: String,
+}
+
 /// The members of an organization group, in the three buckets the upstream
 /// API exposes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -270,6 +283,72 @@ impl SqliteStore {
             name: name.into(),
         })
     }
+
+    /// Find or create a container that is not scoped to an organization.
+    ///
+    /// Upstream bootstraps the global `users` and `organizations` containers
+    /// and grants `server-admins` create/read/update/delete on `users` only.
+    /// The grant is seeded here, on creation, so every caller (bootstrap,
+    /// organization creation, the first user) ends up with the same graph.
+    pub fn ensure_global_container(&self, name: &str) -> Result<GlobalContainer, StoreError> {
+        if let Some(container) = self.find_global_container(name)? {
+            return Ok(container);
+        }
+
+        // Resolve the group before opening the write transaction; both helpers
+        // take the connection themselves.
+        let server_admins = if name == "users" {
+            Some(self.ensure_global_group("server-admins")?)
+        } else {
+            None
+        };
+
+        let id = Uuid::new_v4().simple().to_string();
+        let authz_id = Uuid::new_v4().simple().to_string();
+        let now = crate::identity::now();
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO authz_entities (authz_id, entity_type, org_id, created_at)
+             VALUES (?1, 'container', NULL, ?2)",
+            params![authz_id, now],
+        )?;
+        // Concurrent first-user/first-org startup can race here. One writer
+        // wins the unique name; the losers discard their authz entity and
+        // return the winner instead of surfacing a spurious conflict.
+        let inserted = transaction.execute(
+            "INSERT OR IGNORE INTO global_containers (id, authz_id, name, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![id, authz_id, name, now],
+        )?;
+        if inserted == 0 {
+            transaction.rollback()?;
+            drop(connection);
+            return self.find_global_container(name)?.ok_or_else(|| {
+                StoreError::Conflict(format!("container {name} was created concurrently"))
+            });
+        }
+        if let Some(server_admins) = &server_admins {
+            for permission in [
+                Permission::Create,
+                Permission::Read,
+                Permission::Update,
+                Permission::Delete,
+            ] {
+                transaction.execute(
+                    "INSERT INTO authz_acl_group (target_authz_id, permission, group_authz_id)
+                     VALUES (?1, ?2, ?3)",
+                    params![authz_id, permission.as_str(), server_admins.authz_id],
+                )?;
+            }
+        }
+        transaction.commit()?;
+        Ok(GlobalContainer {
+            id,
+            authz_id,
+            name: name.into(),
+        })
+    }
 }
 
 /// Predicate over `authz_entities` that matches an entity no organization,
@@ -286,6 +365,7 @@ const ORPHAN_AUTHZ_ENTITY_PREDICATE: &str = "\
     AND NOT EXISTS (SELECT 1 FROM containers WHERE containers.authz_id = authz_entities.authz_id)\
     AND NOT EXISTS (SELECT 1 FROM groups WHERE groups.authz_id = authz_entities.authz_id)\
     AND NOT EXISTS (SELECT 1 FROM global_groups WHERE global_groups.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM global_containers WHERE global_containers.authz_id = authz_entities.authz_id)\
     AND NOT EXISTS (SELECT 1 FROM nodes WHERE nodes.authz_id = authz_entities.authz_id)\
     AND NOT EXISTS (SELECT 1 FROM roles WHERE roles.authz_id = authz_entities.authz_id)\
     AND NOT EXISTS (SELECT 1 FROM environments WHERE environments.authz_id = authz_entities.authz_id)\
@@ -414,6 +494,58 @@ impl SqliteStore {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(groups)
+    }
+
+    pub fn find_global_container(&self, name: &str) -> Result<Option<GlobalContainer>, StoreError> {
+        let connection = self.connection();
+        Ok(connection
+            .query_row(
+                "SELECT id, authz_id, name FROM global_containers WHERE name = ?1",
+                [name],
+                |row| {
+                    Ok(GlobalContainer {
+                        id: row.get(0)?,
+                        authz_id: row.get(1)?,
+                        name: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    pub fn list_global_containers(&self) -> Result<Vec<GlobalContainer>, StoreError> {
+        let connection = self.connection();
+        let mut statement =
+            connection.prepare("SELECT id, authz_id, name FROM global_containers ORDER BY name")?;
+        let containers = statement
+            .query_map([], |row| {
+                Ok(GlobalContainer {
+                    id: row.get(0)?,
+                    authz_id: row.get(1)?,
+                    name: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(containers)
+    }
+
+    /// Remove every ACE that names `group_authz_id` on `target_authz_id`.
+    ///
+    /// Used to keep the bootstrap superuser account unmanageable by the
+    /// `server-admins` group, the way upstream creates it outside the object
+    /// path and therefore without inherited ACEs. Missing rows are a no-op.
+    pub fn revoke_group_acl(
+        &self,
+        target_authz_id: &str,
+        group_authz_id: &str,
+    ) -> Result<(), StoreError> {
+        let connection = self.connection();
+        connection.execute(
+            "DELETE FROM authz_acl_group
+             WHERE target_authz_id = ?1 AND group_authz_id = ?2",
+            params![target_authz_id, group_authz_id],
+        )?;
+        Ok(())
     }
 
     /// Remove a global group and every row that references its authz entity.

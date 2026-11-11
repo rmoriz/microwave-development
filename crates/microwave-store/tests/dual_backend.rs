@@ -727,6 +727,81 @@ mod suite {
         Vec::new()
     }
 
+    pub async fn global_containers(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let users = store
+            .ensure_global_container("users")
+            .await
+            .expect("ensure users");
+        let again = store
+            .ensure_global_container("users")
+            .await
+            .expect("ensure users again");
+        assert_eq!(users.authz_id, again.authz_id, "ensure must be idempotent");
+
+        let entries = store
+            .get_acl_entries(&users.authz_id)
+            .await
+            .expect("users container acl");
+        for permission in [
+            Permission::Create,
+            Permission::Read,
+            Permission::Update,
+            Permission::Delete,
+        ] {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.permission == permission)
+                .unwrap_or_else(|| panic!("missing {permission:?} ACE"));
+            assert!(
+                entry.groups.contains(&"::server-admins".to_string()),
+                "server-admins missing from {permission:?}: {entry:?}"
+            );
+        }
+        let grant = entries
+            .iter()
+            .find(|entry| entry.permission == Permission::Grant)
+            .expect("grant ACE row");
+        assert!(grant.groups.is_empty(), "server-admins must not hold grant");
+
+        let organizations = store
+            .ensure_global_container("organizations")
+            .await
+            .expect("ensure organizations");
+        let organization_entries = store
+            .get_acl_entries(&organizations.authz_id)
+            .await
+            .expect("organizations container acl");
+        assert!(
+            organization_entries
+                .iter()
+                .all(|entry| entry.users.is_empty()
+                    && entry.clients.is_empty()
+                    && entry.groups.is_empty()),
+            "the organizations container has no grants upstream: {organization_entries:?}"
+        );
+
+        let names: Vec<String> = store
+            .list_global_containers()
+            .await
+            .expect("list global containers")
+            .into_iter()
+            .map(|container| container.name)
+            .collect();
+        assert!(names.contains(&"users".to_string()));
+        assert!(names.contains(&"organizations".to_string()));
+
+        store
+            .delete_orphan_authz_entities()
+            .await
+            .expect("cleanup keeps referenced entities");
+        assert!(store
+            .find_global_container("users")
+            .await
+            .unwrap()
+            .is_some());
+        Vec::new()
+    }
+
     pub async fn authz(store: &Arc<dyn MetadataStore>) -> Vec<String> {
         let fixture = fixture(store.as_ref()).await;
         let org = &fixture.org;
@@ -3814,6 +3889,7 @@ matrix!(
         org_deletion,
         identity,
         authz,
+        global_containers,
         objects,
         environment_constraints,
         cookbooks,
@@ -3841,6 +3917,7 @@ matrix!(
         org_deletion,
         identity,
         authz,
+        global_containers,
         objects,
         environment_constraints,
         cookbooks,

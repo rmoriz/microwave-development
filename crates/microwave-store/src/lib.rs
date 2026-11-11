@@ -23,7 +23,7 @@ mod sqlite;
 pub mod timing;
 
 pub use artifacts::{StoredCookbookArtifact, StoredCookbookArtifactVersion};
-pub use authz::{Acl, AclEntry, Container, Group, GroupMembers, Permission};
+pub use authz::{Acl, AclEntry, Container, GlobalContainer, Group, GroupMembers, Permission};
 pub use backend::{
     ArtifactRepository, AuthzRepository, CookbookRepository, HealthRepository, IdentityRepository,
     KvRepository, MembershipRepository, MetadataStore, NewNodeRun, NodeRunFilter, OAuthRepository,

@@ -6,7 +6,7 @@
 //! have not been switched to the trait yet, so this module is purely additive.
 
 use crate::artifacts::{StoredCookbookArtifact, StoredCookbookArtifactVersion};
-use crate::authz::{Acl, AclEntry, Container, Group, GroupMembers, Permission};
+use crate::authz::{Acl, AclEntry, Container, GlobalContainer, Group, GroupMembers, Permission};
 use crate::backend::{
     ArtifactRepository, AuthzRepository, CookbookRepository, HealthRepository, IdentityRepository,
     KvRepository, MembershipRepository, NewNodeRun, NodeRunFilter, OAuthRepository,
@@ -498,6 +498,29 @@ impl AuthzRepository for SqliteStore {
 
     async fn delete_global_group(&self, name: &str) -> Result<(), StoreError> {
         self.delete_global_group(name)
+    }
+
+    async fn ensure_global_container(&self, name: &str) -> Result<GlobalContainer, StoreError> {
+        self.ensure_global_container(name)
+    }
+
+    async fn find_global_container(
+        &self,
+        name: &str,
+    ) -> Result<Option<GlobalContainer>, StoreError> {
+        self.find_global_container(name)
+    }
+
+    async fn list_global_containers(&self) -> Result<Vec<GlobalContainer>, StoreError> {
+        self.list_global_containers()
+    }
+
+    async fn revoke_group_acl(
+        &self,
+        target_authz_id: &str,
+        group_authz_id: &str,
+    ) -> Result<(), StoreError> {
+        self.revoke_group_acl(target_authz_id, group_authz_id)
     }
 
     async fn count_orphan_authz_entities(&self) -> Result<u64, StoreError> {

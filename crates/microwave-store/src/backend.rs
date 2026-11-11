@@ -29,7 +29,7 @@
 //! checklist.
 
 use crate::artifacts::{StoredCookbookArtifact, StoredCookbookArtifactVersion};
-use crate::authz::{Acl, AclEntry, Container, Group, GroupMembers, Permission};
+use crate::authz::{Acl, AclEntry, Container, GlobalContainer, Group, GroupMembers, Permission};
 use crate::cookbooks::StoredCookbookVersion;
 use crate::identity::{ActorKey, ActorType, Client, Org, Principal, User, UserPatch, UserProfile};
 use crate::membership::Invitation;
@@ -346,6 +346,24 @@ pub trait AuthzRepository: Send + Sync {
     /// Remove a global group and every ACL/membership row that references its
     /// authz entity. Missing groups are a no-op so cleanup stays idempotent.
     async fn delete_global_group(&self, name: &str) -> Result<(), StoreError>;
+
+    /// Find or create a container that is not scoped to an organization.
+    ///
+    /// Creating the `users` container seeds `::server-admins`
+    /// create/read/update/delete on it, matching the upstream bootstrap;
+    /// `organizations` gets no group grant.
+    async fn ensure_global_container(&self, name: &str) -> Result<GlobalContainer, StoreError>;
+    async fn find_global_container(
+        &self,
+        name: &str,
+    ) -> Result<Option<GlobalContainer>, StoreError>;
+    async fn list_global_containers(&self) -> Result<Vec<GlobalContainer>, StoreError>;
+    /// Remove every ACE that names `group_authz_id` on `target_authz_id`.
+    async fn revoke_group_acl(
+        &self,
+        target_authz_id: &str,
+        group_authz_id: &str,
+    ) -> Result<(), StoreError>;
 
     /// Count authorization entities that no organization, user, client,
     /// group, container, or stored object references.

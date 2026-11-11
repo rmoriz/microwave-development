@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use microwave_store::{
-    Acl, AclEntry, AuthzRepository, Container, Group, GroupMembers, Permission, StoreError,
+    Acl, AclEntry, AuthzRepository, Container, GlobalContainer, Group, GroupMembers, Permission,
+    StoreError,
 };
 use sqlx::postgres::Postgres;
 use sqlx::AssertSqlSafe;
@@ -22,6 +23,7 @@ const ORPHAN_AUTHZ_ENTITY_PREDICATE: &str = "\
     AND NOT EXISTS (SELECT 1 FROM containers WHERE containers.authz_id = authz_entities.authz_id)\
     AND NOT EXISTS (SELECT 1 FROM groups WHERE groups.authz_id = authz_entities.authz_id)\
     AND NOT EXISTS (SELECT 1 FROM global_groups WHERE global_groups.authz_id = authz_entities.authz_id)\
+    AND NOT EXISTS (SELECT 1 FROM global_containers WHERE global_containers.authz_id = authz_entities.authz_id)\
     AND NOT EXISTS (SELECT 1 FROM nodes WHERE nodes.authz_id = authz_entities.authz_id)\
     AND NOT EXISTS (SELECT 1 FROM roles WHERE roles.authz_id = authz_entities.authz_id)\
     AND NOT EXISTS (SELECT 1 FROM environments WHERE environments.authz_id = authz_entities.authz_id)\
@@ -1112,6 +1114,134 @@ impl AuthzRepository for PostgresStore {
         let mut transaction = self.pool().begin().await.map_err(db)?;
         delete_global_group_in_transaction(&mut transaction, name).await?;
         transaction.commit().await.map_err(db)?;
+        Ok(())
+    }
+
+    async fn ensure_global_container(&self, name: &str) -> Result<GlobalContainer, StoreError> {
+        if let Some(container) = self.find_global_container(name).await? {
+            return Ok(container);
+        }
+
+        // Resolve the group before opening the write transaction; both helpers
+        // take the pool themselves.
+        let server_admins = if name == "users" {
+            Some(self.ensure_global_group("server-admins").await?)
+        } else {
+            None
+        };
+
+        let id = new_id();
+        let authz_id = new_id();
+        let timestamp = now();
+        let mut transaction = self.pool().begin().await.map_err(db)?;
+        sqlx::query(
+            "INSERT INTO authz_entities (authz_id, entity_type, org_id, created_at)
+             VALUES ($1, 'container', NULL, $2)",
+        )
+        .bind(&authz_id)
+        .bind(&timestamp)
+        .execute(&mut *transaction)
+        .await
+        .map_err(db)?;
+        // Concurrent first-user/first-org startup can race here. One caller
+        // wins the unique name; the losers discard their authz entity and
+        // return the winner instead of surfacing a spurious conflict.
+        let inserted = sqlx::query(
+            "INSERT INTO global_containers (id, authz_id, name, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $4)
+             ON CONFLICT (name) DO NOTHING",
+        )
+        .bind(&id)
+        .bind(&authz_id)
+        .bind(name)
+        .bind(&timestamp)
+        .execute(&mut *transaction)
+        .await
+        .map_err(db)?;
+        if inserted.rows_affected() == 0 {
+            transaction.rollback().await.map_err(db)?;
+            return self.find_global_container(name).await?.ok_or_else(|| {
+                StoreError::Conflict(format!("container {name} was created concurrently"))
+            });
+        }
+        if let Some(server_admins) = &server_admins {
+            for permission in [
+                Permission::Create,
+                Permission::Read,
+                Permission::Update,
+                Permission::Delete,
+            ] {
+                sqlx::query(
+                    "INSERT INTO authz_acl_group (target_authz_id, permission, group_authz_id)
+                     VALUES ($1, $2, $3)",
+                )
+                .bind(&authz_id)
+                .bind(permission.as_str())
+                .bind(&server_admins.authz_id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(db)?;
+            }
+        }
+        transaction.commit().await.map_err(db)?;
+        Ok(GlobalContainer {
+            id,
+            authz_id,
+            name: name.into(),
+        })
+    }
+
+    async fn find_global_container(
+        &self,
+        name: &str,
+    ) -> Result<Option<GlobalContainer>, StoreError> {
+        let row = sqlx::query("SELECT id, authz_id, name FROM global_containers WHERE name = $1")
+            .bind(name)
+            .fetch_optional(self.pool())
+            .await
+            .map_err(db)?;
+        row.map(|row| {
+            Ok(GlobalContainer {
+                id: row.try_get(0)?,
+                authz_id: row.try_get(1)?,
+                name: row.try_get(2)?,
+            })
+        })
+        .transpose()
+        .map_err(db)
+    }
+
+    async fn list_global_containers(&self) -> Result<Vec<GlobalContainer>, StoreError> {
+        let rows = sqlx::query("SELECT id, authz_id, name FROM global_containers ORDER BY name")
+            .fetch_all(self.pool())
+            .await
+            .map_err(db)?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(GlobalContainer {
+                    id: row.try_get(0)?,
+                    authz_id: row.try_get(1)?,
+                    name: row.try_get(2)?,
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()
+            .map_err(db)
+    }
+
+    async fn revoke_group_acl(
+        &self,
+        target_authz_id: &str,
+        group_authz_id: &str,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            "DELETE FROM authz_acl_group
+             WHERE target_authz_id = $1 AND group_authz_id = $2",
+        )
+        .bind(target_authz_id)
+        .bind(group_authz_id)
+        .execute(self.pool())
+        .await
+        .map_err(db)?;
         Ok(())
     }
 

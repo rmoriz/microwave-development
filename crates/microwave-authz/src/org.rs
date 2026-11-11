@@ -80,6 +80,9 @@ where
     // Keep the global server-admins group available even on servers where the
     // superuser was created by an older bootstrap path.
     store.ensure_global_group("server-admins").await?;
+    // The global containers authorize user and organization creation.
+    store.ensure_global_container("users").await?;
+    store.ensure_global_container("organizations").await?;
 
     store.associate_user_org(&org.id, creator_user_id).await?;
 

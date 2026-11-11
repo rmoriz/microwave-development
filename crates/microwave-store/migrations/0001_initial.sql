@@ -289,6 +289,17 @@ CREATE TABLE IF NOT EXISTS global_groups (
     updated_at TEXT NOT NULL
 );
 
+-- Containers outside any organization. Upstream bootstraps the global
+-- `users` and `organizations` containers and authorizes account and
+-- organization creation through their ACLs.
+CREATE TABLE IF NOT EXISTS global_containers (
+    id TEXT PRIMARY KEY,
+    authz_id TEXT NOT NULL UNIQUE REFERENCES authz_entities(authz_id) ON DELETE CASCADE,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS nodes (
     id TEXT PRIMARY KEY,
     authz_id TEXT NOT NULL UNIQUE REFERENCES authz_entities(authz_id) ON DELETE CASCADE,
