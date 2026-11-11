@@ -2167,9 +2167,9 @@ summary = "A docker-e2e run can be pinned to a version with MW_IMAGE."
 area = "tooling"
 status = "verified"
 surfaces = [
-  { path = "docs/docker-e2e.md", needle = "MW_IMAGE=ghcr.io/rmoriz/microwave-server:0.6.0" },
+  { path = "docs/docker-e2e.md", needle = "MW_IMAGE=ghcr.io/rmoriz/microwave-server:0.6.1" },
 ]
-verify = { kind = "grep", path = "examples/docker-e2e/README.md", pattern = "MW_IMAGE=ghcr\\.io/rmoriz/microwave-server:0\\.6\\.0" }
+verify = { kind = "grep", path = "examples/docker-e2e/README.md", pattern = "MW_IMAGE=ghcr\\.io/rmoriz/microwave-server:0\\.6\\.1" }
 
 [[claim]]
 id = "docker-e2e-console-loopback"

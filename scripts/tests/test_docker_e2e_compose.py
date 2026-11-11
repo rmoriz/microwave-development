@@ -51,7 +51,7 @@ class ComposeTest(unittest.TestCase):
         self.assertEqual(str(service["build"]["args"]["RUST_VERSION"]), "1")
 
     def test_pinned_image_wins_in_both_modes(self):
-        pinned = "ghcr.io/rmoriz/microwave-server:0.6.0"
+        pinned = "ghcr.io/rmoriz/microwave-server:0.6.1"
         env = {**os.environ, "MW_IMAGE": pinned}
         self.assertEqual(self.base(env)["services"]["microwave"]["image"], pinned)
         self.assertEqual(self.overlay(env)["services"]["microwave"]["image"], pinned)
