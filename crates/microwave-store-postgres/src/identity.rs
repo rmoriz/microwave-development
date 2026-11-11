@@ -740,19 +740,22 @@ impl IdentityRepository for PostgresStore {
         name: &str,
         new_name: &str,
         validator: Option<bool>,
+        admin: Option<bool>,
     ) -> Result<Client, StoreError> {
         let timestamp = now();
         let result = sqlx::query(
             "UPDATE clients
              SET name = $3,
                  validator = COALESCE($4, validator),
-                 updated_at = $5
+                 admin = COALESCE($5, admin),
+                 updated_at = $6
              WHERE org_id = $1 AND name = $2",
         )
         .bind(org_id)
         .bind(name)
         .bind(new_name)
         .bind(validator)
+        .bind(admin)
         .bind(&timestamp)
         .execute(self.pool())
         .await

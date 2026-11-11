@@ -177,8 +177,9 @@ impl IdentityRepository for SqliteStore {
         name: &str,
         new_name: &str,
         validator: Option<bool>,
+        admin: Option<bool>,
     ) -> Result<Client, StoreError> {
-        self.update_client(org_id, name, new_name, validator)
+        self.update_client(org_id, name, new_name, validator, admin)
     }
 
     async fn find_client(&self, org_id: &str, name: &str) -> Result<Option<Client>, StoreError> {

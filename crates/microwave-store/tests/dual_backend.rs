@@ -635,7 +635,13 @@ mod suite {
 
         let renamed_client_name = unique("client-renamed");
         let renamed_client = store
-            .update_client(&org.id, &client_name, &renamed_client_name, Some(false))
+            .update_client(
+                &org.id,
+                &client_name,
+                &renamed_client_name,
+                Some(false),
+                None,
+            )
             .await
             .expect("rename client");
         assert_eq!(renamed_client.name, renamed_client_name);

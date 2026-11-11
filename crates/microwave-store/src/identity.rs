@@ -537,6 +537,7 @@ impl SqliteStore {
         name: &str,
         new_name: &str,
         validator: Option<bool>,
+        admin: Option<bool>,
     ) -> Result<Client, StoreError> {
         let now = now();
         let connection = self.connection();
@@ -545,9 +546,17 @@ impl SqliteStore {
                 "UPDATE clients
                  SET name = ?3,
                      validator = COALESCE(?4, validator),
-                     updated_at = ?5
+                     admin = COALESCE(?5, admin),
+                     updated_at = ?6
                  WHERE org_id = ?1 AND name = ?2",
-                params![org_id, name, new_name, validator.map(|v| v as i64), now],
+                params![
+                    org_id,
+                    name,
+                    new_name,
+                    validator.map(|v| v as i64),
+                    admin.map(|v| v as i64),
+                    now
+                ],
             )
             .map_err(|error| conflict(error, format!("client {new_name} already exists")))?;
         if changed == 0 {

@@ -137,6 +137,7 @@ pub trait IdentityRepository: Send + Sync {
         name: &str,
         new_name: &str,
         validator: Option<bool>,
+        admin: Option<bool>,
     ) -> Result<Client, StoreError>;
 
     async fn find_client(&self, org_id: &str, name: &str) -> Result<Option<Client>, StoreError>;

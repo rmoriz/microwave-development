@@ -128,6 +128,9 @@ async fn create_client(
             .await
             .map_err(ApiError::from)?;
     }
+    if admin {
+        set_admin_membership(&state, org, &client, true).await?;
+    }
 
     crate::search::index::index_client(&state, org, &client).await;
 
@@ -197,6 +200,7 @@ async fn update_client(
 
     let new_name = client_destination_name(&body, &client_name)?;
     let validator = optional_bool(&body, "validator")?;
+    let admin = optional_bool(&body, "admin")?;
     if body.get("create_key").is_some() {
         return Err(ApiError::bad_request("Field 'create_key' is invalid"));
     }
@@ -237,15 +241,18 @@ async fn update_client(
     }
 
     let renamed = new_name != client_name;
-    let client = if renamed || validator.is_some() {
+    let client = if renamed || validator.is_some() || admin.is_some() {
         state
             .store
-            .update_client(&org.id, &client_name, &new_name, validator)
+            .update_client(&org.id, &client_name, &new_name, validator, admin)
             .await
             .map_err(client_error)?
     } else {
         client
     };
+    if let Some(admin) = admin {
+        set_admin_membership(&state, org, &client, admin).await?;
+    }
 
     let mut private_key = None;
     if private_key_flag {
@@ -497,6 +504,64 @@ fn client_error(error: StoreError) -> ApiError {
     }
 }
 
+/// A client is an admin exactly when it sits in the org's `admins` group: the
+/// stored flag is only a mirror, so rows written before the flag was kept in
+/// sync still report the truth.
+async fn client_is_admin(state: &AppState, org: &Org, client: &Client) -> Result<bool, ApiError> {
+    let Some(group) = state
+        .store
+        .find_group(&org.id, "admins")
+        .await
+        .map_err(ApiError::from)?
+    else {
+        return Ok(client.admin);
+    };
+    let members = state
+        .store
+        .list_group_members(&org.id, &group.authz_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(members.clients.iter().any(|name| name == &client.name))
+}
+
+/// Adds or removes the client from the org's `admins` group to match `admin`.
+async fn set_admin_membership(
+    state: &AppState,
+    org: &Org,
+    client: &Client,
+    admin: bool,
+) -> Result<(), ApiError> {
+    let Some(group) = state
+        .store
+        .find_group(&org.id, "admins")
+        .await
+        .map_err(ApiError::from)?
+    else {
+        return Ok(());
+    };
+    let members = state
+        .store
+        .list_group_members(&org.id, &group.authz_id)
+        .await
+        .map_err(ApiError::from)?;
+    if members.clients.iter().any(|name| name == &client.name) == admin {
+        return Ok(());
+    }
+    if admin {
+        state
+            .store
+            .add_group_member(&group.authz_id, &client.authz_id)
+            .await
+            .map_err(ApiError::from)
+    } else {
+        state
+            .store
+            .remove_group_member(&group.authz_id, &client.authz_id)
+            .await
+            .map_err(ApiError::from)
+    }
+}
+
 async fn client_json(
     state: &AppState,
     org: &Org,
@@ -508,6 +573,7 @@ async fn client_json(
         "name": client.name,
         "clientname": client.name,
         "validator": client.validator,
+        "admin": client_is_admin(state, org, client).await?,
         "orgname": org.name,
         "json_class": "Chef::ApiClient",
         "chef_type": "client",

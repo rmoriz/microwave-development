@@ -79,6 +79,7 @@ async fn creates_a_client_and_reads_principals() {
     let client = support::response_json(response).await;
     assert_eq!(client["name"], "web1");
     assert_eq!(client["validator"], false);
+    assert_eq!(client["admin"], false);
 
     let response = app
         .clone()
@@ -812,4 +813,166 @@ async fn newly_created_validator_can_create_clients() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn reports_the_admin_flag_of_a_client() {
+    let state = support::state_with_pivotal();
+    let app = support::app(state.clone());
+    create_org(&app).await;
+
+    for (name, admin) in [("boss", true), ("node", false)] {
+        let body = format!(r#"{{"name":"{name}","validator":false,"admin":{admin}}}"#);
+        let response = app
+            .clone()
+            .oneshot(support::signed_request(
+                "POST",
+                "/organizations/acme/clients",
+                body.as_bytes(),
+                SignVersion::V1_3,
+                "pivotal",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED, "{name}");
+
+        let response = app
+            .clone()
+            .oneshot(support::signed_request(
+                "GET",
+                &format!("/organizations/acme/clients/{name}"),
+                b"",
+                SignVersion::V1_3,
+                "pivotal",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{name}");
+        let client = support::response_json(response).await;
+        assert_eq!(client["admin"], admin, "{name}");
+        assert_eq!(admins_group_members(&state, name), admin, "{name}");
+    }
+}
+
+fn admins_group_members(state: &microwave_api::AppState, name: &str) -> bool {
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
+    let admins = state
+        .sqlite()
+        .find_group(&org.id, "admins")
+        .unwrap()
+        .unwrap();
+    state
+        .sqlite()
+        .list_group_members(&org.id, &admins.authz_id)
+        .unwrap()
+        .clients
+        .contains(&name.to_string())
+}
+
+#[tokio::test]
+async fn updates_of_the_admin_flag_track_the_admins_group() {
+    let state = support::state_with_pivotal();
+    let app = support::app(state.clone());
+    create_org(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(support::signed_request(
+            "POST",
+            "/organizations/acme/clients",
+            br#"{"name":"worker","validator":false}"#,
+            SignVersion::V1_3,
+            "pivotal",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert!(!admins_group_members(&state, "worker"));
+
+    for admin in [true, false] {
+        let body = format!(r#"{{"name":"worker","admin":{admin}}}"#);
+        let response = app
+            .clone()
+            .oneshot(support::signed_request(
+                "PUT",
+                "/organizations/acme/clients/worker",
+                body.as_bytes(),
+                SignVersion::V1_3,
+                "pivotal",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let updated = support::response_json(response).await;
+        assert_eq!(updated["admin"], admin);
+        assert_eq!(admins_group_members(&state, "worker"), admin);
+
+        let response = app
+            .clone()
+            .oneshot(support::signed_request(
+                "GET",
+                "/organizations/acme/clients/worker",
+                b"",
+                SignVersion::V1_3,
+                "pivotal",
+            ))
+            .await
+            .unwrap();
+        let fetched = support::response_json(response).await;
+        assert_eq!(fetched["admin"], admin);
+    }
+}
+
+#[tokio::test]
+async fn the_admin_flag_follows_the_group_when_the_stored_flag_is_stale() {
+    let state = support::state_with_pivotal();
+    let app = support::app(state.clone());
+    create_org(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(support::signed_request(
+            "POST",
+            "/organizations/acme/clients",
+            br#"{"name":"legacy","validator":false}"#,
+            SignVersion::V1_3,
+            "pivotal",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    // Rows written before the flag was mirrored keep `admin = 0` while the
+    // group is authoritative.
+    let org = state.sqlite().find_org("acme").unwrap().unwrap();
+    let client = state
+        .sqlite()
+        .find_client(&org.id, "legacy")
+        .unwrap()
+        .unwrap();
+    let admins = state
+        .sqlite()
+        .find_group(&org.id, "admins")
+        .unwrap()
+        .unwrap();
+    state
+        .sqlite()
+        .add_group_member(&admins.authz_id, &client.authz_id)
+        .unwrap();
+    assert!(!client.admin);
+
+    let response = app
+        .clone()
+        .oneshot(support::signed_request(
+            "GET",
+            "/organizations/acme/clients/legacy",
+            b"",
+            SignVersion::V1_3,
+            "pivotal",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let fetched = support::response_json(response).await;
+    assert_eq!(fetched["admin"], true);
 }
