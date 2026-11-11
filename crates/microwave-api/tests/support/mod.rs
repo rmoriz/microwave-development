@@ -55,6 +55,9 @@ fn build_state(mut config: Config, keygen_enabled: bool) -> AppState {
     store
         .add_actor_key(&user.id, ActorType::User, "default", PUBLIC_KEY)
         .unwrap();
+    // Mirror the bootstrap's platform ACL graph; `create_user` seeds the
+    // `users` container, and organization creation needs its sibling.
+    store.ensure_global_container("organizations").unwrap();
     config
         .object_store
         .secret

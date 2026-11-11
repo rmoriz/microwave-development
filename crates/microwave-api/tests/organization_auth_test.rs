@@ -106,7 +106,14 @@ async fn organization_routes_enforce_authorization() {
     );
 
     let (status, _) = send(&app, "GET", "/organizations", b"", "bob").await;
-    assert_eq!(status, StatusCode::OK, "server-admins may list orgs");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "upstream grants server-admins nothing on the organizations container"
+    );
+
+    let (status, _) = send(&app, "GET", "/organizations", b"", "pivotal").await;
+    assert_eq!(status, StatusCode::OK, "the superuser may list orgs");
 
     let (status, _) = send(&app, "GET", "/organizations/acme", b"", "alice").await;
     assert_eq!(status, StatusCode::OK, "org members may read their org");
@@ -125,4 +132,14 @@ async fn organization_routes_enforce_authorization() {
         StatusCode::FORBIDDEN,
         "normal users must not create orgs"
     );
+    let (status, _) = send(&app, "POST", "/organizations", body, "bob").await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "server-admins must not create orgs"
+    );
+
+    let body = br#"{"name":"superorg","full_name":"Super Org"}"#;
+    let (status, _) = send(&app, "POST", "/organizations", body, "pivotal").await;
+    assert_eq!(status, StatusCode::CREATED, "the superuser may create orgs");
 }

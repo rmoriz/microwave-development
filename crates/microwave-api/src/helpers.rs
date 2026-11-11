@@ -144,40 +144,6 @@ pub async fn require_global_container_permission(
     require_permission(state, auth, &container.authz_id, permission).await
 }
 
-/// Whether the caller is the configured superuser or a member of the global
-/// `server-admins` group. Superseded by the container ACL checks; the only
-/// caller left is the organization listing, which Task 5 rewires.
-pub async fn is_server_admin(state: &AppState, auth: &AuthContext) -> Result<bool, ApiError> {
-    if auth.is_superuser {
-        return Ok(true);
-    }
-    if auth.principal.actor_type != microwave_store::ActorType::User {
-        return Ok(false);
-    }
-    if state
-        .store
-        .find_user_by_id(&auth.principal.actor_id)
-        .await
-        .map_err(ApiError::from)?
-        .is_some_and(|user| user.admin)
-    {
-        return Ok(true);
-    }
-    let Some(group) = state
-        .store
-        .find_global_group("server-admins")
-        .await
-        .map_err(ApiError::from)?
-    else {
-        return Ok(false);
-    };
-    state
-        .store
-        .user_in_group(&group.authz_id, &auth.principal.authz_id)
-        .await
-        .map_err(ApiError::from)
-}
-
 pub fn require_superuser(auth: &AuthContext) -> Result<(), ApiError> {
     if is_superuser(auth) {
         Ok(())

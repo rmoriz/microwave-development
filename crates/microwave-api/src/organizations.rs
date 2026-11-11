@@ -1,6 +1,6 @@
 use crate::chef_json::ChefJson;
 use crate::helpers::{
-    base_url, is_server_admin, location_headers, require_permission, require_superuser,
+    base_url, location_headers, require_global_container_permission, require_permission,
 };
 use crate::{ApiError, ApiVersion, AppState, AuthContext};
 use axum::extract::{Path, State};
@@ -25,9 +25,7 @@ async fn list_orgs(
     Extension(auth): Extension<AuthContext>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    if !is_server_admin(&state, &auth).await? {
-        return Err(ApiError::forbidden());
-    }
+    require_global_container_permission(&state, &auth, "organizations", Permission::Read).await?;
     let base = base_url(&headers, &state);
     let mut orgs = Map::new();
     for org in state.store.list_orgs().await.map_err(ApiError::from)? {
@@ -46,7 +44,7 @@ async fn create_org(
     headers: HeaderMap,
     ChefJson(body): ChefJson<Value>,
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), ApiError> {
-    require_superuser(&auth)?;
+    require_global_container_permission(&state, &auth, "organizations", Permission::Create).await?;
     let name = required_string(&body, "name")?;
     if !valid_org_name(&name) {
         return Err(ApiError::bad_request("Field 'name' is invalid"));
