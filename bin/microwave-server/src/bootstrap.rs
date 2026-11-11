@@ -79,6 +79,35 @@ pub async fn ensure_superuser(
         }
     }
 
+    ensure_platform_acl(store, &user).await?;
+
+    Ok(())
+}
+
+/// Reproduce the erchef bootstrap's platform ACL graph.
+///
+/// The global `users` and `organizations` containers exist, their creator (the
+/// configured superuser) holds every permission on them, and the superuser
+/// account itself is not manageable by the `server-admins` group — upstream
+/// creates it outside the object path, so it inherits no container ACEs.
+///
+/// Idempotent; runs on every start so upgraded installations converge. Only
+/// the `server-admins` group is revoked, never operator-made grants.
+async fn ensure_platform_acl(
+    store: &dyn MetadataStore,
+    superuser: &microwave_store::User,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let users = store.ensure_global_container("users").await?;
+    let organizations = store.ensure_global_container("organizations").await?;
+    for container in [&users, &organizations] {
+        store
+            .grant_actor_all(&container.authz_id, &superuser.authz_id)
+            .await?;
+    }
+    let server_admins = store.ensure_global_group("server-admins").await?;
+    store
+        .revoke_group_acl(&superuser.authz_id, &server_admins.authz_id)
+        .await?;
     Ok(())
 }
 
@@ -605,7 +634,90 @@ mod tests {
 #[cfg(test)]
 mod superuser_tests {
     use super::*;
-    use microwave_store::SqliteStore;
+    use microwave_store::{Permission, SqliteStore};
+
+    fn test_config(data_dir: &tempfile::TempDir, name: &str) -> Config {
+        let mut config = Config::default();
+        config.paths.data_dir = data_dir.path().to_string_lossy().into_owned();
+        config.auth.superuser_name = name.into();
+        config
+    }
+
+    #[tokio::test]
+    async fn ensure_superuser_seeds_platform_containers() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let config = test_config(&data_dir, "root");
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        ensure_superuser(&store, &config).await.unwrap();
+        let user = store.find_user("root").unwrap().unwrap();
+
+        let users = store
+            .find_global_container("users")
+            .unwrap()
+            .expect("users container");
+        let organizations = store
+            .find_global_container("organizations")
+            .unwrap()
+            .expect("organizations container");
+        for container in [&users, &organizations] {
+            let entries = store.get_acl_entries(&container.authz_id).unwrap();
+            for permission in Permission::ALL {
+                let entry = entries
+                    .iter()
+                    .find(|entry| entry.permission == permission)
+                    .unwrap_or_else(|| panic!("missing {permission:?} on {}", container.name));
+                assert!(
+                    entry.users.contains(&user.username),
+                    "superuser missing from {permission:?} on {}: {entry:?}",
+                    container.name
+                );
+            }
+        }
+
+        let entries = store.get_acl_entries(&user.authz_id).unwrap();
+        assert!(
+            entries
+                .iter()
+                .all(|entry| !entry.groups.contains(&"::server-admins".to_string())),
+            "the bootstrap superuser must not be manageable by server-admins: {entries:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_superuser_is_idempotent_and_keeps_operator_grants() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let config = test_config(&data_dir, "root");
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        ensure_superuser(&store, &config).await.unwrap();
+        let user = store.find_user("root").unwrap().unwrap();
+        let group = store.ensure_global_group("operator-probe").unwrap();
+        store
+            .set_acl(
+                &user.authz_id,
+                Permission::Read,
+                None,
+                Some(&group.authz_id),
+            )
+            .unwrap();
+
+        ensure_superuser(&store, &config).await.unwrap();
+
+        let entries = store.get_acl_entries(&user.authz_id).unwrap();
+        let read = entries
+            .iter()
+            .find(|entry| entry.permission == Permission::Read)
+            .unwrap();
+        assert!(
+            read.groups.contains(&"::operator-probe".to_string()),
+            "{read:?}"
+        );
+        assert!(
+            !read.groups.contains(&"::server-admins".to_string()),
+            "{read:?}"
+        );
+    }
 
     #[tokio::test]
     async fn creates_the_configured_superuser() {
