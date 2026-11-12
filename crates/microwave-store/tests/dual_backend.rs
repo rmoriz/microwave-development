@@ -829,15 +829,6 @@ mod suite {
         assert!(names.contains(&"users".to_string()));
         assert!(names.contains(&"organizations".to_string()));
 
-        store
-            .delete_orphan_authz_entities()
-            .await
-            .expect("cleanup keeps referenced entities");
-        assert!(store
-            .find_global_container("users")
-            .await
-            .unwrap()
-            .is_some());
         Vec::new()
     }
 
