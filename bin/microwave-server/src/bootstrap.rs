@@ -4,9 +4,10 @@ use microwave_crypto::{
     public_key_pem_from_private,
 };
 use microwave_store::{
-    ActorType, MetadataStore, StoreError, BOOKSHELF_ACCESS_KEY_ID, BOOKSHELF_SECRET_ACCESS_KEY,
-    BOOKSHELF_SECRET_GROUP, OBJECT_STORE_SECRET_GROUP, OBJECT_STORE_SECRET_NAME, OTEL_SECRET_GROUP,
-    OTEL_SECRET_NAME, WEBUI_PRIVATE_KEY_NAME, WEBUI_PUBLIC_KEY_NAME, WEBUI_SECRET_GROUP,
+    ActorType, MetadataStore, Permission, StoreError, BOOKSHELF_ACCESS_KEY_ID,
+    BOOKSHELF_SECRET_ACCESS_KEY, BOOKSHELF_SECRET_GROUP, OBJECT_STORE_SECRET_GROUP,
+    OBJECT_STORE_SECRET_NAME, OTEL_SECRET_GROUP, OTEL_SECRET_NAME, WEBUI_PRIVATE_KEY_NAME,
+    WEBUI_PUBLIC_KEY_NAME, WEBUI_SECRET_GROUP,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -105,6 +106,23 @@ async fn ensure_platform_acl(
             .await?;
     }
     let server_admins = store.ensure_global_group("server-admins").await?;
+    // Re-assert the group grants on every start: a container reconciled from
+    // an import or edited by an operator must converge to the bootstrap graph.
+    for permission in [
+        Permission::Create,
+        Permission::Read,
+        Permission::Update,
+        Permission::Delete,
+    ] {
+        store
+            .set_acl(
+                &users.authz_id,
+                permission,
+                None,
+                Some(&server_admins.authz_id),
+            )
+            .await?;
+    }
     store
         .revoke_group_acl(&superuser.authz_id, &server_admins.authz_id)
         .await?;
@@ -685,6 +703,39 @@ mod superuser_tests {
     }
 
     #[tokio::test]
+    async fn ensure_superuser_restores_the_users_container_grants() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let config = test_config(&data_dir, "root");
+        let store = SqliteStore::open_in_memory().unwrap();
+
+        ensure_superuser(&store, &config).await.unwrap();
+        let users = store.find_global_container("users").unwrap().unwrap();
+        let server_admins = store.ensure_global_group("server-admins").unwrap();
+        store
+            .revoke_group_acl(&users.authz_id, &server_admins.authz_id)
+            .unwrap();
+
+        ensure_superuser(&store, &config).await.unwrap();
+
+        let entries = store.get_acl_entries(&users.authz_id).unwrap();
+        for permission in [
+            Permission::Create,
+            Permission::Read,
+            Permission::Update,
+            Permission::Delete,
+        ] {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.permission == permission)
+                .unwrap();
+            assert!(
+                entry.groups.contains(&"::server-admins".to_string()),
+                "server-admins missing from {permission:?}: {entry:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn ensure_superuser_is_idempotent_and_keeps_operator_grants() {
         let data_dir = tempfile::tempdir().unwrap();
         let config = test_config(&data_dir, "root");
@@ -692,6 +743,7 @@ mod superuser_tests {
 
         ensure_superuser(&store, &config).await.unwrap();
         let user = store.find_user("root").unwrap().unwrap();
+        let entries_after_first_start = store.get_acl_entries(&user.authz_id).unwrap();
         let group = store.ensure_global_group("operator-probe").unwrap();
         store
             .set_acl(
@@ -705,6 +757,22 @@ mod superuser_tests {
         ensure_superuser(&store, &config).await.unwrap();
 
         let entries = store.get_acl_entries(&user.authz_id).unwrap();
+        // Re-running the bootstrap must not duplicate ACEs on the account.
+        let mut expected = entries_after_first_start.clone();
+        expected
+            .iter_mut()
+            .find(|entry| entry.permission == Permission::Read)
+            .unwrap()
+            .groups
+            .push("::operator-probe".to_string());
+        for entry in &mut expected {
+            entry.groups.sort();
+        }
+        let mut actual = entries.clone();
+        for entry in &mut actual {
+            entry.groups.sort();
+        }
+        assert_eq!(actual, expected, "re-seeding must not add ACE rows");
         let read = entries
             .iter()
             .find(|entry| entry.permission == Permission::Read)
