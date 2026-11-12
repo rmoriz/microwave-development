@@ -546,7 +546,7 @@ fn reconcile_global_groups(data: &mut StoreSnapshot, existing: &[(String, String
 }
 
 /// Flatten a store's global containers into `(name, authz_id)` pairs.
-fn existing_global_containers(
+pub(crate) fn existing_global_containers(
     containers: Vec<microwave_store::GlobalContainer>,
 ) -> Vec<(String, String)> {
     containers
@@ -562,6 +562,16 @@ fn existing_global_containers(
 /// and rewriting the ACL targets keeps the import from failing on the unique
 /// name while preserving any ACEs the snapshot carried.
 fn reconcile_global_containers(data: &mut StoreSnapshot, existing: &[(String, String)]) {
+    reconcile_global_containers_in_snapshot(data, existing);
+}
+
+/// Rewrite a snapshot's global containers so a target that already bootstrapped
+/// keeps its own rows. Returns the authz-id replacements so callers with extra
+/// references (the knife plan's ACL targets) can rewrite them too.
+pub(crate) fn reconcile_global_containers_in_snapshot(
+    data: &mut StoreSnapshot,
+    existing: &[(String, String)],
+) -> HashMap<String, String> {
     let mut replacements: HashMap<String, String> = HashMap::new();
     for planned in &data.global_containers {
         if let Some((_, existing_authz)) = existing.iter().find(|(name, _)| name == &planned.name) {
@@ -574,7 +584,7 @@ fn reconcile_global_containers(data: &mut StoreSnapshot, existing: &[(String, St
     data.global_containers
         .retain(|container| !existing_names.contains(container.name.as_str()));
     if replacements.is_empty() {
-        return;
+        return replacements;
     }
     data.authz_entities
         .retain(|entity| !replacements.contains_key(&entity.authz_id));
@@ -588,6 +598,7 @@ fn reconcile_global_containers(data: &mut StoreSnapshot, existing: &[(String, St
             row.target_authz_id = replacement.clone();
         }
     }
+    replacements
 }
 
 /// Reject a malformed or non-PostgreSQL database URL without echoing it.

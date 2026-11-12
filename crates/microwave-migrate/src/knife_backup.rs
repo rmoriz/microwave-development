@@ -367,11 +367,7 @@ pub fn apply_knife_backup_plan_sqlite_with_options(
             existing_default_keys.insert(user.id.clone());
         }
     }
-    let existing_containers: Vec<(String, String)> = store
-        .list_global_containers()?
-        .into_iter()
-        .map(|container| (container.name, container.authz_id))
-        .collect();
+    let existing_containers = crate::existing_global_containers(store.list_global_containers()?);
     let plan = reconcile_global_groups(plan, &existing_groups);
     let plan = reconcile_global_containers(&plan, &existing_containers);
     let (plan, merged_admins) =
@@ -457,11 +453,8 @@ pub fn apply_knife_backup_plan_postgres_with_options(
             existing_default_keys.insert(user.id.clone());
         }
     }
-    let existing_containers: Vec<(String, String)> = runtime
-        .block_on(store.list_global_containers())?
-        .into_iter()
-        .map(|container| (container.name, container.authz_id))
-        .collect();
+    let existing_containers =
+        crate::existing_global_containers(runtime.block_on(store.list_global_containers())?);
     let plan = reconcile_global_groups(plan, &existing_groups);
     let plan = reconcile_global_containers(&plan, &existing_containers);
     let (plan, merged_admins) =
@@ -575,54 +568,19 @@ fn reconcile_global_groups(
 
 /// Reuse global containers that already exist under the same name.
 ///
-/// A bootstrapped target always has `users` and `organizations`, while the
-/// plan synthesizes its own rows for them. Rewriting the plan's authz ids to
-/// the existing ones keeps the import mergeable instead of failing on the
-/// unique name constraint.
+/// The snapshot-level rewrite is shared with the migrate entry points; the
+/// knife plan additionally tracks ACL targets for `--replace-acls`.
 fn reconcile_global_containers(
     plan: &KnifeBackupPlan,
     existing: &[(String, String)],
 ) -> KnifeBackupPlan {
     let mut snapshot = plan.snapshot.clone();
-    let mut replacements: HashMap<String, String> = HashMap::new();
-    for planned in &snapshot.global_containers {
-        if let Some((_, existing_authz)) = existing.iter().find(|(name, _)| name == &planned.name) {
-            if existing_authz != &planned.authz_id {
-                replacements.insert(planned.authz_id.clone(), existing_authz.clone());
-            }
-        }
-    }
-    let existing_names: HashSet<&str> = existing.iter().map(|(name, _)| name.as_str()).collect();
-    snapshot
-        .global_containers
-        .retain(|container| !existing_names.contains(container.name.as_str()));
+    let replacements = crate::reconcile_global_containers_in_snapshot(&mut snapshot, existing);
     let mut acl_targets = plan.acl_targets.clone();
-    if replacements.is_empty() {
-        return KnifeBackupPlan {
-            snapshot,
-            blobs: plan.blobs.clone(),
-            summary: plan.summary.clone(),
-            acl_targets,
-            group_authz_ids: plan.group_authz_ids.clone(),
-        };
-    }
-
-    let rewrite = |value: &mut String| {
-        if let Some(replacement) = replacements.get(value) {
-            *value = replacement.clone();
-        }
-    };
     for target in &mut acl_targets {
-        rewrite(target);
-    }
-    snapshot
-        .authz_entities
-        .retain(|entity| !replacements.contains_key(&entity.authz_id));
-    for row in &mut snapshot.authz_acl_actor {
-        rewrite(&mut row.target_authz_id);
-    }
-    for row in &mut snapshot.authz_acl_group {
-        rewrite(&mut row.target_authz_id);
+        if let Some(replacement) = replacements.get(target) {
+            *target = replacement.clone();
+        }
     }
 
     KnifeBackupPlan {
