@@ -38,8 +38,9 @@ contains one async suite for every repository domain and runs it against both
 backends through `MetadataStore`:
 
 - identity: orgs, users (profiles/patches), clients, actor keys, principals
-- authorization: groups/containers, nested and global groups, ACL replacement,
-  recursive permission checks, org read-access ACEs
+- authorization: groups/containers, nested and global groups, the global
+  `users`/`organizations` containers, ACL replacement, recursive permission
+  checks, org read-access ACEs
 - objects: nodes, roles, environments, data bags and bag items
 - cookbooks: sandboxes, checksum commit/purge, version create/find/update/delete
 - policies: revisions, policy groups, associations

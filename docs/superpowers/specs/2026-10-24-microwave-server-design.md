@@ -263,7 +263,7 @@ Instead of separate `opscode_chef`, `bifrost`, `bookshelf`, and `oc_id` database
 Replaces `oc_bifrost` and `oc_chef_authz` in-process:
 
 - **Permissions:** `create`, `read`, `update`, `delete`, `grant`.
-- **Superuser (`pivotal`):** Configured platform superuser bypasses ACL checks (except where explicitly forbidden, such as `/authenticate_user` and `/system_recovery` refusing to authenticate as superuser).
+- **Superuser (`pivotal`):** Configured platform superuser bypasses ACL checks (except where explicitly forbidden, such as `/authenticate_user` and `/system_recovery` refusing to authenticate as superuser). The global `server-admins` group is the separate platform-administrator grant: its members hold create/read/update/delete on the global `users` container, which authorizes user management through the same ACL checks, and the superuser account itself carries no ACEs for that group.
 - **Transitive Group Resolution:**
   Checked via standard recursive CTE supported identically by SQLite and PostgreSQL:
   ```sql

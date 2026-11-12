@@ -1937,9 +1937,10 @@ PostgreSQL database without `--bookshelf-dir` fails with that instruction
 rather than silently omitting blobs.
 
 Import into a fresh database when possible. The same unique-name rule applies
-on both backends: importing a `server-admins` or other global group with a
-different id into a database that already has that name fails rather than
-rewriting live ACL references.
+on both backends: importing a `server-admins` or other global group, or the
+global `users`/`organizations` containers, with a different id into a database
+that already has that name fails rather than rewriting live ACL references. The
+Chef API and goiardi importers reuse the target's containers by name instead.
 
 Still not included unless explicitly requested: private key files are excluded
 by default and included with `--include-private-keys`; remote object-store
@@ -2528,8 +2529,13 @@ curl -fsS 'http://127.0.0.1:8000/_stats?format=prometheus'
 `microwave-ctl` and the `chef-server-ctl` compatibility alias share one
 dispatch, so every command below is available through both names. Server
 administration uses `grant-server-admin-permissions`,
-`remove-server-admin-permissions`, and `list-server-admins`. The `service`
-commands are `service start|stop|restart|status|tail`.
+`remove-server-admin-permissions`, and `list-server-admins`. These write the
+global `server-admins` group; the `users.admin` flag mirrors it. Members may
+list, read, create, update, and delete user accounts through the signed API,
+including accounts in organizations they do not belong to, but not the
+configured superuser account itself. The group holds no grant on the global
+`organizations` container, so members cannot list or create organizations.
+The `service` commands are `service start|stop|restart|status|tail`.
 
 ```sh
 microwave-ctl --config /etc/microwave/microwave.toml status

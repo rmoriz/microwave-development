@@ -270,7 +270,7 @@ This document tracks the end-to-end engineering checklist for reimplementing the
 - [x] Implement the remaining useful `chef-server-ctl` commands: `user-edit` (editor or `--input` JSON, password hashing, superuser protection), `cleanup-bifrost` (orphan `authz_entities` count/delete on SQLite and PostgreSQL), `filtered-dump` (redacted org/node/environment/role/data-bag/client dumps), `gather-logs` (redacted tar.gz with journald and system data), `oc-id-show-app`, `rotate-credentials`, `rotate-all-credentials`, and `rotate-shared-secrets`. `cleanup` remains intentionally unimplemented: upstream it is an Omnibus post-upgrade chef run, like `reconfigure`.
   - [x] Install `chef-server-ctl` as a compatibility alias to `microwave-ctl`.
   - [x] Org & User commands: `user-list`, `user-show`, `user-create`, `user-delete`, `org-list`, `org-show`, `org-create`, `org-delete`, `org-user-add`, `org-user-remove`, `password`.
-  - [x] Server Admin commands: `grant-server-admin-permissions`, `remove-server-admin-permissions`, `list-server-admins`.
+  - [x] Server Admin commands: `grant-server-admin-permissions`, `remove-server-admin-permissions`, `list-server-admins`, including the global `users`/`organizations` containers and the server-admin user-management grants they authorize.
   - [x] Key Rotation commands: `add-client-key`, `add-user-key`, `list-client-keys`, `list-user-keys`, `delete-client-key`, `delete-user-key`.
   - [x] Search & Maintenance commands: `reindex` (embedded count verification and remote backfill) and `maintenance`.
   - [x] Secrets & Config commands: `show-secret`, `set-secret`, `remove-secret`, `check-config`, and `reconfigure`.
