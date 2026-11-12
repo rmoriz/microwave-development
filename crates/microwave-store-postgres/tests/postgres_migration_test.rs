@@ -66,6 +66,10 @@ async fn snapshot_round_trips_every_seeded_collection() {
         .create_group_for_org_with_acl(&org.id, "admins", &creator)
         .await
         .unwrap();
+    store
+        .ensure_global_container("users")
+        .await
+        .expect("create global users container");
     let user = store
         .create_user(
             &format!("snapshot-user-{suffix}"),
@@ -271,6 +275,13 @@ async fn snapshot_round_trips_every_seeded_collection() {
         .iter()
         .any(|row| row.property == format!("snapshot-{suffix}")));
     assert!(before.orgs.iter().any(|row| row.name == org_name));
+    assert!(
+        before
+            .global_containers
+            .iter()
+            .any(|row| row.name == "users"),
+        "the snapshot must carry the global containers"
+    );
     let exported_node = before
         .nodes
         .iter()

@@ -96,6 +96,10 @@ async fn cleanup_bifrost_removes_only_unreferenced_entities() {
         .create_container_for_org(&org.id, "nodes")
         .await
         .expect("create nodes container");
+    let global_users = store
+        .ensure_global_container("users")
+        .await
+        .expect("create global users container");
     let node = store
         .create_node(
             &org.id,
@@ -179,6 +183,18 @@ async fn cleanup_bifrost_removes_only_unreferenced_entities() {
         .await
         .unwrap()
         .is_some());
+    assert!(
+        store
+            .find_global_container("users")
+            .await
+            .unwrap()
+            .is_some(),
+        "a global container must survive cleanup"
+    );
+    assert!(
+        store.get_acl_entries(&global_users.authz_id).await.is_ok(),
+        "a global container's authz entity must survive cleanup"
+    );
 
     // A second run is idempotent in the isolated schema.
     assert_eq!(store.delete_orphan_authz_entities().await.unwrap(), 0);

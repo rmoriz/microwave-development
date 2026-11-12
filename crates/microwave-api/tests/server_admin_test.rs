@@ -40,7 +40,11 @@ fn revoke_superuser_server_admin_aces(state: &microwave_api::AppState) {
 async fn server_admin_can_manage_users() {
     let state = support::state_with_pivotal();
     support::add_user(&state, "bob", "bob@example.com", true);
-    support::add_user(&state, "carol", "carol@example.com", false);
+    let carol = support::add_user(&state, "carol", "carol@example.com", false);
+    // Bob is not a member of this organization; the `users` container still
+    // authorizes managing Carol, as upstream's ctl help text promises.
+    let org = support::add_org(&state, "acme").await;
+    support::associate(&state, &org, &carol);
     let app = support::app(state);
 
     assert_eq!(
@@ -280,5 +284,10 @@ async fn server_admin_can_grant_on_a_user_it_created() {
         )
         .await,
         StatusCode::OK
+    );
+    assert_eq!(
+        send(&app, "GET", "/users/dave/_acl", b"", "bob").await,
+        StatusCode::OK,
+        "the creator holds grant, so it may also read the ACL"
     );
 }
