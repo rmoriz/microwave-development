@@ -694,6 +694,26 @@ async fn authenticate_path(
         );
     }
 
+    // A rotation sentinel disables the API until the operator rotates the
+    // shared secrets. Like maintenance mode, it runs before authentication so
+    // an unauthenticated request cannot mutate the store, and health stays
+    // reachable. `.exists()` is false on a permission or I/O error, which
+    // keeps a broken data directory from taking down every request.
+    if !is_maintenance_exempt(path) {
+        let marker = std::path::Path::new(&state.config.paths.data_dir)
+            .join(microwave_config::CREDENTIAL_ROTATION_MARKER);
+        if marker.exists() {
+            return with_version_header(
+                ApiError::service_unavailable(
+                    "Server credentials must be rotated. Run 'microwave-ctl rotate-shared-secrets'.",
+                )
+                .into_response(),
+                &requested_version.to_string(),
+                &requested_version.to_string(),
+            );
+        }
+    }
+
     // Maintenance mode rejects normal API traffic before authentication runs,
     // so an unauthenticated request during a drain cannot mutate the store.
     // Health checks stay reachable.

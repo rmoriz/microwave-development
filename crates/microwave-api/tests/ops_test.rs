@@ -306,3 +306,36 @@ async fn stats_json_reports_the_otel_state() {
     assert!(body["keygen"]["capacity"].is_number());
     assert!(body["upstreams"]["database"].is_string());
 }
+
+#[tokio::test]
+async fn credential_rotation_marker_disables_api_traffic() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let mut config = microwave_config::Config::default();
+    config.paths.data_dir = data_dir.path().to_string_lossy().into_owned();
+    let app = support::app(support::state_with_config(config));
+
+    let marker = data_dir
+        .path()
+        .join(microwave_config::CREDENTIAL_ROTATION_MARKER);
+    std::fs::write(&marker, b"credential rotation required\n").unwrap();
+
+    let response = get(&app, "/server_api_version").await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(response.headers().get("x-ops-server-api-version").is_some());
+    let body = support::response_json(response).await;
+    assert!(
+        body["error"][0]
+            .as_str()
+            .unwrap()
+            .contains("rotate-shared-secrets"),
+        "{body}"
+    );
+
+    // Health stays reachable while rotation is required.
+    let response = get(&app, "/_status").await;
+    assert_ne!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    std::fs::remove_file(&marker).unwrap();
+    let response = get(&app, "/server_api_version").await;
+    assert_eq!(response.status(), StatusCode::OK);
+}

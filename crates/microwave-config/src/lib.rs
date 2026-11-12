@@ -11,6 +11,6 @@ pub use config::{
     McpConfig, McpOrgConfig, ObjectStoreBackend, ObjectStoreConfig, ObjectStoreOrgConfig,
     OrgCredentials, OrgQuotas, OtelConfig, PathsConfig, QuotasConfig, RequiredRecipeConfig,
     SearchBackend, SearchConfig, ServerConfig, StorageCompression, StorageConfig, TelemetryConfig,
-    TlsConfig,
+    TlsConfig, CREDENTIAL_ROTATION_MARKER,
 };
 pub use tenant_map::{tenant_issues, TenantIssue};

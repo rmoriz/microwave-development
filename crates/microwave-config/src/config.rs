@@ -954,6 +954,10 @@ impl TlsConfig {
     }
 }
 
+/// File name of the sentinel that disables the server until the shared
+/// secrets have been rotated. Lives in `paths.data_dir`.
+pub const CREDENTIAL_ROTATION_MARKER: &str = "credential_rotation_required";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct PathsConfig {
