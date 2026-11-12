@@ -194,3 +194,28 @@ fn create_user_copies_custom_container_aces() {
         .expect("read ACE");
     assert!(read.users.contains(&"reader".to_string()), "{read:?}");
 }
+
+#[test]
+fn cleanup_keeps_global_container_entities() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    let users = store.ensure_global_container("users").unwrap();
+    let orphan = store.create_actor().unwrap();
+
+    store.delete_orphan_authz_entities().unwrap();
+
+    assert!(
+        store.find_global_container("users").unwrap().is_some(),
+        "a referenced global container must survive cleanup"
+    );
+    assert!(
+        store.get_acl_entries(&users.authz_id).is_ok(),
+        "the container's authz entity must survive cleanup"
+    );
+    assert!(
+        matches!(
+            store.get_acl_entries(&orphan),
+            Err(microwave_store::StoreError::NotFound(_))
+        ),
+        "the unreferenced actor must be removed"
+    );
+}
