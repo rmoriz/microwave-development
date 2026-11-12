@@ -20,8 +20,8 @@ pub struct Group {
 ///
 /// Upstream keeps the global `users` and `organizations` containers in
 /// `containers` under the placeholder global org id, and authorizes account
-/// and organization creation through their ACLs. ACL responses render them
-/// without an organization prefix, like global groups.
+/// and organization creation through their ACLs. They are internal: no API
+/// route reads or edits their ACL today.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlobalContainer {
     pub id: String,

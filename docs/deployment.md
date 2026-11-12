@@ -1937,10 +1937,11 @@ PostgreSQL database without `--bookshelf-dir` fails with that instruction
 rather than silently omitting blobs.
 
 Import into a fresh database when possible. The same unique-name rule applies
-on both backends: importing a `server-admins` or other global group, or the
-global `users`/`organizations` containers, with a different id into a database
-that already has that name fails rather than rewriting live ACL references. The
-Chef API and goiardi importers reuse the target's containers by name instead.
+on both backends: a bare `import_snapshot` that carries a `server-admins` or
+other global group, or the global `users`/`organizations` containers, with a
+different id into a database that already has that name fails rather than
+rewriting live ACL references. `microwave-migrate import`, the Chef API and the
+goiardi importers reuse the target's rows by name instead.
 
 Still not included unless explicitly requested: private key files are excluded
 by default and included with `--include-private-keys`; remote object-store
