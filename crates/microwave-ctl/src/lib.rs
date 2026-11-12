@@ -145,6 +145,18 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
 
     let context = context::Context::load(cli.config.as_deref())?;
 
+    // The rotation sentinel disables every store-touching command. The
+    // configuration-free commands above already returned; keep them usable on
+    // a broken install.
+    if !matches!(cli.command, Command::RotateSharedSecrets)
+        && commands::credential_rotation_marker(&context).is_file()
+    {
+        return Err(CtlError::message(
+            "Server credentials must be rotated before running this command. \
+             Run 'microwave-ctl rotate-shared-secrets' first.",
+        ));
+    }
+
     match cli.command {
         Command::Version => unreachable!("version was handled above"),
         Command::Pedant { .. } => unreachable!("pedant was handled above"),

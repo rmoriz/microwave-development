@@ -829,7 +829,9 @@ pub fn show_service_credentials(context: &Context) -> Result<(), CtlError> {
 /// The sentinel file that marks the installation as disabled until credential
 /// rotation.
 pub(crate) fn credential_rotation_marker(context: &Context) -> PathBuf {
-    context.data_dir.join("credential_rotation_required")
+    context
+        .data_dir
+        .join(microwave_config::CREDENTIAL_ROTATION_MARKER)
 }
 
 /// Write the credential-rotation sentinel without stopping systemd.

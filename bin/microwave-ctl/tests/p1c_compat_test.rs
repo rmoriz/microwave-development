@@ -283,10 +283,31 @@ fn require_credential_rotation_writes_and_rotate_shared_secrets_clears_the_marke
     assert!(text.contains("rotate-shared-secrets"));
     assert!(marker.is_file());
 
+    let blocked = run(
+        dir.path(),
+        &["user-create", "bob", "--password", "bob-password"],
+    );
+    assert!(!blocked.status.success());
+    assert!(
+        stderr(&blocked).contains("rotate-shared-secrets"),
+        "{}",
+        stderr(&blocked)
+    );
+
+    // Configuration-free commands still run on a disabled install.
+    let version = run(dir.path(), &["version"]);
+    assert_success(&version);
+
     let rotated = run(dir.path(), &["rotate-shared-secrets"]);
     assert_success(&rotated);
     assert!(stdout(&rotated).contains("Cleared credential rotation requirement."));
     assert!(!marker.exists());
+
+    let allowed = run(
+        dir.path(),
+        &["user-create", "bob", "--password", "bob-password"],
+    );
+    assert_success(&allowed);
 }
 
 #[test]
