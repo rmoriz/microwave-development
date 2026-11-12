@@ -89,6 +89,11 @@ async fn create_user(
         .as_object()
         .ok_or_else(|| ApiError::bad_request("request body must be a JSON object"))?;
 
+    // Server-admin membership is managed through the CLI/import path, never
+    // by an API caller; upstream has no `admin` field on user creation.
+    if body.contains_key("admin") {
+        require_superuser(&auth)?;
+    }
     let username = username_from_body(body)?;
     validate_username(&username)?;
     let display_name = required_string(body, "display_name")?.to_string();
@@ -215,7 +220,11 @@ async fn get_user(
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::not_found(format!("user {username}")))?;
 
-    require_permission(&state, &auth, &user.authz_id, Permission::Read).await?;
+    if is_configured_superuser(&state, &user.username) {
+        require_superuser(&auth)?;
+    } else {
+        require_permission(&state, &auth, &user.authz_id, Permission::Read).await?;
+    }
     Ok(Json(user_json(&state, &user, api_version).await?))
 }
 
@@ -239,7 +248,8 @@ async fn update_user(
         .ok_or_else(|| ApiError::bad_request("request body must be a JSON object"))?;
     // Upstream only allows the superuser to touch these fields; everything
     // else is an ordinary update on the target user's ACL.
-    let sensitive = body.contains_key("external_authentication_uid")
+    let sensitive = body.contains_key("admin")
+        || body.contains_key("external_authentication_uid")
         || body.contains_key("recovery_authentication_enabled");
     if sensitive || is_configured_superuser(&state, &current.username) {
         require_superuser(&auth)?;

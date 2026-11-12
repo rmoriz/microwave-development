@@ -136,18 +136,19 @@ async fn server_admin_cannot_manage_the_superuser() {
     );
 
     // Defence in depth: even a drifted ACL that names server-admins must not
-    // let a server-admin update the configured superuser.
+    // let a server-admin read or update the configured superuser.
     let pivotal = state.sqlite().find_user("pivotal").unwrap().unwrap();
     let group = state.sqlite().ensure_global_group("server-admins").unwrap();
-    state
-        .sqlite()
-        .set_acl(
-            &pivotal.authz_id,
-            Permission::Update,
-            None,
-            Some(&group.authz_id),
-        )
-        .unwrap();
+    for permission in [Permission::Read, Permission::Update] {
+        state
+            .sqlite()
+            .set_acl(&pivotal.authz_id, permission, None, Some(&group.authz_id))
+            .unwrap();
+    }
+    assert_eq!(
+        send(&app, "GET", "/users/pivotal", b"", "bob").await,
+        StatusCode::FORBIDDEN
+    );
     assert_eq!(
         send(
             &app,
@@ -158,6 +159,70 @@ async fn server_admin_cannot_manage_the_superuser() {
         )
         .await,
         StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn admin_flag_is_superuser_only() {
+    let state = support::state_with_pivotal();
+    support::add_user(&state, "bob", "bob@example.com", true);
+    support::add_user(&state, "eve", "eve@example.com", false);
+    support::add_user(&state, "carol", "carol@example.com", false);
+    let app = support::app(state);
+
+    // A normal user cannot promote themselves to server-admin.
+    assert_eq!(
+        send(
+            &app,
+            "PUT",
+            "/users/eve",
+            br#"{"name":"eve","display_name":"Eve","email":"eve@example.com","admin":true}"#,
+            "eve"
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(&app, "GET", "/users", b"", "eve").await,
+        StatusCode::FORBIDDEN,
+        "the failed promotion must not grant the users container"
+    );
+
+    // A server-admin cannot mint another server-admin or promote an account.
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            "/users",
+            br#"{"name":"dave","email":"dave@example.com","display_name":"Dave","password":"secret1","admin":true}"#,
+            "bob"
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(
+            &app,
+            "PUT",
+            "/users/carol",
+            br#"{"name":"carol","display_name":"Carol","email":"carol@example.com","admin":true}"#,
+            "bob"
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+
+    // The superuser may still set it.
+    assert_eq!(
+        send(
+            &app,
+            "PUT",
+            "/users/eve",
+            br#"{"name":"eve","display_name":"Eve","email":"eve@example.com","admin":true}"#,
+            "pivotal"
+        )
+        .await,
+        StatusCode::OK
     );
 }
 
