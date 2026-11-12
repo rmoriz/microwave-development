@@ -10,6 +10,17 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-12-state-machine-gaps-design.md`
 
+**Status:** implemented on `main` after `v0.6.2` (commits `debf3a7`…`ce80639`).
+Verified 2026-11-13 with `cargo test -p microwave-api --test ops_test
+credential_rotation_marker`, `cargo test -p microwave-api --test oauth_test`,
+`cargo test -p microwave-store --test dual_backend oauth_atomicity` (SQLite and
+PostgreSQL both pass), `cargo test -p microwave-ctl-bin --test p1c_compat_test
+require_credential_rotation`, and `python3 scripts/check-claims.py` (exit 0).
+Three follow-ups landed beyond the steps below: `edb4f05` keeps the read-only
+and process commands usable while the marker exists, `b789e0b` covers expired
+codes and the wrong-client no-burn path, `ce80639` completes the documented
+command list.
+
 ## Global Constraints
 
 - Every store change lands in both `crates/microwave-store` (SQLite) and `crates/microwave-store-postgres`.
@@ -41,7 +52,7 @@
 - Produces: `microwave_config::CREDENTIAL_ROTATION_MARKER: &str = "credential_rotation_required"`, re-exported from the crate root.
 - Produces: middleware order rotation → maintenance → landing/auth.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `ops_test.rs` (it already has `get`, `support::response_json`, and `Config` via `support`):
 
@@ -87,12 +98,12 @@ async fn credential_rotation_marker_disables_api_traffic() {
 `tempfile` is already a dev-dependency. The test mirrors
 `maintenance_mode_returns_503_without_authentication` in the same file.
 
-- [ ] **Step 2: Run it and verify it fails**
+- [x] **Step 2: Run it and verify it fails**
 
 Run: `cargo test -p microwave-api --test ops_test credential_rotation_marker`
 Expected: compile error (`microwave_config::CREDENTIAL_ROTATION_MARKER` missing).
 
-- [ ] **Step 3: Add the constant and the middleware gate**
+- [x] **Step 3: Add the constant and the middleware gate**
 
 In `crates/microwave-config/src/config.rs`, above `PathsConfig`:
 
@@ -129,12 +140,12 @@ In `middleware.rs`, immediately before the maintenance block:
     }
 ```
 
-- [ ] **Step 4: Run the test**
+- [x] **Step 4: Run the test**
 
 Run: `cargo test -p microwave-api --test ops_test`
 Expected: PASS, including the existing maintenance tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/microwave-config crates/microwave-api
@@ -155,7 +166,7 @@ git commit -m "feat(api): refuse traffic while credential rotation is required"
 - Consumes: `microwave_config::CREDENTIAL_ROTATION_MARKER`.
 - Produces: every command except `RotateSharedSecrets` fails while the marker exists; `Version`, `Pedant` and `Service` still run because they return before the context is loaded.
 
-- [ ] **Step 1: Extend the failing test**
+- [x] **Step 1: Extend the failing test**
 
 In `require_credential_rotation_writes_and_rotate_shared_secrets_clears_the_marker`, between writing the marker and rotating, add:
 
@@ -176,12 +187,12 @@ and after the rotation:
     assert_success(&allowed);
 ```
 
-- [ ] **Step 2: Run it and verify it fails**
+- [x] **Step 2: Run it and verify it fails**
 
 Run: `cargo test -p microwave-ctl-bin --test p1c_compat_test require_credential_rotation`
 Expected: FAIL — `user-create` succeeds while the marker exists.
 
-- [ ] **Step 3: Implement the gate**
+- [x] **Step 3: Implement the gate**
 
 `commands.rs`: replace the literal in `credential_rotation_marker` with
 `context.data_dir.join(microwave_config::CREDENTIAL_ROTATION_MARKER)`.
@@ -206,12 +217,12 @@ Expected: FAIL — `user-create` succeeds while the marker exists.
 answers every non-health request with `503` and the CLI refuses commands until
 `rotate-shared-secrets` clears the marker; it still does not stop systemd.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test -p microwave-ctl-bin --test p1c_compat_test`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/microwave-ctl bin/microwave-ctl
@@ -234,7 +245,7 @@ git commit -m "feat(ctl): block commands until credentials are rotated"
 - Produces: `OAuthRepository::rotate_oauth_access_token(&self, refresh_token: &str, expires_in: Option<i64>) -> Result<Option<OAuthAccessToken>, StoreError>`
 - Both return `None` when the row is missing or already revoked/consumed.
 
-- [ ] **Step 1: Write the failing concurrency test**
+- [x] **Step 1: Write the failing concurrency test**
 
 Add to `dual_backend.rs` in `mod suite` and to both `matrix!` lists:
 
@@ -311,12 +322,12 @@ pub async fn oauth_atomicity(store: &Arc<dyn MetadataStore>) -> Vec<String> {
 }
 ```
 
-- [ ] **Step 2: Run it and verify it fails**
+- [x] **Step 2: Run it and verify it fails**
 
 Run: `cargo test -p microwave-store --test dual_backend oauth_atomicity`
 Expected: compile error, no `consume_oauth_access_grant`.
 
-- [ ] **Step 3: Add the trait methods and SQLite implementation**
+- [x] **Step 3: Add the trait methods and SQLite implementation**
 
 Trait additions after `revoke_oauth_access_grant` / `revoke_oauth_access_token_by_refresh`:
 
@@ -363,7 +374,7 @@ Add the two delegating methods to `backend_sqlite.rs`, and mirror both in
 `store-postgres/src/oauth.rs` with `$n` placeholders and `fetch_optional` inside
 one `transaction`.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test -p microwave-store --test dual_backend oauth_atomicity`
 Expected: PASS for SQLite; the PostgreSQL half skips without a URL.
@@ -371,7 +382,7 @@ Expected: PASS for SQLite; the PostgreSQL half skips without a URL.
 Run: `MICROWAVE_TEST_SKIP_PG_CLIENT_TOOLS=1 scripts/run-postgres-tests.sh oauth_atomicity`
 Expected: PASS on both backends.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/microwave-store crates/microwave-store-postgres
@@ -389,7 +400,7 @@ git commit -m "feat(store): make oauth code and refresh-token use atomic"
 **Interfaces:**
 - Consumes: `consume_oauth_access_grant`, `rotate_oauth_access_token` from Task 3.
 
-- [ ] **Step 1: Extend the failing flow test**
+- [x] **Step 1: Extend the failing flow test**
 
 In `authorization_code_token_refresh_and_revoke_flow`, immediately after the
 first successful exchange (after the `scope` assertion, before the bearer
@@ -434,12 +445,12 @@ revoke request, add:
     assert_eq!(body_json(response).await["error"], "invalid_grant");
 ```
 
-- [ ] **Step 2: Run it and verify it fails**
+- [x] **Step 2: Run it and verify it fails**
 
 Run: `cargo test -p microwave-api --test oauth_test authorization_code_token_refresh_and_revoke_flow`
 Expected: FAIL — the replayed code currently mints a second token.
 
-- [ ] **Step 3: Rewire the handler**
+- [x] **Step 3: Rewire the handler**
 
 `authorization_code`: keep the read used for the application and
 `redirect_uri` checks, then:
@@ -474,12 +485,12 @@ Expected: FAIL — the replayed code currently mints a second token.
             Ok(token_response(&token))
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test -p microwave-api --test oauth_test && cargo test -p microwave-api --test http_parity_test oauth`
 Expected: PASS; the parity suite's exchange/refresh/revoke flow still matches on both routers.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/microwave-oauth crates/microwave-api
@@ -494,7 +505,7 @@ git commit -m "fix(oauth): consume codes and refresh tokens atomically"
 - Modify: `docs/deployment.md` (`require-credential-rotation` section)
 - Modify: `docs/claims.toml` only if a needle moves
 
-- [ ] **Step 1: Update the operator docs**
+- [x] **Step 1: Update the operator docs**
 
 In the `require-credential-rotation` section, state that the marker now makes
 the server answer every non-health request with `503` and makes the CLI refuse
@@ -502,12 +513,12 @@ commands until `rotate-shared-secrets` clears it; a restart is still required
 for the server to load the new secrets. Keep the existing literal needles that
 `docs/claims.toml` references.
 
-- [ ] **Step 2: Verify docs and claims**
+- [x] **Step 2: Verify docs and claims**
 
 Run: `python3 scripts/check-claims.py`
 Expected: exit 0.
 
-- [ ] **Step 3: Run the full gate**
+- [x] **Step 3: Run the full gate**
 
 ```bash
 cargo fmt --all --check
@@ -521,7 +532,7 @@ Expected: all green. The PostgreSQL script's pre-existing
 `postgres_integration` deadlock flake may still appear; it reproduces at the
 base commit and is not caused by this plan — rerun once and note it if so.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs
