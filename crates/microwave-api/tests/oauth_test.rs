@@ -639,6 +639,136 @@ async fn authorization_code_is_exchanged_at_most_once_under_concurrency() {
 }
 
 #[tokio::test]
+async fn expired_authorization_code_is_burned() {
+    let fixture = fixture().await;
+    let app = app(&fixture);
+    let application = fixture
+        .state
+        .sqlite()
+        .create_oauth_application("Expired", "https://supermarket.example/cb", "read", true)
+        .unwrap();
+    let alice = fixture.state.sqlite().find_user("alice").unwrap().unwrap();
+    let grant = fixture
+        .state
+        .sqlite()
+        .create_oauth_access_grant(
+            &alice.id,
+            application.id,
+            "https://supermarket.example/cb",
+            "read",
+            0,
+        )
+        .unwrap();
+    let body = format!(
+        "grant_type=authorization_code&code={}&client_id={}&client_secret={}&redirect_uri={}",
+        grant.token, application.uid, application.secret, "https://supermarket.example/cb"
+    );
+
+    for attempt in 0..2 {
+        let response = request(
+            &app,
+            "POST",
+            "/id/oauth/token",
+            &body,
+            "application/x-www-form-urlencoded",
+            &[],
+        )
+        .await;
+        assert_eq!(
+            body_json(response).await["error"],
+            "invalid_grant",
+            "attempt {attempt}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn wrong_client_does_not_burn_the_code_or_refresh_token() {
+    let fixture = fixture().await;
+    let app = app(&fixture);
+    let owner = fixture
+        .state
+        .sqlite()
+        .create_oauth_application("Owner", "https://owner.example/cb", "read", true)
+        .unwrap();
+    let other = fixture
+        .state
+        .sqlite()
+        .create_oauth_application("Other", "https://other.example/cb", "read", true)
+        .unwrap();
+    let alice = fixture.state.sqlite().find_user("alice").unwrap().unwrap();
+    let grant = fixture
+        .state
+        .sqlite()
+        .create_oauth_access_grant(&alice.id, owner.id, "https://owner.example/cb", "read", 300)
+        .unwrap();
+
+    // A different client presenting the code must not consume it.
+    let wrong = format!(
+        "grant_type=authorization_code&code={}&client_id={}&client_secret={}&redirect_uri={}",
+        grant.token, other.uid, other.secret, "https://owner.example/cb"
+    );
+    let response = request(
+        &app,
+        "POST",
+        "/id/oauth/token",
+        &wrong,
+        "application/x-www-form-urlencoded",
+        &[],
+    )
+    .await;
+    assert_eq!(body_json(response).await["error"], "invalid_grant");
+
+    let right = format!(
+        "grant_type=authorization_code&code={}&client_id={}&client_secret={}&redirect_uri={}",
+        grant.token, owner.uid, owner.secret, "https://owner.example/cb"
+    );
+    let response = request(
+        &app,
+        "POST",
+        "/id/oauth/token",
+        &right,
+        "application/x-www-form-urlencoded",
+        &[],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let token = body_json(response).await;
+    let refresh_token = token["refresh_token"].as_str().unwrap().to_string();
+
+    // The same rule holds for refresh tokens.
+    let wrong_refresh = format!(
+        "grant_type=refresh_token&refresh_token={refresh_token}&client_id={}&client_secret={}",
+        other.uid, other.secret
+    );
+    let response = request(
+        &app,
+        "POST",
+        "/id/oauth/token",
+        &wrong_refresh,
+        "application/x-www-form-urlencoded",
+        &[],
+    )
+    .await;
+    assert_eq!(body_json(response).await["error"], "invalid_grant");
+
+    let right_refresh = format!(
+        "grant_type=refresh_token&refresh_token={refresh_token}&client_id={}&client_secret={}",
+        owner.uid, owner.secret
+    );
+    let response = request(
+        &app,
+        "POST",
+        "/id/oauth/token",
+        &right_refresh,
+        "application/x-www-form-urlencoded",
+        &[],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn rejects_authorization_requests_with_an_unknown_client() {
     let fixture = fixture().await;
     let app = app(&fixture);
