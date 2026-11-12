@@ -2560,10 +2560,14 @@ microwave-ctl service status
 `require-credential-rotation` writes `<data_dir>/credential_rotation_required`.
 While that marker exists the server answers every API request except
 `/_status`, `/_stats` and `/version` with `503`, and the CLI refuses every
-command except `rotate-shared-secrets`; the configuration-free `version`,
-`pedant` and `service` commands still run. The marker is per node, so set it on
-each replica. `rotate-shared-secrets` clears it, and a restart is still needed
-for the server to load the new secrets.
+state-changing command. `rotate-shared-secrets` still runs, as do the
+read-only `check-config` (the unit's `ExecStartPre`), `status` and
+`diagnostics`, so a disabled node can still start and be inspected. The marker
+is per node, so set it on each replica. `rotate-shared-secrets` clears it, and
+a restart is still needed for the server to load the new secrets. The marker
+path is resolved from `paths.data_dir`; use an absolute value so the server and
+the CLI agree regardless of their working directories (the shipped units pin
+`WorkingDirectory=/var/lib/microwave`).
 
 `status` reports the data directory, driver, database path, whether the
 database is readable, and whether the superuser exists. `check-config` loads the

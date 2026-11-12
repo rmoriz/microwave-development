@@ -29,6 +29,10 @@ TimeoutStopSec=30s
 # writable parent and its own ReadWritePaths= drop-in.
 StateDirectory=microwave
 StateDirectoryMode=0700
+# Keep the CLI (`ExecStartPre check-config`) and the server on the same working
+# directory so a relative `paths.data_dir` resolves identically; shipped
+# configurations use an absolute path.
+WorkingDirectory=/var/lib/microwave
 ConfigurationDirectory=microwave
 ConfigurationDirectoryMode=0755
 

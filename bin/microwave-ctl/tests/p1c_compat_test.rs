@@ -294,9 +294,15 @@ fn require_credential_rotation_writes_and_rotate_shared_secrets_clears_the_marke
         stderr(&blocked)
     );
 
-    // Configuration-free commands still run on a disabled install.
+    // Configuration-free and read-only commands still run on a disabled
+    // install; `check-config` is the unit's ExecStartPre, so blocking it would
+    // leave the node unable to start.
     let version = run(dir.path(), &["version"]);
     assert_success(&version);
+    let check = run(dir.path(), &["check-config"]);
+    assert_success(&check);
+    let status = run(dir.path(), &["status"]);
+    assert_success(&status);
 
     let rotated = run(dir.path(), &["rotate-shared-secrets"]);
     assert_success(&rotated);

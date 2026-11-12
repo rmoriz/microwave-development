@@ -38,6 +38,10 @@ TimeoutStopSec=30s
 # either way.
 StateDirectory=microwave
 StateDirectoryMode=0700
+# Keep the CLI (`ExecStartPre check-config`) and the server on the same working
+# directory so a relative `paths.data_dir` resolves identically; shipped
+# configurations use an absolute path.
+WorkingDirectory=/var/lib/microwave
 LogsDirectory=microwave
 LogsDirectoryMode=0750
 ConfigurationDirectory=microwave

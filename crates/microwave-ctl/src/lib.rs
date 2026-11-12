@@ -145,12 +145,18 @@ pub fn dispatch(cli: Cli) -> Result<(), CtlError> {
 
     let context = context::Context::load(cli.config.as_deref())?;
 
-    // The rotation sentinel disables every store-touching command. The
-    // configuration-free commands above already returned; keep them usable on
-    // a broken install.
-    if !matches!(cli.command, Command::RotateSharedSecrets)
-        && commands::credential_rotation_marker(&context).is_file()
-    {
+    // The rotation sentinel disables every command that can change state.
+    // `check-config` runs as the systemd unit's ExecStartPre, and
+    // `status`/`diagnostics` are read-only, so a disabled node still starts
+    // and stays observable; the server itself answers health only.
+    let read_only = matches!(
+        cli.command,
+        Command::RotateSharedSecrets
+            | Command::CheckConfig
+            | Command::Status
+            | Command::Diagnostics { .. }
+    );
+    if !read_only && commands::credential_rotation_marker(&context).exists() {
         return Err(CtlError::message(
             "Server credentials must be rotated before running this command. \
              Run 'microwave-ctl rotate-shared-secrets' first.",

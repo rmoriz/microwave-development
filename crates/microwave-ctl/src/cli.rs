@@ -248,8 +248,9 @@ pub enum Command {
     /// Mark the installation as disabled until credentials have been rotated.
     /// Writes `<data_dir>/credential_rotation_required`; it does not stop
     /// systemd, but the server answers every non-health request with `503`
-    /// and this CLI refuses every command except `rotate-shared-secrets`
-    /// until the marker is cleared.
+    /// and this CLI refuses every state-changing command until the marker is
+    /// cleared. `check-config`, `status`, `diagnostics` and
+    /// `rotate-shared-secrets` still run.
     RequireCredentialRotation {
         /// Agree to disable the server and require credential rotation without
         /// an interactive prompt.
