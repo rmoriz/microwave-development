@@ -457,6 +457,22 @@ async fn authorization_code_token_refresh_and_revoke_flow() {
     assert_eq!(token["token_type"], "bearer");
     assert_eq!(token["scope"], "read");
 
+    // A code is single-use.
+    let replay = format!(
+        "grant_type=authorization_code&code={code}&client_id={}&client_secret={}&redirect_uri={}",
+        application.uid, application.secret, "https://supermarket.example/cb"
+    );
+    let response = request(
+        &app,
+        "POST",
+        "/id/oauth/token",
+        &replay,
+        "application/x-www-form-urlencoded",
+        &[],
+    )
+    .await;
+    assert_eq!(body_json(response).await["error"], "invalid_grant");
+
     let bearer = format!("Bearer {access_token}");
     let response = request(
         &app,
@@ -521,6 +537,22 @@ async fn authorization_code_token_refresh_and_revoke_flow() {
     let refreshed_token = refreshed["access_token"].as_str().unwrap().to_string();
     assert_ne!(refreshed_token, access_token);
 
+    // The rotated refresh token is dead.
+    let stale = format!(
+        "grant_type=refresh_token&refresh_token={refresh_token}&client_id={}&client_secret={}",
+        application.uid, application.secret
+    );
+    let response = request(
+        &app,
+        "POST",
+        "/id/oauth/token",
+        &stale,
+        "application/x-www-form-urlencoded",
+        &[],
+    )
+    .await;
+    assert_eq!(body_json(response).await["error"], "invalid_grant");
+
     let body = format!(
         "token={refreshed_token}&client_id={}&client_secret={}",
         application.uid, application.secret
@@ -549,6 +581,61 @@ async fn authorization_code_token_refresh_and_revoke_flow() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn authorization_code_is_exchanged_at_most_once_under_concurrency() {
+    let fixture = fixture().await;
+    let app = app(&fixture);
+    let application = fixture
+        .state
+        .sqlite()
+        .create_oauth_application("Concurrent", "https://supermarket.example/cb", "read", true)
+        .unwrap();
+    let alice = fixture.state.sqlite().find_user("alice").unwrap().unwrap();
+    let grant = fixture
+        .state
+        .sqlite()
+        .create_oauth_access_grant(
+            &alice.id,
+            application.id,
+            "https://supermarket.example/cb",
+            "read",
+            300,
+        )
+        .unwrap();
+    let body = format!(
+        "grant_type=authorization_code&code={}&client_id={}&client_secret={}&redirect_uri={}",
+        grant.token, application.uid, application.secret, "https://supermarket.example/cb"
+    );
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let app = app.clone();
+        let body = body.clone();
+        handles.push(tokio::spawn(async move {
+            request(
+                &app,
+                "POST",
+                "/id/oauth/token",
+                &body,
+                "application/x-www-form-urlencoded",
+                &[],
+            )
+            .await
+            .status()
+        }));
+    }
+    let mut successes = 0;
+    for handle in handles {
+        if handle.await.unwrap() == StatusCode::OK {
+            successes += 1;
+        }
+    }
+    assert_eq!(
+        successes, 1,
+        "a code must be exchanged at most once under concurrency"
+    );
 }
 
 #[tokio::test]

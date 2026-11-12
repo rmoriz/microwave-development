@@ -194,18 +194,13 @@ pub async fn token(
             let code = params
                 .get("code")
                 .ok_or_else(|| OAuthError::invalid_request("code is required"))?;
+            // Read first so a request with the wrong client or redirect URI
+            // cannot burn a valid code; those columns are immutable.
             let grant = state
                 .store
                 .find_oauth_access_grant(&code)
                 .await?
                 .ok_or_else(|| OAuthError::invalid_grant("authorization code is invalid"))?;
-            if grant.revoked_at.is_some()
-                || !timestamp_is_fresh(&grant.created_at, grant.expires_in)
-            {
-                return Err(OAuthError::invalid_grant(
-                    "authorization code is expired or already used",
-                ));
-            }
             if grant.application_id != application.id {
                 return Err(OAuthError::invalid_grant(
                     "authorization code belongs to another client",
@@ -216,7 +211,18 @@ pub async fn token(
                     return Err(OAuthError::invalid_grant("redirect_uri does not match"));
                 }
             }
-            state.store.revoke_oauth_access_grant(&code).await?;
+            // The conditional update is the exchange: exactly one caller can
+            // consume the code, even under concurrent requests.
+            let Some(grant) = state.store.consume_oauth_access_grant(&code).await? else {
+                return Err(OAuthError::invalid_grant(
+                    "authorization code is expired or already used",
+                ));
+            };
+            if !timestamp_is_fresh(&grant.created_at, grant.expires_in) {
+                return Err(OAuthError::invalid_grant(
+                    "authorization code is expired or already used",
+                ));
+            }
             let token = state
                 .store
                 .create_oauth_access_token(
@@ -233,33 +239,25 @@ pub async fn token(
             let refresh_token = params
                 .get("refresh_token")
                 .ok_or_else(|| OAuthError::invalid_request("refresh_token is required"))?;
+            // Read first so another client cannot burn the token; the
+            // rotation itself is one atomic revoke-and-issue transaction.
             let token = state
                 .store
                 .find_oauth_access_token_by_refresh(&refresh_token)
                 .await?
                 .ok_or_else(|| OAuthError::invalid_grant("refresh token is invalid"))?;
-            if token.revoked_at.is_some() {
-                return Err(OAuthError::invalid_grant("refresh token was revoked"));
-            }
             if token.application_id != Some(application.id) {
                 return Err(OAuthError::invalid_grant(
                     "refresh token belongs to another client",
                 ));
             }
-            let Some(resource_owner_id) = token.resource_owner_id.clone() else {
-                return Err(OAuthError::invalid_grant("refresh token has no owner"));
-            };
-            state.store.revoke_oauth_access_token(&token.token).await?;
-            let token = state
+            let Some(token) = state
                 .store
-                .create_oauth_access_token(
-                    &resource_owner_id,
-                    application.id,
-                    &token.scopes,
-                    Some(ACCESS_TOKEN_TTL_SECONDS),
-                    true,
-                )
-                .await?;
+                .rotate_oauth_access_token(&refresh_token, Some(ACCESS_TOKEN_TTL_SECONDS))
+                .await?
+            else {
+                return Err(OAuthError::invalid_grant("refresh token was revoked"));
+            };
             Ok(token_response(&token))
         }
         other => Err(OAuthError::new(
