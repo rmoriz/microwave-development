@@ -117,8 +117,11 @@ pub fn is_superuser(auth: &AuthContext) -> bool {
 }
 
 /// Whether `username` is the configured bootstrap superuser.
+///
+/// The comparison is exact: usernames are case-sensitive and unique, so a
+/// lookalike account with different casing is an ordinary user.
 pub fn is_configured_superuser(state: &AppState, username: &str) -> bool {
-    username.eq_ignore_ascii_case(&state.config.auth.superuser_name)
+    username == state.config.auth.superuser_name
 }
 
 /// Require a permission on one of the global containers.

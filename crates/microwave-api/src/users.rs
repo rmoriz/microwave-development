@@ -792,7 +792,7 @@ fn authorize_superuser_target(
     auth: &AuthContext,
     target_username: &str,
 ) -> Result<(), ApiError> {
-    if target_username == state.config.auth.superuser_name {
+    if is_configured_superuser(state, target_username) {
         return Err(ApiError::forbidden());
     }
     if !auth.is_superuser {

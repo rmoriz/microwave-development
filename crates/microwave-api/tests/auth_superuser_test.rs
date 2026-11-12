@@ -80,3 +80,30 @@ async fn configured_superuser_name_controls_privilege() {
         "the configured superuser may create organizations: {body}"
     );
 }
+
+#[tokio::test]
+async fn a_case_variant_of_the_superuser_name_is_an_ordinary_user() {
+    let mut config = Config::default();
+    config.auth.superuser_name = "root".into();
+    let state = support::state_with_config(config);
+    support::add_user(&state, "root", "root@example.com", false);
+    // Usernames are case-sensitive and unique; a lookalike account created by
+    // an import must not inherit the superuser's protections or privileges.
+    support::add_user(&state, "Root", "lookalike@example.com", false);
+    support::add_user(&state, "bob", "bob@example.com", true);
+    let app = support::app(state);
+
+    let (status, _) = get(&app, "/users", "Root").await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a lookalike account must not be treated as the superuser"
+    );
+
+    let (status, body) = get(&app, "/users/Root", "bob").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a server-admin may read the ordinary lookalike account: {body}"
+    );
+}
