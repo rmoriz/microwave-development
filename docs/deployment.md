@@ -982,12 +982,12 @@ Image properties:
 Released images are published for `linux/amd64` and `linux/arm64`:
 
 ```sh
-docker pull ghcr.io/rmoriz/microwave-server:0.6.1
+docker pull ghcr.io/rmoriz/microwave-server:0.6.2
 docker run -d --name microwave \
   -p 8000:8000 \
   -v microwave-data:/var/lib/microwave \
   -v "$PWD/packaging/microwave.toml.example:/etc/microwave/microwave.toml:ro" \
-  ghcr.io/rmoriz/microwave-server:0.6.1
+  ghcr.io/rmoriz/microwave-server:0.6.2
 ```
 
 For prototyping, omit the tag (`ghcr.io/rmoriz/microwave-server`) and Docker
