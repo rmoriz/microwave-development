@@ -2557,6 +2557,14 @@ microwave-ctl --config /etc/microwave/microwave.toml rotate-shared-secrets
 microwave-ctl service status
 ```
 
+`require-credential-rotation` writes `<data_dir>/credential_rotation_required`.
+While that marker exists the server answers every API request except
+`/_status`, `/_stats` and `/version` with `503`, and the CLI refuses every
+command except `rotate-shared-secrets`; the configuration-free `version`,
+`pedant` and `service` commands still run. The marker is per node, so set it on
+each replica. `rotate-shared-secrets` clears it, and a restart is still needed
+for the server to load the new secrets.
+
 `status` reports the data directory, driver, database path, whether the
 database is readable, and whether the superuser exists. `check-config` loads the
 resolved configuration and validates the data directory, database URL/driver,
