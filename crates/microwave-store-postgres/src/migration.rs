@@ -20,8 +20,8 @@ use microwave_store::{
     AuthzAclGroupRow, AuthzEntityRow, AuthzGroupActorRow, AuthzGroupGroupRow, ChecksumRow,
     ClientRow, Compression, ContainerRow, CookbookArtifactRow, CookbookArtifactVersionChecksumRow,
     CookbookArtifactVersionRow, CookbookRow, CookbookVersionChecksumRow, CookbookVersionRow,
-    DataBagItemRow, GlobalGroupRow, GroupRow, ImportTargetCounts, KvPairRow, NamedObjectRow,
-    NodeRow, OAuthAccessGrantRow, OAuthAccessTokenRow, OAuthApplicationRow, OrgRow,
+    DataBagItemRow, GlobalContainerRow, GlobalGroupRow, GroupRow, ImportTargetCounts, KvPairRow,
+    NamedObjectRow, NodeRow, OAuthAccessGrantRow, OAuthAccessTokenRow, OAuthApplicationRow, OrgRow,
     OrgUserAssociationRow, OrgUserInviteRow, PolicyGroupRevisionAssociationRow, PolicyGroupRow,
     PolicyRevisionRow, PolicyRow, SandboxRow, SandboxedChecksumRow, StoreError, StoreSnapshot,
     TelemetryRow, UserRow,
@@ -83,6 +83,7 @@ impl PostgresStore {
             containers: collect_containers(&mut transaction).await?,
             groups: collect_groups(&mut transaction).await?,
             global_groups: collect_global_groups(&mut transaction).await?,
+            global_containers: collect_global_containers(&mut transaction).await?,
             nodes: collect_nodes(&mut transaction).await?,
             roles: collect_named_objects(&mut transaction, "roles").await?,
             environments: collect_named_objects(&mut transaction, "environments").await?,
@@ -142,6 +143,7 @@ impl PostgresStore {
         import_containers(&mut transaction, snapshot).await?;
         import_groups(&mut transaction, snapshot).await?;
         import_global_groups(&mut transaction, snapshot).await?;
+        import_global_containers(&mut transaction, snapshot).await?;
         import_nodes(&mut transaction, snapshot, self.compression()).await?;
         import_named_objects(
             &mut transaction,
@@ -534,6 +536,28 @@ async fn collect_global_groups(
     .iter()
     .map(|row| {
         Ok(GlobalGroupRow {
+            id: text(row, 0)?,
+            authz_id: text(row, 1)?,
+            name: text(row, 2)?,
+            created_at: text(row, 3)?,
+            updated_at: text(row, 4)?,
+        })
+    })
+    .collect()
+}
+
+async fn collect_global_containers(
+    transaction: &mut PgTransaction<'_>,
+) -> Result<Vec<GlobalContainerRow>, StoreError> {
+    rows(
+        transaction,
+        "SELECT id, authz_id, name, created_at, updated_at
+         FROM global_containers ORDER BY id",
+    )
+    .await?
+    .iter()
+    .map(|row| {
+        Ok(GlobalContainerRow {
             id: text(row, 0)?,
             authz_id: text(row, 1)?,
             name: text(row, 2)?,
@@ -1454,6 +1478,33 @@ async fn import_global_groups(
     for row in &snapshot.global_groups {
         sqlx::query(
             "INSERT INTO global_groups
+             (id, authz_id, name, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (id) DO UPDATE SET
+                 authz_id = EXCLUDED.authz_id,
+                 name = EXCLUDED.name,
+                 created_at = EXCLUDED.created_at,
+                 updated_at = EXCLUDED.updated_at",
+        )
+        .bind(&row.id)
+        .bind(&row.authz_id)
+        .bind(&row.name)
+        .bind(&row.created_at)
+        .bind(&row.updated_at)
+        .execute(&mut **transaction)
+        .await
+        .map_err(db)?;
+    }
+    Ok(())
+}
+
+async fn import_global_containers(
+    transaction: &mut PgTransaction<'_>,
+    snapshot: &StoreSnapshot,
+) -> Result<(), StoreError> {
+    for row in &snapshot.global_containers {
+        sqlx::query(
+            "INSERT INTO global_containers
              (id, authz_id, name, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT (id) DO UPDATE SET

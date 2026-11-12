@@ -42,6 +42,7 @@ pub struct StoreSnapshot {
     pub containers: Vec<ContainerRow>,
     pub groups: Vec<GroupRow>,
     pub global_groups: Vec<GlobalGroupRow>,
+    pub global_containers: Vec<GlobalContainerRow>,
     pub nodes: Vec<NodeRow>,
     pub roles: Vec<NamedObjectRow>,
     pub environments: Vec<NamedObjectRow>,
@@ -242,6 +243,16 @@ pub struct GroupRow {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GlobalGroupRow {
+    pub id: String,
+    pub authz_id: String,
+    pub name: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GlobalContainerRow {
     pub id: String,
     pub authz_id: String,
     pub name: String,
@@ -764,6 +775,20 @@ impl SqliteStore {
                  FROM global_groups ORDER BY id",
                 |row| {
                     Ok(GlobalGroupRow {
+                        id: row.get(0)?,
+                        authz_id: row.get(1)?,
+                        name: row.get(2)?,
+                        created_at: row.get(3)?,
+                        updated_at: row.get(4)?,
+                    })
+                },
+            )?,
+            global_containers: collect(
+                &connection,
+                "SELECT id, authz_id, name, created_at, updated_at
+                 FROM global_containers ORDER BY id",
+                |row| {
+                    Ok(GlobalContainerRow {
                         id: row.get(0)?,
                         authz_id: row.get(1)?,
                         name: row.get(2)?,
@@ -1528,6 +1553,26 @@ fn import_all(
     for row in &snapshot.global_groups {
         transaction.execute(
             "INSERT INTO global_groups
+             (id, authz_id, name, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET
+                 authz_id = excluded.authz_id,
+                 name = excluded.name,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at",
+            params![
+                row.id,
+                row.authz_id,
+                row.name,
+                row.created_at,
+                row.updated_at
+            ],
+        )?;
+    }
+
+    for row in &snapshot.global_containers {
+        transaction.execute(
+            "INSERT INTO global_containers
              (id, authz_id, name, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(id) DO UPDATE SET

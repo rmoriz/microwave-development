@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use microwave_store::{
-    ActorKey, ActorType, AuthzRepository, Client, IdentityRepository, Org, Principal,
-    StoreError, User, UserPatch, UserProfile,
+    ActorKey, ActorType, AuthzRepository, Client, IdentityRepository, Org, Principal, StoreError,
+    User, UserPatch, UserProfile,
 };
 use sqlx::postgres::PgRow;
 use sqlx::Row;

@@ -63,6 +63,14 @@ fn crawls_objects_raw_and_skips_default_environment() {
     assert_eq!(summary.warnings, [SYNTHESIZED_ADMIN]);
     // The summary counts the environment rows, the synthesized one included.
     assert_eq!(summary.environments, snapshot.data.environments.len());
+    let names: Vec<&str> = snapshot
+        .data
+        .global_containers
+        .iter()
+        .map(|row| row.name.as_str())
+        .collect();
+    assert!(names.contains(&"users"), "{names:?}");
+    assert!(names.contains(&"organizations"), "{names:?}");
 }
 
 #[test]

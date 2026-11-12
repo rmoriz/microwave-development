@@ -35,6 +35,9 @@ fn name_map(snapshot: &StoreSnapshot, extra: &[(&str, &str)]) -> HashMap<String,
     for group in &snapshot.global_groups {
         names.insert(group.authz_id.clone(), group.name.clone());
     }
+    for container in &snapshot.global_containers {
+        names.insert(container.authz_id.clone(), container.name.clone());
+    }
     for node in &snapshot.nodes {
         names.insert(node.authz_id.clone(), node.name.clone());
     }

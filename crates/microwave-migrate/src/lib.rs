@@ -331,6 +331,12 @@ pub fn import_database_with_compression(
             &existing_global_groups(store.list_global_groups()?),
         );
     }
+    if !snapshot.data.global_containers.is_empty() {
+        reconcile_global_containers(
+            &mut snapshot.data,
+            &existing_global_containers(store.list_global_containers()?),
+        );
+    }
     store.import_snapshot(&snapshot.data)?;
     Ok(())
 }
@@ -433,6 +439,11 @@ pub fn import_postgres_with_compression(
         let existing = existing_global_groups(runtime.block_on(store.list_global_groups())?);
         reconcile_global_groups(&mut snapshot.data, &existing);
     }
+    if !snapshot.data.global_containers.is_empty() {
+        let existing =
+            existing_global_containers(runtime.block_on(store.list_global_containers())?);
+        reconcile_global_containers(&mut snapshot.data, &existing);
+    }
     runtime.block_on(store.import_snapshot(&snapshot.data))?;
     Ok(())
 }
@@ -531,6 +542,51 @@ fn reconcile_global_groups(data: &mut StoreSnapshot, existing: &[(String, String
     for row in &mut data.authz_group_groups {
         rewrite(&mut row.parent_group_authz_id);
         rewrite(&mut row.child_group_authz_id);
+    }
+}
+
+/// Flatten a store's global containers into `(name, authz_id)` pairs.
+fn existing_global_containers(
+    containers: Vec<microwave_store::GlobalContainer>,
+) -> Vec<(String, String)> {
+    containers
+        .into_iter()
+        .map(|container| (container.name, container.authz_id))
+        .collect()
+}
+
+/// Reuse global containers that the target already has under the same name.
+///
+/// A bootstrapped target always has `users` and `organizations`, while every
+/// snapshot repeats them with a different authz id. Dropping the snapshot row
+/// and rewriting the ACL targets keeps the import from failing on the unique
+/// name while preserving any ACEs the snapshot carried.
+fn reconcile_global_containers(data: &mut StoreSnapshot, existing: &[(String, String)]) {
+    let mut replacements: HashMap<String, String> = HashMap::new();
+    for planned in &data.global_containers {
+        if let Some((_, existing_authz)) = existing.iter().find(|(name, _)| name == &planned.name) {
+            if existing_authz != &planned.authz_id {
+                replacements.insert(planned.authz_id.clone(), existing_authz.clone());
+            }
+        }
+    }
+    let existing_names: HashSet<&str> = existing.iter().map(|(name, _)| name.as_str()).collect();
+    data.global_containers
+        .retain(|container| !existing_names.contains(container.name.as_str()));
+    if replacements.is_empty() {
+        return;
+    }
+    data.authz_entities
+        .retain(|entity| !replacements.contains_key(&entity.authz_id));
+    for row in &mut data.authz_acl_actor {
+        if let Some(replacement) = replacements.get(&row.target_authz_id) {
+            row.target_authz_id = replacement.clone();
+        }
+    }
+    for row in &mut data.authz_acl_group {
+        if let Some(replacement) = replacements.get(&row.target_authz_id) {
+            row.target_authz_id = replacement.clone();
+        }
     }
 }
 

@@ -270,8 +270,17 @@ fn snapshots_are_decoded_and_round_trip_through_a_second_store() {
     let source_dir = TempDir::new().unwrap();
     let source = SqliteStore::open(&database(&source_dir)).unwrap();
     let (org_id, _) = seed(&source);
+    let container = source.ensure_global_container("users").unwrap();
     let exported = source.export_snapshot().unwrap();
 
+    assert!(
+        exported
+            .global_containers
+            .iter()
+            .any(|row| row.name == "users"),
+        "{:?}",
+        exported.global_containers
+    );
     assert_eq!(
         exported.nodes[0].serialized_object.as_deref(),
         Some(NODE_BODY)
@@ -294,6 +303,14 @@ fn snapshots_are_decoded_and_round_trip_through_a_second_store() {
     let target = SqliteStore::open(&target_path).unwrap();
     target.import_snapshot(&exported).unwrap();
 
+    assert_eq!(
+        target
+            .find_global_container("users")
+            .unwrap()
+            .unwrap()
+            .authz_id,
+        container.authz_id
+    );
     assert_eq!(
         target
             .find_node(&org_id, "node-1")

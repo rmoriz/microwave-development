@@ -6,8 +6,8 @@ use microwave_migrate::{
     SNAPSHOT_FORMAT, SNAPSHOT_VERSION,
 };
 use microwave_store::{
-    AuthzAclActorRow, AuthzEntityRow, AuthzGroupActorRow, GlobalGroupRow, OrgRow, StoreSnapshot,
-    UserRow,
+    AuthzAclActorRow, AuthzEntityRow, AuthzGroupActorRow, GlobalContainerRow, GlobalGroupRow,
+    OrgRow, StoreSnapshot, UserRow,
 };
 use std::path::{Path, PathBuf};
 
@@ -240,4 +240,45 @@ fn chef_snapshot_still_merges() {
 
     import(target.path(), &input).unwrap();
     import(target.path(), &input).unwrap();
+}
+
+#[test]
+fn reuses_the_bootstrap_global_containers() {
+    let target = tempfile::tempdir().unwrap();
+    let database = target.path().join("microwave.db");
+    let bootstrap = microwave_store::SqliteStore::open(&database).unwrap();
+    bootstrap
+        .create_user("pivotal", "pivotal@example.com", "bcrypt", "h", "s", true)
+        .unwrap();
+    let bootstrap_users = bootstrap
+        .find_global_container("users")
+        .unwrap()
+        .expect("create_user bootstraps the users container");
+    drop(bootstrap);
+
+    let mut snapshot = snapshot(Some("goiardi"));
+    snapshot.data.global_containers = vec![GlobalContainerRow {
+        id: "global-users".to_string(),
+        authz_id: "authz-global-users".to_string(),
+        name: "users".to_string(),
+        ..GlobalContainerRow::default()
+    }];
+    snapshot.data.authz_entities.push(AuthzEntityRow {
+        authz_id: "authz-global-users".to_string(),
+        entity_type: "container".to_string(),
+        ..AuthzEntityRow::default()
+    });
+    let input = write(target.path(), &snapshot);
+
+    import(target.path(), &input).unwrap();
+
+    let store = microwave_store::SqliteStore::open(&database).unwrap();
+    let containers: Vec<_> = store
+        .list_global_containers()
+        .unwrap()
+        .into_iter()
+        .filter(|container| container.name == "users")
+        .collect();
+    assert_eq!(containers.len(), 1, "{containers:?}");
+    assert_eq!(containers[0].authz_id, bootstrap_users.authz_id);
 }

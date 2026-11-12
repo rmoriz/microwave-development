@@ -18,9 +18,9 @@ use microwave_store::{
     parse_version, AclEntry, ActorKeyRow, ActorType, AuthzAclActorRow, AuthzAclGroupRow,
     AuthzEntityRow, AuthzGroupActorRow, AuthzGroupGroupRow, AuthzRepository, ChecksumRow,
     ClientRow, ContainerRow, CookbookRow, CookbookVersionChecksumRow, CookbookVersionRow,
-    DataBagItemRow, GlobalGroupRow, GroupMembers, GroupRow, IdentityRepository, NamedObjectRow,
-    NodeRow, OrgRow, OrgUserAssociationRow, OrgUserInviteRow, Permission, StoreError,
-    StoreSnapshot, User, UserPatch, UserRow,
+    DataBagItemRow, GlobalContainerRow, GlobalGroupRow, GroupMembers, GroupRow, IdentityRepository,
+    NamedObjectRow, NodeRow, OrgRow, OrgUserAssociationRow, OrgUserInviteRow, Permission,
+    StoreError, StoreSnapshot, User, UserPatch, UserRow,
 };
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -367,7 +367,13 @@ pub fn apply_knife_backup_plan_sqlite_with_options(
             existing_default_keys.insert(user.id.clone());
         }
     }
+    let existing_containers: Vec<(String, String)> = store
+        .list_global_containers()?
+        .into_iter()
+        .map(|container| (container.name, container.authz_id))
+        .collect();
     let plan = reconcile_global_groups(plan, &existing_groups);
+    let plan = reconcile_global_containers(&plan, &existing_containers);
     let (plan, merged_admins) =
         reconcile_users(&plan, &existing_users, &existing_default_keys, options)?;
     write_blobs(bookshelf_dir, &plan.blobs)?;
@@ -451,7 +457,13 @@ pub fn apply_knife_backup_plan_postgres_with_options(
             existing_default_keys.insert(user.id.clone());
         }
     }
+    let existing_containers: Vec<(String, String)> = runtime
+        .block_on(store.list_global_containers())?
+        .into_iter()
+        .map(|container| (container.name, container.authz_id))
+        .collect();
     let plan = reconcile_global_groups(plan, &existing_groups);
+    let plan = reconcile_global_containers(&plan, &existing_containers);
     let (plan, merged_admins) =
         reconcile_users(&plan, &existing_users, &existing_default_keys, options)?;
     write_blobs(bookshelf_dir, &plan.blobs)?;
@@ -558,6 +570,67 @@ fn reconcile_global_groups(
         summary: plan.summary.clone(),
         acl_targets,
         group_authz_ids,
+    }
+}
+
+/// Reuse global containers that already exist under the same name.
+///
+/// A bootstrapped target always has `users` and `organizations`, while the
+/// plan synthesizes its own rows for them. Rewriting the plan's authz ids to
+/// the existing ones keeps the import mergeable instead of failing on the
+/// unique name constraint.
+fn reconcile_global_containers(
+    plan: &KnifeBackupPlan,
+    existing: &[(String, String)],
+) -> KnifeBackupPlan {
+    let mut snapshot = plan.snapshot.clone();
+    let mut replacements: HashMap<String, String> = HashMap::new();
+    for planned in &snapshot.global_containers {
+        if let Some((_, existing_authz)) = existing.iter().find(|(name, _)| name == &planned.name) {
+            if existing_authz != &planned.authz_id {
+                replacements.insert(planned.authz_id.clone(), existing_authz.clone());
+            }
+        }
+    }
+    let existing_names: HashSet<&str> = existing.iter().map(|(name, _)| name.as_str()).collect();
+    snapshot
+        .global_containers
+        .retain(|container| !existing_names.contains(container.name.as_str()));
+    let mut acl_targets = plan.acl_targets.clone();
+    if replacements.is_empty() {
+        return KnifeBackupPlan {
+            snapshot,
+            blobs: plan.blobs.clone(),
+            summary: plan.summary.clone(),
+            acl_targets,
+            group_authz_ids: plan.group_authz_ids.clone(),
+        };
+    }
+
+    let rewrite = |value: &mut String| {
+        if let Some(replacement) = replacements.get(value) {
+            *value = replacement.clone();
+        }
+    };
+    for target in &mut acl_targets {
+        rewrite(target);
+    }
+    snapshot
+        .authz_entities
+        .retain(|entity| !replacements.contains_key(&entity.authz_id));
+    for row in &mut snapshot.authz_acl_actor {
+        rewrite(&mut row.target_authz_id);
+    }
+    for row in &mut snapshot.authz_acl_group {
+        rewrite(&mut row.target_authz_id);
+    }
+
+    KnifeBackupPlan {
+        snapshot,
+        blobs: plan.blobs.clone(),
+        summary: plan.summary.clone(),
+        acl_targets,
+        group_authz_ids: plan.group_authz_ids.clone(),
     }
 }
 
@@ -1066,6 +1139,7 @@ struct Builder {
     client_authz: HashMap<(String, String), String>,
     group_authz: HashMap<(String, String), String>,
     global_group_authz: HashMap<String, String>,
+    global_container_authz: HashMap<String, String>,
     container_authz: HashMap<(String, String), String>,
     object_authz: HashMap<(String, String, String), String>,
     cookbook_ids: HashMap<(String, String), i64>,
@@ -1108,6 +1182,7 @@ impl Builder {
             client_authz: HashMap::new(),
             group_authz: HashMap::new(),
             global_group_authz: HashMap::new(),
+            global_container_authz: HashMap::new(),
             container_authz: HashMap::new(),
             object_authz: HashMap::new(),
             cookbook_ids: HashMap::new(),
@@ -2390,6 +2465,18 @@ impl Builder {
             }
         }
 
+        // Global containers authorize account and organization creation.
+        // The `users` container carries the server-admins grants the upstream
+        // bootstrap seeds; the creator ACE comes from the target's start.
+        if let Some(users) = self.resolve_global_container("users") {
+            if let Some(server_admins) = self.resolve_global_group("server-admins") {
+                for permission in ["create", "read", "update", "delete"] {
+                    self.add_acl_group(&users, permission, &server_admins);
+                }
+            }
+        }
+        self.resolve_global_container("organizations");
+
         let orgs: Vec<String> = self.data.orgs.iter().map(|org| org.name.clone()).collect();
         for org_name in orgs {
             let Some(read_access) =
@@ -2704,6 +2791,31 @@ impl Builder {
         });
         self.global_group_authz
             .insert(normalized.to_string(), authz_id.clone());
+        Some(authz_id)
+    }
+
+    /// Find or create one of the two standard global containers in the
+    /// snapshot. The backup repository does not contain them; the target's
+    /// bootstrap adds the superuser creator ACE on first start.
+    fn resolve_global_container(&mut self, name: &str) -> Option<String> {
+        if !matches!(name, "users" | "organizations") {
+            return None;
+        }
+        if let Some(authz_id) = self.global_container_authz.get(name) {
+            return Some(authz_id.clone());
+        }
+        let id = stable_id(&format!("global_container:id:{name}"));
+        let authz_id = stable_id(&format!("global_container:authz:{name}"));
+        self.ensure_authz(&authz_id, "container", None);
+        self.data.global_containers.push(GlobalContainerRow {
+            id,
+            authz_id: authz_id.clone(),
+            name: name.to_string(),
+            created_at: self.generated_at.clone(),
+            updated_at: self.generated_at.clone(),
+        });
+        self.global_container_authz
+            .insert(name.to_string(), authz_id.clone());
         Some(authz_id)
     }
 }

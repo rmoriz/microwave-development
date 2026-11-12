@@ -28,8 +28,9 @@ use microwave_objectstore::{object_path, LocalObjectStore, ObjectStore};
 use microwave_store::{
     parse_version, ActorKeyRow, AuthzAclActorRow, AuthzAclGroupRow, AuthzEntityRow,
     AuthzGroupActorRow, AuthzGroupGroupRow, ChecksumRow, ClientRow, ContainerRow, CookbookRow,
-    CookbookVersionChecksumRow, CookbookVersionRow, DataBagItemRow, GlobalGroupRow, GroupRow,
-    NamedObjectRow, NodeRow, OrgRow, OrgUserAssociationRow, StoreSnapshot, UserRow,
+    CookbookVersionChecksumRow, CookbookVersionRow, DataBagItemRow, GlobalContainerRow,
+    GlobalGroupRow, GroupRow, NamedObjectRow, NodeRow, OrgRow, OrgUserAssociationRow,
+    StoreSnapshot, UserRow,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -1142,6 +1143,10 @@ pub fn apply_default_policy(
         generated_at,
     );
     let server_admins = push_global_group(data, "server-admins", generated_at);
+    // The global containers authorize account and organization creation. The
+    // target's bootstrap adds its superuser as their creator on first start.
+    push_global_container(data, "users", generated_at, Some(&server_admins));
+    push_global_container(data, "organizations", generated_at, None);
 
     // `create_user` gives every user ALL on itself and hands `server-admins`
     // create/read/update/delete on it; admins also join that group.
@@ -1476,6 +1481,43 @@ fn push_global_group(data: &mut StoreSnapshot, name: &str, generated_at: &str) -
     });
     for permission in Permission::ALL {
         push_acl_group(data, &authz_id, permission.as_str(), &authz_id);
+    }
+    authz_id
+}
+
+/// Push a global container and, for `users`, the `server-admins` grants the
+/// upstream bootstrap seeds. The synthetic creator ACE is added by the
+/// target's `ensure_superuser` on first start, because the snapshot does not
+/// know the target superuser's authz id.
+fn push_global_container(
+    data: &mut StoreSnapshot,
+    name: &str,
+    generated_at: &str,
+    server_admins: Option<&str>,
+) -> String {
+    let authz_id = synthetic_id(&format!("authz:global_container:{name}"));
+    ensure_entity(data, &authz_id, "container", None, generated_at);
+    data.global_containers.push(GlobalContainerRow {
+        id: synthetic_id(&format!("global_container:{name}")),
+        authz_id: authz_id.clone(),
+        name: name.to_string(),
+        created_at: generated_at.to_string(),
+        updated_at: generated_at.to_string(),
+    });
+    if name == "users" {
+        if let Some(server_admins) = server_admins {
+            grant_group(
+                data,
+                &authz_id,
+                &[
+                    Permission::Create,
+                    Permission::Read,
+                    Permission::Update,
+                    Permission::Delete,
+                ],
+                server_admins,
+            );
+        }
     }
     authz_id
 }
