@@ -2440,6 +2440,84 @@ mod suite {
         vec![read_group]
     }
 
+    pub async fn oauth_atomicity(store: &Arc<dyn MetadataStore>) -> Vec<String> {
+        let owner = create_user(store.as_ref(), "oauth-atomic-owner").await;
+        let app = store
+            .create_oauth_application(
+                &unique("oauth-atomic-app"),
+                "https://example.test/oauth/callback",
+                "read",
+                false,
+            )
+            .await
+            .expect("create oauth app");
+
+        // Authorization code: exactly one of eight concurrent consumes wins.
+        let grant = store
+            .create_oauth_access_grant(
+                &owner.id,
+                app.id,
+                "https://example.test/oauth/callback",
+                "read",
+                300,
+            )
+            .await
+            .expect("create grant");
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let store = store.clone();
+            let code = grant.token.clone();
+            handles.push(tokio::spawn(async move {
+                store
+                    .consume_oauth_access_grant(&code)
+                    .await
+                    .expect("consume grant")
+                    .is_some()
+            }));
+        }
+        let mut winners = 0;
+        for handle in handles {
+            if handle.await.expect("join consume") {
+                winners += 1;
+            }
+        }
+        assert_eq!(winners, 1, "a code must be exchangeable exactly once");
+
+        // Refresh token: exactly one rotation wins and leaves exactly one
+        // active token for the owner.
+        let token = store
+            .create_oauth_access_token(&owner.id, app.id, "read", Some(300), true)
+            .await
+            .expect("create token");
+        let refresh = token.refresh_token.clone().expect("refresh token");
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let store = store.clone();
+            let refresh = refresh.clone();
+            handles.push(tokio::spawn(async move {
+                store
+                    .rotate_oauth_access_token(&refresh, Some(300))
+                    .await
+                    .expect("rotate token")
+                    .is_some()
+            }));
+        }
+        let mut rotations = 0;
+        for handle in handles {
+            if handle.await.expect("join rotate") {
+                rotations += 1;
+            }
+        }
+        assert_eq!(rotations, 1, "a refresh token must rotate exactly once");
+        let active = store
+            .list_oauth_access_tokens_for_owner(&owner.id)
+            .await
+            .expect("active tokens");
+        assert_eq!(active.len(), 1, "{active:?}");
+        assert_ne!(active[0].token, token.token);
+        Vec::new()
+    }
+
     pub async fn oauth(store: &Arc<dyn MetadataStore>) -> Vec<String> {
         let owner = create_user(store.as_ref(), "oauth-owner").await;
         let app_name = unique("oauth-app");
@@ -3928,6 +4006,7 @@ matrix!(
         artifacts,
         membership,
         oauth,
+        oauth_atomicity,
         kv_secrets,
         bulk_lookups,
         reports,
@@ -3957,6 +4036,7 @@ matrix!(
         artifacts,
         membership,
         oauth,
+        oauth_atomicity,
         kv_secrets,
         bulk_lookups,
         reports,

@@ -1279,6 +1279,13 @@ impl OAuthRepository for SqliteStore {
         self.revoke_oauth_access_grant(token)
     }
 
+    async fn consume_oauth_access_grant(
+        &self,
+        token: &str,
+    ) -> Result<Option<OAuthAccessGrant>, StoreError> {
+        self.consume_oauth_access_grant(token)
+    }
+
     async fn create_oauth_access_token(
         &self,
         resource_owner_id: &str,
@@ -1334,6 +1341,14 @@ impl OAuthRepository for SqliteStore {
         refresh_token: &str,
     ) -> Result<(), StoreError> {
         self.revoke_oauth_access_token_by_refresh(refresh_token)
+    }
+
+    async fn rotate_oauth_access_token(
+        &self,
+        refresh_token: &str,
+        expires_in: Option<i64>,
+    ) -> Result<Option<OAuthAccessToken>, StoreError> {
+        self.rotate_oauth_access_token(refresh_token, expires_in)
     }
 
     async fn create_id_session(&self, username: &str) -> Result<String, StoreError> {

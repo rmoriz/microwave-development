@@ -224,6 +224,86 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Atomically consume an authorization code.
+    ///
+    /// The conditional update is the whole state transition: only one caller
+    /// can move the row from "not revoked" to "revoked", and `RETURNING`
+    /// gives that caller the row. A missing row or an already-revoked code
+    /// yields `None`.
+    pub fn consume_oauth_access_grant(
+        &self,
+        token: &str,
+    ) -> Result<Option<OAuthAccessGrant>, StoreError> {
+        let connection = self.connection();
+        Ok(connection
+            .query_row(
+                &format!(
+                    "UPDATE oauth_access_grants SET revoked_at = ?2
+                     WHERE token = ?1 AND revoked_at IS NULL
+                     RETURNING {GRANT_COLUMNS}"
+                ),
+                params![token, now()],
+                grant_from_row,
+            )
+            .optional()?)
+    }
+
+    /// Atomically rotate a refresh token.
+    ///
+    /// One transaction revokes the old row and inserts its successor, so a
+    /// concurrent or crashed rotation can never consume a refresh token
+    /// without issuing the replacement.
+    pub fn rotate_oauth_access_token(
+        &self,
+        refresh_token: &str,
+        expires_in: Option<i64>,
+    ) -> Result<Option<OAuthAccessToken>, StoreError> {
+        let timestamp = now();
+        let token = random_token();
+        let new_refresh = random_token();
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        let previous: Option<(Option<String>, Option<i64>, String)> = transaction
+            .query_row(
+                "UPDATE oauth_access_tokens SET revoked_at = ?2
+                 WHERE refresh_token = ?1 AND revoked_at IS NULL
+                 RETURNING resource_owner_id, application_id, scopes",
+                params![refresh_token, timestamp],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((resource_owner_id, application_id, scopes)) = previous else {
+            return Ok(None);
+        };
+        transaction.execute(
+            "INSERT INTO oauth_access_tokens
+             (resource_owner_id, application_id, token, refresh_token, expires_in, scopes, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                resource_owner_id,
+                application_id,
+                token,
+                new_refresh,
+                expires_in,
+                scopes,
+                timestamp
+            ],
+        )?;
+        let id = transaction.last_insert_rowid();
+        transaction.commit()?;
+        Ok(Some(OAuthAccessToken {
+            id,
+            resource_owner_id,
+            application_id,
+            token,
+            refresh_token: Some(new_refresh),
+            expires_in,
+            scopes,
+            created_at: timestamp,
+            revoked_at: None,
+        }))
+    }
+
     pub fn create_oauth_access_token(
         &self,
         resource_owner_id: &str,

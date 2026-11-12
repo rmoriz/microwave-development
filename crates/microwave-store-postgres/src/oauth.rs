@@ -4,7 +4,7 @@ use microwave_store::{
     OAuthAccessGrant, OAuthAccessToken, OAuthApplication, OAuthRepository, StoreError,
 };
 use sqlx::postgres::PgRow;
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 
 use crate::store::{db, new_id, now, PostgresStore};
 
@@ -268,6 +268,78 @@ impl OAuthRepository for PostgresStore {
         .await
         .map_err(db)?;
         Ok(())
+    }
+
+    async fn consume_oauth_access_grant(
+        &self,
+        token: &str,
+    ) -> Result<Option<OAuthAccessGrant>, StoreError> {
+        let row = sqlx::query(AssertSqlSafe(format!(
+            "UPDATE oauth_access_grants SET revoked_at = $2
+             WHERE token = $1 AND revoked_at IS NULL
+             RETURNING {GRANT_COLUMNS}"
+        )))
+        .bind(token)
+        .bind(now())
+        .fetch_optional(self.pool())
+        .await
+        .map_err(db)?;
+        row.map(|row| grant_from_row(&row)).transpose().map_err(db)
+    }
+
+    async fn rotate_oauth_access_token(
+        &self,
+        refresh_token: &str,
+        expires_in: Option<i64>,
+    ) -> Result<Option<OAuthAccessToken>, StoreError> {
+        let timestamp = now();
+        let token = random_token();
+        let new_refresh = random_token();
+        let mut transaction = self.pool().begin().await.map_err(db)?;
+        let previous = sqlx::query(
+            "UPDATE oauth_access_tokens SET revoked_at = $2
+             WHERE refresh_token = $1 AND revoked_at IS NULL
+             RETURNING resource_owner_id, application_id, scopes",
+        )
+        .bind(refresh_token)
+        .bind(&timestamp)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(db)?;
+        let Some(previous) = previous else {
+            return Ok(None);
+        };
+        let resource_owner_id: Option<String> = previous.try_get(0).map_err(db)?;
+        let application_id: Option<i64> = previous.try_get(1).map_err(db)?;
+        let scopes: String = previous.try_get(2).map_err(db)?;
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO oauth_access_tokens
+             (resource_owner_id, application_id, token, refresh_token, expires_in, scopes, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             RETURNING id",
+        )
+        .bind(&resource_owner_id)
+        .bind(application_id)
+        .bind(&token)
+        .bind(Some(&new_refresh))
+        .bind(expires_in)
+        .bind(&scopes)
+        .bind(&timestamp)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(db)?;
+        transaction.commit().await.map_err(db)?;
+        Ok(Some(OAuthAccessToken {
+            id,
+            resource_owner_id,
+            application_id,
+            token,
+            refresh_token: Some(new_refresh),
+            expires_in,
+            scopes,
+            created_at: timestamp,
+            revoked_at: None,
+        }))
     }
 
     async fn create_oauth_access_token(

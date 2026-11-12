@@ -832,6 +832,12 @@ pub trait OAuthRepository: Send + Sync {
         token: &str,
     ) -> Result<Option<OAuthAccessGrant>, StoreError>;
     async fn revoke_oauth_access_grant(&self, token: &str) -> Result<(), StoreError>;
+    /// Atomically consume an authorization code. `None` means the code is
+    /// unknown or was already exchanged.
+    async fn consume_oauth_access_grant(
+        &self,
+        token: &str,
+    ) -> Result<Option<OAuthAccessGrant>, StoreError>;
 
     async fn create_oauth_access_token(
         &self,
@@ -867,6 +873,13 @@ pub trait OAuthRepository: Send + Sync {
         &self,
         refresh_token: &str,
     ) -> Result<(), StoreError>;
+    /// Atomically revoke a refresh token and issue its successor in one
+    /// transaction. `None` means the token is unknown or already rotated.
+    async fn rotate_oauth_access_token(
+        &self,
+        refresh_token: &str,
+        expires_in: Option<i64>,
+    ) -> Result<Option<OAuthAccessToken>, StoreError>;
 
     async fn create_id_session(&self, username: &str) -> Result<String, StoreError>;
     async fn find_id_session(&self, token: &str) -> Result<Option<String>, StoreError>;
