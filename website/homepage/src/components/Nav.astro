@@ -2,6 +2,13 @@
 import { site } from '../data/site';
 import { withBase } from '../lib/paths';
 import Logo from './Logo.astro';
+import LanguageSwitcher from './LanguageSwitcher.astro';
+
+interface Props {
+  showLanguageSwitcher?: boolean;
+}
+
+const { showLanguageSwitcher = true } = Astro.props;
 
 const links = [
   { href: withBase('/#product'), label: 'Product' },
@@ -25,6 +32,7 @@ const links = [
     </nav>
 
     <div class="nav-actions">
+      {showLanguageSwitcher && <LanguageSwitcher />}
       <a class="button button-small nav-download" href={site.releases}>Download</a>
       <a class="button button-primary button-small" href={site.docs}>Docs</a>
       <a class="nav-github" href={site.github}>GitHub</a>
@@ -37,10 +45,11 @@ const links = [
           {links.map((link) => (
             <li><a href={link.href}>{link.label}</a></li>
           ))}
-          <li><a href={site.releases}>Download</a></li>
-          <li><a href={site.github}>GitHub</a></li>
-          <li><a class="button button-primary" href={site.docs}>Docs</a></li>
-        </ul>
+           <li><a href={site.releases}>Download</a></li>
+           <li><a href={site.github}>GitHub</a></li>
+           <li><a class="button button-primary" href={site.docs}>Docs</a></li>
+           {showLanguageSwitcher && <li class="nav-language-mobile"><LanguageSwitcher /></li>}
+         </ul>
       </nav>
     </details>
   </div>

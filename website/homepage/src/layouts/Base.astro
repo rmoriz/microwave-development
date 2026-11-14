@@ -7,9 +7,10 @@ import '../styles/global.css';
 import '../styles/components.css';
 import Footer from '../components/Footer.astro';
 import GridField from '../components/GridField.astro';
-import { SITE_URL } from '../data/config';
+import { BASE_PATH, SITE_URL } from '../data/config';
 import { site } from '../data/site';
 import { withBase } from '../lib/paths';
+import { getRelativeLocaleUrlList } from 'astro:i18n';
 
 interface Props {
   title: string;
@@ -35,6 +36,9 @@ const {
 const origin = Astro.site ?? new URL(SITE_URL);
 const canonical = new URL(Astro.url.pathname, origin);
 const socialImage = new URL(withBase(image), origin);
+const stripBase = (p: string) => (p.startsWith(BASE_PATH) ? p.slice(BASE_PATH.length) || '/' : p);
+const localeUrls = getRelativeLocaleUrlList(stripBase(Astro.url.pathname));
+const localeCodes = ['en', 'de', 'fr', 'it', 'es', 'nl'];
 const schema = {
   '@context': 'https://schema.org',
   '@type': 'SoftwareApplication',
@@ -49,7 +53,7 @@ const schema = {
 };
 ---
 <!doctype html>
-<html lang="en">
+<html lang={Astro.currentLocale ?? 'en'}>
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://www.youtube.com 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' https://www.youtube-nocookie.com; base-uri 'self'; form-action 'self'; frame-src https://www.youtube-nocookie.com; frame-ancestors 'none'" />
@@ -63,6 +67,10 @@ const schema = {
     <link rel="manifest" href={withBase('/site.webmanifest')} />
     <meta name="theme-color" content="#2a4d6e" />
     <link rel="canonical" href={canonical} />
+    {!noindex && localeUrls.map((href, index) => (
+      <link rel="alternate" hreflang={localeCodes[index]} href={new URL(href, origin)} />
+    ))}
+    {!noindex && <link rel="alternate" hreflang="x-default" href={new URL(localeUrls[0], origin)} />}
     {preload && (
       <link
         rel="preload"
