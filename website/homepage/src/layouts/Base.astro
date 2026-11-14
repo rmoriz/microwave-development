@@ -67,10 +67,10 @@ const schema = {
     <link rel="manifest" href={withBase('/site.webmanifest')} />
     <meta name="theme-color" content="#2a4d6e" />
     <link rel="canonical" href={canonical} />
-    {localeUrls.map((href, index) => (
+    {!noindex && localeUrls.map((href, index) => (
       <link rel="alternate" hreflang={localeCodes[index]} href={new URL(href, origin)} />
     ))}
-    <link rel="alternate" hreflang="x-default" href={new URL(localeUrls[0], origin)} />
+    {!noindex && <link rel="alternate" hreflang="x-default" href={new URL(localeUrls[0], origin)} />}
     {preload && (
       <link
         rel="preload"

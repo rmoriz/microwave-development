@@ -48,7 +48,7 @@ const links = [
            <li><a href={site.releases}>Download</a></li>
            <li><a href={site.github}>GitHub</a></li>
            <li><a class="button button-primary" href={site.docs}>Docs</a></li>
-           <li class="nav-language-mobile"><LanguageSwitcher /></li>
+           {showLanguageSwitcher && <li class="nav-language-mobile"><LanguageSwitcher /></li>}
          </ul>
       </nav>
     </details>

@@ -1104,6 +1104,7 @@ area = "website"
 status = "verified"
 surfaces = [
   { path = "website/homepage/src/components/Nav.astro", needle = "Under the hood" },
+  { path = "website/homepage/src/components/LanguageSwitcher.astro", needle = "language-switcher" },
 ]
 verify = { kind = "grep", path = "website/homepage/src/components/Nav.astro", pattern = "/#support" }
 
@@ -2515,3 +2516,12 @@ area = "docs"
 status = "verified"
 surfaces = [ { path = "docs/quotas.md", needle = "a restore is never truncated" } ]
 verify = { kind = "grep", path = "crates/microwave-migrate/src/lib.rs", pattern = "Quota checks are not installed" }
+
+
+[[claim]]
+id = "homepage-i18n-locales"
+summary = "The homepage declares six locales and falls back to English."
+area = "website"
+status = "verified"
+surfaces = [ { path = "website/homepage/src/data/i18n.ts", needle = "LOCALES = ['en', 'de', 'fr', 'it', 'es', 'nl']" } ]
+verify = { kind = "grep", path = "website/homepage/src/data/i18n.ts", pattern = "LOCALES = " }
