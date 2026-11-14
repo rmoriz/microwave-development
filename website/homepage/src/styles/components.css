@@ -69,6 +69,35 @@
   margin-left: auto;
 }
 
+.language-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.language-switcher a {
+  font-size: 0.75rem;
+  line-height: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 160ms ease, border-color 160ms ease;
+}
+
+.language-switcher a:hover {
+  color: var(--text);
+  border-color: var(--text);
+}
+
+.language-switcher a.is-active {
+  color: var(--text);
+  border-color: var(--accent, var(--cyan));
+}
+
 /* The accent fill marks Download as the primary action in the bar. */
 .nav-download {
   border-color: transparent;
@@ -148,6 +177,11 @@
 .nav-mobile a:not(.button):hover {
   background: var(--panel-raised);
 }
+
+  .nav-language-mobile .language-switcher {
+    gap: 6px;
+    margin-top: 8px;
+  }
 
 .button {
   display: inline-flex;

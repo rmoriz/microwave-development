@@ -1,0 +1,23 @@
+---
+import { LOCALE_LABELS, LOCALES } from '../data/i18n';
+import { getRelativeLocaleUrlList } from 'astro:i18n';
+import { BASE_PATH } from '../data/config';
+
+const stripBase = (p: string) => (p.startsWith(BASE_PATH) ? p.slice(BASE_PATH.length) || '/' : p);
+const urls = getRelativeLocaleUrlList(stripBase(Astro.url.pathname));
+const current = Astro.currentLocale ?? 'en';
+---
+
+<nav class="language-switcher" aria-label="Language">
+  {LOCALES.map((locale, index) => (
+    <a
+      href={urls[index]}
+      hreflang={locale}
+      lang={locale}
+      aria-current={locale === current ? 'true' : undefined}
+      class={locale === current ? 'is-active' : undefined}
+    >
+      {LOCALE_LABELS[locale]}
+    </a>
+  ))}
+</nav>
