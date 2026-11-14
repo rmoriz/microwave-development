@@ -1,0 +1,54 @@
+name: opencode
+
+# An `/oc` or `/opencode` inline review comment hands the task to an OpenCode
+# agent. The job holds `contents: write` and this repository is public, so the
+# job only runs for commenters GitHub marks as OWNER, MEMBER or COLLABORATOR.
+on:
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: opencode-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  opencode:
+    if: >-
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+      && (contains(github.event.comment.body, '/oc') || contains(github.event.comment.body, '/opencode'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Trade the workflow's OIDC token for an OpenCode API key, so the run
+      # needs no stored provider secret. `id-token: write` above is the gate.
+      - name: Sign in to OpenCode
+        env:
+          AUDIENCE: https://opencode.ai/console
+        run: |
+          oidc=$(curl -sSf --oauth2-bearer "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE" | jq -r .value)
+          token=$(curl -sSf https://opencode.ai/console/auth/oauth/token \
+            -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+            -d subject_token_type=urn:ietf:params:oauth:token-type:jwt \
+            -d client_id=sk_c17d92b1-4ceb-4d9e-b841-07a61a42b422 \
+            -d subject_token="$oidc" | jq -r .access_token)
+          echo "::add-mask::$token"
+          echo "OPENCODE_API_KEY=$token" >> "$GITHUB_ENV"
+      - uses: dceoy/opencode-action@163f9a9cd3d3f497e2847635585419f951371d2f  # v0.8.1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          model: opencode-go/beam-free
+          # `latest` resolves the newest release at run time; the action's
+          # default is a pinned v1 binary.
+          opencode-version: latest
+          timeout-minutes: 25
