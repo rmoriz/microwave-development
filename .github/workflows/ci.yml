@@ -133,10 +133,12 @@ jobs:
       # Ruby's YAML parser accepts files GitHub rejects (an unavailable
       # expression context breaks the whole workflow at run time, with no job
       # to look at), so lint the workflows with the same tool locally.
+      # actionlint 1.7.12 is the newest release and does not know the
+      # job-level `cache-mode` key yet; ignore only that message until it does.
       - name: Lint the workflows
         run: |
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.12
-          ./actionlint
+          ./actionlint -ignore 'unexpected key "cache-mode"'
 
   homepage:
     needs: changes
