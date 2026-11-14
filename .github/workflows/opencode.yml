@@ -1,9 +1,12 @@
 name: opencode
 
-# An `/oc` or `/opencode` inline review comment hands the task to an OpenCode
-# agent. The job holds `contents: write` and this repository is public, so the
-# job only runs for commenters GitHub marks as OWNER, MEMBER or COLLABORATOR.
+# An `/oc` or `/opencode` comment — on an issue, or inline on a pull request
+# diff — hands the task to an OpenCode agent. The job holds `contents: write`
+# and this repository is public, so it only runs for commenters GitHub marks
+# as OWNER, MEMBER or COLLABORATOR.
 on:
+  issue_comment:
+    types: [created]
   pull_request_review_comment:
     types: [created]
 
@@ -14,7 +17,8 @@ permissions:
   id-token: write
 
 concurrency:
-  group: opencode-${{ github.event.pull_request.number }}
+  # `issue.number` covers issue comments, `pull_request.number` review comments.
+  group: opencode-${{ github.event.issue.number || github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
